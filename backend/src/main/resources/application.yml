@@ -1,0 +1,58 @@
+spring.application.name: EnvoyMart
+
+server:
+  port: 8080
+
+spring:
+  profiles:
+    active: demo
+  main:
+    allow-circular-references: true   # 允许依赖循环
+  datasource:
+    driver-class-name: ${DB_DRIVER:org.h2.Driver}
+    url: ${DB_URL:jdbc:h2:mem:envoymart;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
+    username: ${DB_USERNAME:sa}
+    password: ${DB_PASSWORD:}
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+
+mybatis-plus:
+  type-aliases-package: yumefusaka.envoymart
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false # 是否开启二级缓存
+  global-config:
+    db-config:
+      update-strategy: not_null # 更新策略：只更新非空字段
+
+logging:
+  level:
+    yumefusaka:
+      envoymart:
+        mapper: debug
+        service: info
+        controller: info
+
+# jwt令牌信息
+jwt:
+  token-name: token
+  ttl: 432000000000
+  secret-key: yumefusaka
+
+
+# knife4j配置信息
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+
+ai:
+  provider: mock
+  base-url: ${AI_BASE_URL:}
+  api-key: ${AI_API_KEY:}
+  model: ${AI_MODEL:gpt-4.1-mini}
