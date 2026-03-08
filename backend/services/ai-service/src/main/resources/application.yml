@@ -1,0 +1,17 @@
+server:
+  port: 9004
+
+spring:
+  application:
+    name: ai-service
+  cloud:
+    nacos:
+      discovery:
+        enabled: ${NACOS_ENABLED:false}
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+  # 自研 Agent 框架已替换 Spring AI
+  # LLM Provider 在 AiAgentConfig 中通过 Java Config 注入
+
+services:
+  product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
+  order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
