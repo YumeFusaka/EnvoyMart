@@ -12,25 +12,51 @@ spring:
     gateway:
       routes:
         - id: auth-service
-          uri: ${AUTH_SERVICE_URL:http://127.0.0.1:9001}
+          uri: lb://auth-service
           predicates:
             - Path=/auth/**
         - id: product-service
-          uri: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
+          uri: lb://product-service
           predicates:
             - Path=/products/**
         - id: order-service-cart
-          uri: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
+          uri: lb://order-service
           predicates:
             - Path=/cart/**
         - id: order-service-orders
-          uri: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
+          uri: lb://order-service
           predicates:
             - Path=/orders/**
         - id: ai-service
-          uri: ${AI_SERVICE_URL:http://127.0.0.1:9004}
+          uri: lb://ai-service
           predicates:
             - Path=/ai/**
+        - id: payment-service
+          uri: lb://payment-service
+          predicates:
+            - Path=/payments/**
+        - id: review-service
+          uri: lb://review-service
+          predicates:
+            - Path=/reviews/**
+
+      # 全局熔断降级配置
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            key-resolver: '#{@remoteAddrKeyResolver}'
+            redis-rate-limiter.replenishRate: 100
+            redis-rate-limiter.burstCapacity: 200
+
+sentinel:
+  filter:
+    enabled: true
+  transport:
+    dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8718}
+  scg:
+    fallback:
+      mode: response
+      response-body: '{"code": 429, "message": "请求过于频繁，请稍后再试"}'
 
 jwt:
   token-name: token
