@@ -19,9 +19,12 @@ import java.util.stream.Collectors;
 public class ProductServiceImpl implements ProductService {
 
     private final ProductMapper productMapper;
+    private final ProductCacheService productCacheService;
 
-    public ProductServiceImpl(ProductMapper productMapper) {
+    public ProductServiceImpl(ProductMapper productMapper,
+                              ProductCacheService productCacheService) {
         this.productMapper = productMapper;
+        this.productCacheService = productCacheService;
     }
 
     @Override
@@ -38,7 +41,13 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public ProductResponse getProduct(Long id) {
-        return toResponse(requireEntity(id));
+        ProductResponse cached = productCacheService.getCachedProduct(id);
+        if (cached != null) {
+            return cached;
+        }
+        ProductResponse product = toResponse(requireEntity(id));
+        productCacheService.cacheProduct(product);
+        return product;
     }
 
     @Override
@@ -64,6 +73,8 @@ public class ProductServiceImpl implements ProductService {
         }
         entity.setStock(entity.getStock() - request.getQuantity());
         productMapper.updateById(entity);
+        // 库存变更后清除缓存，确保强一致性
+        productCacheService.evictProductCache(request.getProductId());
     }
 
     private ProductEntity requireEntity(Long id) {
