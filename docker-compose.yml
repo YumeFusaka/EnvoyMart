@@ -1,0 +1,98 @@
+version: '3.8'
+
+# EnvoyMart 智能零售平台 - Docker 部署
+# 基础设施：Nacos + MySQL + Redis + RabbitMQ + Elasticsearch + Sentinel
+
+networks:
+  envoymart-net:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  redis-data:
+  es-data:
+  nacos-data:
+  rabbitmq-data:
+
+services:
+  # ========== 注册中心 ==========
+  nacos:
+    image: nacos/nacos-server:v2.5.1
+    container_name: envoymart-nacos
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    environment:
+      MODE: standalone
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+    volumes:
+      - nacos-data:/home/nacos/data
+    networks:
+      - envoymart-net
+
+  # ========== 数据库 ==========
+  mysql:
+    image: mysql:8.4
+    container_name: envoymart-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: envoymart123
+      MYSQL_DATABASE: envoymart
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - envoymart-net
+
+  # ========== 缓存 ==========
+  redis:
+    image: redis:7.4
+    container_name: envoymart-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - envoymart-net
+
+  # ========== 消息队列 ==========
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    container_name: envoymart-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: envoymart
+      RABBITMQ_DEFAULT_PASS: envoymart123
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - envoymart-net
+
+  # ========== 搜索引擎 ==========
+  elasticsearch:
+    image: elasticsearch:8.17
+    container_name: envoymart-es
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      - envoymart-net
+
+  # ========== Sentinel 控制台 ==========
+  sentinel-dashboard:
+    image: bladex/sentinel-dashboard:1.8.8
+    container_name: envoymart-sentinel
+    ports:
+      - "8718:8718"
+    networks:
+      - envoymart-net
