@@ -56,11 +56,15 @@ async function initialize() {
   await Promise.all([loadProducts(), loadCart(), loadOrders()])
 }
 
-async function handleAddToCart(product: Product) {
+async async function handleAddToCart(product: Product) {
   await addCartItem({ productId: product.id, quantity: 1 })
   ElMessage.success(`已将 ${product.name} 加入购物车`)
   cartVisible.value = true
   await loadCart()
+}
+
+function goToProduct(product: Product) {
+  router.push(`/products/${product.id}`)
 }
 
 async function handleUpdateQuantity(payload: { id: number; quantity: number }) {
@@ -115,6 +119,7 @@ onMounted(initialize)
       </div>
       <div class="header-actions">
         <el-button plain @click="router.push('/assistant')">进入 AI 助手</el-button>
+        <el-button plain @click="router.push('/orders')">订单</el-button>
         <el-button type="primary" @click="cartVisible = true">购物车 {{ cartItems.length }}</el-button>
         <el-button text @click="logout">退出</el-button>
       </div>
@@ -137,7 +142,7 @@ onMounted(initialize)
 
     <section class="content-grid">
       <div class="product-grid">
-        <ProductCard v-for="product in products" :key="product.id" :product="product" @add="handleAddToCart" />
+        <ProductCard v-for="product in products" :key="product.id" :product="product" @add="handleAddToCart" @click="goToProduct(product)" />
       </div>
 
       <OrderPanel
