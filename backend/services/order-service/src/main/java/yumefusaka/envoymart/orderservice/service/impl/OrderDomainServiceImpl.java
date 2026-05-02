@@ -101,6 +101,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         CartItemEntity entity = requireCartItem(userId, id);
         entity.setQuantity(request.getQuantity());
         cartItemMapper.updateById(entity);
+        cartCacheService.evictCartCache(userId);
         return toCartResponse(entity, requireProduct(entity.getProductId()));
     }
 
