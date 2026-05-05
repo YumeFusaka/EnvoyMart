@@ -1,7 +1,7 @@
 # EnvoyMart Agent 电商平台
 
 <p align="center">
-  <strong>Spring Cloud + 自研 Agent 框架 + Vue3 智能零售微服务平台</strong>
+  <strong>Spring Cloud + 自研 Agent 框架 + Vue3 智能电商平台</strong>
 </p>
 
 <p align="center">
@@ -16,11 +16,11 @@
 
 ## 项目简介
 
-EnvoyMart 是一个面向简历展示的全功能全栈电商 demo，覆盖**用户、商品、订单、支付、物流、评价与客服**等核心业务，并扩展**智能导购、RAG 知识增强问答、Agent 多步推理与工具编排**能力，实现"业务系统 + 智能决策"一体化电商架构。
+EnvoyMart 是基于 Spring Cloud Alibaba + 自研 Agent 框架 + Vue3 构建的智能电商平台，覆盖用户、商品、订单、支付、物流、评价与客服等核心业务，并扩展智能导购、RAG 知识增强问答、Agent 多步推理与工具编排能力，实现"业务系统 + 智能决策"一体化电商架构。
 
-- **后端**：Spring Cloud Alibaba 微服务（Nacos 注册发现 + Sentinel 限流熔断）
+- **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个微服务独立部署
 - **Agent 框架**：自研三层架构（LLM 接入 → ReAct/PAE 推理 → Tool/Skill 执行）+ RAG 知识增强 + Memory 持久记忆
-- **前端**：Vue 3 + TypeScript + Element Plus
+- **前端**：Vue 3 + TypeScript + Element Plus，6 个完整页面
 - **中间件**：Redis 缓存 & 分布式锁 + RabbitMQ 事件驱动 + Elasticsearch 搜索引擎
 
 ## 系统架构
@@ -128,7 +128,7 @@ EnvoyMart 是一个面向简历展示的全功能全栈电商 demo，覆盖**用
 | 页面 | 功能 |
 |------|------|
 | 登录页 | 用户名密码登录，JWT 存储，路由守卫 |
-| 智能零售工作台 | 商品网格 + 搜索/分类筛选 + 购物车 + 订单面板 + 物流追踪 |
+| 电商工作台 | 商品网格 + 搜索/分类筛选 + 购物车 + 订单面板 + 物流追踪 |
 | 商品详情页 | 商品信息 + 标签 + 价格 + 加入购物车 |
 | 订单管理页 | 订单列表 + 物流时间线 + 去支付 |
 | 支付页 | 多支付方式选择 + 支付模拟 + 成功页 |

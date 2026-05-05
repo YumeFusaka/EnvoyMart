@@ -76,7 +76,7 @@ function openProduct(product: Product) {
         <p class="eyebrow">AI Service Console</p>
         <h1>EnvoyMart 智能客服与导购</h1>
         <p class="subcopy">
-          当前会话由 Mock Provider + 本地知识检索驱动，适合演示商品问答、活动答疑、订单与物流工具调用。
+          基于自研 Agent 框架，支持商品问答、活动答疑、订单查询与物流追踪等场景。
         </p>
       </div>
       <div class="header-actions">
@@ -95,8 +95,8 @@ function openProduct(product: Product) {
         <strong>{{ assistantCount }}</strong>
       </div>
       <div class="stat-card">
-        <span>演示能力</span>
-        <strong>RAG + Tool Calling</strong>
+        <span>核心技术</span>
+        <strong>Agent + RAG + Tool Calling</strong>
       </div>
     </section>
 
