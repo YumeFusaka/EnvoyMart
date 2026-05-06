@@ -151,8 +151,25 @@ public class Agent {
         return sb.toString();
     }
 
-    /** 简单启发式判断是否为复杂任务。 */
+    /**
+     * 通过快速 LLM 判断任务类型。
+     * 无法判定时回退到关键词启发式。
+     */
     private boolean isComplexTask(String message) {
+        try {
+            List<ChatMessage> classifyMessages = List.of(
+                    ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
+                            .content("判断用户请求是否需要多步操作（如比价、退换货、查物流后下单），只需回复 yes 或 no。").build(),
+                    ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()
+            );
+            LLMResponse resp = llmProvider.chat(classifyMessages, llmConfig);
+            if (resp.getContent() != null && resp.getContent().toLowerCase().contains("yes")) {
+                return true;
+            }
+        } catch (Exception e) {
+            log.warn("[Agent] LLM classification failed, fallback to keyword heuristic");
+        }
+        // Fallback：关键词启发式
         long toolKeywords = message.chars().filter(c -> "买卖下单物流退换比价".indexOf(c) >= 0).count();
         return toolKeywords >= 2;
     }

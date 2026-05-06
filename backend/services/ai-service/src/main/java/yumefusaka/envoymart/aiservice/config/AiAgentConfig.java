@@ -11,6 +11,7 @@ import yumefusaka.envoymart.agent.llm.MockLLMProvider;
 import yumefusaka.envoymart.agent.memory.LongTermMemory;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.ShortTermMemory;
+import yumefusaka.envoymart.agent.memory.mem0.Mem0Client;
 import yumefusaka.envoymart.agent.rag.*;
 import yumefusaka.envoymart.agent.skill.SkillRegistry;
 import yumefusaka.envoymart.agent.skill.WorkflowEngine;
@@ -67,8 +68,14 @@ public class AiAgentConfig {
     }
 
     @Bean
-    public SimpleEmbeddingService embeddingService() {
-        return new SimpleEmbeddingService();
+    public Mem0Client mem0Client() {
+        return new Mem0Client();
+    }
+
+    @Bean
+    public OllamaEmbeddingService embeddingService() {
+        // 优先使用本地 Ollama（nomic-embed-text），不可用时自动降级到 SimpleEmbeddingService
+        return new OllamaEmbeddingService();
     }
 
     @Bean
