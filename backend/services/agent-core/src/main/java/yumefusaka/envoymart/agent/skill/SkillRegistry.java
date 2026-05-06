@@ -26,7 +26,6 @@ public class SkillRegistry {
 
     /**
      * 根据用户消息路由到最佳匹配的 Skill。
-     * ponytail: 关键词匹配路由，生产环境应使用意图分类模型。
      */
     public Optional<Skill> route(String userMessage) {
         return skills.values().stream()

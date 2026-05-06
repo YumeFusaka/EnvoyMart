@@ -8,7 +8,6 @@ import java.util.stream.Collectors;
 
 /**
  * 长期记忆 —— 持久化用户偏好、事实、摘要等，不随滑动窗口淘汰。
- * ponytail: 内存 Map 实现，生产环境应替换为数据库或向量存储后端。
  */
 @Slf4j
 public class LongTermMemory implements Memory {

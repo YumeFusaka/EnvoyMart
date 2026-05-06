@@ -91,7 +91,7 @@ public class PAEEngine {
 
     @SuppressWarnings("unchecked")
     private List<PlanItem> generatePlan(String userMessage, List<ChatMessage> context) {
-        // ponytail: 硬编码规划逻辑，生产环境由 LLM 生成结构化 Plan
+        // 规则化规划逻辑，后续可替换为 LLM 生成结构化 Plan
         List<PlanItem> plan = new ArrayList<>();
         if (userMessage.contains("买") || userMessage.contains("下单")) {
             plan.add(PlanItem.builder().action("product_search").expectedOutcome("找到目标商品").build());

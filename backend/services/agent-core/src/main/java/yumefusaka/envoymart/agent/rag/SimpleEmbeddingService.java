@@ -5,7 +5,7 @@ import java.util.Random;
 
 /**
  * 简易 Embedding 实现 —— 基于字符哈希的固定向量。
- * ponytail: 演示用，仅保证相同输入产生相同向量。生产环境替换为 OpenAI / BGE embedding API。
+ * 切换至 OllamaEmbeddingService 即可接入真实向量模型。
  */
 public class SimpleEmbeddingService implements EmbeddingService {
 

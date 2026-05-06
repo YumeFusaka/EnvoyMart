@@ -17,7 +17,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * 每个 MCPAdapter 实例对应一个远程 MCP Server 的工具。
  * 通信协议由注入的 MCPTransport 决定。
- * ponytail: 仅做协议适配骨架，真实 MCP 握手/发现/批量工具注册待补齐。
  */
 @Slf4j
 public class MCPAdapter implements Tool {

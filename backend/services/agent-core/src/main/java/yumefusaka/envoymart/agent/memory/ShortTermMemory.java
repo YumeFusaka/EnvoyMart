@@ -6,7 +6,6 @@ import java.util.stream.Collectors;
 
 /**
  * 短期记忆 —— 每会话滑动窗口，超出上限则丢弃最早条目。
- * ponytail: ConcurrentHashMap + Deque，单机够用；集群环境换 RedisListMemory。
  */
 public class ShortTermMemory implements Memory {
 

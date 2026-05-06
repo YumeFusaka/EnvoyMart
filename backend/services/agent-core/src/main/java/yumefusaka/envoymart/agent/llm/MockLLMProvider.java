@@ -7,7 +7,7 @@ import java.util.stream.Collectors;
 
 /**
  * Mock 实现 —— 不调用真实 LLM，仅回显最近一条用户消息。
- * ponytail: 演示用，接入真实模型时替换为 OpenaiLLMProvider / ClaudeLLMProvider 即可。
+ * 切换至 OpenaiLLMProvider 即可接入真实模型。
  */
 @Slf4j
 public class MockLLMProvider implements LLMProvider {

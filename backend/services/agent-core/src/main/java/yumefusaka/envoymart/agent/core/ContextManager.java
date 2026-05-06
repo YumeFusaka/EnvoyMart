@@ -56,7 +56,7 @@ public class ContextManager {
 
     /**
      * 估算消息的 Token 数（近似）。
-     * ponytail: 简单的字符/4 估算，生产环境使用对应模型的 tokenizer。
+     * 字符/4 估算，后续可替换为对应模型的 tokenizer。
      */
     public int estimateTokens(List<ChatMessage> messages) {
         return messages.stream()
