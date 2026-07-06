@@ -1,6 +1,8 @@
 package yumefusaka.envoymart.orderservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.orderservice.client.ProductClient;
@@ -27,7 +29,9 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
+@Slf4j
 @Service
 public class OrderDomainServiceImpl implements OrderDomainService {
 
@@ -35,15 +39,18 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
     private final ProductClient productClient;
+    private final CartCacheService cartCacheService;
 
     public OrderDomainServiceImpl(CartItemMapper cartItemMapper,
                                   OrderMapper orderMapper,
                                   OrderItemMapper orderItemMapper,
-                                  ProductClient productClient) {
+                                  ProductClient productClient,
+                                  CartCacheService cartCacheService) {
         this.cartItemMapper = cartItemMapper;
         this.orderMapper = orderMapper;
         this.orderItemMapper = orderItemMapper;
         this.productClient = productClient;
+        this.cartCacheService = cartCacheService;
     }
 
     @Override
@@ -68,10 +75,18 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
     @Override
     public List<CartItemResponse> listCartItems(String userId) {
-        return cartItemMapper.selectList(new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId))
+        // 优先从缓存读取，预热后减少 DB 查询
+        List<CartItemResponse> cached = cartCacheService.getCachedCart(userId);
+        if (!cached.isEmpty()) {
+            return cached;
+        }
+        List<CartItemResponse> items = cartItemMapper.selectList(
+                        new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId))
                 .stream()
                 .map(item -> toCartResponse(item, requireProduct(item.getProductId())))
                 .toList();
+        cartCacheService.cacheCart(userId, items);
+        return items;
     }
 
     @Override
@@ -90,6 +105,21 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         if (cartItems.isEmpty()) {
             throw new IllegalArgumentException("购物车为空，无法下单");
         }
+
+        // 逐商品加分布式锁，防止超卖
+        for (CartItemEntity cartItem : cartItems) {
+            RLock lock = cartCacheService.getStockLock(cartItem.getProductId());
+            try {
+                if (!lock.tryLock(3, 10, TimeUnit.SECONDS)) {
+                    ProductSnapshot p = requireProduct(cartItem.getProductId());
+                    throw new IllegalStateException("商品「" + p.getName() + "」当前购买人数过多，请稍后再试");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("获取锁被中断", e);
+            }
+        }
+
         OrderEntity order = new OrderEntity();
         order.setOrderNo("YS" + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(LocalDateTime.now())
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase());
@@ -103,24 +133,31 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         orderMapper.insert(order);
 
         BigDecimal total = BigDecimal.ZERO;
-        for (CartItemEntity cartItem : cartItems) {
-            ProductSnapshot product = requireProduct(cartItem.getProductId());
-            productClient.deductStock(new StockDeductRequest(product.getId(), cartItem.getQuantity()));
-            BigDecimal subtotal = product.getPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity()));
-            total = total.add(subtotal);
-            OrderItemEntity item = new OrderItemEntity();
-            item.setOrderId(order.getId());
-            item.setProductId(product.getId());
-            item.setProductName(product.getName());
-            item.setProductImage(product.getImage());
-            item.setUnitPrice(product.getPrice());
-            item.setQuantity(cartItem.getQuantity());
-            item.setSubtotal(subtotal);
-            orderItemMapper.insert(item);
+        try {
+            for (CartItemEntity cartItem : cartItems) {
+                ProductSnapshot product = requireProduct(cartItem.getProductId());
+                productClient.deductStock(new StockDeductRequest(product.getId(), cartItem.getQuantity()));
+                BigDecimal subtotal = product.getPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity()));
+                total = total.add(subtotal);
+                OrderItemEntity item = new OrderItemEntity();
+                item.setOrderId(order.getId());
+                item.setProductId(product.getId());
+                item.setProductName(product.getName());
+                item.setProductImage(product.getImage());
+                item.setUnitPrice(product.getPrice());
+                item.setQuantity(cartItem.getQuantity());
+                item.setSubtotal(subtotal);
+                orderItemMapper.insert(item);
+            }
+            order.setTotalAmount(total);
+            orderMapper.updateById(order);
+            cartItemMapper.delete(new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId));
+            cartCacheService.evictCartCache(userId);  // 清除购物车缓存
+            log.info("用户 {} 下单成功，订单号 {}", userId, order.getOrderNo());
+        } finally {
+            // 释放所有分布式锁
+            cartItems.forEach(item -> cartCacheService.unlock(item.getProductId()));
         }
-        order.setTotalAmount(total);
-        orderMapper.updateById(order);
-        cartItemMapper.delete(new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId));
         return getOrder(userId, order.getId());
     }
 
