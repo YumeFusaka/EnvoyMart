@@ -22,6 +22,10 @@ import yumefusaka.envoymart.orderservice.model.OrderResponse;
 import yumefusaka.envoymart.orderservice.model.ProductSnapshot;
 import yumefusaka.envoymart.orderservice.model.StockDeductRequest;
 import yumefusaka.envoymart.orderservice.model.UpdateCartItemRequest;
+import yumefusaka.envoymart.orderservice.mq.OrderCreatedEvent;
+import yumefusaka.envoymart.orderservice.mq.OrderEventPublisher;
+import yumefusaka.envoymart.orderservice.mq.OrderItemEvent;
+import yumefusaka.envoymart.orderservice.mq.StockUpdatedEvent;
 import yumefusaka.envoymart.orderservice.service.OrderDomainService;
 
 import java.math.BigDecimal;
@@ -40,17 +44,20 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     private final OrderItemMapper orderItemMapper;
     private final ProductClient productClient;
     private final CartCacheService cartCacheService;
+    private final OrderEventPublisher eventPublisher;
 
     public OrderDomainServiceImpl(CartItemMapper cartItemMapper,
                                   OrderMapper orderMapper,
                                   OrderItemMapper orderItemMapper,
                                   ProductClient productClient,
-                                  CartCacheService cartCacheService) {
+                                  CartCacheService cartCacheService,
+                                  OrderEventPublisher eventPublisher) {
         this.cartItemMapper = cartItemMapper;
         this.orderMapper = orderMapper;
         this.orderItemMapper = orderItemMapper;
         this.productClient = productClient;
         this.cartCacheService = cartCacheService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -153,6 +160,23 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             orderMapper.updateById(order);
             cartItemMapper.delete(new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId));
             cartCacheService.evictCartCache(userId);  // 清除购物车缓存
+            // 发布订单创建事件（异步解耦后续流程）
+            eventPublisher.publishOrderCreated(OrderCreatedEvent.builder()
+                    .orderId(order.getId())
+                    .orderNo(order.getOrderNo())
+                    .userId(userId)
+                    .totalAmount(total)
+                    .items(cartItems.stream().map(ci -> {
+                        ProductSnapshot p = requireProduct(ci.getProductId());
+                        return OrderItemEvent.builder()
+                                .productId(p.getId())
+                                .productName(p.getName())
+                                .quantity(ci.getQuantity())
+                                .price(p.getPrice())
+                                .build();
+                    }).toList())
+                    .createdAt(order.getCreatedAt())
+                    .build());
             log.info("用户 {} 下单成功，订单号 {}", userId, order.getOrderNo());
         } finally {
             // 释放所有分布式锁
