@@ -20,15 +20,29 @@ import java.util.List;
 public class ProductController {
 
     private final ProductService productService;
+    private final yumefusaka.envoymart.productservice.search.ProductSearchService searchService;
 
-    public ProductController(ProductService productService) {
+    public ProductController(ProductService productService,
+                             yumefusaka.envoymart.productservice.search.ProductSearchService searchService) {
         this.productService = productService;
+        this.searchService = searchService;
     }
 
     @GetMapping
     public Result<List<ProductResponse>> list(@RequestParam(required = false) String keyword,
                                               @RequestParam(required = false) String category) {
         return Result.success(productService.listProducts(keyword, category));
+    }
+
+    /**
+     * ES 搜索引擎入口：多字段组合检索，支持分页
+     */
+    @GetMapping("/search")
+    public Result<List<ProductResponse>> search(@RequestParam(required = false) String keyword,
+                                                @RequestParam(required = false) String category,
+                                                @RequestParam(defaultValue = "0") int page,
+                                                @RequestParam(defaultValue = "20") int size) {
+        return Result.success(searchService.search(keyword, category, page, size));
     }
 
     @GetMapping("/{id}")
