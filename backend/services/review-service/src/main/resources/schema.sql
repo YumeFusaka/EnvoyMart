@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS review (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    product_id BIGINT NOT NULL,
+    order_id BIGINT NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    rating INT NOT NULL DEFAULT 5,
+    content TEXT,
+    images VARCHAR(1024),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

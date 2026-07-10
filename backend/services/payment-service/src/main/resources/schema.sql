@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS payment (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id BIGINT NOT NULL,
+    order_no VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    transaction_no VARCHAR(128),
+    paid_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
