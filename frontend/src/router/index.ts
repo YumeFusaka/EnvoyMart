@@ -1,3 +1,4 @@
+import '@/assets/main.css'
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { useUserStore } from '@/stores'
 import pinia from '@/stores'
@@ -26,6 +27,21 @@ const router = createRouter({
       path: '/assistant',
       name: 'assistant',
       component: () => import('@/views/AiAssistantView.vue')
+    },
+    {
+      path: '/products/:id',
+      name: 'product-detail',
+      component: () => import('@/views/ProductDetailView.vue')
+    },
+    {
+      path: '/orders',
+      name: 'orders',
+      component: () => import('@/views/OrderDetailView.vue')
+    },
+    {
+      path: '/payment',
+      name: 'payment',
+      component: () => import('@/views/PaymentView.vue')
     }
   ],
 })

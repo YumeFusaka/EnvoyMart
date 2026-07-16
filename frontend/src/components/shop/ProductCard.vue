@@ -7,11 +7,17 @@ defineProps<{
 
 const emit = defineEmits<{
   add: [product: Product]
+  click: []
 }>()
+
+function handleAdd(event: MouseEvent) {
+  event.stopPropagation()
+  emit('add', product)
+}
 </script>
 
 <template>
-  <article class="product-card">
+  <article class="product-card" @click="$emit('click')">
     <img :src="product.image" :alt="product.name" class="product-image" />
     <div class="product-body">
       <div class="product-meta">
