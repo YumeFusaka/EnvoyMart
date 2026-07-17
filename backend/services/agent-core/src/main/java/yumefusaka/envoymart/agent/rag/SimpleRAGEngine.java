@@ -34,10 +34,19 @@ public class SimpleRAGEngine implements RAGEngine {
 
     @Override
     public void ingest(Document document) {
+        if (document == null || document.getContent() == null) {
+            log.warn("[RAG] skip null document");
+            return;
+        }
         List<DocumentChunk> chunks = chunk(document);
         List<String> texts = chunks.stream().map(DocumentChunk::getContent).toList();
         List<float[]> embeddings = embeddingService.embedBatch(texts);
-        for (int i = 0; i < chunks.size(); i++) {
+        if (embeddings == null || embeddings.isEmpty()) {
+            log.warn("[RAG] embedding result is empty for doc={}, use raw text index", document.getId());
+            vectorStore.indexBatch(chunks);
+            return;
+        }
+        for (int i = 0; i < Math.min(chunks.size(), embeddings.size()); i++) {
             chunks.get(i).setEmbedding(embeddings.get(i));
         }
         vectorStore.indexBatch(chunks);
@@ -46,6 +55,10 @@ public class SimpleRAGEngine implements RAGEngine {
 
     @Override
     public void ingestBatch(List<Document> documents) {
+        if (documents == null || documents.isEmpty()) {
+            log.warn("[RAG] ingestBatch called with empty list");
+            return;
+        }
         documents.forEach(this::ingest);
     }
 
