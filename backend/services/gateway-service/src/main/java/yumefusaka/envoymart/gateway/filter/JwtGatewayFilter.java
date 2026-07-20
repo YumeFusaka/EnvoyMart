@@ -2,6 +2,7 @@ package yumefusaka.envoymart.gateway.filter;
 
 import io.jsonwebtoken.Claims;
 import lombok.extern.slf4j.Slf4j;
+import java.util.List;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -25,10 +26,17 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
         this.jwtProperties = jwtProperties;
     }
 
+    private static final List<String> PUBLIC_PATHS = List.of(
+            "/auth/login", "/auth/register",
+            "/products",
+            "/payments/callback"
+    );
+
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         String path = exchange.getRequest().getPath().value();
-        if (path.startsWith("/auth/login") || path.startsWith("/products")) {
+        boolean isPublic = PUBLIC_PATHS.stream().anyMatch(path::startsWith);
+        if (isPublic) {
             return chain.filter(exchange);
         }
         String token = exchange.getRequest().getHeaders().getFirst("Authorization");
