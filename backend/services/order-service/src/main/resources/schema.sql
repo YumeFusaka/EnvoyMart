@@ -27,3 +27,9 @@ create table if not exists shop_order_item (
     quantity int not null,
     subtotal decimal(10,2) not null
 );
+
+-- 查询索引：高频查询 user_id + status 维度
+create index if not exists idx_shop_order_user on shop_order(user_id, status);
+create index if not exists idx_shop_order_created on shop_order(created_at desc);
+create index if not exists idx_shop_order_item_order on shop_order_item(order_id);
+create index if not exists idx_cart_item_user on cart_item(user_id);

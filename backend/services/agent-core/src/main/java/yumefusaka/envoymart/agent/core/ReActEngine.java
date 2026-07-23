@@ -63,15 +63,22 @@ public class ReActEngine {
                     // Thought 阶段隐含在 LLM 的响应中
                     String thought = response.getContent() != null ? response.getContent() : "";
 
-                    // Action：执行工具
-                    var toolResult = toolRegistry.execute(new yumefusaka.envoymart.agent.tool.ToolCall(
-                            toolReq.getId(), toolReq.getName(), toolReq.getArguments()));
+                    // Action：执行工具（捕获异常防止中断推理循环）
+                    String observation;
+                    try {
+                        var toolResult = toolRegistry.execute(new yumefusaka.envoymart.agent.tool.ToolCall(
+                                toolReq.getId(), toolReq.getName(), toolReq.getArguments()));
+                        observation = toolResult.getOutput() != null ? toolResult.getOutput() : "工具执行成功但无返回内容";
+                    } catch (Exception e) {
+                        log.warn("[ReAct] tool {} execution failed: {}", toolReq.getName(), e.getMessage());
+                        observation = "工具执行异常: " + e.getMessage();
+                    }
 
                     steps.add(ReActStep.builder()
                             .thought(thought)
                             .action(toolReq.getName())
                             .actionInput(String.valueOf(toolReq.getArguments()))
-                            .observation(toolResult.getOutput())
+                            .observation(observation)
                             .build());
 
                     // Observation：将结果注入上下文
@@ -82,8 +89,8 @@ public class ReActEngine {
                             .build());
                     messages.add(ChatMessage.builder()
                             .role(ChatMessage.Role.TOOL)
-                            .content(toolResult.getOutput())
-                            .toolResult(toolResult.getOutput())
+                            .content(observation)
+                            .toolResult(observation)
                             .build());
                 }
             } else {
