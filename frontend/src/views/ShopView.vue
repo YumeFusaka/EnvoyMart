@@ -114,7 +114,7 @@ onMounted(initialize)
     <header class="page-header">
       <div>
         <p class="eyebrow">Retail Command Desk</p>
-        <h1>EnvoyMart 智能零售工作台</h1>
+        <h1>EnvoyMart 电商工作台</h1>
         <p class="subcopy">欢迎回来，{{ userStore.profile?.nickname || userStore.profile?.username }}</p>
       </div>
       <div class="header-actions">
@@ -127,8 +127,8 @@ onMounted(initialize)
 
     <section class="hero-strip">
       <div>
-        <strong>商品、订单、AI 联动演示</strong>
-        <p>当前已打通商品浏览、购物车、订单查询与 AI 智能客服问答。</p>
+        <strong>商品、订单、AI 联动工作台</strong>
+        <p>已打通商品浏览、购物车、订单查询与 AI 智能客服问答。</p>
       </div>
       <el-button type="success" @click="router.push('/assistant')">试试导购提问</el-button>
     </section>
