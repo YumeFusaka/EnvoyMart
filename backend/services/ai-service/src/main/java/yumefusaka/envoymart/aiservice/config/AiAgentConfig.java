@@ -128,7 +128,6 @@ public class AiAgentConfig {
 
     @Bean
     public SkillRegistry skillRegistry() {
-        // ponytail: 预留 Skill 注册入口，电商领域 Skill 待扩展
         return new SkillRegistry();
     }
 

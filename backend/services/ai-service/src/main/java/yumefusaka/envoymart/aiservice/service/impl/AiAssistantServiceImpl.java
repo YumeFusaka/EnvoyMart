@@ -41,7 +41,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .sessionId(request.getSessionId())
                 .reply(agentResp.getReply())
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))
-                .toolCalls(List.of())  // ponytail: ReAct 内部 trace 未暴露为外部 response
+                .toolCalls(List.of())
                 .recommendedProducts(List.of())
                 .build();
     }
