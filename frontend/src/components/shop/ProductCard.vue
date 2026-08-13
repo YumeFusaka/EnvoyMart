@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Product } from '@/types/models'
 
-defineProps<{
+const props = defineProps<{
   product: Product
 }>()
 
@@ -12,7 +12,7 @@ const emit = defineEmits<{
 
 function handleAdd(event: MouseEvent) {
   event.stopPropagation()
-  emit('add', product)
+  emit('add', props.product)
 }
 </script>
 
