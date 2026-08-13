@@ -56,7 +56,7 @@ async function initialize() {
   await Promise.all([loadProducts(), loadCart(), loadOrders()])
 }
 
-async async function handleAddToCart(product: Product) {
+async function handleAddToCart(product: Product) {
   await addCartItem({ productId: product.id, quantity: 1 })
   ElMessage.success(`已将 ${product.name} 加入购物车`)
   cartVisible.value = true
