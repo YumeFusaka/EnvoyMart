@@ -1,0 +1,82 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: gateway-service
+  # 未显式指定 profile 时默认走 local：用静态实例列表代替注册中心，开箱即可路由
+  profiles:
+    default: local
+  cloud:
+    nacos:
+      discovery:
+        enabled: ${NACOS_ENABLED:false}
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: auth-service
+              uri: lb://auth-service
+              predicates:
+                - Path=/auth/**
+            - id: product-service
+              uri: lb://product-service
+              predicates:
+                - Path=/products/**
+            - id: order-service-cart
+              uri: lb://order-service
+              predicates:
+                - Path=/cart/**
+            - id: order-service-orders
+              uri: lb://order-service
+              predicates:
+                - Path=/orders/**
+            - id: ai-service
+              uri: lb://ai-service
+              predicates:
+                - Path=/ai/**
+            - id: payment-service
+              uri: lb://payment-service
+              predicates:
+                - Path=/payments/**
+            - id: review-service
+              uri: lb://review-service
+              predicates:
+                - Path=/reviews/**
+    sentinel:
+      transport:
+        dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8718}
+      scg:
+        fallback:
+          mode: response
+          response-body: '{"code": 429, "message": "请求过于频繁，请稍后再试"}'
+
+jwt:
+  token-name: token
+  ttl: 432000000000
+  secret-key: ${JWT_SECRET:envoymart-jwt-secret-key-change-me-in-production}
+
+---
+# 本地无注册中心：lb:// 通过静态实例列表解析，生产环境用 NACOS_ENABLED=true + prod profile
+spring:
+  config:
+    activate:
+      on-profile: local
+  cloud:
+    discovery:
+      client:
+        simple:
+          instances:
+            auth-service:
+              - uri: ${AUTH_SERVICE_URL:http://127.0.0.1:9001}
+            product-service:
+              - uri: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
+            order-service:
+              - uri: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
+            ai-service:
+              - uri: ${AI_SERVICE_URL:http://127.0.0.1:9004}
+            payment-service:
+              - uri: ${PAYMENT_SERVICE_URL:http://127.0.0.1:9005}
+            review-service:
+              - uri: ${REVIEW_SERVICE_URL:http://127.0.0.1:9006}
