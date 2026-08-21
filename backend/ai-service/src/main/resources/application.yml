@@ -1,0 +1,46 @@
+server:
+  port: 9004
+
+spring:
+  application:
+    name: ai-service
+  # 默认不加载 Milvus 自动配置：本地无 Milvus 时走内存向量库降级。
+  # 启用方式：SPRING_PROFILES_ACTIVE=milvus
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.milvus.autoconfigure.MilvusVectorStoreAutoConfiguration
+  cloud:
+    nacos:
+      discovery:
+        enabled: ${NACOS_ENABLED:false}
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+  ai:
+    openai:
+      # 留空则回退到 MockLLMProvider，服务仍可启动、链路仍可跑通
+      api-key: ${LLM_API_KEY:}
+      # 默认指向阿里云百炼（DashScope）OpenAI 兼容端点；可换 DeepSeek / Ollama 等
+      base-url: ${LLM_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      chat:
+        model: ${LLM_MODEL:qwen-plus}
+        temperature: 0.7
+
+services:
+  product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
+  order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
+
+---
+# 生产/联调：接入 Milvus 作为向量库（需先启动 docker compose 里的 milvus）
+spring:
+  config:
+    activate:
+      on-profile: milvus
+  autoconfigure:
+    exclude: []
+  ai:
+    vectorstore:
+      milvus:
+        client:
+          host: ${MILVUS_HOST:127.0.0.1}
+          port: ${MILVUS_PORT:19530}
+        collection-name: envoymart_knowledge
+        initialize-schema: true
