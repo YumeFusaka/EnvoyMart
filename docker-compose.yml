@@ -74,7 +74,7 @@ services:
 
   # ========== 搜索引擎 ==========
   elasticsearch:
-    image: elasticsearch:8.17
+    image: elasticsearch:9.4.5
     container_name: envoymart-es
     ports:
       - "9200:9200"
