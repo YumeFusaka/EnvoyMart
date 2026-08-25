@@ -11,7 +11,6 @@ import java.util.List;
 @Slf4j
 public class SimpleRAGEngine implements RAGEngine {
 
-    private final EmbeddingService embeddingService;
     private final VectorStore vectorStore;
     private final Retriever retriever;
 
@@ -20,12 +19,10 @@ public class SimpleRAGEngine implements RAGEngine {
     /** 切片重叠（字符数） */
     private final int chunkOverlap;
 
-    public SimpleRAGEngine(EmbeddingService embeddingService,
-                           VectorStore vectorStore,
+    public SimpleRAGEngine(VectorStore vectorStore,
                            Retriever retriever,
                            int chunkSize,
                            int chunkOverlap) {
-        this.embeddingService = embeddingService;
         this.vectorStore = vectorStore;
         this.retriever = retriever;
         this.chunkSize = chunkSize;
@@ -39,16 +36,7 @@ public class SimpleRAGEngine implements RAGEngine {
             return;
         }
         List<DocumentChunk> chunks = chunk(document);
-        List<String> texts = chunks.stream().map(DocumentChunk::getContent).toList();
-        List<float[]> embeddings = embeddingService.embedBatch(texts);
-        if (embeddings == null || embeddings.isEmpty()) {
-            log.warn("[RAG] embedding result is empty for doc={}, use raw text index", document.getId());
-            vectorStore.indexBatch(chunks);
-            return;
-        }
-        for (int i = 0; i < Math.min(chunks.size(), embeddings.size()); i++) {
-            chunks.get(i).setEmbedding(embeddings.get(i));
-        }
+        // 向量化交给 VectorStore，避免上层与存储层用不同模型编码
         vectorStore.indexBatch(chunks);
         log.info("[RAG] ingested doc={} chunks={}", document.getId(), chunks.size());
     }

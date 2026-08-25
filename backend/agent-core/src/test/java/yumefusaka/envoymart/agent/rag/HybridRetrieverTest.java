@@ -22,7 +22,8 @@ class HybridRetrieverTest {
 
     private HybridRetriever retriever() {
         // 向量库故意留空，只验证 BM25 关键词路对中文查询是否命中
-        return new HybridRetriever(new InMemoryVectorStore(), new SimpleEmbeddingService(), docs);
+        return new HybridRetriever(
+                new InMemoryVectorStore(new SimpleEmbeddingService()), docs);
     }
 
     @Test

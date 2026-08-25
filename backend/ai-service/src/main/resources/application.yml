@@ -23,6 +23,8 @@ spring:
       chat:
         model: ${LLM_MODEL:qwen-plus}
         temperature: 0.7
+      embedding:
+        model: ${LLM_EMBEDDING_MODEL:text-embedding-v4}
 
 services:
   product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}

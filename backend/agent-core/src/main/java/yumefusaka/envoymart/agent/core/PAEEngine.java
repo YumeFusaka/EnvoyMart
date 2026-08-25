@@ -47,13 +47,19 @@ public class PAEEngine {
      * 执行 PAE 循环：自行生成计划。
      */
     public PAEResult execute(String userMessage, List<ChatMessage> context) {
-        return execute(userMessage, context, generatePlan(userMessage));
+        return execute(userMessage, context, generatePlan(userMessage, null), null);
     }
 
     /**
      * 执行 PAE 循环：使用调用方给定的计划（避免重复规划）。
+     *
+     * @param systemPrompt 含 RAG 知识与用户长期记忆的系统提示词，用于最终回答合成
      */
-    public PAEResult execute(String userMessage, List<ChatMessage> context, List<PlanStep> plan) {
+    public PAEResult execute(String userMessage, List<ChatMessage> context,
+                             List<PlanStep> plan, String systemPrompt) {
+        if (plan == null) {
+            plan = List.of();
+        }
         List<PAEStep> steps = new ArrayList<>();
         List<ToolExecution> executions = new ArrayList<>();
 
@@ -106,16 +112,11 @@ public class PAEEngine {
             }
         }
 
-        // 汇总
-        StringBuilder finalAnswer = new StringBuilder("执行完成。\n");
-        for (PAEStep step : steps) {
-            finalAnswer.append("- ").append(step.getAction())
-                    .append(": ").append(step.isSuccess() ? "成功" : "失败")
-                    .append("\n");
-        }
+        // Phase 4: Answer —— 把工具结果交给 LLM 组织成自然语言回复
+        String finalAnswer = synthesize(userMessage, steps, systemPrompt);
 
         return PAEResult.builder()
-                .finalAnswer(finalAnswer.toString())
+                .finalAnswer(finalAnswer)
                 .steps(steps)
                 .plan(plan)
                 .toolExecutions(executions)
@@ -123,13 +124,58 @@ public class PAEEngine {
     }
 
     /**
+     * 用工具执行结果合成最终回答。
+     * 合成失败时退回到结构化摘要，保证用户至少能看到执行结果。
+     */
+    private String synthesize(String userMessage, List<PAEStep> steps, String systemPrompt) {
+        if (steps.isEmpty()) {
+            return "抱歉，我没能完成这个请求。";
+        }
+
+        StringBuilder observations = new StringBuilder();
+        for (PAEStep step : steps) {
+            observations.append("【").append(step.getAction()).append("】\n")
+                    .append(step.getResult()).append("\n\n");
+        }
+
+        List<ChatMessage> messages = new ArrayList<>();
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
+                    .content(systemPrompt).build());
+        }
+        messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
+                .content("下面是刚查到的真实数据，请基于它用自然、简洁的中文回答用户，不要编造数据。")
+                .build());
+        messages.add(ChatMessage.builder().role(ChatMessage.Role.USER)
+                .content("用户问：" + userMessage + "\n\n查询结果：\n" + observations)
+                .build());
+
+        try {
+            String answer = llmProvider.chat(messages, llmConfig).getContent();
+            if (answer != null && !answer.isBlank()) {
+                return answer;
+            }
+        } catch (Exception e) {
+            log.warn("[PAE] answer synthesis failed: {}", e.getMessage());
+        }
+
+        StringBuilder fallback = new StringBuilder("执行完成。\n");
+        for (PAEStep step : steps) {
+            fallback.append("- ").append(step.getAction())
+                    .append(": ").append(step.isSuccess() ? "成功" : "失败")
+                    .append("\n");
+        }
+        return fallback.toString();
+    }
+
+    /**
      * 生成计划：优先由 LLM 规划，失败或为空时回退到关键词规则。
      * 两条路径都会过滤掉未注册的工具，避免执行必然失败的计划。
      */
-    private List<PlanStep> generatePlan(String userMessage) {
+    private List<PlanStep> generatePlan(String userMessage, String systemPrompt) {
         List<ToolDefinition> available = toolRegistry.listDefinitions();
 
-        List<PlanStep> llmPlan = llmProvider.plan(userMessage, available);
+        List<PlanStep> llmPlan = llmProvider.plan(userMessage, available, systemPrompt);
         if (llmPlan != null && !llmPlan.isEmpty()) {
             List<PlanStep> valid = llmPlan.stream()
                     .filter(step -> toolRegistry.get(step.getTool()).isPresent())

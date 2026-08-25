@@ -1,11 +1,14 @@
 package yumefusaka.envoymart.aiservice.config;
 
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import org.springframework.context.annotation.Profile;
 import yumefusaka.envoymart.agent.core.Agent;
 import yumefusaka.envoymart.agent.core.ContextManager;
 import yumefusaka.envoymart.agent.core.PAEEngine;
@@ -16,13 +19,15 @@ import yumefusaka.envoymart.agent.llm.MockLLMProvider;
 import yumefusaka.envoymart.agent.memory.LongTermMemory;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.ShortTermMemory;
-import yumefusaka.envoymart.agent.memory.mem0.Mem0Client;
 import yumefusaka.envoymart.agent.rag.*;
 import yumefusaka.envoymart.agent.skill.SkillRegistry;
 import yumefusaka.envoymart.agent.skill.WorkflowEngine;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
+import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
+import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
+import yumefusaka.envoymart.aiservice.rag.SpringAiEmbeddingService;
 import yumefusaka.envoymart.aiservice.llm.SpringAiLLMProvider;
 import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
@@ -44,8 +49,8 @@ public class AiAgentConfig {
      */
     @Bean
     @ConditionalOnExpression("'${spring.ai.openai.api-key:}'.length() > 0")
-    public LLMProvider springAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry) {
-        return new SpringAiLLMProvider(chatModel, toolRegistry);
+    public LLMProvider springAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig llmConfig) {
+        return new SpringAiLLMProvider(chatModel, toolRegistry, llmConfig);
     }
 
     @Bean
@@ -80,32 +85,69 @@ public class AiAgentConfig {
     }
 
     @Bean
-    public LongTermMemory longTermMemory() {
-        return new LongTermMemory();
+    public LongTermMemory longTermMemory(@Qualifier("memoryVectorStore") VectorStore memoryVectorStore) {
+        return new LongTermMemory(memoryVectorStore);
     }
 
     @Bean
-    public Mem0Client mem0Client() {
-        return new Mem0Client();
+    public MemoryConsolidator memoryConsolidator(LLMProvider llmProvider, LLMConfig llmConfig) {
+        return new LlmMemoryConsolidator(llmProvider, llmConfig);
     }
 
+    /** 配了模型 Key 就用 Spring AI 的 EmbeddingModel（语义召回才有意义）。 */
     @Bean
-    public OllamaEmbeddingService embeddingService() {
-        // 优先使用本地 Ollama（nomic-embed-text），不可用时自动降级到 SimpleEmbeddingService
+    @ConditionalOnExpression("'${spring.ai.openai.api-key:}'.length() > 0")
+    public EmbeddingService springAiEmbeddingService(org.springframework.ai.embedding.EmbeddingModel embeddingModel) {
+        return new SpringAiEmbeddingService(embeddingModel);
+    }
+
+    /** 无 Key 时退回本地 Ollama（nomic-embed-text），不可用再降级到哈希向量。 */
+    @Bean
+    @ConditionalOnMissingBean(EmbeddingService.class)
+    public EmbeddingService ollamaEmbeddingService() {
         return new OllamaEmbeddingService();
     }
 
+    /** 知识库：本地降级用内存向量库（milvus profile 下不启用）。 */
+    @Bean("knowledgeVectorStore")
+    @Primary
+    @Profile("!milvus")
+    public VectorStore inMemoryKnowledgeVectorStore(EmbeddingService embeddingService) {
+        return new InMemoryVectorStore(embeddingService);
+    }
+
+    /** 知识库：生产用 Milvus，向量化由 Spring AI 的 EmbeddingModel 完成。 */
+    @Bean("knowledgeVectorStore")
+    @Primary
+    @Profile("milvus")
+    public VectorStore milvusKnowledgeVectorStore(org.springframework.ai.vectorstore.VectorStore delegate) {
+        return new MilvusVectorStore(delegate);
+    }
+
     /**
-     * 本地降级用的内存向量库。生产走 Milvus（见 MilvusVectorStoreConfig）。
+     * 长期记忆专用向量库 —— 与知识库隔离，避免记忆条目污染知识检索结果。
+     * 本地用独立的内存实例，生产用独立 collection。
      */
-    @Bean
-    public VectorStore inMemoryVectorStore() {
-        return new InMemoryVectorStore();
+    @Bean("memoryVectorStore")
+    @Profile("!milvus")
+    public VectorStore inMemoryMemoryVectorStore(EmbeddingService embeddingService) {
+        return new InMemoryVectorStore(embeddingService);
+    }
+
+    @Bean("memoryVectorStore")
+    @Profile("milvus")
+    public VectorStore milvusMemoryVectorStore(io.milvus.client.MilvusServiceClient milvusClient,
+                                               org.springframework.ai.embedding.EmbeddingModel embeddingModel) {
+        return new MilvusVectorStore(org.springframework.ai.vectorstore.milvus.MilvusVectorStore
+                .builder(milvusClient, embeddingModel)
+                .collectionName("envoymart_memory")
+                .initializeSchema(true)
+                .build());
     }
 
     @Bean
-    public HybridRetriever retriever(VectorStore vectorStore, EmbeddingService embeddingService) {
-        return new HybridRetriever(vectorStore, embeddingService, knowledgeDocuments());
+    public HybridRetriever retriever(@Qualifier("knowledgeVectorStore") VectorStore vectorStore) {
+        return new HybridRetriever(vectorStore, knowledgeDocuments());
     }
 
     /**
@@ -129,10 +171,8 @@ public class AiAgentConfig {
     }
 
     @Bean
-    public SimpleRAGEngine ragEngine(EmbeddingService embeddingService,
-                                     VectorStore vectorStore,
-                                     Retriever retriever) {
-        SimpleRAGEngine engine = new SimpleRAGEngine(embeddingService, vectorStore, retriever, 256, 32);
+    public SimpleRAGEngine ragEngine(VectorStore vectorStore, Retriever retriever) {
+        SimpleRAGEngine engine = new SimpleRAGEngine(vectorStore, retriever, 256, 32);
         // 启动时把领域知识灌入向量库；不调用 ingest 的话 ANN 检索永远返回空
         engine.ingestBatch(knowledgeDocuments());
         return engine;
@@ -175,12 +215,14 @@ public class AiAgentConfig {
                        ContextManager contextManager,
                        ReActEngine reActEngine,
                        PAEEngine paeEngine,
-                       LLMConfig llmConfig) {
+                       LLMConfig llmConfig,
+                       MemoryConsolidator memoryConsolidator) {
         return new Agent(
-                Agent.Config.builder().memoryWindow(16).ragTopK(3).build(),
+                Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3).build(),
                 toolRegistry, skillRegistry, workflowEngine,
                 shortTermMemory, longTermMemory, ragEngine,
-                contextManager, reActEngine, paeEngine, llmProvider, llmConfig
+                contextManager, reActEngine, paeEngine, llmProvider, llmConfig,
+                memoryConsolidator
         );
     }
 }
