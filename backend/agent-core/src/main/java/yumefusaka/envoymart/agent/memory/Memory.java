@@ -14,6 +14,14 @@ public interface Memory {
 
     List<MemoryItem> search(String sessionId, String keyword);
 
+    /**
+     * 语义召回：按与 query 的相关性返回记忆条目。
+     * 默认不支持（返回空），由接入向量库的实现覆写。
+     */
+    default List<MemoryItem> recall(String query, int limit) {
+        return List.of();
+    }
+
     Optional<MemoryItem> findById(String id);
 
     void clear(String sessionId);

@@ -8,6 +8,7 @@ import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMProvider;
 import yumefusaka.envoymart.agent.llm.LLMResponse;
 import yumefusaka.envoymart.agent.llm.PlanStep;
+import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.*;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
 import yumefusaka.envoymart.agent.skill.SkillContext;
@@ -39,6 +40,7 @@ public class Agent {
     private final PAEEngine paeEngine;
     private final LLMProvider llmProvider;
     private final LLMConfig llmConfig;
+    private final MemoryConsolidator consolidator;
 
     public Agent(Config config,
                  ToolRegistry toolRegistry,
@@ -51,7 +53,9 @@ public class Agent {
                  ReActEngine reActEngine,
                  PAEEngine paeEngine,
                  LLMProvider llmProvider,
-                 LLMConfig llmConfig) {
+                 LLMConfig llmConfig,
+                 MemoryConsolidator consolidator) {
+        this.consolidator = consolidator;
         this.config = config;
         this.toolRegistry = toolRegistry;
         this.skillRegistry = skillRegistry;
@@ -83,9 +87,10 @@ public class Agent {
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
 
-        // 2. RAG 检索相关知识
+        // 2. RAG 检索相关知识 + 长期记忆语义召回
         var knowledge = ragEngine.retrieve(message, config.getRagTopK());
-        String systemPrompt = buildSystemPrompt(knowledge);
+        var memories = longTermMemory.recall(message, config.getLongTermRecallTopK());
+        String systemPrompt = buildSystemPrompt(knowledge, memories);
 
         // 3. 检查是否有匹配的 Skill
         var skillOpt = skillRegistry.route(message);
@@ -108,14 +113,15 @@ public class Agent {
                     .knowledge(knowledge)
                     .build();
         } else {
-            List<PlanStep> plan = isComplexTask(message) ? planFor(message) : List.of();
+            List<PlanStep> plan = isComplexTask(message) ? planFor(message, systemPrompt) : List.of();
 
             if (!plan.isEmpty()) {
                 // 复杂任务且确实能拆成工具步骤 → PAE
                 log.debug("[Agent] using PAE engine, plan={}",
                         plan.stream().map(PlanStep::getTool).toList());
                 var paeResult = paeEngine.execute(message, List.of(
-                        ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()), plan);
+                        ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()),
+                        plan, systemPrompt);
                 response = AgentResponse.builder()
                         .reply(paeResult.getFinalAnswer())
                         .source("pae")
@@ -151,17 +157,48 @@ public class Agent {
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
 
+        // 5. 执行后：沉淀长期记忆
+        consolidateMemory(sessionId);
+
         return response;
     }
 
-    private String buildSystemPrompt(List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge) {
-        if (knowledge.isEmpty()) return config.getDefaultSystemPrompt();
+    private String buildSystemPrompt(List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge,
+                                     List<MemoryItem> memories) {
         StringBuilder sb = new StringBuilder(config.getDefaultSystemPrompt());
-        sb.append("\n\n相关知识：\n");
-        for (int i = 0; i < knowledge.size(); i++) {
-            sb.append(i + 1).append(". ").append(knowledge.get(i).getContent()).append("\n");
+        if (!knowledge.isEmpty()) {
+            sb.append("\n\n相关知识：\n");
+            for (int i = 0; i < knowledge.size(); i++) {
+                sb.append(i + 1).append(". ").append(knowledge.get(i).getContent()).append("\n");
+            }
+        }
+        if (!memories.isEmpty()) {
+            sb.append("\n\n关于该用户你记得：\n");
+            for (MemoryItem memory : memories) {
+                sb.append("- ").append(memory.getContent()).append("\n");
+            }
         }
         return sb.toString();
+    }
+
+    /**
+     * 把本轮对话中值得长期记住的事实/偏好沉淀到长期记忆。
+     * 失败不影响主链路——记忆是增强项，不是必需项。
+     */
+    private void consolidateMemory(String sessionId) {
+        if (consolidator == null || !config.isMemoryConsolidationEnabled()) {
+            return;
+        }
+        try {
+            var recent = shortTermMemory.recent(sessionId, config.getMemoryWindow());
+            var facts = consolidator.extract(sessionId, recent);
+            facts.forEach(longTermMemory::add);
+            if (!facts.isEmpty()) {
+                log.debug("[Agent] consolidated {} memory item(s)", facts.size());
+            }
+        } catch (Exception e) {
+            log.warn("[Agent] memory consolidation failed: {}", e.getMessage());
+        }
     }
 
     /**
@@ -169,8 +206,8 @@ public class Agent {
      * 返回空表示没有工具能帮上忙，此时应回落到 ReAct —— 让它基于 RAG 知识直接回答，
      * 而不是把"没有可用工具"当成最终答复。
      */
-    private List<PlanStep> planFor(String message) {
-        var plan = llmProvider.plan(message, toolRegistry.listDefinitions());
+    private List<PlanStep> planFor(String message, String systemPrompt) {
+        var plan = llmProvider.plan(message, toolRegistry.listDefinitions(), systemPrompt);
         return plan == null ? List.of() : plan;
     }
 
@@ -219,6 +256,10 @@ public class Agent {
     public static class Config {
         @Builder.Default private int memoryWindow = 16;
         @Builder.Default private int ragTopK = 3;
+        /** 每轮注入的长期记忆条数 */
+        @Builder.Default private int longTermRecallTopK = 3;
+        /** 是否在每轮结束后抽取事实沉淀到长期记忆（会额外调用一次模型） */
+        @Builder.Default private boolean memoryConsolidationEnabled = true;
         @Builder.Default private String defaultSystemPrompt = "你是一个智能电商助手，帮助用户选购商品、查询订单、解答售后问题。";
         @Builder.Default private AgentMode mode = AgentMode.AUTO;
 

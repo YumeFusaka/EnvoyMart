@@ -15,8 +15,11 @@ public interface LLMProvider {
      * 生成多步执行计划。默认不提供规划能力，PAE 引擎会回退到关键词规则。
      *
      * @param availableTools 已注册工具清单，计划只能引用其中的工具
+     * @param context        系统提示词（含 RAG 知识与用户长期记忆），规划时可参考
      */
-    default List<PlanStep> plan(String userMessage, List<yumefusaka.envoymart.agent.tool.ToolDefinition> availableTools) {
+    default List<PlanStep> plan(String userMessage,
+                                List<yumefusaka.envoymart.agent.tool.ToolDefinition> availableTools,
+                                String context) {
         return List.of();
     }
 

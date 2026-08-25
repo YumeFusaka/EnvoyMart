@@ -14,7 +14,6 @@ import java.util.*;
 public class HybridRetriever implements Retriever {
 
     private final VectorStore vectorStore;
-    private final EmbeddingService embeddingService;
     private final List<Document> localDocs;
 
     /** BM25 参数 */
@@ -22,17 +21,15 @@ public class HybridRetriever implements Retriever {
     private static final double B = 0.75;
     private static final int RRF_CONST = 60;
 
-    public HybridRetriever(VectorStore vectorStore, EmbeddingService embeddingService, List<Document> localDocs) {
+    public HybridRetriever(VectorStore vectorStore, List<Document> localDocs) {
         this.vectorStore = vectorStore;
-        this.embeddingService = embeddingService;
         this.localDocs = localDocs;
     }
 
     @Override
     public List<DocumentChunk> retrieve(String query, int topK) {
-        // 1. ANN 向量检索
-        float[] queryVec = embeddingService.embed(query);
-        List<DocumentChunk> vectorResults = vectorStore.search(queryVec, topK * 2);
+        // 1. 向量检索（由 VectorStore 负责向量化）
+        List<DocumentChunk> vectorResults = vectorStore.search(query, topK * 2);
 
         // 2. BM25 关键词检索
         List<DocumentChunk> keywordResults = bm25Search(query);

@@ -49,10 +49,13 @@ public class SpringAiLLMProvider implements LLMProvider {
 
     private final ChatModel chatModel;
     private final ToolRegistry toolRegistry;
+    /** 全局默认调用配置（模型名等），规划这类内部调用也复用它 */
+    private final LLMConfig defaultConfig;
 
-    public SpringAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry) {
+    public SpringAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig defaultConfig) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
+        this.defaultConfig = defaultConfig;
     }
 
     @Override
@@ -104,7 +107,7 @@ public class SpringAiLLMProvider implements LLMProvider {
     }
 
     @Override
-    public List<PlanStep> plan(String userMessage, List<ToolDefinition> availableTools) {
+    public List<PlanStep> plan(String userMessage, List<ToolDefinition> availableTools, String context) {
         if (availableTools.isEmpty()) {
             return List.of();
         }
@@ -113,22 +116,32 @@ public class SpringAiLLMProvider implements LLMProvider {
                 .map(d -> "- " + d.getName() + ": " + d.getDescription())
                 .reduce("", (a, b) -> a + b + "\n");
 
+        String background = (context == null || context.isBlank())
+                ? "" : "\n已知背景（可据此补全工具参数）：\n" + context + "\n";
+
         List<ChatMessage> messages = List.of(
                 ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
                         .content("""
                                 你是电商客服任务规划器。根据用户请求和可用工具，输出一个 JSON 数组作为执行计划。
                                 每个元素形如 {"tool":"工具名","arguments":{"参数名":"值"},"reason":"这一步要达成什么","optional":false}。
-                                规则：只能使用下面列出的工具；不需要多步就返回只含一个元素的数组；无法完成则返回 []。
+                                规则：只能使用下面列出的工具；工具参数尽量从用户请求与已知背景中提取；
+                                不需要多步就返回只含一个元素的数组；无法完成则返回 []。
                                 只输出 JSON，不要任何解释。
 
                                 可用工具：
-                                """ + toolList)
+                                """ + toolList + background)
                         .build(),
                 ChatMessage.builder().role(ChatMessage.Role.USER).content(userMessage).build()
         );
 
         try {
-            LLMResponse response = chat(messages, LLMConfig.builder().temperature(0.0).build());
+            // 规划要确定性输出，复用全局配置的模型名，只覆盖温度
+            LLMConfig planConfig = LLMConfig.builder()
+                    .model(defaultConfig.getModel())
+                    .temperature(0.0)
+                    .maxTokens(defaultConfig.getMaxTokens())
+                    .build();
+            LLMResponse response = chat(messages, planConfig);
             return parsePlan(response.getContent());
         } catch (Exception e) {
             log.warn("[SpringAiLLMProvider] plan failed, fallback to rule-based: {}", e.getMessage());

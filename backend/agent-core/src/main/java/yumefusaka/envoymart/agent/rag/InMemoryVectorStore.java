@@ -5,14 +5,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
- * ANN 向量索引 —— 基于 IVF（倒排文件）的近似最近邻搜索。
+ * 内存向量索引 —— 基于 IVF（倒排文件）的近似最近邻搜索，用于本地降级。
  * <p>
  * 聚类数 numCentroids = sqrt(n)，检索时只搜索最近的 2 个中心簇，
  * 相比暴力扫描减少约 60-80% 的计算量。小规模数据全量搜索作为降级。
+ * 生产环境使用 Milvus（见 ai-service 的 MilvusVectorStore）。
  */
 public class InMemoryVectorStore implements VectorStore {
 
     private final Map<String, DocumentChunk> store = new ConcurrentHashMap<>();
+    private final EmbeddingService embeddingService;
     private final int numCentroids;
     private final int probeCount;
 
@@ -20,26 +22,34 @@ public class InMemoryVectorStore implements VectorStore {
     private Map<Integer, List<String>> invertedIndex;  // centroidId -> chunkId list
     private boolean indexed = false;
 
-    public InMemoryVectorStore() {
+    public InMemoryVectorStore(EmbeddingService embeddingService) {
+        this.embeddingService = embeddingService;
         this.numCentroids = 4;
         this.probeCount = 2;
     }
 
     @Override
-    public void index(DocumentChunk chunk) {
-        store.put(chunk.getChunkId(), chunk);
-        indexed = false;
-    }
-
-    @Override
     public void indexBatch(List<DocumentChunk> chunks) {
+        List<DocumentChunk> pending = chunks.stream()
+                .filter(c -> c.getEmbedding() == null)
+                .collect(Collectors.toList());
+        if (!pending.isEmpty()) {
+            List<float[]> vectors = embeddingService.embedBatch(
+                    pending.stream().map(DocumentChunk::getContent).collect(Collectors.toList()));
+            for (int i = 0; i < Math.min(pending.size(), vectors.size()); i++) {
+                pending.get(i).setEmbedding(vectors.get(i));
+            }
+        }
         chunks.forEach(c -> store.put(c.getChunkId(), c));
         indexed = false;
     }
 
     @Override
-    public List<DocumentChunk> search(float[] queryVector, int topK) {
-        if (store.isEmpty()) return List.of();
+    public List<DocumentChunk> search(String query, int topK) {
+        if (store.isEmpty()) {
+            return List.of();
+        }
+        float[] queryVector = embeddingService.embed(query);
         buildIndex();
 
         // ANN：只搜索最近的 probeCount 个中心簇
@@ -155,7 +165,7 @@ public class InMemoryVectorStore implements VectorStore {
     }
 
     @Override
-    public void delete(String docId) {
+    public void deleteByDocId(String docId) {
         store.entrySet().removeIf(e -> e.getValue().getDocId().equals(docId));
         indexed = false;
     }
@@ -173,4 +183,3 @@ public class InMemoryVectorStore implements VectorStore {
 
     private record ScoredChunk(DocumentChunk chunk, double score) {}
 }
-
