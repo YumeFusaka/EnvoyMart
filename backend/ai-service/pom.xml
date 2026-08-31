@@ -38,6 +38,12 @@
             <artifactId>spring-ai-starter-vector-store-milvus</artifactId>
         </dependency>
 
+        <!-- MCP Server：把业务能力以 MCP 协议对外发布 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+        </dependency>
+
         <!-- 可观测性：Micrometer Tracing -> OTLP（可接 Langfuse / Jaeger / Tempo） -->
         <dependency>
             <groupId>io.micrometer</groupId>

@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.aiservice.config;
 
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
@@ -32,6 +33,7 @@ import yumefusaka.envoymart.aiservice.llm.SpringAiLLMProvider;
 import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
+import yumefusaka.envoymart.aiservice.tool.ToolRegistryCallbackProvider;
 
 import java.util.List;
 
@@ -77,6 +79,15 @@ public class AiAgentConfig {
                 new ProductTool(productClient)
         ));
         return registry;
+    }
+
+    /**
+     * 把 ToolRegistry 的工具发布给 Spring AI，MCP Server 会自动注册为 MCP 工具。
+     * 同一份工具定义既供 Agent 调用，也供外部 MCP 客户端调用。
+     */
+    @Bean
+    public ToolCallbackProvider mcpToolCallbackProvider(ToolRegistry toolRegistry) {
+        return new ToolRegistryCallbackProvider(toolRegistry);
     }
 
     @Bean

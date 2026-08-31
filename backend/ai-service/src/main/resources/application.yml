@@ -15,6 +15,15 @@ spring:
         enabled: ${NACOS_ENABLED:false}
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
   ai:
+    mcp:
+      server:
+        name: envoymart-mcp
+        version: 1.0.0
+        type: SYNC
+        protocol: STREAMABLE
+        instructions: EnvoyMart 电商业务工具（订单查询、物流追踪、商品搜索），供外部 Agent 调用。
+        streamable-http:
+          mcp-endpoint: /mcp
     openai:
       # 留空则回退到 MockLLMProvider，服务仍可启动、链路仍可跑通
       api-key: ${LLM_API_KEY:}
