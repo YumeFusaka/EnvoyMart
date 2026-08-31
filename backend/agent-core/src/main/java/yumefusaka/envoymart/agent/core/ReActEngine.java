@@ -11,7 +11,9 @@ import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * ReAct 循环引擎 —— Thought → Action → Observation 的迭代推理执行。
@@ -25,6 +27,9 @@ import java.util.List;
  */
 @Slf4j
 public class ReActEngine {
+
+    /** 同一「工具 + 参数」允许重复调用的次数，超过即判定为死循环。 */
+    private static final int MAX_REPEATED_ACTIONS = 2;
 
     private final LLMProvider llmProvider;
     private final LLMConfig llmConfig;
@@ -51,6 +56,7 @@ public class ReActEngine {
 
         List<ReActStep> steps = new ArrayList<>();
         List<ToolExecution> executions = new ArrayList<>();
+        Map<String, Integer> actionCounts = new HashMap<>();
         int iteration = 0;
 
         while (iteration < maxIterations) {
@@ -69,6 +75,24 @@ public class ReActEngine {
                 for (ChatMessage.ToolCallRequest toolReq : response.getToolCalls()) {
                     // Thought 阶段隐含在 LLM 的响应中
                     String thought = response.getContent() != null ? response.getContent() : "";
+
+                    // 死循环防护：同一工具用同样参数反复调用说明模型在原地打转
+                    String actionKey = toolReq.getName() + "|" + toolReq.getArguments();
+                    if (actionCounts.merge(actionKey, 1, Integer::sum) > MAX_REPEATED_ACTIONS) {
+                        log.warn("[ReAct] repeated action detected, abort: {}", actionKey);
+                        steps.add(ReActStep.builder()
+                                .thought(thought)
+                                .action(toolReq.getName())
+                                .actionInput(String.valueOf(toolReq.getArguments()))
+                                .observation("检测到重复调用，已中止")
+                                .build());
+                        return ReActResult.builder()
+                                .finalAnswer("我似乎陷入了重复操作，已停止推理。请补充更多信息，或换一种问法。")
+                                .steps(steps)
+                                .toolExecutions(executions)
+                                .totalIterations(iteration)
+                                .build();
+                    }
 
                     // Action：执行工具（捕获异常防止中断推理循环）
                     String observation;
