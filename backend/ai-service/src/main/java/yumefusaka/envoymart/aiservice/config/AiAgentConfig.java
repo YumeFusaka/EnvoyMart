@@ -27,6 +27,7 @@ import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
+import yumefusaka.envoymart.aiservice.rag.DashScopeReranker;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.rag.SpringAiEmbeddingService;
 import yumefusaka.envoymart.aiservice.llm.SpringAiLLMProvider;
@@ -156,9 +157,26 @@ public class AiAgentConfig {
                 .build());
     }
 
+    /** 配了 Key 就用百炼 gte-rerank 做 cross-encoder 精排。 */
     @Bean
-    public HybridRetriever retriever(@Qualifier("knowledgeVectorStore") VectorStore vectorStore) {
-        return new HybridRetriever(vectorStore, knowledgeDocuments());
+    @ConditionalOnExpression("'${spring.ai.openai.api-key:}'.length() > 0")
+    public Reranker dashScopeReranker(@Value("${spring.ai.openai.api-key}") String apiKey,
+                                      @Value("${envoymart.rerank.model:gte-rerank-v2}") String model,
+                                      @Value("${envoymart.rerank.endpoint:}") String endpoint,
+                                      @Value("${envoymart.rerank.timeout-ms:5000}") long timeoutMs) {
+        return new DashScopeReranker(apiKey, model, endpoint, java.time.Duration.ofMillis(timeoutMs));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(Reranker.class)
+    public Reranker noopReranker() {
+        return Reranker.NOOP;
+    }
+
+    @Bean
+    public HybridRetriever retriever(@Qualifier("knowledgeVectorStore") VectorStore vectorStore,
+                                     Reranker reranker) {
+        return new HybridRetriever(vectorStore, knowledgeDocuments(), reranker);
     }
 
     /**
