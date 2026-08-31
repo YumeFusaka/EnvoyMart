@@ -30,6 +30,24 @@ services:
   product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
   order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:1.0}
+    export:
+      # 配了 OTLP 端点才导出；可指向 Langfuse(/api/public/otel) 或 Jaeger/Tempo
+      enabled: ${TRACING_EXPORT_ENABLED:false}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_TRACING_ENDPOINT:http://127.0.0.1:4318/v1/traces}
+
 ---
 # 生产/联调：接入 Milvus 作为向量库（需先启动 docker compose 里的 milvus）
 spring:

@@ -63,7 +63,9 @@ public class SpringAiLLMProvider implements LLMProvider {
         List<ToolExecution> executions = new ArrayList<>();
         ChatOptions options = buildOptions(config, toToolCallbacks(executions));
 
+        long startedAt = System.nanoTime();
         ChatResponse response = chatModel.call(new Prompt(toSpringMessages(messages), options));
+        long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
         AssistantMessage output = response.getResult().getOutput();
 
         List<ChatMessage.ToolCallRequest> toolCalls = output.getToolCalls() == null
@@ -76,12 +78,19 @@ public class SpringAiLLMProvider implements LLMProvider {
                         .build())
                 .toList();
 
+        int promptTokens = promptTokens(response);
+        int completionTokens = completionTokens(response);
+        // 成本可观测：每次模型调用的耗时、token 消耗与工具调用数
+        log.info("[LLM] model={} latencyMs={} promptTokens={} completionTokens={} toolCalls={} toolExecutions={}",
+                config.getModel(), latencyMs, promptTokens, completionTokens,
+                toolCalls.size(), executions.size());
+
         return LLMResponse.builder()
                 .content(output.getText())
                 .toolCalls(toolCalls)
                 .toolExecutions(executions)
-                .promptTokens(promptTokens(response))
-                .completionTokens(completionTokens(response))
+                .promptTokens(promptTokens)
+                .completionTokens(completionTokens)
                 .finishReason(toolCalls.isEmpty()
                         ? LLMResponse.FinishReason.STOP
                         : LLMResponse.FinishReason.TOOL_CALL)

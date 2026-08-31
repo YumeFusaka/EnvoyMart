@@ -96,57 +96,16 @@ public class Agent {
         var skillOpt = skillRegistry.route(message);
 
         AgentResponse response;
-
-        if (skillOpt.isPresent()) {
-            // Skill 模式 —— 按工作流执行
-            log.debug("[Agent] routed to skill: {}", skillOpt.get().getName());
-            var context = SkillContext.builder()
-                    .userId(userId).sessionId(sessionId).userMessage(message)
-                    .shortTermMemory(shortTermMemory).longTermMemory(longTermMemory)
-                    .toolRegistry(toolRegistry).ragEngine(ragEngine)
-                    .build();
-            // 简化处理：直接执行 skill 而非完整 workflow
-            var result = skillOpt.get().execute(context);
+        try {
+            response = route(userId, sessionId, message, knowledge, systemPrompt, skillOpt);
+        } catch (Exception e) {
+            // 模型/工具链路异常不应把整个请求打成 500，降级为可读提示
+            log.error("[Agent] chat failed, degrade to fallback reply", e);
             response = AgentResponse.builder()
-                    .reply(result.getOutput())
-                    .source("skill")
+                    .reply("抱歉，智能助手暂时不可用，请稍后再试或换个说法。")
+                    .source("fallback")
                     .knowledge(knowledge)
                     .build();
-        } else {
-            List<PlanStep> plan = isComplexTask(message) ? planFor(message, systemPrompt) : List.of();
-
-            if (!plan.isEmpty()) {
-                // 复杂任务且确实能拆成工具步骤 → PAE
-                log.debug("[Agent] using PAE engine, plan={}",
-                        plan.stream().map(PlanStep::getTool).toList());
-                var paeResult = paeEngine.execute(message, List.of(
-                        ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()),
-                        plan, systemPrompt);
-                response = AgentResponse.builder()
-                        .reply(paeResult.getFinalAnswer())
-                        .source("pae")
-                        .knowledge(knowledge)
-                        .toolExecutions(paeResult.getToolExecutions())
-                        .build();
-            } else {
-                // 一般对话 / 规划落不了地 → ReAct
-                log.debug("[Agent] using ReAct engine");
-                var recentMemory = shortTermMemory.recent(sessionId, config.getMemoryWindow());
-                var conversation = recentMemory.stream()
-                        .map(m -> ChatMessage.builder()
-                                .role(m.getContent().startsWith("user:") ? ChatMessage.Role.USER : ChatMessage.Role.ASSISTANT)
-                                .content(m.getContent().replaceAll("^(user:|assistant:)", "").trim())
-                                .build())
-                        .toList();
-
-                var reActResult = reActEngine.execute(systemPrompt, conversation);
-                response = AgentResponse.builder()
-                        .reply(reActResult.getFinalAnswer())
-                        .source("react")
-                        .knowledge(knowledge)
-                        .toolExecutions(reActResult.getToolExecutions())
-                        .build();
-            }
         }
 
         // 4. 记录回复到短期记忆
@@ -161,6 +120,60 @@ public class Agent {
         consolidateMemory(sessionId);
 
         return response;
+    }
+
+    /** 按「Skill → PAE → ReAct」优先级选择执行策略。 */
+    private AgentResponse route(String userId, String sessionId, String message,
+                                List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge,
+                                String systemPrompt,
+                                java.util.Optional<yumefusaka.envoymart.agent.skill.Skill> skillOpt) {
+        if (skillOpt.isPresent()) {
+            log.debug("[Agent] routed to skill: {}", skillOpt.get().getName());
+            var context = SkillContext.builder()
+                    .userId(userId).sessionId(sessionId).userMessage(message)
+                    .shortTermMemory(shortTermMemory).longTermMemory(longTermMemory)
+                    .toolRegistry(toolRegistry).ragEngine(ragEngine)
+                    .build();
+            var result = skillOpt.get().execute(context);
+            return AgentResponse.builder()
+                    .reply(result.getOutput())
+                    .source("skill")
+                    .knowledge(knowledge)
+                    .build();
+        }
+
+        List<PlanStep> plan = isComplexTask(message) ? planFor(message, systemPrompt) : List.of();
+        if (!plan.isEmpty()) {
+            // 复杂任务且确实能拆成工具步骤 → PAE
+            log.debug("[Agent] using PAE engine, plan={}", plan.stream().map(PlanStep::getTool).toList());
+            var paeResult = paeEngine.execute(message, List.of(
+                    ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()),
+                    plan, systemPrompt);
+            return AgentResponse.builder()
+                    .reply(paeResult.getFinalAnswer())
+                    .source("pae")
+                    .knowledge(knowledge)
+                    .toolExecutions(paeResult.getToolExecutions())
+                    .build();
+        }
+
+        // 一般对话 / 规划落不了地 → ReAct
+        log.debug("[Agent] using ReAct engine");
+        var recentMemory = shortTermMemory.recent(sessionId, config.getMemoryWindow());
+        var conversation = recentMemory.stream()
+                .map(m -> ChatMessage.builder()
+                        .role(m.getContent().startsWith("user:") ? ChatMessage.Role.USER : ChatMessage.Role.ASSISTANT)
+                        .content(m.getContent().replaceAll("^(user:|assistant:)", "").trim())
+                        .build())
+                .toList();
+
+        var reActResult = reActEngine.execute(systemPrompt, conversation);
+        return AgentResponse.builder()
+                .reply(reActResult.getFinalAnswer())
+                .source("react")
+                .knowledge(knowledge)
+                .toolExecutions(reActResult.getToolExecutions())
+                .build();
     }
 
     private String buildSystemPrompt(List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge,
