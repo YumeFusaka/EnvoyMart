@@ -15,15 +15,23 @@ public class HybridRetriever implements Retriever {
 
     private final VectorStore vectorStore;
     private final List<Document> localDocs;
+    private final Reranker reranker;
 
     /** BM25 参数 */
     private static final double K1 = 1.5;
     private static final double B = 0.75;
     private static final int RRF_CONST = 60;
+    /** 重排前多召回一些候选，给精排留出腾挪空间 */
+    private static final int RERANK_CANDIDATES = 3;
 
     public HybridRetriever(VectorStore vectorStore, List<Document> localDocs) {
+        this(vectorStore, localDocs, Reranker.NOOP);
+    }
+
+    public HybridRetriever(VectorStore vectorStore, List<Document> localDocs, Reranker reranker) {
         this.vectorStore = vectorStore;
         this.localDocs = localDocs;
+        this.reranker = reranker;
     }
 
     @Override
@@ -34,8 +42,12 @@ public class HybridRetriever implements Retriever {
         // 2. BM25 关键词检索
         List<DocumentChunk> keywordResults = bm25Search(query);
 
-        // 3. RRF 融合
-        return rrfMerge(vectorResults, keywordResults, topK);
+        // 3. RRF 融合后多留候选，交给重排精排
+        List<DocumentChunk> fused = rrfMerge(vectorResults, keywordResults,
+                Math.max(topK * RERANK_CANDIDATES, topK));
+
+        // 4. 重排（未配置时是直接截断）
+        return reranker.rerank(query, fused, topK);
     }
 
     /**
