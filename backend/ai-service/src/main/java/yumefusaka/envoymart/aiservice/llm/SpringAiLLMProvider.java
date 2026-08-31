@@ -23,6 +23,7 @@ import yumefusaka.envoymart.agent.llm.PlanStep;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
+import yumefusaka.envoymart.aiservice.tool.ToolRegistryToolCallback;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
@@ -194,49 +195,8 @@ public class SpringAiLLMProvider implements LLMProvider {
      */
     private List<ToolCallback> toToolCallbacks(List<ToolExecution> sink) {
         return toolRegistry.listDefinitions().stream()
-                .map(def -> (ToolCallback) new RecordingToolCallback(def, sink))
+                .map(def -> (ToolCallback) new ToolRegistryToolCallback(toolRegistry, def, sink))
                 .toList();
-    }
-
-    private final class RecordingToolCallback implements ToolCallback {
-
-        private final ToolDefinition definition;
-        private final List<ToolExecution> sink;
-
-        private RecordingToolCallback(ToolDefinition definition, List<ToolExecution> sink) {
-            this.definition = definition;
-            this.sink = sink;
-        }
-
-        @Override
-        public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
-            return DefaultToolDefinition.builder()
-                    .name(definition.getName())
-                    .description(definition.getDescription())
-                    .inputSchema(toJsonSchema(definition))
-                    .build();
-        }
-
-        @Override
-        public String call(String toolInput) {
-            Map<String, Object> arguments = parseArguments(toolInput);
-            ToolResult result = toolRegistry.execute(
-                    new ToolCall(UUID.randomUUID().toString(), definition.getName(), arguments));
-
-            String output = result.isSuccess()
-                    ? String.valueOf(result.getOutput())
-                    : "工具执行失败: " + result.getErrorMessage();
-
-            sink.add(ToolExecution.builder()
-                    .tool(definition.getName())
-                    .input(toolInput)
-                    .output(output)
-                    .success(result.isSuccess())
-                    .rawData(result.getRawData())
-                    .build());
-
-            return output;
-        }
     }
 
     private List<Message> toSpringMessages(List<ChatMessage> messages) {
