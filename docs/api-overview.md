@@ -49,8 +49,22 @@
 
 | 方法 | 路径 | 描述 |
 |------|------|------|
-| POST | /ai/chat | 智能对话（支持商品/订单/物流查询） |
+| POST | /ai/chat | 智能对话（RAG + 工具调用 + 记忆） |
+| POST | /mcp | MCP Server（Streamable HTTP），发布 order_query / logistics_query / product_search |
+| GET  | /actuator/prometheus | 指标（含 Spring AI 的 gen_ai.* 语义指标） |
+
+`/ai/chat` 返回体中的三个字段可用于确认链路是否真的走通：
+
+| 字段 | 含义 |
+|------|------|
+| `knowledge` | RAG 命中的知识片段 |
+| `toolCalls` | 本轮实际发生的工具调用轨迹 |
+| `recommendedProducts` | 工具结果中抽取出的商品卡片 |
+
+## 接口文档
+
+各服务暴露 OpenAPI 文档（springdoc）：`http://localhost:<port>/swagger-ui/index.html`
 
 ## Gateway (8080)
 
-所有请求统一通过网关 `http://localhost:8080` 接入，由网关路由至对应微服务。
+所有请求统一通过网关 `http://localhost:8080` 接入，由网关路由至对应微服务。网关负责 JWT 鉴权、Sentinel 限流与路由转发；无 Nacos 时用静态实例列表解析 `lb://`。

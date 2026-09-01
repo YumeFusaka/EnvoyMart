@@ -1,13 +1,13 @@
-# EnvoyMart Agent 电商平台
-
 <p align="center">
-  <strong>Spring Cloud + 自研 Agent 框架 + Vue3 智能电商平台</strong>
+  <strong>EnvoyMart · 智能电商平台</strong><br/>
+  Spring Cloud 微服务 + Spring AI Agent + Vue 3 全栈
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Java-17-589636" />
-  <img src="https://img.shields.io/badge/Spring%20Boot-3.5.14-6DB33F" />
-  <img src="https://img.shields.io/badge/Spring%20Cloud-2025.0.0-6DB33F" />
+  <img src="https://img.shields.io/badge/Java-21-589636" />
+  <img src="https://img.shields.io/badge/Spring%20Boot-4.1.1-6DB33F" />
+  <img src="https://img.shields.io/badge/Spring%20Cloud-2025.1.3-6DB33F" />
+  <img src="https://img.shields.io/badge/Spring%20AI-2.0.1-6DB33F" />
   <img src="https://img.shields.io/badge/Vue-3.5-4FC08D" />
   <img src="https://img.shields.io/badge/license-MIT-blue" />
 </p>
@@ -16,199 +16,175 @@
 
 ## 项目简介
 
-EnvoyMart 是基于 Spring Cloud Alibaba + 自研 Agent 框架 + Vue3 构建的智能电商平台，覆盖用户、商品、订单、支付、物流、评价与客服等核心业务，并扩展智能导购、RAG 知识增强问答、Agent 多步推理与工具编排能力，实现"业务系统 + 智能决策"一体化电商架构。
+EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平台，覆盖用户、商品、订单、支付、物流、评价等核心业务，并在其上构建 Agent 能力：RAG 知识问答、多步工具编排、长期记忆、MCP 工具发布。
 
-- **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个微服务独立部署
-- **Agent 框架**：自研三层架构（LLM 接入 → ReAct/PAE 推理 → Tool/Skill 执行）+ RAG 知识增强 + Memory 持久记忆
-- **前端**：Vue 3 + TypeScript + Element Plus，6 个完整页面
-- **中间件**：Redis 缓存 & 分布式锁 + RabbitMQ 事件驱动 + Elasticsearch 搜索引擎
+**工程重点不在于"接了个大模型"，而在于让 Agent 可观测、可评测、可降级。**
+
+- **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个 Maven 模块
+- **Agent 编排层**：自研 `agent-core`（意图路由 / ReAct / Plan-and-Execute / 工具注册 / 记忆 / RAG）
+- **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议（默认百炼，可切 DeepSeek / Ollama）
+- **检索**：BM25 + 向量混合召回 → RRF 融合 → gte-rerank 精排；带 Hit Rate / MRR / NDCG 评测
+- **记忆**：LLM 抽取事实/偏好 → 向量库语义召回 → 注入 system prompt
+- **MCP**：把订单、物流、商品能力以 MCP 协议对外发布，外部 Agent 可直接调用
+- **可观测**：Micrometer + OTLP + Prometheus，每次模型调用记录耗时与 token
 
 ## 系统架构
 
 ```
-                       ┌─────────────────────────────┐
-                       │    Vue 3 SPA 前端            │
-                       │  商城 · 购物车 · AI 智能助手  │
-                       └─────────────┬───────────────┘
-                                     │ HTTP
-                       ┌─────────────▼───────────────┐
-                       │   API 网关 (Spring Cloud     │
-                       │   Gateway + Sentinel)        │
-                       │   JWT 鉴权 · 限流 · 路由     │
-                       └──┬──────┬──────┬──────┬─────┘
-                          │      │      │      │
-              ┌───────────┘      │      │      └───────────┐
-              ▼                  ▼      ▼                  ▼
-      ┌────────────┐   ┌────────────┐   ┌────────────┐   ┌────────────┐
-      │ 认证服务    │   │ 商品服务    │   │ 订单服务    │   │ AI 服务     │
-      │ auth       │   │ product    │   │ order      │   │ ai         │
-      │ 9001       │   │ 9002       │   │ 9003       │   │ 9004       │
-      └────────────┘   └─────┬──────┘   └─────┬──────┘   └─────┬──────┘
-             ┌──────────┐    │                │                │
-             │ 支付服务   │   │   ┌──────────┐ │   ┌──────────┐ │
-             │ payment  │   │   │ 评价服务   │ │   │ Agent    │ │
-             │ 9005     │   │   │ review    │ │   │ Core     │ │
-             └──────────┘   │   │ 9006      │ │   │ (库)     │ │
-                            │   └──────────┘ │   └──────────┘ │
-                            ▼                ▼                ▼
-                    ┌───────────────────────────────────────────┐
-                    │           基础设施层                       │
-                    │  Nacos · Redis · RabbitMQ · ES · MySQL    │
-                    └───────────────────────────────────────────┘
+                        ┌──────────────────────────────┐
+                        │      Vue 3 SPA 前端           │
+                        │  商城 · 购物车 · AI 智能助手   │
+                        └──────────────┬───────────────┘
+                                       │ HTTP
+                        ┌──────────────▼───────────────┐
+                        │  API 网关 (Spring Cloud       │
+                        │  Gateway + Sentinel)          │
+                        │  JWT 鉴权 · 限流 · 路由       │
+                        └──┬──────┬──────┬──────┬───────┘
+                           │      │      │      │
+                 ┌─────────┘      │      │      └─────────┐
+                 ▼                ▼      ▼                ▼
+          ┌────────────┐  ┌────────────┐ ┌────────────┐ ┌────────────┐
+          │ 认证服务    │  │ 商品服务    │ │ 订单服务    │ │ AI 服务     │
+          │ auth 9001  │  │ product    │ │ order 9003 │ │ ai 9004    │
+          └────────────┘  │ 9002       │ └────────────┘ └─────┬──────┘
+          ┌────────────┐  └────────────┘ ┌────────────┐        │
+          │ 支付服务    │                 │ 评价服务    │ ┌──────▼──────┐
+          │ payment    │                 │ review     │ │ agent-core  │
+          │ 9005       │                 │ 9006       │ │ （编排层）   │
+          └────────────┘                 └────────────┘ └──────┬──────┘
+                                                               │
+          ┌────────────────────────────────────────────────────▼──────┐
+          │  基础设施：Nacos · Redis · RabbitMQ · ES 9 · MySQL · Milvus │
+          └───────────────────────────────────────────────────────────┘
 ```
 
-## 微服务清单
+## 模块清单
 
-| 服务 | 端口 | 说明 | 技术栈 |
-|------|------|------|--------|
-| `gateway-service` | 8080 | API 网关，路由转发 + JWT 鉴权 + Sentinel 限流 | Spring Cloud Gateway, Sentinel |
-| `auth-service` | 9001 | 用户认证与 JWT 签发 | Spring Boot, MyBatis-Plus, JJWT |
-| `product-service` | 9002 | 商品 CRUD + ES 全文搜索 + Redis 热点缓存 | MyBatis-Plus, ES, Redis |
-| `order-service` | 9003 | 订单与购物车 + Redis 缓存 + Redisson 锁 + RabbitMQ 事件 | Redisson, RabbitMQ |
-| `ai-service` | 9004 | 智能客服 & 导购 | Agent Core, Feign |
-| `payment-service` | 9005 | 支付创建/回调 + 支付完成事件 | MyBatis-Plus, RabbitMQ |
-| `review-service` | 9006 | 商品评价 | MyBatis-Plus |
-| `agent-core` | — | 自研 Agent 框架（嵌入 ai-service 运行） | 纯 Java 库 |
+| 模块 | 端口 | 说明 |
+|------|------|------|
+| `gateway-service` | 8080 | 网关：路由 + JWT 鉴权 + Sentinel 限流 |
+| `auth-service` | 9001 | 用户认证与 JWT 签发 |
+| `product-service` | 9002 | 商品 CRUD + ES 搜索 + Redis 热点缓存 |
+| `order-service` | 9003 | 订单与购物车 + Redisson 分布式锁 + RabbitMQ 事件 |
+| `ai-service` | 9004 | Agent 编排、RAG、记忆、MCP Server |
+| `payment-service` | 9005 | 支付创建/回调 |
+| `review-service` | 9006 | 商品评价 |
+| `agent-core` | — | 自研 Agent 编排层（纯 Java 库，无 Spring 依赖） |
+| `common` | — | 公共模块（Result / JWT / 异常处理 / 上下文透传） |
 
-## 自研 Agent 框架
-
-### 三层架构
-
-```
-┌──────────────────────────────────────────────────────┐
-│                  能力层 (Capability)                   │
-│  Tool 注册中心 · Skill 编排 · MCP 协议适配             │
-├──────────────────────────────────────────────────────┤
-│                  推理层 (Reasoning)                    │
-│  ReAct (实时问答) · Plan-and-Execute (多步编排)        │
-├──────────────────────────────────────────────────────┤
-│                  LLM 接入层 (LLM)                      │
-│  LLMProvider 接口 · MockLLMProvider · 消息协议         │
-└──────────────────────────────────────────────────────┘
-```
-
-### 三阶段执行链路
+## Agent 执行链路
 
 ```
-执行前                                     执行中                                        执行后
-┌──────────┐  ┌───────────┐  ┌────────┐  ┌──────────┐  ┌──────────────┐  ┌──────────┐  ┌───────────────────┐
-│ Memory   │→ │ RAG 知识   │→ │ Prompt │→ │ ReAct /  │→ │ ToolRegistry  │→ │ LLM      │→ │ MemoryConsolidator│
-│ 加载     │  │ 检索       │  │ 注入   │  │ PAE 推理  │  │ 调用业务工具  │  │ 生成回答  │  │ 长期记忆沉淀       │
-└──────────┘  └───────────┘  └────────┘  └──────────┘  └──────────────┘  └──────────┘  └───────────────────┘
+执行前                          执行中                              执行后
+┌────────┐ ┌────────┐ ┌───────┐ ┌────────┐ ┌──────────┐ ┌────────┐ ┌──────────────┐
+│Memory  │→│ RAG    │→│Prompt │→│意图路由 │→│工具执行   │→│回答合成 │→│记忆沉淀       │
+│语义召回 │ │混合检索 │ │组装   │ │Skill/  │ │ToolRegistry│ │LLM 生成│ │LLM 抽取事实   │
+│        │ │+ 重排   │ │       │ │PAE/ReAct│ │+ 轨迹记录 │ │        │ │→ 向量库       │
+└────────┘ └────────┘ └───────┘ └────────┘ └──────────┘ └────────┘ └──────────────┘
 ```
 
-### RAG 知识增强
+**路由策略**：匹配 Skill → 按工作流执行；LLM 规划出可执行步骤 → Plan-and-Execute；否则 → ReAct（带 RAG 知识直接回答）。
 
-- **文档处理**：结构化切分商品数据、活动规则、售后政策、物流说明
-- **混合检索**：Hybrid Retriever 融合关键词匹配（BM25）与向量语义检索
-- **RRF 融合**：互惠排名融合算法合并多路召回 Top-K 结果
-- **Prompt 融合**：检索结果注入 LLM 上下文，生成可解释回答
+**可靠性护栏**：ReAct 同一「工具+参数」重复调用超阈值即中止；模型/工具异常整体降级为可读回复；重排/嵌入失败自动回退。
 
-### 执行模式
+## 检索评测（可复现）
 
-| 模式 | 适用场景 | 特点 |
-|------|---------|------|
-| **ReAct** | 实时问答、商品咨询、售后快速回复 | Thought-Action-Observation 循环推理 |
-| **Plan-and-Execute** | 物流追踪、比价、多步售后流程 | 先拆解为子任务，再分步执行 |
-| **Skill 匹配** | 标准化业务流程（退换货、投诉） | 预定义工作流编排，一步直达 |
+`RetrievalQualityTest` 用两组标注样本锁住检索质量：
 
-## 基础设施集成
-
-| 中间件 | 用途 | 关键实现 |
-|--------|------|---------|
-| **Nacos** | 服务注册发现 + 配置管理 | `@EnableDiscoveryClient` + `lb://` 路由 |
-| **Sentinel** | 网关限流熔断 | Sentinel Gateway 集成 + Dashboard 监控 |
-| **Redis** | 购物车缓存 + 热点商品缓存 | RedisTemplate + 72h TTL |
-| **Redisson** | 分布式锁（防超卖） | `RLock.tryLock()` 锁定库存扣减 |
-| **RabbitMQ** | 事件驱动（订单/支付/库存） | Topic Exchange + 死信队列兜底 |
-| **Elasticsearch** | 商品全文搜索 | 多字段组合查询 + IK 分词 |
-
-## 前端页面
-
-| 页面 | 功能 |
-|------|------|
-| 登录页 | 用户名密码登录，JWT 存储，路由守卫 |
-| 电商工作台 | 商品网格 + 搜索/分类筛选 + 购物车 + 订单面板 + 物流追踪 |
-| 商品详情页 | 商品信息 + 标签 + 价格 + 加入购物车 |
-| 订单管理页 | 订单列表 + 物流时间线 + 去支付 |
-| 支付页 | 多支付方式选择 + 支付模拟 + 成功页 |
-| AI 智能助手 | 多轮对话 + 知识检索 + 工具调用 + 商品推荐卡片联动 |
+| 样本组 | Hit Rate@3 | MRR | 说明 |
+|--------|-----------|-----|------|
+| 字面重合查询（8 条） | 1.000 | 1.000 | 关键词检索的强项 |
+| 口语化改写（4 条） | 0.750 | 0.750 | 暴露纯关键词检索的短板，是引入向量检索与重排的量化依据 |
 
 ## 快速启动
 
 ```bash
-# 1. 启动基础设施 (Docker)
-docker compose up -d nacos redis rabbitmq mysql elasticsearch
+# 0. 依赖 JDK 21（Boot 4.1 最低 17，本项目用 21）
 
-# 2. 启动后端服务 (Maven)
+# 1. 基础设施（可选，缺失时服务会自动降级）
+docker compose up -d nacos redis rabbitmq mysql elasticsearch milvus
+
+# 2. 后端
 cd backend
-mvn spring-boot:run -pl services/auth-service -am
-mvn spring-boot:run -pl services/product-service -am
-mvn spring-boot:run -pl services/order-service -am
-mvn spring-boot:run -pl services/ai-service -am
+mvn clean install -DskipTests
 
-# 3. 启动前端
-cd frontend
-pnpm install
-pnpm dev
+# 启动网关与业务服务
+mvn -pl gateway-service spring-boot:run
+mvn -pl auth-service spring-boot:run
+mvn -pl product-service spring-boot:run
+mvn -pl order-service spring-boot:run
+mvn -pl ai-service spring-boot:run
+
+# 3. 前端
+cd frontend && pnpm install && pnpm dev
+```
+
+**AI 能力所需的模型配置**（不配也能启动，会自动回退到 Mock 模型）：
+
+```bash
+export LLM_API_KEY=<百炼 / DeepSeek / OpenAI 的 Key>
+export LLM_MODEL=qwen-plus                 # 对话模型
+export LLM_EMBEDDING_MODEL=text-embedding-v4
+# 可选：接入 Milvus 作为向量库
+export SPRING_PROFILES_ACTIVE=milvus
 ```
 
 访问地址：
 - 前端：`http://localhost:5173`
 - API 网关：`http://localhost:8080`
-- Nacos 控制台：`http://localhost:8848`
-- Knife4j 文档：`http://localhost:8080/doc.html`
+- 接口文档：`http://localhost:9001/swagger-ui/index.html`（各服务同路径）
+- MCP 端点：`http://localhost:9004/mcp`（Streamable HTTP）
+- 指标：`http://localhost:9004/actuator/prometheus`
 
 ## 技术栈
 
 | 类别 | 技术 |
 |------|------|
-| **语言** | Java 17, TypeScript |
-| **微服务** | Spring Boot 3.5, Spring Cloud 2025, Spring Cloud Alibaba 2025 |
-| **注册中心** | Nacos 2.5 |
-| **网关** | Spring Cloud Gateway |
-| **限流熔断** | Sentinel 1.8 |
-| **数据库** | MySQL 8.4 / H2 内存库 |
-| **ORM** | MyBatis-Plus 3.5 |
-| **缓存** | Redis 7.4 + Redisson 3.49 |
-| **消息队列** | RabbitMQ 4.1 |
-| **搜索引擎** | Elasticsearch 8.17 |
-| **前端** | Vue 3.5, Vite 5, Element Plus, Pinia, Axios |
-| **AI 框架** | 自研 Agent 框架（ReAct/PAE/Memory/RAG/Tool/MCP/Skill） |
-| **服务调用** | OpenFeign + Nacos 负载均衡 |
-| **包管理** | Maven, pnpm |
+| 语言 | Java 21, TypeScript |
+| 微服务 | Spring Boot 4.1.1, Spring Cloud 2025.1.3, Spring Cloud Alibaba 2025.1.0.0 |
+| AI 框架 | Spring AI 2.0.1（ChatModel / Tool Calling / MCP Server / EmbeddingModel） |
+| Agent | 自研 agent-core：意图路由、ReAct、Plan-and-Execute、ToolRegistry、Skill/Workflow |
+| 检索 | BM25 + 向量混合召回、RRF 融合、gte-rerank 精排、Hit Rate/MRR/NDCG 评测 |
+| 向量库 | Milvus（生产）/ 内存 IVF 索引（本地降级） |
+| 记忆 | LLM 事实抽取 + 向量语义召回，知识与记忆分库隔离 |
+| 可观测 | Micrometer Tracing + OTLP + Prometheus，逐次调用记录 token 与耗时 |
+| 数据库 | MySQL 8.4 / H2（本地） |
+| ORM | MyBatis-Plus 3.5.17 |
+| 缓存 | Redis 7.4 + Redisson 4.7 |
+| 消息队列 | RabbitMQ 4.1 |
+| 搜索引擎 | Elasticsearch 9.4.5 |
+| 前端 | Vue 3.5, Vite 8, Element Plus, Pinia, Axios |
+| 接口文档 | springdoc-openapi 3.1.1 |
+| 鉴权 | jjwt 0.13 |
+| 包管理 | Maven, pnpm |
 
 ## 项目结构
 
 ```
 EnvoyMart/
-├── docker-compose.yml          # 基础设施编排
+├── docker-compose.yml
 ├── backend/
-│   ├── pom.xml                 # 聚合 POM
-│   ├── Dockerfile              # 多阶段构建
-│   └── services/
-│       ├── common/             # 公共模块（Result, JWT, 异常处理）
-│       ├── gateway-service/    # API 网关
-│       ├── auth-service/       # 认证服务
-│       ├── product-service/    # 商品服务
-│       ├── order-service/      # 订单服务
-│       ├── payment-service/    # 支付服务
-│       ├── review-service/     # 评价服务
-│       ├── ai-service/         # AI 智能服务
-│       └── agent-core/         # 自研 Agent 框架
-├── frontend/
-│   └── src/
-│       ├── views/              # 页面（6个）
-│       ├── components/         # 组件（6个）
-│       ├── api/                # API 层（5个模块）
-│       ├── types/              # TypeScript 类型
-│       ├── stores/             # Pinia 状态管理
-│       ├── router/             # Vue Router
-│       └── utils/              # Axios 封装
-└── docs/
-    ├── architecture.md         # 架构设计文档
-    ├── api-overview.md         # API 概览
-    └── quick-start.md          # 快速启动
+│   ├── pom.xml                 # 聚合 POM（Boot 4.1.1 + Spring AI 2.0.1）
+│   ├── Dockerfile
+│   ├── common/                 # Result / JWT / 异常处理 / 身份透传
+│   ├── gateway-service/
+│   ├── auth-service/
+│   ├── product-service/
+│   ├── order-service/
+│   ├── payment-service/
+│   ├── review-service/
+│   ├── agent-core/             # 自研 Agent 编排层
+│   │   └── src/main/java/.../agent/
+│   │       ├── core/           # Agent / ReActEngine / PAEEngine / ContextManager
+│   │       ├── llm/            # LLMProvider 契约、PlanStep、ToolExecution
+│   │       ├── memory/         # 短期/长期记忆与固化器
+│   │       ├── rag/            # 分词、混合检索、重排、向量库、评测器
+│   │       ├── skill/          # Skill / Workflow
+│   │       └── tool/           # Tool / ToolRegistry / MCP 适配
+│   └── ai-service/             # Agent 装配、Spring AI 接入、MCP Server、记忆与 RAG 实现
+└── frontend/
+    └── src/                    # 页面 / 组件 / API / 状态管理
 ```
 
 ## License
