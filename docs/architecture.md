@@ -48,36 +48,37 @@
 - **Sentinel**：网关层集成 Sentinel 限流熔断，配置降级响应与 Dashboard 监控，保护下游服务。
 - **Feign**：服务间通过 `@FeignClient` 声明式 HTTP 调用，集成 Nacos 实现客户端负载均衡。
 
-## 四、自研 Agent 框架（agent-core）
+## 四、Agent 编排层（agent-core）+ 模型接入层（Spring AI）
 
-### 三层架构
+### 分层
 
 ```
 ┌────────────────────────────────────────────────────┐
-│                  能力层 (Capability Layer)           │
-│  Tool 注册中心  │  Skill 工作流  │  MCP 协议适配    │
+│  接入层（ai-service）                                │
+│  SpringAiLLMProvider · MilvusVectorStore            │
+│  DashScopeReranker · LlmMemoryConsolidator · MCP    │
 ├────────────────────────────────────────────────────┤
-│                  推理层 (Reasoning Layer)            │
-│  ReAct 引擎 (实时问答)  │  PAE 引擎 (多步编排)       │
-├────────────────────────────────────────────────────┤
-│                  LLM 接入层 (LLM Layer)              │
-│  LLMProvider 统一接口  │  MockLLMProvider           │
-│  消息格式  │  模型配置  │  响应解析                  │
+│  编排层（agent-core，纯 Java，无 Spring 依赖）        │
+│  Agent 意图路由 · ReAct · Plan-and-Execute          │
+│  ToolRegistry · Skill/Workflow · Memory · RAG       │
 └────────────────────────────────────────────────────┘
 ```
 
+模型接入、工具调用循环、MCP 协议由 Spring AI 负责；推理模式选择、上下文预算、工具编排、记忆与检索由 agent-core 负责。
+
 ### 执行三阶段
 
-1. **执行前**：Memory System 加载上下文 + RAG Engine 检索领域知识 → 注入 Prompt
-2. **执行中**：根据任务复杂度匹配推理模式，ToolRegistry 调用业务工具，结果回写推理循环
-3. **执行后**：MemoryConsolidator 将偏好与事实沉淀至长期记忆
+1. **执行前**：RAG 混合检索 + 长期记忆语义召回 → 组装 system prompt
+2. **执行中**：按 Skill → PAE → ReAct 优先级选策略，ToolRegistry 调用业务工具并记录轨迹
+3. **执行后**：LLM 抽取跨会话事实/偏好 → 写入长期记忆向量库
 
 ## 五、RAG 知识增强引擎
 
-- **文档处理**：对商品数据、活动规则、售后政策等进行结构化切分
-- **向量化**：EmbeddingService 将文本转为向量，InMemoryVectorStore 存储
-- **混合检索**：HybridRetriever 融合关键词匹配（BM25）与向量语义检索，RRF 算法融合 Top-K 结果
-- **生成**：检索结果注入 Prompt，LLM 生成可解释回答
+- **分词**：CJK bigram + 拉丁字母按边界切分（零依赖，中文可命中）
+- **混合检索**：BM25 关键词 + 向量语义，RRF 按 docId 融合
+- **重排**：召回后多留候选，交 cross-encoder（百炼 gte-rerank）精排
+- **评测**：Hit Rate / MRR / NDCG，标注样本回归（见 `docs/rag-engine-design.md`）
+- **降级**：无 Milvus 走内存 IVF，无重排服务保持原顺序
 
 ## 六、事件驱动架构
 
@@ -102,12 +103,14 @@
 
 | 组件 | 版本 | 用途 |
 |------|------|------|
-| Java | 17 | 运行时 |
-| Spring Boot | 3.5.14 | 微服务框架 |
-| Spring Cloud | 2025.0.0 | 微服务治理 |
-| Spring Cloud Alibaba | 2025.0.0.0 | Nacos + Sentinel |
+| Java | 21 | 运行时 |
+| Spring Boot | 4.1.1 | 微服务框架 |
+| Spring Cloud | 2025.1.3 | 微服务治理 |
+| Spring Cloud Alibaba | 2025.1.0.0 | Nacos + Sentinel |
+| Spring AI | 2.0.1 | 模型接入、Tool Calling、MCP Server |
 | MySQL / H2 | 8.4 / 内嵌 | 持久化 |
 | Redis | 7.4 | 缓存 + 分布式锁 |
 | RabbitMQ | 4.1 | 消息队列 |
-| Elasticsearch | 8.17 | 搜索引擎 |
+| Elasticsearch | 9.4.5 | 搜索引擎 |
+| Milvus | 2.6 | 向量库（生产，可选） |
 | Nacos | 2.5.1 | 注册中心/配置中心 |

@@ -2,79 +2,98 @@
 
 ## 设计目标
 
-构建一套与业务逻辑解耦的 Agent 框架，支持电商场景下的智能问答、订单查询、售后处理等需求。核心目标：推理策略可切换、工具可注册、知识可检索、记忆可持久化。
+把"业务可控"和"模型自主"分开：
 
-## 三层架构
+- **模型接入、工具调用循环、MCP 协议**交给 Spring AI，不重复造轮子；
+- **推理模式选择、上下文预算、工具编排、记忆、检索、降级**由自研 `agent-core` 负责，因为这些是框架没覆盖、且生产上真正出问题的地方。
 
-```
-┌─────────────────────────────────┐
-│         LLM 接入层               │
-│  LLMProvider 接口                │
-│  MockLLMProvider（演示）          │
-│  OpenaiLLMProvider（预留）        │
-├─────────────────────────────────┤
-│         推理层                    │
-│  ReActEngine   PAEEngine         │
-│  Thought→Action→Observation     │
-│  Plan→Act→Evaluate              │
-│  意图路由（轻量 LLM 分类器）       │
-├─────────────────────────────────┤
-│         能力层                    │
-│  Tool 接口  │  Skill 接口        │
-│  ToolRegistry│  SkillRegistry    │
-│  MCPAdapter  │  WorkflowEngine   │
-└─────────────────────────────────┘
-```
-
-### LLM 接入层
-
-`LLMProvider` 定义统一的 `chat()` 和 `chatStream()` 接口，所有模型适配器实现此接口即可接入。
-
-当前使用 `MockLLMProvider` 返回模拟响应，便于前端联调和演示。生产环境可替换为真实模型实现，无需改动上层代码。
-
-### 推理层
-
-**意图路由**：用户请求进入后，先通过轻量 LLM 分类器判断任务类型：
-- 匹配到 Skill → 按预设流程执行
-- 复杂多步任务 → PAE 引擎
-- 一般问答 → ReAct 引擎
-
-**ReAct**：Thought → Action → Observation 循环，适合实时问答。每轮 LLM 决定是调用工具还是直接回答，工具结果回写上下文进入下一轮。
-
-**PAE**：Plan → Act → Evaluate，适合多步骤任务。先拆解步骤计划，再逐步执行并评估每步结果，失败时终止或跳过可选步骤。
-
-### 能力层
-
-**Tool**：最细粒度的业务能力单元，每个 Tool 封装一个具体操作（查订单、查物流等）。通过 `ToolDefinition` 暴露元数据供 LLM 识别调用时机。
-
-**Skill**：多个 Tool 的组合编排，通过 WorkflowEngine 按步骤执行，处理跨工具的数据流转和异常。
-
-**MCP 协议适配**：`MCPAdapter` 实现 Tool 接口，将本地工具调用转换为 MCP 协议格式，支持远程工具注册与调用。
-
-## 三阶段执行链路
+## 分层
 
 ```
-执行前                     执行中                          执行后
-┌──────┐  ┌──────┐  ┌──────┐  ┌──────────┐  ┌──────┐  ┌──────┐
-│Memory│→ │ RAG  │→ │Prompt│→ │ 意图路由  │→ │ Tool │→ │记忆  │
-│加载   │  │ 检索  │  │注入  │  │→推理引擎   │  │ 调用 │  │沉淀  │
-└──────┘  └──────┘  └──────┘  └──────────┘  └──────┘  └──────┘
+┌──────────────────────────────────────────────────────────────┐
+│  接入层（ai-service）                                          │
+│  SpringAiLLMProvider · MilvusVectorStore · DashScopeReranker  │
+│  LlmMemoryConsolidator · ToolRegistryCallbackProvider(MCP)    │
+├──────────────────────────────────────────────────────────────┤
+│  编排层（agent-core，纯 Java，无 Spring 依赖）                  │
+│  Agent（意图路由） · ReActEngine · PAEEngine · ContextManager   │
+│  ToolRegistry · SkillRegistry/WorkflowEngine · Memory · RAG    │
+├──────────────────────────────────────────────────────────────┤
+│  基础设施                                                      │
+│  Spring AI ChatModel/EmbeddingModel · Milvus · Redis · 业务服务 │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-1. **执行前**：ShortTermMemory 加载对话上下文，RAG 检索领域知识，组装 system prompt
-2. **执行中**：意图路由决定推理模式，ReAct/PAE 循环执行，ToolRegistry 调用业务工具
-3. **执行后**：LongTermMemory 通过 mem0 沉淀用户偏好与事实
+依赖方向单向：编排层只依赖自己定义的接口（`LLMProvider`、`VectorStore`、`EmbeddingService`、`Reranker`、`Memory`、`Tool`），接入层提供实现。
 
-## 工具清单
+## 关键契约
 
-| 工具 | 类名 | 输入 | 输出 |
-|------|------|------|------|
-| 订单查询 | OrderTool | userId, orderId | 订单详情、订单列表 |
-| 商品推荐 | ProductTool | query, limit | 推荐商品列表 |
-| 物流追踪 | LogisticsTool | userId, orderId | 物流轨迹、承运商 |
+| 接口 | 职责 | 实现 |
+|------|------|------|
+| `LLMProvider` | 模型对话与多步规划 | `SpringAiLLMProvider` / `MockLLMProvider`（无 Key 降级） |
+| `Tool` | 单个业务能力 | `OrderTool` / `LogisticsTool` / `ProductTool` |
+| `VectorStore` | 文本入、切片出的语义检索 | `MilvusVectorStore` / `InMemoryVectorStore` |
+| `Reranker` | 召回结果精排 | `DashScopeReranker` / `Reranker.NOOP` |
+| `Memory` | 短期窗口与长期语义召回 | `ShortTermMemory` / `LongTermMemory` |
+| `MemoryConsolidator` | 从对话中抽取事实 | `LlmMemoryConsolidator` |
+
+## 执行三阶段
+
+```
+执行前                                执行中                        执行后
+Memory.recall ┐                                              ┌ MemoryConsolidator.extract
+RAG.retrieve  ├→ systemPrompt → 意图路由 → 工具执行 → 回答合成 ─┤        ↓
+              ┘                 (Skill/PAE/ReAct)             └ LongTermMemory.add
+```
+
+1. **执行前**：RAG 混合检索 + 长期记忆语义召回，一起组装进 system prompt
+2. **执行中**：按 Skill → PAE → ReAct 的优先级选策略；工具执行结果记录轨迹
+3. **执行后**：LLM 抽取跨会话成立的事实/偏好，写入长期记忆向量库
+
+## 推理模式
+
+| 模式 | 触发条件 | 特点 |
+|------|---------|------|
+| **Skill** | 命中已注册 Skill | 预定义工作流，确定性最高 |
+| **Plan-and-Execute** | LLM 规划出非空的可执行计划 | 先拆步再执行，每步有评估；计划只允许引用已注册工具 |
+| **ReAct** | 其余情况 | 基于 RAG 知识直接回答，带工具循环 |
+
+**为什么 PAE 规划为空要回落 ReAct**：规划为空说明没有工具能帮上忙，这时应该让模型基于检索到的知识回答，而不是把"没有可用工具"当成最终答复。
+
+## 可靠性护栏
+
+| 风险 | 措施 |
+|------|------|
+| 死循环 | ReAct 对同一「工具 + 参数」计数，超阈值即中止并给出可读提示 |
+| 无限迭代 | ReAct `maxIterations`、PAE `maxSteps` 双重上限 |
+| 工具异常 | 异常信息结构化回写为 observation，不中断推理；PAE 中非可选步骤失败则终止计划 |
+| 模型/工具链路异常 | Agent 整体兜底，降级为可读回复而非 500 |
+| 外部依赖不可用 | 无 Key → Mock 模型；无 Milvus → 内存向量库；重排失败 → 保持原顺序 |
+
+## 工具与 MCP
+
+同一份 `ToolDefinition` 有两个消费方：
+
+- `ToolRegistryToolCallback` 适配成 Spring AI 的 `ToolCallback`，供 Agent 链路调用；
+- `ToolRegistryCallbackProvider` 把全部工具注册给 MCP Server，经 `/mcp`（Streamable HTTP）对外发布。
+
+因此新增一个业务工具只需实现 `Tool` 并注册一次，Agent 与 MCP 客户端同时可用。
+
+## 长期记忆
+
+```
+对话 → LlmMemoryConsolidator（LLM 抽取）
+         ↓ 只抽跨会话成立的事实/偏好，不抽一次性意图
+     LongTermMemory.add
+         ↓ 写入独立向量库（与知识库隔离，避免污染检索）
+     下一轮 Memory.recall → 注入 system prompt
+```
+
+记忆与知识分库是刻意的：两者混在同一个 collection 里，知识检索会被用户偏好污染。
 
 ## 异常处理策略
 
-- **LLM 调用失败**：降级到关键词意图匹配
-- **工具执行异常**：异常信息回写 Observation，LLM 决定重试或告知用户
-- **RAG 服务不可用**：跳过知识注入，仅使用模型自身知识
+- **LLM 调用失败**：规划降级为关键词规则；对话降级为可读提示
+- **工具执行异常**：异常信息回写 Observation，由模型决定重试或告知用户
+- **RAG 不可用**：跳过知识注入，仅使用模型自身知识
+- **记忆沉淀失败**：仅记录日志，不影响主链路
