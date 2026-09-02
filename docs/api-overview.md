@@ -50,8 +50,13 @@
 | 方法 | 路径 | 描述 |
 |------|------|------|
 | POST | /ai/chat | 智能对话（RAG + 工具调用 + 记忆） |
-| POST | /mcp | MCP Server（Streamable HTTP），发布 order_query / logistics_query / product_search |
+| POST | /ai/chat/stream | SSE 流式对话（delta / done / error） |
+| POST | /mcp | MCP Server（Streamable HTTP），发布 order_query / logistics_query / product_search / order_cancel |
 | GET  | /actuator/prometheus | 指标（含 Spring AI 的 gen_ai.* 语义指标） |
+
+**高危操作确认**：请求体带 `approved: true` 时才会执行 `order_cancel`；未确认时返回 `pendingActions` 列出待确认工具。
+
+**MCP 鉴权**：`/mcp` 需携带 `Authorization: Bearer <JWT>` 或 `X-MCP-API-Key: <key>`（后者需配置 `MCP_API_KEY`）。
 
 `/ai/chat` 返回体中的三个字段可用于确认链路是否真的走通：
 
