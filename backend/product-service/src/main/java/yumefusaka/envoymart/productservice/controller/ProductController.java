@@ -61,4 +61,10 @@ public class ProductController {
         productService.deductStock(request);
         return Result.success();
     }
+
+    @PostMapping("/stock/restore")
+    public Result<Void> restore(@Valid @RequestBody StockDeductRequest request) {
+        productService.restoreStock(request);
+        return Result.success();
+    }
 }

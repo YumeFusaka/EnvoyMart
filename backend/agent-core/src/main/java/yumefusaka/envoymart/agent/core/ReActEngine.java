@@ -48,6 +48,13 @@ public class ReActEngine {
      * 执行 ReAct 循环，返回最终回答。
      */
     public ReActResult execute(String systemPrompt, List<ChatMessage> conversation) {
+        return execute(systemPrompt, conversation, false);
+    }
+
+    /**
+     * @param approved 用户是否已确认高危操作
+     */
+    public ReActResult execute(String systemPrompt, List<ChatMessage> conversation, boolean approved) {
         List<ChatMessage> messages = new ArrayList<>();
         if (systemPrompt != null && !systemPrompt.isEmpty()) {
             messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(systemPrompt).build());
@@ -100,7 +107,7 @@ public class ReActEngine {
                     Object rawData = null;
                     try {
                         var toolResult = toolRegistry.execute(new yumefusaka.envoymart.agent.tool.ToolCall(
-                                toolReq.getId(), toolReq.getName(), toolReq.getArguments()));
+                                toolReq.getId(), toolReq.getName(), toolReq.getArguments(), approved));
                         success = toolResult.isSuccess();
                         rawData = toolResult.getRawData();
                         observation = toolResult.getOutput() != null ? toolResult.getOutput() : "工具执行成功但无返回内容";

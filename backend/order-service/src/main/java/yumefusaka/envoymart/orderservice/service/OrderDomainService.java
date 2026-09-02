@@ -24,4 +24,7 @@ public interface OrderDomainService {
     OrderResponse getOrder(String userId, Long orderId);
 
     LogisticsResponse getLogistics(String userId, Long orderId);
+
+    /** 取消订单（高危操作，仅供已确认的调用方使用）。 */
+    OrderResponse cancelOrder(String userId, Long orderId);
 }

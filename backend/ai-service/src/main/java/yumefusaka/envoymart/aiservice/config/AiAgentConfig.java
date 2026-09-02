@@ -31,6 +31,7 @@ import yumefusaka.envoymart.aiservice.rag.DashScopeReranker;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.rag.SpringAiEmbeddingService;
 import yumefusaka.envoymart.aiservice.llm.SpringAiLLMProvider;
+import yumefusaka.envoymart.aiservice.tool.CancelOrderTool;
 import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
@@ -77,7 +78,8 @@ public class AiAgentConfig {
         registry.registerAll(List.of(
                 new OrderTool(orderClient),
                 new LogisticsTool(orderClient),
-                new ProductTool(productClient)
+                new ProductTool(productClient),
+                new CancelOrderTool(orderClient)
         ));
         return registry;
     }
@@ -150,11 +152,20 @@ public class AiAgentConfig {
     @Profile("milvus")
     public VectorStore milvusMemoryVectorStore(io.milvus.client.MilvusServiceClient milvusClient,
                                                org.springframework.ai.embedding.EmbeddingModel embeddingModel) {
-        return new MilvusVectorStore(org.springframework.ai.vectorstore.milvus.MilvusVectorStore
-                .builder(milvusClient, embeddingModel)
-                .collectionName("envoymart_memory")
-                .initializeSchema(true)
-                .build());
+        org.springframework.ai.vectorstore.milvus.MilvusVectorStore delegate =
+                org.springframework.ai.vectorstore.milvus.MilvusVectorStore
+                        .builder(milvusClient, embeddingModel)
+                        .collectionName("envoymart_memory")
+                        .embeddingDimension(embeddingModel.dimensions())
+                        .initializeSchema(true)
+                        .build();
+        try {
+            // 手工构造的实例不走 Spring 生命周期，需显式触发建表
+            delegate.afterPropertiesSet();
+        } catch (Exception e) {
+            throw new IllegalStateException("初始化 Milvus 记忆库失败", e);
+        }
+        return new MilvusVectorStore(delegate);
     }
 
     /** 配了 Key 就用百炼 gte-rerank 做 cross-encoder 精排。 */

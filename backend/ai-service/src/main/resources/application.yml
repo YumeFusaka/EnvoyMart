@@ -39,6 +39,19 @@ services:
   product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
   order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
 
+jwt:
+  token-name: token
+  ttl: 432000000000
+  secret-key: ${JWT_SECRET:envoymart-jwt-secret-key-change-me-in-production}
+
+envoymart:
+  mcp:
+    # 机器客户端可用 X-MCP-API-Key 访问 /mcp；留空则只接受平台 JWT
+    api-key: ${MCP_API_KEY:}
+  rerank:
+    model: ${RERANK_MODEL:gte-rerank-v2}
+    timeout-ms: ${RERANK_TIMEOUT_MS:5000}
+
 management:
   endpoints:
     web:
@@ -72,4 +85,6 @@ spring:
           host: ${MILVUS_HOST:127.0.0.1}
           port: ${MILVUS_PORT:19530}
         collection-name: envoymart_knowledge
+        # 必须与 Embedding 模型输出维度一致，否则插入报 dimension mismatch
+        embedding-dimension: ${MILVUS_EMBEDDING_DIMENSION:1024}
         initialize-schema: true

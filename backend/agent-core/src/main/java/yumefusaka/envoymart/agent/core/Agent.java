@@ -77,7 +77,36 @@ public class Agent {
      * - 一般对话 → ReAct
      */
     public AgentResponse chat(String userId, String sessionId, String message) {
-        log.info("[Agent] chat userId={} sessionId={}", userId, sessionId);
+        return chat(userId, sessionId, message, false);
+    }
+
+    /** @param approved 用户是否已确认高危操作（退款/取消订单等） */
+    public AgentResponse chat(String userId, String sessionId, String message, boolean approved) {
+        return doChat(userId, sessionId, message, null, approved);
+    }
+
+    /**
+     * 流式对话。
+     * <p>
+     * 纯对话路径逐块推送模型输出；命中 Skill 或需要多步工具编排时，
+     * 先完成工具执行再一次性推送最终回答（工具结果没出来之前无法合成回答）。
+     *
+     * @param onChunk 增量文本回调，可为 null（等价于非流式）
+     */
+    public AgentResponse chatStream(String userId, String sessionId, String message,
+                                    java.util.function.Consumer<String> onChunk) {
+        return chatStream(userId, sessionId, message, onChunk, false);
+    }
+
+    public AgentResponse chatStream(String userId, String sessionId, String message,
+                                    java.util.function.Consumer<String> onChunk, boolean approved) {
+        return doChat(userId, sessionId, message, onChunk, approved);
+    }
+
+    private AgentResponse doChat(String userId, String sessionId, String message,
+                                 java.util.function.Consumer<String> onChunk, boolean approved) {
+        log.info("[Agent] chat userId={} sessionId={} stream={} approved={}",
+                userId, sessionId, onChunk != null, approved);
 
         // 1. 记录用户消息到短期记忆
         shortTermMemory.add(MemoryItem.builder()
@@ -97,7 +126,7 @@ public class Agent {
 
         AgentResponse response;
         try {
-            response = route(userId, sessionId, message, knowledge, systemPrompt, skillOpt);
+            response = route(userId, sessionId, message, knowledge, systemPrompt, skillOpt, onChunk, approved);
         } catch (Exception e) {
             // 模型/工具链路异常不应把整个请求打成 500，降级为可读提示
             log.error("[Agent] chat failed, degrade to fallback reply", e);
@@ -126,7 +155,9 @@ public class Agent {
     private AgentResponse route(String userId, String sessionId, String message,
                                 List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge,
                                 String systemPrompt,
-                                java.util.Optional<yumefusaka.envoymart.agent.skill.Skill> skillOpt) {
+                                java.util.Optional<yumefusaka.envoymart.agent.skill.Skill> skillOpt,
+                                java.util.function.Consumer<String> onChunk,
+                                boolean approved) {
         if (skillOpt.isPresent()) {
             log.debug("[Agent] routed to skill: {}", skillOpt.get().getName());
             var context = SkillContext.builder()
@@ -135,6 +166,7 @@ public class Agent {
                     .toolRegistry(toolRegistry).ragEngine(ragEngine)
                     .build();
             var result = skillOpt.get().execute(context);
+            emit(onChunk, result.getOutput());
             return AgentResponse.builder()
                     .reply(result.getOutput())
                     .source("skill")
@@ -144,11 +176,32 @@ public class Agent {
 
         List<PlanStep> plan = isComplexTask(message) ? planFor(message, systemPrompt) : List.of();
         if (!plan.isEmpty()) {
+            // 高危操作先拦一道：计划里含需确认的工具且用户未确认，则不执行
+            List<String> riskyTools = plan.stream()
+                    .map(PlanStep::getTool)
+                    .filter(tool -> toolRegistry.get(tool)
+                            .map(t -> t.getDefinition().isRequiresConfirmation())
+                            .orElse(false))
+                    .distinct()
+                    .toList();
+            if (!riskyTools.isEmpty() && !approved) {
+                String reply = "这个操作涉及「" + String.join("、", riskyTools)
+                        + "」，属于不可撤销的高危操作。确认无误的话，请回复「确认执行」。";
+                emit(onChunk, reply);
+                return AgentResponse.builder()
+                        .reply(reply)
+                        .source("hitl")
+                        .knowledge(knowledge)
+                        .pendingActions(riskyTools)
+                        .build();
+            }
+
             // 复杂任务且确实能拆成工具步骤 → PAE
             log.debug("[Agent] using PAE engine, plan={}", plan.stream().map(PlanStep::getTool).toList());
             var paeResult = paeEngine.execute(message, List.of(
                     ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()),
-                    plan, systemPrompt);
+                    plan, systemPrompt, approved);
+            emit(onChunk, paeResult.getFinalAnswer());
             return AgentResponse.builder()
                     .reply(paeResult.getFinalAnswer())
                     .source("pae")
@@ -167,13 +220,38 @@ public class Agent {
                         .build())
                 .toList();
 
-        var reActResult = reActEngine.execute(systemPrompt, conversation);
+        if (onChunk == null) {
+            var reActResult = reActEngine.execute(systemPrompt, conversation);
+            return AgentResponse.builder()
+                    .reply(reActResult.getFinalAnswer())
+                    .source("react")
+                    .knowledge(knowledge)
+                    .toolExecutions(reActResult.getToolExecutions())
+                    .build();
+        }
+
+        // 流式：逐块推送，同时累积完整回答用于记忆沉淀
+        StringBuilder answer = new StringBuilder();
+        List<ChatMessage> messages = new java.util.ArrayList<>();
+        if (systemPrompt != null && !systemPrompt.isEmpty()) {
+            messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(systemPrompt).build());
+        }
+        messages.addAll(conversation);
+        llmProvider.chatStream(messages, llmConfig, chunk -> {
+            answer.append(chunk);
+            onChunk.accept(chunk);
+        });
         return AgentResponse.builder()
-                .reply(reActResult.getFinalAnswer())
-                .source("react")
+                .reply(answer.toString())
+                .source("react-stream")
                 .knowledge(knowledge)
-                .toolExecutions(reActResult.getToolExecutions())
                 .build();
+    }
+
+    private void emit(java.util.function.Consumer<String> onChunk, String text) {
+        if (onChunk != null && text != null && !text.isEmpty()) {
+            onChunk.accept(text);
+        }
     }
 
     private String buildSystemPrompt(List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge,
@@ -262,6 +340,8 @@ public class Agent {
         private List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge;
         /** 本轮对话实际发生的工具调用轨迹 */
         private List<yumefusaka.envoymart.agent.llm.ToolExecution> toolExecutions;
+        /** 等待用户确认的高危工具名 */
+        private List<String> pendingActions;
     }
 
     @Data

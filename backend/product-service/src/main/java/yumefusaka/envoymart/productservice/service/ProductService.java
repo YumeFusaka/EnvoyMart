@@ -14,4 +14,7 @@ public interface ProductService {
     List<ProductResponse> recommendProducts(String query, int limit);
 
     void deductStock(StockDeductRequest request);
+
+    /** 取消订单时回补库存。 */
+    void restoreStock(StockDeductRequest request);
 }

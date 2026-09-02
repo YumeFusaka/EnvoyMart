@@ -36,9 +36,20 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         log.info("[AiService] chat userId={} sessionId={} msg={}",
                 userId, request.getSessionId(), request.getMessage());
 
-        Agent.AgentResponse agentResp = agent.chat(
+        return toChatResponse(request, agent.chat(
+                userId, request.getSessionId(), request.getMessage(), request.isApproved()));
+    }
+
+    @Override
+    public ChatResponse chatStream(String userId, ChatRequest request, java.util.function.Consumer<String> onChunk) {
+        log.info("[AiService] chatStream userId={} sessionId={} msg={}",
                 userId, request.getSessionId(), request.getMessage());
 
+        return toChatResponse(request, agent.chatStream(
+                userId, request.getSessionId(), request.getMessage(), onChunk, request.isApproved()));
+    }
+
+    private ChatResponse toChatResponse(ChatRequest request, Agent.AgentResponse agentResp) {
         List<ToolExecution> executions = agentResp.getToolExecutions() == null
                 ? List.of() : agentResp.getToolExecutions();
 
@@ -48,6 +59,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
                 .recommendedProducts(extractProducts(executions))
+                .pendingActions(agentResp.getPendingActions())
                 .build();
     }
 

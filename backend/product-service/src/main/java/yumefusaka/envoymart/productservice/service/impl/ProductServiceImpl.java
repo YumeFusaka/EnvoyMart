@@ -77,6 +77,14 @@ public class ProductServiceImpl implements ProductService {
         productCacheService.evictProductCache(request.getProductId());
     }
 
+    @Override
+    public void restoreStock(StockDeductRequest request) {
+        ProductEntity entity = requireEntity(request.getProductId());
+        entity.setStock(entity.getStock() + request.getQuantity());
+        productMapper.updateById(entity);
+        productCacheService.evictProductCache(request.getProductId());
+    }
+
     private ProductEntity requireEntity(Long id) {
         ProductEntity entity = productMapper.selectById(id);
         if (entity == null) {

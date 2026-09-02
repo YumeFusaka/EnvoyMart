@@ -66,6 +66,12 @@ public class OrderController {
         return Result.success(orderDomainService.getOrder(userId, id));
     }
 
+    @PostMapping("/orders/{id}/cancel")
+    public Result<OrderResponse> cancelOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+                                             @PathVariable("id") Long id) {
+        return Result.success(orderDomainService.cancelOrder(userId, id));
+    }
+
     @GetMapping("/orders/{id}/logistics")
     public Result<LogisticsResponse> logistics(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                                @PathVariable Long id) {

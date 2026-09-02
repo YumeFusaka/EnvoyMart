@@ -99,6 +99,33 @@ public class SpringAiLLMProvider implements LLMProvider {
     }
 
     /**
+     * 真流式：逐块推送模型输出。
+     * <p>
+     * 工具仍由 Spring AI 在流式过程中执行，调用轨迹照常记录；
+     * 因此首字延迟只取决于模型首个 token，而不是整轮推理 + 工具执行的总时长。
+     */
+    @Override
+    public void chatStream(List<ChatMessage> messages, LLMConfig config, java.util.function.Consumer<String> onChunk) {
+        List<ToolExecution> executions = new ArrayList<>();
+        ChatOptions options = buildOptions(config, toToolCallbacks(executions));
+
+        long startedAt = System.nanoTime();
+        StringBuilder full = new StringBuilder();
+        chatModel.stream(new Prompt(toSpringMessages(messages), options)).toIterable().forEach(response -> {
+            AssistantMessage output = response.getResult() == null ? null : response.getResult().getOutput();
+            String text = output == null ? null : output.getText();
+            if (text != null && !text.isEmpty()) {
+                full.append(text);
+                onChunk.accept(text);
+            }
+        });
+
+        log.info("[LLM] stream model={} latencyMs={} chars={} toolExecutions={}",
+                config.getModel(), (System.nanoTime() - startedAt) / 1_000_000,
+                full.length(), executions.size());
+    }
+
+    /**
      * 以模型自带的默认选项为模板改写，避免把通用 ChatOptions 强塞给具体模型实现
      * （OpenAI 等实现要求自己的 Options 类型）。
      */

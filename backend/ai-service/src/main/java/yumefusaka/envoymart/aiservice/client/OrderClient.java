@@ -2,6 +2,7 @@ package yumefusaka.envoymart.aiservice.client;
 
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 import yumefusaka.envoymart.aiservice.model.LogisticsResponse;
@@ -19,4 +20,8 @@ public interface OrderClient {
     @GetMapping("/orders/{id}/logistics")
     Result<LogisticsResponse> getLogistics(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                            @PathVariable("id") Long id);
+
+    @PostMapping("/orders/{id}/cancel")
+    Result<OrderResponse> cancelOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+                                      @PathVariable("id") Long id);
 }
