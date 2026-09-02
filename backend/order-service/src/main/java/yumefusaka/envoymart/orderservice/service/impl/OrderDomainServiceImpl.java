@@ -225,6 +225,40 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 .build();
     }
 
+    @Override
+    @Transactional
+    public OrderResponse cancelOrder(String userId, Long orderId) {
+        OrderEntity order = orderMapper.selectOne(new LambdaQueryWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getUserId, userId));
+        if (order == null) {
+            throw new IllegalArgumentException("订单不存在");
+        }
+        if ("CANCELLED".equals(order.getStatus())) {
+            throw new IllegalStateException("订单已取消，无需重复操作");
+        }
+        if ("PAID".equals(order.getStatus())) {
+            throw new IllegalStateException("已支付订单请走退款流程");
+        }
+
+        order.setStatus("CANCELLED");
+        orderMapper.updateById(order);
+
+        // 回补库存，避免取消后商品被"锁死"
+        List<OrderItemEntity> items = orderItemMapper.selectList(
+                new LambdaQueryWrapper<OrderItemEntity>().eq(OrderItemEntity::getOrderId, orderId));
+        for (OrderItemEntity item : items) {
+            try {
+                productClient.restoreStock(new StockDeductRequest(item.getProductId(), item.getQuantity()));
+            } catch (Exception e) {
+                log.warn("回补库存失败 orderId={} productId={}: {}", orderId, item.getProductId(), e.getMessage());
+            }
+        }
+
+        log.info("用户 {} 取消订单 {}", userId, order.getOrderNo());
+        return toOrderResponse(order);
+    }
+
     private ProductSnapshot requireProduct(Long productId) {
         ProductSnapshot product = productClient.getProduct(productId).getData();
         if (product == null) {

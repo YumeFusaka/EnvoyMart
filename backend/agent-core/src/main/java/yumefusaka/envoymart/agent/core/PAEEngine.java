@@ -47,16 +47,22 @@ public class PAEEngine {
      * 执行 PAE 循环：自行生成计划。
      */
     public PAEResult execute(String userMessage, List<ChatMessage> context) {
-        return execute(userMessage, context, generatePlan(userMessage, null), null);
+        return execute(userMessage, context, generatePlan(userMessage, null), null, false);
+    }
+
+    public PAEResult execute(String userMessage, List<ChatMessage> context,
+                             List<PlanStep> plan, String systemPrompt) {
+        return execute(userMessage, context, plan, systemPrompt, false);
     }
 
     /**
      * 执行 PAE 循环：使用调用方给定的计划（避免重复规划）。
      *
      * @param systemPrompt 含 RAG 知识与用户长期记忆的系统提示词，用于最终回答合成
+     * @param approved     用户是否已确认高危操作
      */
     public PAEResult execute(String userMessage, List<ChatMessage> context,
-                             List<PlanStep> plan, String systemPrompt) {
+                             List<PlanStep> plan, String systemPrompt, boolean approved) {
         if (plan == null) {
             plan = List.of();
         }
@@ -83,7 +89,7 @@ public class PAEEngine {
 
             ToolResult toolResult = toolRegistry.execute(new yumefusaka.envoymart.agent.tool.ToolCall(
                     "pae_" + i, item.getTool(),
-                    item.getArguments() == null ? Map.of() : item.getArguments()));
+                    item.getArguments() == null ? Map.of() : item.getArguments(), approved));
 
             String observation = toolResult.isSuccess()
                     ? toolResult.getOutput()

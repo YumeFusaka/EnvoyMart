@@ -16,4 +16,12 @@ public class ToolCall {
     private String id;
     private String toolName;
     private Map<String, Object> arguments;
+
+    /** 高危工具是否已获得用户确认 */
+    @Builder.Default
+    private boolean confirmed = false;
+
+    public ToolCall(String id, String toolName, Map<String, Object> arguments) {
+        this(id, toolName, arguments, false);
+    }
 }

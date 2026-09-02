@@ -17,4 +17,7 @@ public interface ProductClient {
 
     @PostMapping("/products/stock/deduct")
     Result<Void> deductStock(@RequestBody StockDeductRequest request);
+
+    @PostMapping("/products/stock/restore")
+    Result<Void> restoreStock(@RequestBody StockDeductRequest request);
 }

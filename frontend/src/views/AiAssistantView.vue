@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { chat } from '@/api/ai'
+import { chatStream } from '@/api/ai'
 import ChatMessageList from '@/components/ai/ChatMessageList.vue'
 import QuickPromptBar from '@/components/ai/QuickPromptBar.vue'
 import { useUserStore } from '@/stores'
 import type { ChatMessage, Product } from '@/types/models'
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
@@ -41,19 +41,35 @@ async function sendMessage(message = input.value) {
   })
   input.value = ''
   loading.value = true
+
+  // 先插入占位的助手消息，随后按流式增量填充
+  const assistantMessage = reactive<ChatMessage>({
+    id: `assistant-${Date.now()}`,
+    role: 'assistant',
+    content: ''
+  })
+  messages.value.push(assistantMessage)
+
   try {
-    const response = await chat({
-      sessionId,
-      message: content
-    })
-    messages.value.push({
-      id: `assistant-${Date.now()}`,
-      role: 'assistant',
-      content: response.reply,
-      knowledge: response.knowledge,
-      toolCalls: response.toolCalls,
-      recommendedProducts: response.recommendedProducts
-    })
+    await chatStream(
+      { sessionId, message: content },
+      {
+        onDelta: (text) => {
+          assistantMessage.content += text
+        },
+        onDone: (response) => {
+          assistantMessage.content = response.reply || assistantMessage.content
+          assistantMessage.knowledge = response.knowledge
+          assistantMessage.toolCalls = response.toolCalls
+          assistantMessage.recommendedProducts = response.recommendedProducts
+        },
+        onError: (msg) => {
+          assistantMessage.content = msg
+        }
+      }
+    )
+  } catch {
+    assistantMessage.content = '智能助手暂时不可用，请稍后再试。'
   } finally {
     loading.value = false
   }
