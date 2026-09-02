@@ -174,7 +174,9 @@ public class Agent {
                     .build();
         }
 
-        List<PlanStep> plan = isComplexTask(message) ? planFor(message, systemPrompt) : List.of();
+        // 规划器需要知道当前用户身份，否则带 userId 参数的工具无法从上下文补全
+        String planContext = systemPrompt + "\n当前用户 ID：" + userId;
+        List<PlanStep> plan = isComplexTask(message) ? planFor(message, planContext) : List.of();
         if (!plan.isEmpty()) {
             // 高危操作先拦一道：计划里含需确认的工具且用户未确认，则不执行
             List<String> riskyTools = plan.stream()
@@ -310,19 +312,25 @@ public class Agent {
         try {
             List<ChatMessage> classifyMessages = List.of(
                     ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
-                            .content("判断用户请求是否必须通过调用业务接口才能完成（如查订单、查物流、搜索商品），"
-                                    + "只是咨询规则或闲聊则不需要。只需回复 yes 或 no。").build(),
+                            .content("判断用户请求是否必须通过调用业务接口才能完成（如查订单、查物流、搜索商品、取消订单），"
+                                    + "只是咨询规则或闲聊则不需要。只回复一个英文单词：yes 或 no。").build(),
                     ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()
             );
             LLMResponse resp = llmProvider.chat(classifyMessages, llmConfig);
-            if (resp.getContent() != null && resp.getContent().toLowerCase().contains("yes")) {
+            String answer = resp.getContent() == null ? "" : resp.getContent().trim().toLowerCase();
+            log.debug("[Agent] intent classify raw={}", answer);
+            // 兼容模型偶尔用中文回答的情况
+            if (answer.contains("yes") || answer.startsWith("是") || answer.contains("需要调用")) {
                 return true;
+            }
+            if (answer.contains("no") || answer.startsWith("否")) {
+                return false;
             }
         } catch (Exception e) {
             log.warn("[Agent] LLM classification failed, fallback to keyword heuristic");
         }
         // Fallback：关键词启发式
-        long toolKeywords = message.chars().filter(c -> "买卖下单物流退换比价".indexOf(c) >= 0).count();
+        long toolKeywords = message.chars().filter(c -> "买卖下单物流退换比价取消查询".indexOf(c) >= 0).count();
         return toolKeywords >= 2;
     }
 

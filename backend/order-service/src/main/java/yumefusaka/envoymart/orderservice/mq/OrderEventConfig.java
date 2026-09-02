@@ -1,6 +1,9 @@
 package yumefusaka.envoymart.orderservice.mq;
 
 import org.springframework.amqp.core.*;
+import org.springframework.amqp.support.converter.JacksonJsonMessageConverter;
+import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -9,6 +12,14 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class OrderEventConfig {
+
+    /**
+     * 事件对象用 JSON 序列化；默认的 SimpleMessageConverter 只支持 String/byte[]/Serializable。
+     */
+    @Bean
+    public MessageConverter jsonMessageConverter() {
+        return new JacksonJsonMessageConverter();
+    }
 
     // ========== 交换机 ==========
     public static final String ORDER_EXCHANGE = "envoymart.order";
@@ -66,22 +77,26 @@ public class OrderEventConfig {
     }
 
     @Bean
-    public Binding orderCreatedBinding(TopicExchange orderExchange, Queue orderCreatedQueue) {
+    public Binding orderCreatedBinding(TopicExchange orderExchange,
+                                             @Qualifier("orderCreatedQueue") Queue orderCreatedQueue) {
         return BindingBuilder.bind(orderCreatedQueue).to(orderExchange).with(ORDER_CREATED_KEY);
     }
 
     @Bean
-    public Binding paymentCompletedBinding(TopicExchange orderExchange, Queue paymentCompletedQueue) {
+    public Binding paymentCompletedBinding(TopicExchange orderExchange,
+                                                @Qualifier("paymentCompletedQueue") Queue paymentCompletedQueue) {
         return BindingBuilder.bind(paymentCompletedQueue).to(orderExchange).with(PAYMENT_COMPLETED_KEY);
     }
 
     @Bean
-    public Binding stockUpdatedBinding(TopicExchange orderExchange, Queue stockUpdatedQueue) {
+    public Binding stockUpdatedBinding(TopicExchange orderExchange,
+                                            @Qualifier("stockUpdatedQueue") Queue stockUpdatedQueue) {
         return BindingBuilder.bind(stockUpdatedQueue).to(orderExchange).with(STOCK_UPDATED_KEY);
     }
 
     @Bean
-    public Binding dlxBinding(DirectExchange deadLetterExchange, Queue orderDlxQueue) {
+    public Binding dlxBinding(DirectExchange deadLetterExchange,
+                                 @Qualifier("orderDlxQueue") Queue orderDlxQueue) {
         return BindingBuilder.bind(orderDlxQueue).to(deadLetterExchange).with("dead.#");
     }
 }

@@ -20,6 +20,8 @@ spring:
   rabbitmq:
     host: ${RABBITMQ_HOST:127.0.0.1}
     port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:envoymart}
+    password: ${RABBITMQ_PASSWORD:envoymart123}
 
 services:
   order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
