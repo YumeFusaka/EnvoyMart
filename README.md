@@ -25,8 +25,10 @@ EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平�
 - **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议（默认百炼，可切 DeepSeek / Ollama）
 - **检索**：BM25 + 向量混合召回 → RRF 融合 → gte-rerank 精排；带 Hit Rate / MRR / NDCG 评测
 - **记忆**：LLM 抽取事实/偏好 → 向量库语义召回 → 注入 system prompt
-- **MCP**：把订单、物流、商品能力以 MCP 协议对外发布，外部 Agent 可直接调用
+- **MCP**：把订单、物流、商品、取消订单能力以 MCP 协议对外发布，端点带鉴权
+- **可靠性**：ReAct 死循环检测、高危操作人工确认（HITL）、链路异常整体降级
 - **可观测**：Micrometer + OTLP + Prometheus，每次模型调用记录耗时与 token
+- **流式**：`/ai/chat/stream`（SSE），首字延迟只取决于首个 token 到达时间
 
 ## 系统架构
 
