@@ -26,10 +26,15 @@ public class SkillRegistry {
 
     /**
      * 根据用户消息路由到最佳匹配的 Skill。
+     * <p>
+     * 命中优先级按注册顺序，因此注册时应把更具体的 Skill 放在前面。
      */
     public Optional<Skill> route(String userMessage) {
+        if (userMessage == null || userMessage.isBlank()) {
+            return Optional.empty();
+        }
         return skills.values().stream()
-                .filter(skill -> userMessage.contains(skill.getName()))
+                .filter(skill -> skill.matches(userMessage))
                 .findFirst();
     }
 
