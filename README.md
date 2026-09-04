@@ -21,7 +21,7 @@ EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平�
 **工程重点不在于"接了个大模型"，而在于让 Agent 可观测、可评测、可降级。**
 
 - **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个 Maven 模块
-- **Agent 编排层**：自研 `agent-core`（意图路由 / ReAct / Plan-and-Execute / 工具注册 / 记忆 / RAG）
+- **Agent 编排层**：自研 `agent-core`（意图路由 / Skill 确定性流程 / ReAct / Plan-and-Execute / 工具注册 / 记忆 / RAG）
 - **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议（默认百炼，可切 DeepSeek / Ollama）
 - **检索**：BM25 + 向量混合召回 → RRF 融合 → gte-rerank 精排；带 Hit Rate / MRR / NDCG 评测
 - **记忆**：LLM 抽取事实/偏好 → 向量库语义召回 → 注入 system prompt
@@ -146,7 +146,7 @@ export SPRING_PROFILES_ACTIVE=milvus
 | 语言 | Java 21, TypeScript |
 | 微服务 | Spring Boot 4.1.1, Spring Cloud 2025.1.3, Spring Cloud Alibaba 2025.1.0.0 |
 | AI 框架 | Spring AI 2.0.1（ChatModel / Tool Calling / MCP Server / EmbeddingModel） |
-| Agent | 自研 agent-core：意图路由、ReAct、Plan-and-Execute、ToolRegistry、Skill/Workflow |
+| Agent | 自研 agent-core：意图路由、Skill 确定性流程、ReAct、Plan-and-Execute、ToolRegistry |
 | 检索 | BM25 + 向量混合召回、RRF 融合、gte-rerank 精排、Hit Rate/MRR/NDCG 评测 |
 | 向量库 | Milvus（生产）/ 内存 IVF 索引（本地降级） |
 | 记忆 | LLM 事实抽取 + 向量语义召回，知识与记忆分库隔离 |
@@ -185,8 +185,10 @@ EnvoyMart/
 │   │       ├── skill/          # Skill / Workflow
 │   │       └── tool/           # Tool / ToolRegistry / MCP 适配
 │   └── ai-service/             # Agent 装配、Spring AI 接入、MCP Server、记忆与 RAG 实现
-└── frontend/
-    └── src/                    # 页面 / 组件 / API / 状态管理
+├── frontend/
+│   └── src/                    # 页面 / 组件 / API / 状态管理
+└── docs/
+    └── 项目总览.md              # 技术栈 · 结构 · 设计 · 亮点 · 实现顺序
 ```
 
 ## License

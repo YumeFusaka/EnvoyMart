@@ -28,6 +28,7 @@ import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
 import yumefusaka.envoymart.aiservice.rag.DashScopeReranker;
+import yumefusaka.envoymart.aiservice.skill.AfterSaleSkill;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.rag.SpringAiEmbeddingService;
 import yumefusaka.envoymart.aiservice.llm.SpringAiLLMProvider;
@@ -236,7 +237,10 @@ public class AiAgentConfig {
 
     @Bean
     public SkillRegistry skillRegistry() {
-        return new SkillRegistry();
+        SkillRegistry registry = new SkillRegistry();
+        // 注册顺序即命中优先级：越具体的 Skill 越靠前
+        registry.registerAll(List.of(new AfterSaleSkill()));
+        return registry;
     }
 
     @Bean
