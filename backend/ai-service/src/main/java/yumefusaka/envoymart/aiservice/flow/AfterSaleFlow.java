@@ -1,9 +1,9 @@
-package yumefusaka.envoymart.aiservice.skill;
+package yumefusaka.envoymart.aiservice.flow;
 
 import lombok.extern.slf4j.Slf4j;
-import yumefusaka.envoymart.agent.skill.Skill;
-import yumefusaka.envoymart.agent.skill.SkillContext;
-import yumefusaka.envoymart.agent.skill.SkillResult;
+import yumefusaka.envoymart.agent.flow.DeterministicFlow;
+import yumefusaka.envoymart.agent.flow.FlowContext;
+import yumefusaka.envoymart.agent.flow.FlowResult;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 import yumefusaka.envoymart.aiservice.model.OrderResponse;
@@ -15,40 +15,47 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 售后引导 Skill —— 把标准化的退货流程从模型手里拿回来。
+ * 售后引导 —— 针对具体订单的退货资格判定与操作指引。
  * <p>
- * 为什么用 Skill 而不是让模型自由发挥：退货有明确的判定规则
- * （订单状态决定能不能退）和固定的操作步骤。这类流程的正确性要求高、
- * 路径固定，交给模型即兴推理反而会引入不确定性——模型可能编造一个
- * 不存在的退货期限。Skill 用确定性代码走完，只把结论交给模型润色。
+ * 为什么值得做成确定性流程：退货有明确的判定规则（订单状态决定能不能退）和固定步骤。
+ * 这类流程交给模型即兴推理会引入不确定性——<b>模型可能编造一个不存在的退货期限</b>。
+ * 这里由代码判定，只把结论交给用户。
  */
 @Slf4j
-public class AfterSaleSkill implements Skill {
+public class AfterSaleFlow implements DeterministicFlow {
 
-    private static final Pattern ORDER_ID = Pattern.compile("\\d{1,19}");
+    /**
+     * 订单引用：订单号必须<b>紧跟在订单标识词之后</b>，中间最多 3 个非数字字符。
+     * <p>
+     * 不用「消息里任意数字」——那样"你们退货政策第 3 条是什么"会被误判成查询订单 3，
+     * 然后答非所问地返回某个订单的退货步骤。
+     */
+    private static final Pattern ORDER_REFERENCE =
+            Pattern.compile("(?:订单|单号|编号|order)\\D{0,3}(\\d{1,19})", Pattern.CASE_INSENSITIVE);
 
-    /** 售后意图关键词 */
     private static final Set<String> INTENT_KEYWORDS =
-            Set.of("退货", "换货", "退款", "售后", "退掉");
+            Set.of("退货", "换货", "退款", "售后", "退掉", "退了");
 
-    /** 已取消的订单不能再走售后 */
     private static final String STATUS_CANCELLED = "CANCELLED";
 
     @Override
     public String getName() {
-        return "after_sale_guide";
+        return "after_sale";
     }
 
     @Override
     public String getDescription() {
-        return "针对指定订单的售后引导：查询订单状态并给出退货可行性判断与操作步骤。";
+        return "用户想对**某个具体订单**申请退货、换货、退款或咨询该订单的售后处理时使用。"
+                + "前提是用户消息里明确给出了订单号（如「订单 3」「单号 12」）。"
+                + "如果用户只是在问售后政策本身（如「退货政策是什么」「七天无理由怎么算」），"
+                + "或者没有给出任何订单号，都不要匹配这条流程。";
     }
 
     /**
-     * 命中条件：既表达了售后意图，又给出了具体订单号。
+     * 规则判定：售后意图 <b>且</b> 明确的订单引用，两者必须同时满足。
      * <p>
-     * 只问政策（"七天无理由怎么算"）不该命中——那属于知识问答，走 ReAct + RAG 更合适；
-     * 只有落到具体订单上，才有确定性流程可走。
+     * 宁可漏判不可误判——漏判还有执行图接着（最多追问一句订单号），
+     * 误判会让用户拿到答非所问的结果。
      */
     @Override
     public boolean matches(String userMessage) {
@@ -60,17 +67,17 @@ public class AfterSaleSkill implements Skill {
     }
 
     @Override
-    public SkillResult execute(SkillContext context) {
+    public FlowResult execute(FlowContext context) {
         Long orderId = extractOrderId(context.getUserMessage());
-        log.info("[AfterSaleSkill] userId={} orderId={}", context.getUserId(), orderId);
+        log.info("[AfterSaleFlow] userId={} orderId={}", context.getUserId(), orderId);
 
         ToolResult query = context.getToolRegistry().execute(new ToolCall(
                 UUID.randomUUID().toString(), "order_query",
-                Map.of("userId", context.getUserId(), "orderId", orderId)));
+                Map.of("userId", context.getUserId(), "orderId", orderId), true));
 
         if (!query.isSuccess() || !(query.getRawData() instanceof OrderResponse order)) {
             String reason = query.getErrorMessage() == null ? "未查询到订单" : query.getErrorMessage();
-            return SkillResult.builder()
+            return FlowResult.builder()
                     .success(false)
                     .output("我没能查到订单 " + orderId + "：" + reason + "。请确认订单号是否正确。")
                     .build();
@@ -80,11 +87,11 @@ public class AfterSaleSkill implements Skill {
     }
 
     /** 按订单状态给出确定性结论，不交给模型判断。 */
-    private SkillResult evaluate(OrderResponse order) {
+    private FlowResult evaluate(OrderResponse order) {
         String status = order.getStatus() == null ? "" : order.getStatus();
 
         if (STATUS_CANCELLED.equals(status)) {
-            return SkillResult.builder()
+            return FlowResult.builder()
                     .success(true)
                     .data(order)
                     .output("订单 " + order.getOrderNo() + " 已经是取消状态，无需再申请退货。"
@@ -92,7 +99,7 @@ public class AfterSaleSkill implements Skill {
                     .build();
         }
 
-        return SkillResult.builder()
+        return FlowResult.builder()
                 .success(true)
                 .data(order)
                 .output("订单 " + order.getOrderNo() + "（" + status + "，金额 " + order.getTotalAmount() + " 元）"
@@ -105,16 +112,17 @@ public class AfterSaleSkill implements Skill {
                 .build();
     }
 
-    private Long extractOrderId(String text) {
+    /** 只为后续业务逻辑提取订单号；提取不到不影响语义判断（那是 IntentRouter 的职责）。 */
+    public Long extractOrderId(String text) {
         if (text == null || text.isBlank()) {
             return null;
         }
-        Matcher matcher = ORDER_ID.matcher(text);
+        Matcher matcher = ORDER_REFERENCE.matcher(text);
         if (!matcher.find()) {
             return null;
         }
         try {
-            return Long.valueOf(matcher.group());
+            return Long.valueOf(matcher.group(1));
         } catch (NumberFormatException e) {
             return null;
         }

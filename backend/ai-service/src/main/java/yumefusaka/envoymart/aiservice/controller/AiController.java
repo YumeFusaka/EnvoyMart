@@ -4,12 +4,14 @@ import jakarta.annotation.PreDestroy;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import yumefusaka.envoymart.agent.core.AgentGraph;
 import yumefusaka.envoymart.aiservice.model.ChatRequest;
 import yumefusaka.envoymart.aiservice.model.ChatResponse;
 import yumefusaka.envoymart.aiservice.service.AiAssistantService;
@@ -29,9 +31,22 @@ public class AiController {
     private final ExecutorService streamExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     private final AiAssistantService aiAssistantService;
+    private final AgentGraph agentGraph;
 
-    public AiController(AiAssistantService aiAssistantService) {
+    public AiController(AiAssistantService aiAssistantService, AgentGraph agentGraph) {
         this.aiAssistantService = aiAssistantService;
+        this.agentGraph = agentGraph;
+    }
+
+    /**
+     * 导出 Agent 执行图（mermaid）。
+     * <p>
+     * 图是显式注册的，所以能直接画出来——调试时能一眼看清"下一步会去哪"，
+     * 也方便放进设计文档。
+     */
+    @GetMapping("/graph")
+    public Result<String> graph() {
+        return Result.success(agentGraph.toMermaid());
     }
 
     @PostMapping("/chat")
