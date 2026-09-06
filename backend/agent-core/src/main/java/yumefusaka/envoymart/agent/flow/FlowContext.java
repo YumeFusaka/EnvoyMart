@@ -1,4 +1,4 @@
-package yumefusaka.envoymart.agent.skill;
+package yumefusaka.envoymart.agent.flow;
 
 import lombok.Builder;
 import lombok.Data;
@@ -9,11 +9,11 @@ import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import java.util.Map;
 
 /**
- * Skill 执行上下文 —— 携带当前用户、会话、工具、记忆、RAG 等信息。
+ * 确定性流程的执行上下文。
  */
 @Data
 @Builder
-public class SkillContext {
+public class FlowContext {
     private String userId;
     private String sessionId;
     private String userMessage;

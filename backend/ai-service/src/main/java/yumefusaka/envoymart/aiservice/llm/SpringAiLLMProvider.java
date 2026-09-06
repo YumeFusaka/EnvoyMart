@@ -61,8 +61,13 @@ public class SpringAiLLMProvider implements LLMProvider {
 
     @Override
     public LLMResponse chat(List<ChatMessage> messages, LLMConfig config) {
+        return chat(messages, config, Map.of());
+    }
+
+    @Override
+    public LLMResponse chat(List<ChatMessage> messages, LLMConfig config, Map<String, Object> toolContext) {
         List<ToolExecution> executions = new ArrayList<>();
-        ChatOptions options = buildOptions(config, toToolCallbacks(executions));
+        ChatOptions options = buildOptions(config, toToolCallbacks(executions), toolContext);
 
         long startedAt = System.nanoTime();
         ChatResponse response = chatModel.call(new Prompt(toSpringMessages(messages), options));
@@ -106,8 +111,14 @@ public class SpringAiLLMProvider implements LLMProvider {
      */
     @Override
     public void chatStream(List<ChatMessage> messages, LLMConfig config, java.util.function.Consumer<String> onChunk) {
+        chatStream(messages, config, Map.of(), onChunk);
+    }
+
+    @Override
+    public void chatStream(List<ChatMessage> messages, LLMConfig config, Map<String, Object> toolContext,
+                           java.util.function.Consumer<String> onChunk) {
         List<ToolExecution> executions = new ArrayList<>();
-        ChatOptions options = buildOptions(config, toToolCallbacks(executions));
+        ChatOptions options = buildOptions(config, toToolCallbacks(executions), toolContext);
 
         long startedAt = System.nanoTime();
         StringBuilder full = new StringBuilder();
@@ -130,6 +141,11 @@ public class SpringAiLLMProvider implements LLMProvider {
      * （OpenAI 等实现要求自己的 Options 类型）。
      */
     private ChatOptions buildOptions(LLMConfig config, List<ToolCallback> callbacks) {
+        return buildOptions(config, callbacks, Map.of());
+    }
+
+    private ChatOptions buildOptions(LLMConfig config, List<ToolCallback> callbacks,
+                                     Map<String, Object> toolContext) {
         ChatOptions defaults = chatModel.getOptions();
         ChatOptions.Builder<?> builder = defaults == null ? ChatOptions.builder() : defaults.mutate();
 
@@ -137,8 +153,14 @@ public class SpringAiLLMProvider implements LLMProvider {
                 .temperature(config.getTemperature())
                 .maxTokens(config.getMaxTokens());
 
-        if (builder instanceof ToolCallingChatOptions.Builder<?> toolBuilder && !callbacks.isEmpty()) {
-            toolBuilder.toolCallbacks(callbacks);
+        if (builder instanceof ToolCallingChatOptions.Builder<?> toolBuilder) {
+            if (!callbacks.isEmpty()) {
+                toolBuilder.toolCallbacks(callbacks);
+            }
+            // per-request 上下文（如循环护栏）随工具调用传回 ToolCallback
+            if (!toolContext.isEmpty()) {
+                toolBuilder.toolContext(toolContext);
+            }
         }
         return builder.build();
     }

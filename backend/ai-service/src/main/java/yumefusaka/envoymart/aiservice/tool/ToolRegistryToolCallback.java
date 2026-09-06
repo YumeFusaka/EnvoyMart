@@ -1,11 +1,14 @@
 package yumefusaka.envoymart.aiservice.tool;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.DefaultToolDefinition;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
+import yumefusaka.envoymart.agent.loop.LoopGuard;
+import yumefusaka.envoymart.agent.loop.ToolContextKeys;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
@@ -50,9 +53,30 @@ public class ToolRegistryToolCallback implements ToolCallback {
 
     @Override
     public String call(String toolInput) {
+        return call(toolInput, null);
+    }
+
+    /**
+     * 工具循环由框架驱动，但两件事必须由我们把关，所以从 toolContext 里取出来在这里生效：
+     * <ul>
+     *   <li><b>循环护栏</b>——超出预算或重复调用时拒绝执行，把原因交回给模型；</li>
+     *   <li><b>高危确认</b>——未经用户确认的操作不执行。</li>
+     * </ul>
+     */
+    @Override
+    public String call(String toolInput, ToolContext context) {
         Map<String, Object> arguments = parseArguments(toolInput);
+        Map<String, Object> toolContext = context == null ? Map.of() : context.getContext();
+
+        LoopGuard guard = (LoopGuard) toolContext.get(ToolContextKeys.LOOP_GUARD);
+        if (guard != null && !guard.allowToolCall(definition.getName(), arguments)) {
+            log.warn("[Tool] {} blocked by loop guard: {}", definition.getName(), guard.getStopReason());
+            return guard.getStopReason() + "。请基于已有信息作答，不要再调用工具。";
+        }
+
+        boolean approved = Boolean.TRUE.equals(toolContext.get(ToolContextKeys.APPROVED));
         ToolResult result = toolRegistry.execute(
-                new ToolCall(UUID.randomUUID().toString(), definition.getName(), arguments));
+                new ToolCall(UUID.randomUUID().toString(), definition.getName(), arguments, approved));
 
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())

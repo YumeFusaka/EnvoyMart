@@ -11,9 +11,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import yumefusaka.envoymart.agent.core.Agent;
-import yumefusaka.envoymart.agent.core.ContextManager;
-import yumefusaka.envoymart.agent.core.PAEEngine;
-import yumefusaka.envoymart.agent.core.ReActEngine;
+import yumefusaka.envoymart.agent.core.AgentGraph;
+import yumefusaka.envoymart.agent.flow.FlowRegistry;
+import yumefusaka.envoymart.agent.flow.IntentRouter;
 import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMProvider;
 import yumefusaka.envoymart.agent.llm.MockLLMProvider;
@@ -21,14 +21,12 @@ import yumefusaka.envoymart.agent.memory.LongTermMemory;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.ShortTermMemory;
 import yumefusaka.envoymart.agent.rag.*;
-import yumefusaka.envoymart.agent.skill.SkillRegistry;
-import yumefusaka.envoymart.agent.skill.WorkflowEngine;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
+import yumefusaka.envoymart.aiservice.flow.AfterSaleFlow;
 import yumefusaka.envoymart.aiservice.rag.DashScopeReranker;
-import yumefusaka.envoymart.aiservice.skill.AfterSaleSkill;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.rag.SpringAiEmbeddingService;
 import yumefusaka.envoymart.aiservice.llm.SpringAiLLMProvider;
@@ -39,6 +37,8 @@ import yumefusaka.envoymart.aiservice.tool.ProductTool;
 import yumefusaka.envoymart.aiservice.tool.ToolRegistryCallbackProvider;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Agent 框架的 Spring 配置 —— 将自研 agent-core 组件注入 Spring 容器。
@@ -219,53 +219,52 @@ public class AiAgentConfig {
         return engine;
     }
 
+    /**
+     * 确定性流程注册 —— 业务判定由代码完成，不交给模型自由发挥。
+     */
     @Bean
-    public ContextManager contextManager() {
-        return new ContextManager(ContextManager.Config.builder()
-                .maxRounds(10).maxTokens(4096).build());
-    }
-
-    @Bean
-    public ReActEngine reActEngine(LLMProvider llmProvider, LLMConfig llmConfig, ToolRegistry toolRegistry) {
-        return new ReActEngine(llmProvider, llmConfig, toolRegistry, 10);
-    }
-
-    @Bean
-    public PAEEngine paeEngine(LLMProvider llmProvider, LLMConfig llmConfig, ToolRegistry toolRegistry) {
-        return new PAEEngine(llmProvider, llmConfig, toolRegistry, 10);
-    }
-
-    @Bean
-    public SkillRegistry skillRegistry() {
-        SkillRegistry registry = new SkillRegistry();
-        // 注册顺序即命中优先级：越具体的 Skill 越靠前
-        registry.registerAll(List.of(new AfterSaleSkill()));
+    public FlowRegistry flowRegistry() {
+        FlowRegistry registry = new FlowRegistry();
+        registry.registerAll(List.of(new AfterSaleFlow()));
         return registry;
     }
 
+    /**
+     * 入口守卫：判断一条消息该走确定性流程，还是交给执行图。
+     * 模型负责语义判断，规则负责参数齐备性校验；模型不可用时纯走规则。
+     */
     @Bean
-    public WorkflowEngine workflowEngine(SkillRegistry skillRegistry) {
-        return new WorkflowEngine(skillRegistry);
+    public IntentRouter intentRouter(LLMProvider llmProvider, LLMConfig llmConfig, FlowRegistry flowRegistry) {
+        return new IntentRouter(llmProvider, llmConfig, flowRegistry);
+    }
+
+    /**
+     * 执行计划中无依赖步骤的并发执行器。
+     * 任务是阻塞式外部调用，用虚拟线程比固定线程池更合适。
+     */
+    @Bean(destroyMethod = "shutdown")
+    public ExecutorService agentExecutor() {
+        return Executors.newVirtualThreadPerTaskExecutor();
     }
 
     @Bean
-    public Agent agent(LLMProvider llmProvider,
-                       ToolRegistry toolRegistry,
-                       SkillRegistry skillRegistry,
-                       WorkflowEngine workflowEngine,
+    public AgentGraph agentGraph(LLMProvider llmProvider, LLMConfig llmConfig,
+                                 ToolRegistry toolRegistry, ExecutorService agentExecutor) {
+        return new AgentGraph(llmProvider, llmConfig, toolRegistry, agentExecutor);
+    }
+
+    @Bean
+    public Agent agent(ToolRegistry toolRegistry,
+                       IntentRouter intentRouter,
+                       AgentGraph agentGraph,
                        ShortTermMemory shortTermMemory,
                        LongTermMemory longTermMemory,
                        SimpleRAGEngine ragEngine,
-                       ContextManager contextManager,
-                       ReActEngine reActEngine,
-                       PAEEngine paeEngine,
-                       LLMConfig llmConfig,
                        MemoryConsolidator memoryConsolidator) {
         return new Agent(
                 Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3).build(),
-                toolRegistry, skillRegistry, workflowEngine,
+                toolRegistry, intentRouter, agentGraph,
                 shortTermMemory, longTermMemory, ragEngine,
-                contextManager, reActEngine, paeEngine, llmProvider, llmConfig,
                 memoryConsolidator
         );
     }

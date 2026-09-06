@@ -3,112 +3,83 @@ package yumefusaka.envoymart.agent.core;
 import lombok.Builder;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
+import yumefusaka.envoymart.agent.flow.DeterministicFlow;
+import yumefusaka.envoymart.agent.flow.FlowContext;
+import yumefusaka.envoymart.agent.flow.FlowResult;
+import yumefusaka.envoymart.agent.flow.IntentRouter;
 import yumefusaka.envoymart.agent.llm.ChatMessage;
-import yumefusaka.envoymart.agent.llm.LLMConfig;
-import yumefusaka.envoymart.agent.llm.LLMProvider;
-import yumefusaka.envoymart.agent.llm.LLMResponse;
-import yumefusaka.envoymart.agent.llm.PlanStep;
+import yumefusaka.envoymart.agent.llm.ToolExecution;
+import yumefusaka.envoymart.agent.loop.LoopBudget;
+import yumefusaka.envoymart.agent.loop.LoopGuard;
+import yumefusaka.envoymart.agent.memory.Memory;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
-import yumefusaka.envoymart.agent.memory.*;
+import yumefusaka.envoymart.agent.memory.MemoryItem;
+import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
-import yumefusaka.envoymart.agent.skill.SkillContext;
-import yumefusaka.envoymart.agent.skill.SkillRegistry;
-import yumefusaka.envoymart.agent.skill.WorkflowEngine;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
- * Agent —— 自研 Agent 系统的统一入口门面。
+ * Agent —— 统一入口。
  * <p>
- * 整合 ReAct / PAE、记忆、RAG、工具、Skill 等全部子系统，
- * 提供开箱即用的 chat() 接口。
+ * 整体是<b>两层</b>结构，不是几种并列的「推理模式」：
+ * <pre>
+ *  ① 入口守卫：能不能确定？能确定就走确定性流程（业务判定零 LLM）
+ *        ↓ 不能确定
+ *  ② 执行图：规划 → 执行（并发）→ 评估 → 重规划 → 合成回答
+ *        （图中「计划为空」时转为直接对话——ReAct 循环就发生在那里，由框架驱动）
+ * </pre>
+ * 执行前加载长期记忆与 RAG 知识组装 system prompt；执行后把本轮事实沉淀回长期记忆。
  */
 @Slf4j
 public class Agent {
 
     private final Config config;
     private final ToolRegistry toolRegistry;
-    private final SkillRegistry skillRegistry;
-    private final WorkflowEngine workflowEngine;
+    private final IntentRouter intentRouter;
+    private final AgentGraph agentGraph;
     private final Memory shortTermMemory;
     private final Memory longTermMemory;
     private final RAGEngine ragEngine;
-    private final ContextManager contextManager;
-    private final ReActEngine reActEngine;
-    private final PAEEngine paeEngine;
-    private final LLMProvider llmProvider;
-    private final LLMConfig llmConfig;
     private final MemoryConsolidator consolidator;
 
     public Agent(Config config,
                  ToolRegistry toolRegistry,
-                 SkillRegistry skillRegistry,
-                 WorkflowEngine workflowEngine,
+                 IntentRouter intentRouter,
+                 AgentGraph agentGraph,
                  Memory shortTermMemory,
                  Memory longTermMemory,
                  RAGEngine ragEngine,
-                 ContextManager contextManager,
-                 ReActEngine reActEngine,
-                 PAEEngine paeEngine,
-                 LLMProvider llmProvider,
-                 LLMConfig llmConfig,
                  MemoryConsolidator consolidator) {
-        this.consolidator = consolidator;
         this.config = config;
         this.toolRegistry = toolRegistry;
-        this.skillRegistry = skillRegistry;
-        this.workflowEngine = workflowEngine;
+        this.intentRouter = intentRouter;
+        this.agentGraph = agentGraph;
         this.shortTermMemory = shortTermMemory;
         this.longTermMemory = longTermMemory;
         this.ragEngine = ragEngine;
-        this.contextManager = contextManager;
-        this.reActEngine = reActEngine;
-        this.paeEngine = paeEngine;
-        this.llmProvider = llmProvider;
-        this.llmConfig = llmConfig;
+        this.consolidator = consolidator;
     }
 
-    /**
-     * 统一聊天入口 —— 自动选择执行策略：
-     * - 匹配到 Skill → 按 Workflow 编排执行
-     * - 复杂任务（含多个工具依赖）→ PAE
-     * - 一般对话 → ReAct
-     */
-    public AgentResponse chat(String userId, String sessionId, String message) {
-        return chat(userId, sessionId, message, false);
-    }
-
-    /** @param approved 用户是否已确认高危操作（退款/取消订单等） */
     public AgentResponse chat(String userId, String sessionId, String message, boolean approved) {
-        return doChat(userId, sessionId, message, null, approved);
+        return doChat(userId, sessionId, message, approved, null);
     }
 
-    /**
-     * 流式对话。
-     * <p>
-     * 纯对话路径逐块推送模型输出；命中 Skill 或需要多步工具编排时，
-     * 先完成工具执行再一次性推送最终回答（工具结果没出来之前无法合成回答）。
-     *
-     * @param onChunk 增量文本回调，可为 null（等价于非流式）
-     */
+    /** 流式变体：最终回答逐块推送；工具编排阶段仍是同步的。 */
     public AgentResponse chatStream(String userId, String sessionId, String message,
-                                    java.util.function.Consumer<String> onChunk) {
-        return chatStream(userId, sessionId, message, onChunk, false);
-    }
-
-    public AgentResponse chatStream(String userId, String sessionId, String message,
-                                    java.util.function.Consumer<String> onChunk, boolean approved) {
-        return doChat(userId, sessionId, message, onChunk, approved);
+                                    boolean approved, Consumer<String> onChunk) {
+        return doChat(userId, sessionId, message, approved, onChunk);
     }
 
     private AgentResponse doChat(String userId, String sessionId, String message,
-                                 java.util.function.Consumer<String> onChunk, boolean approved) {
-        log.info("[Agent] chat userId={} sessionId={} stream={} approved={}",
-                userId, sessionId, onChunk != null, approved);
+                                 boolean approved, Consumer<String> onChunk) {
+        log.info("[Agent] chat userId={} sessionId={} approved={}", userId, sessionId, approved);
 
-        // 1. 记录用户消息到短期记忆
+        // 1. 记录用户消息
         shortTermMemory.add(MemoryItem.builder()
                 .id(UUID.randomUUID().toString())
                 .sessionId(sessionId)
@@ -116,19 +87,15 @@ public class Agent {
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
 
-        // 2. RAG 检索相关知识 + 长期记忆语义召回
-        var knowledge = ragEngine.retrieve(message, config.getRagTopK());
-        var memories = longTermMemory.recall(message, config.getLongTermRecallTopK());
+        // 2. RAG 检索 + 长期记忆召回 → system prompt
+        List<DocumentChunk> knowledge = ragEngine.retrieve(message, config.getRagTopK());
+        List<MemoryItem> memories = longTermMemory.recall(message, config.getLongTermRecallTopK());
         String systemPrompt = buildSystemPrompt(knowledge, memories);
-
-        // 3. 检查是否有匹配的 Skill
-        var skillOpt = skillRegistry.route(message);
 
         AgentResponse response;
         try {
-            response = route(userId, sessionId, message, knowledge, systemPrompt, skillOpt, onChunk, approved);
+            response = execute(userId, sessionId, message, systemPrompt, knowledge, approved, onChunk);
         } catch (Exception e) {
-            // 模型/工具链路异常不应把整个请求打成 500，降级为可读提示
             log.error("[Agent] chat failed, degrade to fallback reply", e);
             response = AgentResponse.builder()
                     .reply("抱歉，智能助手暂时不可用，请稍后再试或换个说法。")
@@ -137,7 +104,7 @@ public class Agent {
                     .build();
         }
 
-        // 4. 记录回复到短期记忆
+        // 3. 记录回复
         shortTermMemory.add(MemoryItem.builder()
                 .id(UUID.randomUUID().toString())
                 .sessionId(sessionId)
@@ -145,119 +112,77 @@ public class Agent {
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
 
-        // 5. 执行后：沉淀长期记忆
+        // 4. 沉淀长期记忆
         consolidateMemory(sessionId);
 
         return response;
     }
 
-    /** 按「Skill → PAE → ReAct」优先级选择执行策略。 */
-    private AgentResponse route(String userId, String sessionId, String message,
-                                List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge,
-                                String systemPrompt,
-                                java.util.Optional<yumefusaka.envoymart.agent.skill.Skill> skillOpt,
-                                java.util.function.Consumer<String> onChunk,
-                                boolean approved) {
-        if (skillOpt.isPresent()) {
-            log.debug("[Agent] routed to skill: {}", skillOpt.get().getName());
-            var context = SkillContext.builder()
+    /** 入口守卫 → 确定性流程 或 执行图。 */
+    private AgentResponse execute(String userId, String sessionId, String message, String systemPrompt,
+                                  List<DocumentChunk> knowledge, boolean approved, Consumer<String> onChunk) {
+
+        Optional<DeterministicFlow> flowOpt = intentRouter.route(message);
+        if (flowOpt.isPresent()) {
+            DeterministicFlow flow = flowOpt.get();
+            log.debug("[Agent] routed to deterministic flow: {}", flow.getName());
+            FlowResult result = flow.execute(FlowContext.builder()
                     .userId(userId).sessionId(sessionId).userMessage(message)
                     .shortTermMemory(shortTermMemory).longTermMemory(longTermMemory)
                     .toolRegistry(toolRegistry).ragEngine(ragEngine)
-                    .build();
-            var result = skillOpt.get().execute(context);
+                    .build());
             emit(onChunk, result.getOutput());
             return AgentResponse.builder()
                     .reply(result.getOutput())
-                    .source("skill")
+                    .source("flow")
                     .knowledge(knowledge)
                     .build();
         }
 
-        // 规划器需要知道当前用户身份，否则带 userId 参数的工具无法从上下文补全
-        String planContext = systemPrompt + "\n当前用户 ID：" + userId;
-        List<PlanStep> plan = isComplexTask(message) ? planFor(message, planContext) : List.of();
-        if (!plan.isEmpty()) {
-            // 高危操作先拦一道：计划里含需确认的工具且用户未确认，则不执行
-            List<String> riskyTools = plan.stream()
-                    .map(PlanStep::getTool)
-                    .filter(tool -> toolRegistry.get(tool)
-                            .map(t -> t.getDefinition().isRequiresConfirmation())
-                            .orElse(false))
-                    .distinct()
-                    .toList();
-            if (!riskyTools.isEmpty() && !approved) {
-                String reply = "这个操作涉及「" + String.join("、", riskyTools)
-                        + "」，属于不可撤销的高危操作。确认无误的话，请回复「确认执行」。";
-                emit(onChunk, reply);
-                return AgentResponse.builder()
-                        .reply(reply)
-                        .source("hitl")
-                        .knowledge(knowledge)
-                        .pendingActions(riskyTools)
-                        .build();
-            }
+        // 执行图：计划为空时它会转为直接对话（ReAct 所在的位置）
+        // 循环护栏一次请求一份，同时约束图里的环与框架驱动的工具循环
+        LoopGuard guard = new LoopGuard(config.getLoopBudget());
+        AgentGraph.GraphResult graphResult = agentGraph.run(
+                message, systemPrompt, recentConversation(sessionId), approved, guard, onChunk);
+        log.info("[Agent] loops {}", guard.summary());
 
-            // 复杂任务且确实能拆成工具步骤 → PAE
-            log.debug("[Agent] using PAE engine, plan={}", plan.stream().map(PlanStep::getTool).toList());
-            var paeResult = paeEngine.execute(message, List.of(
-                    ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()),
-                    plan, systemPrompt, approved);
-            emit(onChunk, paeResult.getFinalAnswer());
+        // 图的「中断出口」：高危操作未确认，图在此结束，等用户确认后作为新请求重入
+        if (graphResult.getPendingApproval() != null && !graphResult.getPendingApproval().isEmpty()) {
+            String reply = "这个操作涉及「" + String.join("、", graphResult.getPendingApproval())
+                    + "」，属于不可撤销的高危操作。确认无误的话，请回复「确认执行」。";
+            emit(onChunk, reply);
             return AgentResponse.builder()
-                    .reply(paeResult.getFinalAnswer())
-                    .source("pae")
+                    .reply(reply)
+                    .source("approval")
                     .knowledge(knowledge)
-                    .toolExecutions(paeResult.getToolExecutions())
+                    .pendingActions(graphResult.getPendingApproval())
                     .build();
         }
 
-        // 一般对话 / 规划落不了地 → ReAct
-        log.debug("[Agent] using ReAct engine");
-        var recentMemory = shortTermMemory.recent(sessionId, config.getMemoryWindow());
-        var conversation = recentMemory.stream()
+        return AgentResponse.builder()
+                .reply(graphResult.getAnswer())
+                .source(graphResult.getSteps().isEmpty() ? "react" : "plan")
+                .knowledge(knowledge)
+                .toolExecutions(graphResult.getToolExecutions())
+                .build();
+    }
+
+    private List<ChatMessage> recentConversation(String sessionId) {
+        return shortTermMemory.recent(sessionId, config.getMemoryWindow()).stream()
                 .map(m -> ChatMessage.builder()
                         .role(m.getContent().startsWith("user:") ? ChatMessage.Role.USER : ChatMessage.Role.ASSISTANT)
                         .content(m.getContent().replaceAll("^(user:|assistant:)", "").trim())
                         .build())
                 .toList();
-
-        if (onChunk == null) {
-            var reActResult = reActEngine.execute(systemPrompt, conversation);
-            return AgentResponse.builder()
-                    .reply(reActResult.getFinalAnswer())
-                    .source("react")
-                    .knowledge(knowledge)
-                    .toolExecutions(reActResult.getToolExecutions())
-                    .build();
-        }
-
-        // 流式：逐块推送，同时累积完整回答用于记忆沉淀
-        StringBuilder answer = new StringBuilder();
-        List<ChatMessage> messages = new java.util.ArrayList<>();
-        if (systemPrompt != null && !systemPrompt.isEmpty()) {
-            messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(systemPrompt).build());
-        }
-        messages.addAll(conversation);
-        llmProvider.chatStream(messages, llmConfig, chunk -> {
-            answer.append(chunk);
-            onChunk.accept(chunk);
-        });
-        return AgentResponse.builder()
-                .reply(answer.toString())
-                .source("react-stream")
-                .knowledge(knowledge)
-                .build();
     }
 
-    private void emit(java.util.function.Consumer<String> onChunk, String text) {
+    private void emit(Consumer<String> onChunk, String text) {
         if (onChunk != null && text != null && !text.isEmpty()) {
             onChunk.accept(text);
         }
     }
 
-    private String buildSystemPrompt(List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge,
-                                     List<MemoryItem> memories) {
+    private String buildSystemPrompt(List<DocumentChunk> knowledge, List<MemoryItem> memories) {
         StringBuilder sb = new StringBuilder(config.getDefaultSystemPrompt());
         if (!knowledge.isEmpty()) {
             sb.append("\n\n相关知识：\n");
@@ -275,7 +200,7 @@ public class Agent {
     }
 
     /**
-     * 把本轮对话中值得长期记住的事实/偏好沉淀到长期记忆。
+     * 把本轮值得长期记住的事实/偏好沉淀到长期记忆。
      * 失败不影响主链路——记忆是增强项，不是必需项。
      */
     private void consolidateMemory(String sessionId) {
@@ -283,8 +208,8 @@ public class Agent {
             return;
         }
         try {
-            var recent = shortTermMemory.recent(sessionId, config.getMemoryWindow());
-            var facts = consolidator.extract(sessionId, recent);
+            List<MemoryItem> facts = consolidator.extract(
+                    sessionId, shortTermMemory.recent(sessionId, config.getMemoryWindow()));
             facts.forEach(longTermMemory::add);
             if (!facts.isEmpty()) {
                 log.debug("[Agent] consolidated {} memory item(s)", facts.size());
@@ -294,61 +219,32 @@ public class Agent {
         }
     }
 
-    /**
-     * 生成可执行的工具计划。
-     * 返回空表示没有工具能帮上忙，此时应回落到 ReAct —— 让它基于 RAG 知识直接回答，
-     * 而不是把"没有可用工具"当成最终答复。
-     */
-    private List<PlanStep> planFor(String message, String systemPrompt) {
-        var plan = llmProvider.plan(message, toolRegistry.listDefinitions(), systemPrompt);
-        return plan == null ? List.of() : plan;
+    public ToolRegistry getToolRegistry() {
+        return toolRegistry;
     }
 
-    /**
-     * 通过快速 LLM 判断任务类型。
-     * 无法判定时回退到关键词启发式。
-     */
-    private boolean isComplexTask(String message) {
-        try {
-            List<ChatMessage> classifyMessages = List.of(
-                    ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
-                            .content("判断用户请求是否必须通过调用业务接口才能完成（如查订单、查物流、搜索商品、取消订单），"
-                                    + "只是咨询规则或闲聊则不需要。只回复一个英文单词：yes 或 no。").build(),
-                    ChatMessage.builder().role(ChatMessage.Role.USER).content(message).build()
-            );
-            LLMResponse resp = llmProvider.chat(classifyMessages, llmConfig);
-            String answer = resp.getContent() == null ? "" : resp.getContent().trim().toLowerCase();
-            log.debug("[Agent] intent classify raw={}", answer);
-            // 兼容模型偶尔用中文回答的情况
-            if (answer.contains("yes") || answer.startsWith("是") || answer.contains("需要调用")) {
-                return true;
-            }
-            if (answer.contains("no") || answer.startsWith("否")) {
-                return false;
-            }
-        } catch (Exception e) {
-            log.warn("[Agent] LLM classification failed, fallback to keyword heuristic");
-        }
-        // Fallback：关键词启发式
-        long toolKeywords = message.chars().filter(c -> "买卖下单物流退换比价取消查询".indexOf(c) >= 0).count();
-        return toolKeywords >= 2;
+    public Memory getShortTermMemory() {
+        return shortTermMemory;
     }
 
-    public ToolRegistry getToolRegistry() { return toolRegistry; }
-    public SkillRegistry getSkillRegistry() { return skillRegistry; }
-    public Memory getShortTermMemory() { return shortTermMemory; }
-    public Memory getLongTermMemory() { return longTermMemory; }
-    public RAGEngine getRagEngine() { return ragEngine; }
+    public Memory getLongTermMemory() {
+        return longTermMemory;
+    }
+
+    public RAGEngine getRagEngine() {
+        return ragEngine;
+    }
 
     @Data
     @Builder
     public static class AgentResponse {
         private String reply;
-        private String source;   // react / pae / skill
-        private List<yumefusaka.envoymart.agent.rag.DocumentChunk> knowledge;
-        /** 本轮对话实际发生的工具调用轨迹 */
-        private List<yumefusaka.envoymart.agent.llm.ToolExecution> toolExecutions;
-        /** 等待用户确认的高危工具名 */
+        /** flow / plan / react / approval / fallback */
+        private String source;
+        private List<DocumentChunk> knowledge;
+        /** 本轮实际发生的工具调用轨迹 */
+        private List<ToolExecution> toolExecutions;
+        /** 等待用户确认的高危操作 */
         private List<String> pendingActions;
     }
 
@@ -361,13 +257,8 @@ public class Agent {
         @Builder.Default private int longTermRecallTopK = 3;
         /** 是否在每轮结束后抽取事实沉淀到长期记忆（会额外调用一次模型） */
         @Builder.Default private boolean memoryConsolidationEnabled = true;
+        /** 单次请求的循环预算 */
+        @Builder.Default private LoopBudget loopBudget = LoopBudget.defaults();
         @Builder.Default private String defaultSystemPrompt = "你是一个智能电商助手，帮助用户选购商品、查询订单、解答售后问题。";
-        @Builder.Default private AgentMode mode = AgentMode.AUTO;
-
-        public enum AgentMode {
-            REACT,
-            PAE,
-            AUTO
-        }
     }
 }

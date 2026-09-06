@@ -13,9 +13,15 @@
 
     <artifactId>agent-core</artifactId>
     <packaging>jar</packaging>
-    <description>Self-built Agent Framework — ReAct/PAE, Memory, RAG, Tool Calling, MCP, Skill</description>
+    <description>Agent 编排层 —— 执行图、循环护栏、工具注册、记忆、RAG（纯 Java，无 Spring 依赖）</description>
 
     <dependencies>
+        <!-- 执行图引擎：LangGraph 的 Java 实现。零 Spring 依赖，不会污染宿主的 Jackson 版本 -->
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-core</artifactId>
+            <version>${langgraph4j.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

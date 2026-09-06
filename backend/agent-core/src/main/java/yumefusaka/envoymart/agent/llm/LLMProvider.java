@@ -9,7 +9,28 @@ import java.util.List;
  */
 public interface LLMProvider {
 
+    /**
+     * 是否具备真实推理能力。
+     * <p>
+     * Mock 实现返回 false，上层据此跳过需要模型参与的环节
+     * （如意图路由），直接走规则降级路径。
+     */
+    default boolean supportsReasoning() {
+        return true;
+    }
+
     LLMResponse chat(List<ChatMessage> messages, LLMConfig config);
+
+    /**
+     * 带工具上下文的调用。
+     * <p>
+     * 工具上下文会随每次工具调用传回给 {@code ToolCallback}，
+     * 用于传递 per-request 的状态——例如循环护栏（预算、重复检测）。
+     * 这样即使工具循环由框架驱动，循环的边界仍归我们控制。
+     */
+    default LLMResponse chat(List<ChatMessage> messages, LLMConfig config, java.util.Map<String, Object> toolContext) {
+        return chat(messages, config);
+    }
 
     /**
      * 生成多步执行计划。默认不提供规划能力，PAE 引擎会回退到关键词规则。
@@ -29,5 +50,12 @@ public interface LLMProvider {
         if (resp.getContent() != null) {
             onChunk.accept(resp.getContent());
         }
+    }
+
+    /** 带工具上下文的流式变体。 */
+    default void chatStream(List<ChatMessage> messages, LLMConfig config,
+                            java.util.Map<String, Object> toolContext,
+                            java.util.function.Consumer<String> onChunk) {
+        chatStream(messages, config, onChunk);
     }
 }

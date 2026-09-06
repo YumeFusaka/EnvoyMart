@@ -8,7 +8,7 @@ import lombok.Data;
  */
 @Data
 @Builder
-public class ToolExecution {
+public class ToolExecution implements java.io.Serializable {
 
     /** 工具名 */
     private String tool;

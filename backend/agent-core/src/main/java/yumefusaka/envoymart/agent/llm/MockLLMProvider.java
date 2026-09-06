@@ -13,6 +13,11 @@ import java.util.stream.Collectors;
 public class MockLLMProvider implements LLMProvider {
 
     @Override
+    public boolean supportsReasoning() {
+        return false;
+    }
+
+    @Override
     public LLMResponse chat(List<ChatMessage> messages, LLMConfig config) {
         String lastUser = messages.stream()
                 .filter(m -> m.getRole() == ChatMessage.Role.USER)

@@ -46,7 +46,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 userId, request.getSessionId(), request.getMessage());
 
         return toChatResponse(request, agent.chatStream(
-                userId, request.getSessionId(), request.getMessage(), onChunk, request.isApproved()));
+                userId, request.getSessionId(), request.getMessage(), request.isApproved(), onChunk));
     }
 
     private ChatResponse toChatResponse(ChatRequest request, Agent.AgentResponse agentResp) {
