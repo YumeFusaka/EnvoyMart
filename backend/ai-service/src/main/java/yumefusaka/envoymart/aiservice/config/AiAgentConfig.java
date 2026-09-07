@@ -53,7 +53,7 @@ public class AiAgentConfig {
      * 保证本地无 Key 也能启动并跑通链路。
      */
     @Bean
-    @ConditionalOnExpression("'${spring.ai.openai.api-key:}'.length() > 0")
+    @ConditionalOnExpression("'${spring.ai.openai.chat.api-key:}'.length() > 0")
     public LLMProvider springAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig llmConfig) {
         return new SpringAiLLMProvider(chatModel, toolRegistry, llmConfig);
     }
@@ -111,7 +111,7 @@ public class AiAgentConfig {
 
     /** 配了模型 Key 就用 Spring AI 的 EmbeddingModel（语义召回才有意义）。 */
     @Bean
-    @ConditionalOnExpression("'${spring.ai.openai.api-key:}'.length() > 0")
+    @ConditionalOnExpression("'${spring.ai.openai.embedding.api-key:}'.length() > 0")
     public EmbeddingService springAiEmbeddingService(org.springframework.ai.embedding.EmbeddingModel embeddingModel) {
         return new SpringAiEmbeddingService(embeddingModel);
     }
@@ -169,10 +169,10 @@ public class AiAgentConfig {
         return new MilvusVectorStore(delegate);
     }
 
-    /** 配了 Key 就用百炼 gte-rerank 做 cross-encoder 精排。 */
+    /** 配了重排 Key 就用百炼 gte-rerank 做 cross-encoder 精排（默认复用 embedding 的 Key）。 */
     @Bean
-    @ConditionalOnExpression("'${spring.ai.openai.api-key:}'.length() > 0")
-    public Reranker dashScopeReranker(@Value("${spring.ai.openai.api-key}") String apiKey,
+    @ConditionalOnExpression("'${envoymart.rerank.api-key:}'.length() > 0")
+    public Reranker dashScopeReranker(@Value("${envoymart.rerank.api-key}") String apiKey,
                                       @Value("${envoymart.rerank.model:gte-rerank-v2}") String model,
                                       @Value("${envoymart.rerank.endpoint:}") String endpoint,
                                       @Value("${envoymart.rerank.timeout-ms:5000}") long timeoutMs) {

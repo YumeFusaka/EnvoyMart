@@ -4,11 +4,17 @@ server:
 spring:
   application:
     name: ai-service
-  # 默认不加载 Milvus 自动配置：本地无 Milvus 时走内存向量库降级。
-  # 启用方式：SPRING_PROFILES_ACTIVE=milvus
+  # 关闭本项目用不到的自动配置：
+  # - Milvus：本地无 Milvus 时走内存向量库降级，启用方式 SPRING_PROFILES_ACTIVE=milvus
+  # - OpenAI 的音频/图像/审核：它们各自要求凭证，而对话与向量化的 Key 已拆分配置，
+  #   留着会让容器启动失败
   autoconfigure:
     exclude:
       - org.springframework.ai.vectorstore.milvus.autoconfigure.MilvusVectorStoreAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
   cloud:
     nacos:
       discovery:
@@ -24,15 +30,23 @@ spring:
         instructions: EnvoyMart 电商业务工具（订单查询、物流追踪、商品搜索），供外部 Agent 调用。
         streamable-http:
           mcp-endpoint: /mcp
+    # 对话与向量化分开配置：两者可以来自不同供应商。
+    # DeepSeek 只有 Chat Completions、没有 Embeddings 端点，所以向量化仍留在百炼。
     openai:
-      # 留空则回退到 MockLLMProvider，服务仍可启动、链路仍可跑通
-      api-key: ${LLM_API_KEY:}
-      # 默认指向阿里云百炼（DashScope）OpenAI 兼容端点；可换 DeepSeek / Ollama 等
-      base-url: ${LLM_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
       chat:
-        model: ${LLM_MODEL:qwen-plus}
+        # 留空则回退到 MockLLMProvider，服务仍可启动、链路仍可跑通
+        api-key: ${LLM_API_KEY:}
+        base-url: ${LLM_BASE_URL:https://api.deepseek.com}
+        model: ${LLM_MODEL:deepseek-flash}
         temperature: 0.7
+        # DeepSeek 默认开启思考模式，会返回 reasoning_content 并占用输出 token。
+        # Agent 的调用多为分类/规划/合成，不需要深度推理，关掉以降低延迟与成本。
+        extra-body:
+          thinking:
+            type: ${LLM_THINKING:disabled}
       embedding:
+        api-key: ${EMBEDDING_API_KEY:}
+        base-url: ${EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
         model: ${LLM_EMBEDDING_MODEL:text-embedding-v4}
 
 services:
@@ -49,6 +63,8 @@ envoymart:
     # 机器客户端可用 X-MCP-API-Key 访问 /mcp；留空则只接受平台 JWT
     api-key: ${MCP_API_KEY:}
   rerank:
+    # 重排与向量化同属百炼（DeepSeek 无 rerank 端点），默认复用 embedding 的 Key
+    api-key: ${RERANK_API_KEY:${EMBEDDING_API_KEY:}}
     model: ${RERANK_MODEL:gte-rerank-v2}
     timeout-ms: ${RERANK_TIMEOUT_MS:5000}
 
