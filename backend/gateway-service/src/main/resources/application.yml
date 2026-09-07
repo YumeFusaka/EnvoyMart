@@ -54,8 +54,8 @@ spring:
 
 jwt:
   token-name: token
-  ttl: 432000000000
-  secret-key: ${JWT_SECRET:envoymart-jwt-secret-key-change-me-in-production}
+  ttl: ${JWT_TTL:604800000}
+  secret-key: ${JWT_SECRET:}
 
 ---
 # 本地无注册中心：lb:// 通过静态实例列表解析，生产环境用 NACOS_ENABLED=true + prod profile

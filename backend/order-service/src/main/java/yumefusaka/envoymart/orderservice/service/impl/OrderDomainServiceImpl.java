@@ -77,6 +77,9 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             entity.setQuantity(entity.getQuantity() + request.getQuantity());
             cartItemMapper.updateById(entity);
         }
+        // 加购同样改了购物车，必须与 updateCartItem / checkout 一样失效缓存，
+        // 否则最长到 TTL 结束前，用户看到的都是加购前的那份
+        cartCacheService.evictCartCache(userId);
         return toCartResponse(entity, product);
     }
 

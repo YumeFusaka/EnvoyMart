@@ -1,5 +1,8 @@
 package yumefusaka.envoymart.aiservice.llm;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -52,11 +55,15 @@ public class SpringAiLLMProvider implements LLMProvider {
     private final ToolRegistry toolRegistry;
     /** 全局默认调用配置（模型名等），规划这类内部调用也复用它 */
     private final LLMConfig defaultConfig;
+    /** 模型调用的耗时与 token 走指标而不是只写日志——日志适合排查单次，指标才能看出趋势与成本 */
+    private final MeterRegistry meterRegistry;
 
-    public SpringAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig defaultConfig) {
+    public SpringAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig defaultConfig,
+                               MeterRegistry meterRegistry) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.defaultConfig = defaultConfig;
+        this.meterRegistry = meterRegistry;
     }
 
     @Override
@@ -90,6 +97,7 @@ public class SpringAiLLMProvider implements LLMProvider {
         log.info("[LLM] model={} latencyMs={} promptTokens={} completionTokens={} toolCalls={} toolExecutions={}",
                 config.getModel(), latencyMs, promptTokens, completionTokens,
                 toolCalls.size(), executions.size());
+        recordLlmMetrics(config.getModel(), false, latencyMs, promptTokens, completionTokens);
 
         return LLMResponse.builder()
                 .content(output.getText())
@@ -131,9 +139,39 @@ public class SpringAiLLMProvider implements LLMProvider {
             }
         });
 
+        long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
         log.info("[LLM] stream model={} latencyMs={} chars={} toolExecutions={}",
-                config.getModel(), (System.nanoTime() - startedAt) / 1_000_000,
-                full.length(), executions.size());
+                config.getModel(), latencyMs, full.length(), executions.size());
+        // 流式拿不到 token 用量，只记耗时；stream=true 与同步调用分开看，否则首字延迟会被整轮时长污染
+        recordLlmMetrics(config.getModel(), true, latencyMs, 0, 0);
+    }
+
+    /**
+     * 模型调用的耗时与 token 指标。
+     * <p>
+     * 日志回答"这一次发生了什么"，指标回答"最近一周贵在哪"——模型是按 token 计费的，
+     * 没有按模型的用量趋势就无从谈成本控制。
+     */
+    private void recordLlmMetrics(String model, boolean stream, long latencyMs,
+                                  int promptTokens, int completionTokens) {
+        if (meterRegistry == null) {
+            return;
+        }
+        String tag = stream ? "stream" : "sync";
+        Timer.builder("agent.llm.latency")
+                .tag("model", model).tag("mode", tag)
+                .register(meterRegistry)
+                .record(java.time.Duration.ofMillis(latencyMs));
+        if (promptTokens > 0) {
+            Counter.builder("agent.llm.tokens")
+                    .tag("model", model).tag("type", "prompt")
+                    .register(meterRegistry).increment(promptTokens);
+        }
+        if (completionTokens > 0) {
+            Counter.builder("agent.llm.tokens")
+                    .tag("model", model).tag("type", "completion")
+                    .register(meterRegistry).increment(completionTokens);
+        }
     }
 
     /**
@@ -244,7 +282,7 @@ public class SpringAiLLMProvider implements LLMProvider {
      */
     private List<ToolCallback> toToolCallbacks(List<ToolExecution> sink) {
         return toolRegistry.listDefinitions().stream()
-                .map(def -> (ToolCallback) new ToolRegistryToolCallback(toolRegistry, def, sink))
+                .map(def -> (ToolCallback) new ToolRegistryToolCallback(toolRegistry, def, sink, meterRegistry))
                 .toList();
     }
 
