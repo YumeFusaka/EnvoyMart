@@ -33,11 +33,23 @@ public final class JwtUtils {
                 .getPayload();
     }
 
+    /**
+     * 启动时校验密钥，让配置错误在启动阶段暴露，而不是等到第一次签发/校验 Token。
+     * <p>
+     * <b>密钥刻意不设默认值</b>：一个写在仓库里的默认密钥等于没有密钥——任何读过源码的人
+     * 都能离线自签出合法 Token。缺失或过短时必须拒绝启动，而不是降级成一个人人皆知的值。
+     */
+    public static void validateSecretKey(String signKey) {
+        secretKey(signKey);
+    }
+
     private static SecretKey secretKey(String signKey) {
         byte[] keyBytes = signKey == null ? new byte[0] : signKey.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < MIN_SECRET_BYTES) {
-            throw new IllegalArgumentException(
-                    "jwt.secret-key 至少需要 " + MIN_SECRET_BYTES + " 字节，当前 " + keyBytes.length + " 字节");
+            throw new IllegalStateException(
+                    "JWT_SECRET 未配置或长度不足：HS256 要求至少 " + MIN_SECRET_BYTES
+                            + " 字节，当前 " + keyBytes.length + " 字节。"
+                            + "请通过环境变量 JWT_SECRET 提供一个随机密钥，例如 `openssl rand -base64 48`。");
         }
         return Keys.hmacShaKeyFor(keyBytes);
     }

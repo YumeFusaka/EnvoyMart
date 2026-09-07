@@ -3,14 +3,21 @@ package yumefusaka.envoymart.agent.llm;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
- * Mock 实现 —— 不调用真实 LLM，仅回显最近一条用户消息。
- * 切换至 OpenaiLLMProvider 即可接入真实模型。
+ * Mock 实现 —— 未配置模型 Key 时的占位，不调用真实 LLM。
+ * <p>
+ * <b>只回一句固定的提示，不回显任何输入</b>。早先的实现把 system prompt 原样拼进回复，
+ * 而 system prompt 里含 RAG 知识与长期记忆——等于在无 Key 部署下把内部上下文，
+ * 包括其他用户沉淀的记忆，直接读给用户。降级路径必须"功能变弱"，不能"变成泄漏"。
+ * <p>
+ * 它也不假装在工作：明确告诉调用方当前没接模型，避免把占位回复误当成真实回答。
  */
 @Slf4j
 public class MockLLMProvider implements LLMProvider {
+
+    private static final String NOT_CONFIGURED_REPLY =
+            "智能助手尚未接入模型（未配置 LLM_API_KEY），当前只能作为链路占位。";
 
     @Override
     public boolean supportsReasoning() {
@@ -19,21 +26,9 @@ public class MockLLMProvider implements LLMProvider {
 
     @Override
     public LLMResponse chat(List<ChatMessage> messages, LLMConfig config) {
-        String lastUser = messages.stream()
-                .filter(m -> m.getRole() == ChatMessage.Role.USER)
-                .reduce((first, second) -> second)
-                .map(ChatMessage::getContent)
-                .orElse("");
-
-        String knowledge = messages.stream()
-                .filter(m -> m.getRole() == ChatMessage.Role.SYSTEM)
-                .map(ChatMessage::getContent)
-                .collect(Collectors.joining("; "));
-
-        log.debug("[MockLLM] userMsg={}, knowledge={}", lastUser, knowledge);
-
+        log.warn("[MockLLM] 未配置模型 Key，返回占位回复。设 LLM_API_KEY 后启用真实模型。");
         return LLMResponse.builder()
-                .content("已收到你的消息。结合已有信息，" + (knowledge.isEmpty() ? "暂无相关知识匹配。" : "可参考：" + knowledge))
+                .content(NOT_CONFIGURED_REPLY)
                 .finishReason(LLMResponse.FinishReason.STOP)
                 .promptTokens(0)
                 .completionTokens(0)

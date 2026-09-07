@@ -10,6 +10,7 @@ import yumefusaka.envoymart.authservice.model.UserProfile;
 import yumefusaka.envoymart.authservice.service.AuthService;
 import yumefusaka.envoymart.common.properties.JwtProperties;
 import yumefusaka.envoymart.common.util.JwtUtils;
+import yumefusaka.envoymart.common.util.Passwords;
 
 import java.util.Map;
 
@@ -27,9 +28,17 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public LoginResponse login(LoginRequest request) {
         UserEntity user = userMapper.selectOne(new LambdaQueryWrapper<UserEntity>()
-                .eq(UserEntity::getUsername, request.getUsername())
-                .eq(UserEntity::getPassword, request.getPassword()));
+                .eq(UserEntity::getUsername, request.getUsername()));
+
+        // 口令不能进 SQL：BCrypt 每次哈希都带随机盐，等值查询永远匹配不上；
+        // 而且明文比对会让「查得到用户」这件事本身成为可观测的旁路。
+        boolean matched = user != null
+                && Passwords.matches(request.getPassword(), user.getPassword());
         if (user == null) {
+            // 用户不存在时也走一次等开销的比对，否则响应时间会泄漏用户名是否存在
+            Passwords.wasteTimeLikeVerification(request.getPassword());
+        }
+        if (!matched) {
             throw new IllegalArgumentException("用户名或密码错误");
         }
         return LoginResponse.builder()

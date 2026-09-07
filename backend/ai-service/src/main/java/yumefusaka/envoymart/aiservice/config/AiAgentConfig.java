@@ -34,6 +34,7 @@ import yumefusaka.envoymart.aiservice.tool.CancelOrderTool;
 import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
+import io.micrometer.core.instrument.MeterRegistry;
 import yumefusaka.envoymart.aiservice.tool.ToolRegistryCallbackProvider;
 
 import java.util.List;
@@ -54,8 +55,9 @@ public class AiAgentConfig {
      */
     @Bean
     @ConditionalOnExpression("'${spring.ai.openai.chat.api-key:}'.length() > 0")
-    public LLMProvider springAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig llmConfig) {
-        return new SpringAiLLMProvider(chatModel, toolRegistry, llmConfig);
+    public LLMProvider springAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig llmConfig,
+                                           MeterRegistry meterRegistry) {
+        return new SpringAiLLMProvider(chatModel, toolRegistry, llmConfig, meterRegistry);
     }
 
     @Bean
@@ -90,8 +92,8 @@ public class AiAgentConfig {
      * 同一份工具定义既供 Agent 调用，也供外部 MCP 客户端调用。
      */
     @Bean
-    public ToolCallbackProvider mcpToolCallbackProvider(ToolRegistry toolRegistry) {
-        return new ToolRegistryCallbackProvider(toolRegistry);
+    public ToolCallbackProvider mcpToolCallbackProvider(ToolRegistry toolRegistry, MeterRegistry meterRegistry) {
+        return new ToolRegistryCallbackProvider(toolRegistry, meterRegistry);
     }
 
     @Bean

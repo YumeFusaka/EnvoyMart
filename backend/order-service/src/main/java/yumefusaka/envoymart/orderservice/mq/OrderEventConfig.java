@@ -43,9 +43,16 @@ public class OrderEventConfig {
                 .build();
     }
 
+    /**
+     * 死信交换机必须是 topic。
+     * <p>
+     * 业务队列声明的死信路由键是 {@code dead.order.created} / {@code dead.payment.completed}，
+     * 而这里原先绑的是 {@code dead.#} —— {@code #} 是 topic 通配符，direct 交换机只做精确匹配，
+     * 结果死信永远路由不到队列，被 broker 静默丢弃。
+     */
     @Bean
-    public DirectExchange deadLetterExchange() {
-        return ExchangeBuilder.directExchange(DEAD_LETTER_EXCHANGE)
+    public TopicExchange deadLetterExchange() {
+        return ExchangeBuilder.topicExchange(DEAD_LETTER_EXCHANGE)
                 .durable(true)
                 .build();
     }
@@ -95,7 +102,7 @@ public class OrderEventConfig {
     }
 
     @Bean
-    public Binding dlxBinding(DirectExchange deadLetterExchange,
+    public Binding dlxBinding(TopicExchange deadLetterExchange,
                                  @Qualifier("orderDlxQueue") Queue orderDlxQueue) {
         return BindingBuilder.bind(orderDlxQueue).to(deadLetterExchange).with("dead.#");
     }

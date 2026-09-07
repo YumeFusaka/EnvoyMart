@@ -26,5 +26,5 @@ mybatis-plus:
 
 jwt:
   token-name: token
-  ttl: 432000000000
-  secret-key: ${JWT_SECRET:envoymart-jwt-secret-key-change-me-in-production}
+  ttl: ${JWT_TTL:604800000}
+  secret-key: ${JWT_SECRET:}

@@ -29,7 +29,28 @@ class JwtUtilsTest {
     @Test
     void shouldRejectTooShortSecret() {
         assertThatThrownBy(() -> JwtUtils.createToken("yumefusaka", 60_000, Map.of()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("至少需要 32 字节");
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("JWT_SECRET")
+                .hasMessageContaining("32 字节");
+    }
+
+    /**
+     * 密钥缺失必须在签发 Token 之前就被拦下。
+     * <p>
+     * 回归防线：曾经配置里带一个仓库公开的默认密钥，任何读过源码的人都能离线自签出合法 Token。
+     */
+    @Test
+    void shouldRejectMissingSecret() {
+        assertThatThrownBy(() -> JwtUtils.validateSecretKey(null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("JWT_SECRET");
+        assertThatThrownBy(() -> JwtUtils.validateSecretKey(""))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("JWT_SECRET");
+    }
+
+    @Test
+    void shouldAcceptValidSecret() {
+        JwtUtils.validateSecretKey(SECRET);
     }
 }

@@ -26,6 +26,17 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:envoymart}
     password: ${RABBITMQ_PASSWORD:envoymart123}
+    listener:
+      simple:
+        acknowledge-mode: auto
+        # 消费失败不重回队列，而是 nack → 进死信交换机。
+        # 不开这个开关时，抛异常的消息会被无限 requeue，死信队列永远收不到东西。
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          # 共 3 次尝试（首次 + 2 次重试）；仍失败才判定为死信，避免一次抖动就打进人工队列
+          max-retries: 2
+          initial-interval: 1s
 
 services:
   product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}

@@ -21,13 +21,14 @@ EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平�
 **工程重点不在于"接了个大模型"，而在于让 Agent 可观测、可评测、可降级。**
 
 - **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个 Maven 模块
+- **网关限流**：Sentinel 按路由分档限流（AI 接口 5rps ~ 商品接口 100rps），阈值按「一次请求的代价」定，超限返回 429 与可读提示
 - **Agent 编排层**：自研 `agent-core`（入口守卫 / LangGraph4j 执行图 / 循环护栏 / 工具注册 / 记忆 / RAG）
-- **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议；**对话走 DeepSeek V4 Flash、向量化与重排走百炼**（DeepSeek 无 embeddings 端点，故按能力拆供应商）
+- **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议；**对话走 DeepSeek V4.1 Flash、向量化与重排走百炼**（DeepSeek 无 embeddings 端点，故按能力拆供应商）
 - **检索**：BM25 + 向量混合召回 → RRF 融合 → gte-rerank 精排；带 Hit Rate / MRR / NDCG 评测
 - **记忆**：LLM 抽取事实/偏好 → 向量库语义召回 → 注入 system prompt
 - **MCP**：把订单、物流、商品、取消订单能力以 MCP 协议对外发布，端点带鉴权
 - **可靠性**：LoopGuard 统一约束循环预算、高危操作人工确认（HITL）、链路异常整体降级
-- **可观测**：Micrometer + OTLP + Prometheus，每次模型调用记录耗时与 token
+- **可观测**：Micrometer + OTLP + Prometheus。业务指标按成本与失败面埋点——`agent_llm_latency` / `agent_llm_tokens`（按模型、按 prompt/completion 分向）、`agent_tool_calls`（按工具与 success/error/**blocked** 分类）、`agent_tool_latency`。护栏拦截计进指标，否则无从判断"预算过紧"还是"模型在失控"
 - **流式**：`/ai/chat/stream`（SSE），首字延迟只取决于首个 token 到达时间
 
 ## 系统架构
