@@ -22,7 +22,7 @@ EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平�
 
 - **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个 Maven 模块
 - **Agent 编排层**：自研 `agent-core`（入口守卫 / LangGraph4j 执行图 / 循环护栏 / 工具注册 / 记忆 / RAG）
-- **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议（默认百炼，可切 DeepSeek / Ollama）
+- **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议；**对话走 DeepSeek V4 Flash、向量化与重排走百炼**（DeepSeek 无 embeddings 端点，故按能力拆供应商）
 - **检索**：BM25 + 向量混合召回 → RRF 融合 → gte-rerank 精排；带 Hit Rate / MRR / NDCG 评测
 - **记忆**：LLM 抽取事实/偏好 → 向量库语义召回 → 注入 system prompt
 - **MCP**：把订单、物流、商品、取消订单能力以 MCP 协议对外发布，端点带鉴权
@@ -113,10 +113,26 @@ flowchart TD
 
 `RetrievalQualityTest` 用两组标注样本锁住检索质量：
 
-| 样本组 | Hit Rate@3 | MRR | 说明 |
-|--------|-----------|-----|------|
-| 字面重合查询（8 条） | 1.000 | 1.000 | 关键词检索的强项 |
-| 口语化改写（4 条） | 0.750 | 0.750 | 暴露纯关键词检索的短板，是引入向量检索与重排的量化依据 |
+| 样本组 | 条数 | Hit Rate@3 | MRR | 说明 |
+|--------|------|-----------|-----|------|
+| 字面重合 | 10 | 1.000 | 1.000 | 用户照抄文档用词，关键词检索的强项 |
+| 口语改写 | 10 | 0.800 | 0.750 | 换种说法，部分词仍重合 |
+| 语义鸿沟 | 10 | **0.100** | 0.100 | 查询与文档几乎无字面交集 |
+| **全量** | **30** | **0.633** | **0.617** | |
+
+**语义鸿沟组的 0.100 正好等于随机基线**（30 篇取 top-3 的随机命中率 = 0.1）——在语义化提问面前，纯关键词检索退化成随机。
+
+> 该测试的向量库是空的，**隔离测量的是关键词路的底线**。
+
+**引入向量与重排后的对照**（`RetrievalComparisonTest`，本地跑）：
+
+| 配置 | 字面 | 口语 | 语义 | 全量 |
+|------|------|------|------|------|
+| 仅关键词 | 1.000 | 0.800 | 0.100 | 0.633 |
+| 混合（+向量） | 1.000 | 1.000 | **0.600** | **0.867** |
+| 混合 + 重排 | 1.000 | 1.000 | 0.400 | 0.800 |
+
+向量混合召回带来 **+23.4pp** 全量提升（语义档 +50pp）；重排在该数据集上未见增益（仅 2 个样本差异，不构成结论）。完整分析见 [docs/检索效果对照实验结果.md](docs/检索效果对照实验结果.md)。
 
 ## 快速启动
 
@@ -144,8 +160,10 @@ cd frontend && pnpm install && pnpm dev
 **AI 能力所需的模型配置**（不配也能启动，会自动回退到 Mock 模型）：
 
 ```bash
-export LLM_API_KEY=<百炼 / DeepSeek / OpenAI 的 Key>
-export LLM_MODEL=qwen-plus                 # 对话模型
+# 对话与向量化可来自不同供应商：DeepSeek 没有 embeddings 端点，向量化留在百炼
+export LLM_API_KEY=<DeepSeek Key>          # 对话
+export LLM_MODEL=deepseek-flash
+export EMBEDDING_API_KEY=<百炼 Key>        # 向量化与重排
 export LLM_EMBEDDING_MODEL=text-embedding-v4
 # 可选：接入 Milvus 作为向量库
 export SPRING_PROFILES_ACTIVE=milvus

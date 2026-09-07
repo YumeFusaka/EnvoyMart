@@ -70,7 +70,6 @@ public class AgentGraph {
 
     private static final String KEY_PLAN = "plan";
     private static final String KEY_STEPS = "steps";
-    private static final String KEY_EXECUTIONS = "executions";
     private static final String KEY_PENDING = "pendingApproval";
     private static final String KEY_ANSWER = "answer";
     private static final String KEY_ROUND = "round";
@@ -100,7 +99,7 @@ public class AgentGraph {
     public GraphResult run(String message, String systemPrompt, List<ChatMessage> conversation,
                            boolean approved, LoopGuard guard, Consumer<String> onChunk) {
 
-        GraphContext ctx = new GraphContext(message,
+        GraphContext ctx = GraphContext.of(message,
                 systemPrompt == null ? "" : systemPrompt,
                 conversation == null ? List.of() : conversation,
                 approved,
@@ -109,7 +108,6 @@ public class AgentGraph {
 
         Map<String, Object> initial = new HashMap<>();
         initial.put(KEY_STEPS, new ArrayList<GraphStep>());
-        initial.put(KEY_EXECUTIONS, new ArrayList<ToolExecution>());
         initial.put(KEY_PENDING, List.of());
         initial.put(KEY_ROUND, 1);
 
@@ -120,7 +118,7 @@ public class AgentGraph {
                 .answer(finalState.get(KEY_ANSWER, null))
                 .plan(finalState.get(KEY_PLAN, List.<PlanStep>of()))
                 .steps(finalState.get(KEY_STEPS, List.<GraphStep>of()))
-                .toolExecutions(finalState.get(KEY_EXECUTIONS, List.<ToolExecution>of()))
+                .toolExecutions(ctx.executions())
                 .pendingApproval(pending.isEmpty() ? null : pending)
                 .planRounds(finalState.get(KEY_ROUND, 1))
                 .loops(ctx.guard().summary())
@@ -189,11 +187,10 @@ public class AgentGraph {
     private Map<String, Object> actNode(GraphContext ctx, GraphState state) {
         List<PlanStep> plan = state.get(KEY_PLAN, List.<PlanStep>of());
         List<GraphStep> steps = new ArrayList<>(state.get(KEY_STEPS, List.<GraphStep>of()));
-        List<ToolExecution> executions = new ArrayList<>(state.get(KEY_EXECUTIONS, List.<ToolExecution>of()));
 
-        List<String> pending = executePlan(plan, state.get(KEY_ROUND, 1), ctx, steps, executions);
+        List<String> pending = executePlan(plan, state.get(KEY_ROUND, 1), ctx, steps);
 
-        return updates(KEY_STEPS, steps, KEY_EXECUTIONS, executions, KEY_PENDING, pending,
+        return updates(KEY_STEPS, steps, KEY_PENDING, pending,
                 KEY_ROUTE, pending.isEmpty() ? ROUTE_EVALUATE : ROUTE_END);
     }
 
@@ -230,7 +227,7 @@ public class AgentGraph {
 
     /** @return 待用户确认的高危工具；非空表示应中断 */
     private List<String> executePlan(List<PlanStep> plan, int round, GraphContext ctx,
-                                     List<GraphStep> steps, List<ToolExecution> executions) {
+                                     List<GraphStep> steps) {
         boolean[] done = new boolean[plan.size()];
         int finished = 0;
 
@@ -264,7 +261,7 @@ public class AgentGraph {
                 }
             }
 
-            invokeBatch(plan, ready, round, ctx, steps, executions);
+            invokeBatch(plan, ready, round, ctx, steps);
             ready.forEach(i -> done[i] = true);
             finished += ready.size();
         }
@@ -272,11 +269,11 @@ public class AgentGraph {
     }
 
     private void invokeBatch(List<PlanStep> plan, List<Integer> batch, int round, GraphContext ctx,
-                             List<GraphStep> steps, List<ToolExecution> executions) {
+                             List<GraphStep> steps) {
         List<Future<GraphStep>> futures = new ArrayList<>(batch.size());
         for (Integer index : batch) {
             PlanStep step = plan.get(index);
-            futures.add(executor.submit(() -> executeStep(round, index, step, ctx, executions)));
+            futures.add(executor.submit(() -> executeStep(round, index, step, ctx)));
         }
 
         List<GraphStep> batchResults = new ArrayList<>(batch.size());
@@ -298,8 +295,7 @@ public class AgentGraph {
         steps.addAll(batchResults);
     }
 
-    private GraphStep executeStep(int round, int index, PlanStep step, GraphContext ctx,
-                                  List<ToolExecution> executions) {
+    private GraphStep executeStep(int round, int index, PlanStep step, GraphContext ctx) {
         Map<String, Object> arguments = step.getArguments() == null ? Map.of() : step.getArguments();
 
         // 循环护栏：超出预算就不再执行，把原因交回给模型
@@ -318,15 +314,15 @@ public class AgentGraph {
                 ? String.valueOf(result.getOutput())
                 : "工具执行失败：" + result.getErrorMessage();
 
-        synchronized (executions) {
-            executions.add(ToolExecution.builder()
-                    .tool(step.getTool())
-                    .input(String.valueOf(arguments))
-                    .output(output)
-                    .success(result.isSuccess())
-                    .rawData(result.getRawData())
-                    .build());
-        }
+        // 调用轨迹带 rawData（可能是任意业务 DTO），放在上下文里而非图状态，
+        // 避免图保存快照时序列化失败
+        ctx.executions().add(ToolExecution.builder()
+                .tool(step.getTool())
+                .input(String.valueOf(arguments))
+                .output(output)
+                .success(result.isSuccess())
+                .rawData(result.getRawData())
+                .build());
 
         return GraphStep.builder()
                 .round(round).index(index).tool(step.getTool())
@@ -442,9 +438,23 @@ public class AgentGraph {
 
     // ==================== 状态与结果 ====================
 
-    /** 请求级上下文：由节点闭包捕获，不进入图状态（避免把活对象塞进可序列化的状态）。 */
+    /**
+     * 请求级上下文：由节点闭包捕获，<b>不进入图状态</b>。
+     * <p>
+     * 图状态要求可序列化，而这里放的都是活对象或不可序列化的领域对象：
+     * 流式回调、循环护栏、对话历史，以及工具返回的原始数据
+     * （{@code rawData} 可能是任意业务 DTO，塞进状态会在保存快照时抛
+     * {@code NotSerializableException}）。
+     */
     private record GraphContext(String message, String systemPrompt, List<ChatMessage> conversation,
-                                boolean approved, LoopGuard guard, Consumer<String> onChunk) {
+                                boolean approved, LoopGuard guard, Consumer<String> onChunk,
+                                List<ToolExecution> executions) {
+
+        static GraphContext of(String message, String systemPrompt, List<ChatMessage> conversation,
+                               boolean approved, LoopGuard guard, Consumer<String> onChunk) {
+            return new GraphContext(message, systemPrompt, conversation, approved, guard, onChunk,
+                    Collections.synchronizedList(new ArrayList<>()));
+        }
     }
 
     /** 图状态：只承载可序列化的执行结果，节点返回的 Map 会合并进来。 */
