@@ -21,12 +21,12 @@ EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平�
 **工程重点不在于"接了个大模型"，而在于让 Agent 可观测、可评测、可降级。**
 
 - **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个 Maven 模块
-- **Agent 编排层**：自研 `agent-core`（意图路由 / Skill 确定性流程 / ReAct / Plan-and-Execute / 工具注册 / 记忆 / RAG）
+- **Agent 编排层**：自研 `agent-core`（入口守卫 / LangGraph4j 执行图 / 循环护栏 / 工具注册 / 记忆 / RAG）
 - **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议（默认百炼，可切 DeepSeek / Ollama）
 - **检索**：BM25 + 向量混合召回 → RRF 融合 → gte-rerank 精排；带 Hit Rate / MRR / NDCG 评测
 - **记忆**：LLM 抽取事实/偏好 → 向量库语义召回 → 注入 system prompt
 - **MCP**：把订单、物流、商品、取消订单能力以 MCP 协议对外发布，端点带鉴权
-- **可靠性**：ReAct 死循环检测、高危操作人工确认（HITL）、链路异常整体降级
+- **可靠性**：LoopGuard 统一约束循环预算、高危操作人工确认（HITL）、链路异常整体降级
 - **可观测**：Micrometer + OTLP + Prometheus，每次模型调用记录耗时与 token
 - **流式**：`/ai/chat/stream`（SSE），首字延迟只取决于首个 token 到达时间
 
@@ -77,18 +77,37 @@ EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平�
 
 ## Agent 执行链路
 
+**外层是显式的图，节点内部才是模型自主** —— 不是"几种并列的推理模式"：
+
 ```
-执行前                          执行中                              执行后
-┌────────┐ ┌────────┐ ┌───────┐ ┌────────┐ ┌──────────┐ ┌────────┐ ┌──────────────┐
-│Memory  │→│ RAG    │→│Prompt │→│意图路由 │→│工具执行   │→│回答合成 │→│记忆沉淀       │
-│语义召回 │ │混合检索 │ │组装   │ │Skill/  │ │ToolRegistry│ │LLM 生成│ │LLM 抽取事实   │
-│        │ │+ 重排   │ │       │ │PAE/ReAct│ │+ 轨迹记录 │ │        │ │→ 向量库       │
-└────────┘ └────────┘ └───────┘ └────────┘ └──────────┘ └────────┘ └──────────────┘
+① 入口守卫：能不能确定？能确定就走确定性流程（业务判定零 LLM）
+      ↓ 不能确定
+② 执行图（LangGraph4j）：plan → act（并发）→ evaluate → replan → answer
+      图中"计划为空"时转为直接对话——ReAct 循环就发生在那里，由框架驱动
 ```
 
-**路由策略**：匹配 Skill → 按工作流执行；LLM 规划出可执行步骤 → Plan-and-Execute；否则 → ReAct（带 RAG 知识直接回答）。
+```mermaid
+flowchart TD
+  START --> plan
+  plan -->|计划为空| answer
+  plan -->|计划非空| act
+  act -->|命中高危未确认| END
+  act --> evaluate
+  evaluate -->|无阻塞失败| answer
+  evaluate -->|有步骤失败| replan
+  replan --> act
+  answer --> END
+```
 
-**可靠性护栏**：ReAct 同一「工具+参数」重复调用超阈值即中止；模型/工具异常整体降级为可读回复；重排/嵌入失败自动回退。
+`GET /ai/graph` 可直接导出这张图的 mermaid，方便调试与讲解。
+
+**意图路由的分工**：模型判语义（"退货政策第 3 条"与"订单 3 我要退货"的区别是语义的），规则验参数齐备（消息里是否真的给了订单号）。模型不可用时完全退回规则。
+
+**循环护栏 LoopGuard**：一次请求一份，同时约束**图里的环**与**框架驱动的工具循环**——后者经 Spring AI 的 `toolContext` 传进 `ToolCallback`，在调用点拦截。预算是工具调用总数、同一「工具+参数」重复次数、规划轮次三项。
+
+**ACT 的并发**：计划里带 `dependsOn`，无依赖的步骤并发执行。这是 ReAct 结构上做不到的——它每步都要看上一步结果，天然串行。
+
+**可靠性护栏**：模型/工具异常整体降级为可读回复；重排/嵌入失败自动回退；无模型 Key / 无 Milvus / 无注册中心均有降级路径。
 
 ## 检索评测（可复现）
 
@@ -146,7 +165,8 @@ export SPRING_PROFILES_ACTIVE=milvus
 | 语言 | Java 21, TypeScript |
 | 微服务 | Spring Boot 4.1.1, Spring Cloud 2025.1.3, Spring Cloud Alibaba 2025.1.0.0 |
 | AI 框架 | Spring AI 2.0.1（ChatModel / Tool Calling / MCP Server / EmbeddingModel） |
-| Agent | 自研 agent-core：意图路由、Skill 确定性流程、ReAct、Plan-and-Execute、ToolRegistry |
+| Agent 图 | LangGraph4j 1.8.27（LangGraph 的 Java 实现，零 Spring 依赖） |
+| Agent | 自研 agent-core：入口守卫、执行图编排、循环护栏、ToolRegistry |
 | 检索 | BM25 + 向量混合召回、RRF 融合、gte-rerank 精排、Hit Rate/MRR/NDCG 评测 |
 | 向量库 | Milvus（生产）/ 内存 IVF 索引（本地降级） |
 | 记忆 | LLM 事实抽取 + 向量语义召回，知识与记忆分库隔离 |
@@ -178,11 +198,12 @@ EnvoyMart/
 │   ├── review-service/
 │   ├── agent-core/             # 自研 Agent 编排层
 │   │   └── src/main/java/.../agent/
-│   │       ├── core/           # Agent / ReActEngine / PAEEngine / ContextManager
+│   │       ├── core/           # Agent(入口守卫) / AgentGraph(执行图)
 │   │       ├── llm/            # LLMProvider 契约、PlanStep、ToolExecution
 │   │       ├── memory/         # 短期/长期记忆与固化器
 │   │       ├── rag/            # 分词、混合检索、重排、向量库、评测器
-│   │       ├── skill/          # Skill / Workflow
+│   │       ├── flow/           # DeterministicFlow / IntentRouter
+│   │       ├── loop/           # LoopGuard / LoopBudget
 │   │       └── tool/           # Tool / ToolRegistry / MCP 适配
 │   └── ai-service/             # Agent 装配、Spring AI 接入、MCP Server、记忆与 RAG 实现
 ├── frontend/
