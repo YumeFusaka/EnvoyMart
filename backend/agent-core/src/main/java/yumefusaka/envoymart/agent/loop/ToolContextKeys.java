@@ -15,6 +15,14 @@ public final class ToolContextKeys {
     /** 用户是否已确认高危操作（Boolean） */
     public static final String APPROVED = "approved";
 
+    /**
+     * 经过认证的用户身份（String）。
+     * <p>
+     * 与 {@code LOOP_GUARD}、{@code APPROVED} 同类：由我们把关的事，经 toolContext 送进
+     * 框架驱动的工具调用点。身份绝不能作为工具参数由模型提供——模型不知道真实用户是谁。
+     */
+    public static final String USER_ID = "userId";
+
     private ToolContextKeys() {
     }
 }
