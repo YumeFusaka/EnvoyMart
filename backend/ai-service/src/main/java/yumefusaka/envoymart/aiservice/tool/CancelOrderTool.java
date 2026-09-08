@@ -30,8 +30,6 @@ public class CancelOrderTool implements Tool {
                 .description("取消未支付的订单。不可撤销，需要用户确认。")
                 .requiresConfirmation(true)
                 .parameters(Map.of(
-                        "userId", ToolDefinition.ParameterSpec.builder()
-                                .type("string").description("用户 ID").required(true).build(),
                         "orderId", ToolDefinition.ParameterSpec.builder()
                                 .type("integer").description("订单 ID").required(true).build()
                 ))
@@ -41,7 +39,7 @@ public class CancelOrderTool implements Tool {
     @Override
     public ToolResult execute(ToolCall call) {
         try {
-            String userId = (String) call.getArguments().get("userId");
+            String userId = call.requireUserId();
             Long orderId = Long.valueOf(call.getArguments().get("orderId").toString());
             var order = orderClient.cancelOrder(userId, orderId).getData();
             return ToolResult.builder()

@@ -1,5 +1,8 @@
 package yumefusaka.envoymart.aiservice.tool;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -13,6 +16,7 @@ import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
+import yumefusaka.envoymart.common.context.BaseContext;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -35,11 +39,14 @@ public class ToolRegistryToolCallback implements ToolCallback {
     private final ToolDefinition definition;
     /** 调用轨迹收集器，可为 null（如 MCP 外部调用） */
     private final List<ToolExecution> sink;
+    private final MeterRegistry meterRegistry;
 
-    public ToolRegistryToolCallback(ToolRegistry toolRegistry, ToolDefinition definition, List<ToolExecution> sink) {
+    public ToolRegistryToolCallback(ToolRegistry toolRegistry, ToolDefinition definition, List<ToolExecution> sink,
+                                    MeterRegistry meterRegistry) {
         this.toolRegistry = toolRegistry;
         this.definition = definition;
         this.sink = sink;
+        this.meterRegistry = meterRegistry;
     }
 
     @Override
@@ -71,12 +78,26 @@ public class ToolRegistryToolCallback implements ToolCallback {
         LoopGuard guard = (LoopGuard) toolContext.get(ToolContextKeys.LOOP_GUARD);
         if (guard != null && !guard.allowToolCall(definition.getName(), arguments)) {
             log.warn("[Tool] {} blocked by loop guard: {}", definition.getName(), guard.getStopReason());
+            recordToolMetric("blocked", 0);
             return guard.getStopReason() + "。请基于已有信息作答，不要再调用工具。";
         }
 
         boolean approved = Boolean.TRUE.equals(toolContext.get(ToolContextKeys.APPROVED));
+        // 身份只认认证结果。arguments 里的同名项无条件剔除——
+        // 工具定义已经不声明 userId，但 MCP 客户端的入参是任意 JSON，留着就是一条旁路。
+        String userId = (String) toolContext.get(ToolContextKeys.USER_ID);
+        if (userId == null) {
+            // MCP 路径：MCP Server 不携带我们的 toolContext，身份来自 McpAuthFilter 校验 JWT 后的结果。
+            // 走 API Key（机器凭证、无用户身份）时这里仍为 null，需要身份的工具会 fail-closed。
+            userId = BaseContext.getCurrentId();
+        }
+        arguments = new LinkedHashMap<>(arguments);
+        arguments.remove(ToolContextKeys.USER_ID);
+
+        long startedAt = System.nanoTime();
         ToolResult result = toolRegistry.execute(
-                new ToolCall(UUID.randomUUID().toString(), definition.getName(), arguments, approved));
+                new ToolCall(UUID.randomUUID().toString(), definition.getName(), arguments, approved, userId));
+        long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
 
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
@@ -91,8 +112,26 @@ public class ToolRegistryToolCallback implements ToolCallback {
                     .rawData(result.getRawData())
                     .build());
         }
+        // 拦截也计入指标：护栏触发率是判断"预算是否过紧"还是"模型确实在失控"的唯一依据
+        recordToolMetric(result.isSuccess() ? "success" : "error", latencyMs);
         log.debug("[Tool] {} success={} output={}", definition.getName(), result.isSuccess(), output);
         return output;
+    }
+
+    /** 单个工具的调用次数与耗时，按结果分类——成功率与耗时趋势都从这两个指标来。 */
+    private void recordToolMetric(String outcome, long latencyMs) {
+        if (meterRegistry == null) {
+            return;
+        }
+        Counter.builder("agent.tool.calls")
+                .tag("tool", definition.getName()).tag("outcome", outcome)
+                .register(meterRegistry).increment();
+        if (latencyMs > 0) {
+            Timer.builder("agent.tool.latency")
+                    .tag("tool", definition.getName())
+                    .register(meterRegistry)
+                    .record(java.time.Duration.ofMillis(latencyMs));
+        }
     }
 
     /** 由工具参数定义生成 JSON Schema，供模型/MCP 客户端理解工具签名。 */

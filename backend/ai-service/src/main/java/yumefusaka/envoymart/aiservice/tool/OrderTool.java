@@ -25,10 +25,8 @@ public class OrderTool implements Tool {
     public ToolDefinition getDefinition() {
         return ToolDefinition.builder()
                 .name("order_query")
-                .description("查询订单状态和详情。需要用户 ID 和订单 ID。")
+                .description("查询当前用户的订单状态和详情。需要订单 ID。")
                 .parameters(Map.of(
-                        "userId", ToolDefinition.ParameterSpec.builder()
-                                .type("string").description("用户 ID").required(true).build(),
                         "orderId", ToolDefinition.ParameterSpec.builder()
                                 .type("integer").description("订单 ID").required(true).build()
                 ))
@@ -38,7 +36,7 @@ public class OrderTool implements Tool {
     @Override
     public ToolResult execute(ToolCall call) {
         try {
-            String userId = (String) call.getArguments().get("userId");
+            String userId = call.requireUserId();
             Long orderId = Long.valueOf(call.getArguments().get("orderId").toString());
             var order = orderClient.getOrder(userId, orderId).getData();
             return ToolResult.builder()

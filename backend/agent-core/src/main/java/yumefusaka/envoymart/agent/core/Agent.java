@@ -143,7 +143,7 @@ public class Agent {
         // 循环护栏一次请求一份，同时约束图里的环与框架驱动的工具循环
         LoopGuard guard = new LoopGuard(config.getLoopBudget());
         AgentGraph.GraphResult graphResult = agentGraph.run(
-                message, systemPrompt, recentConversation(sessionId), approved, guard, onChunk);
+                userId, message, systemPrompt, recentConversation(sessionId), approved, guard, onChunk);
         log.info("[Agent] loops {}", guard.summary());
 
         // 图的「中断出口」：高危操作未确认，图在此结束，等用户确认后作为新请求重入

@@ -96,10 +96,11 @@ public class AgentGraph {
 
     // ==================== 对外入口 ====================
 
-    public GraphResult run(String message, String systemPrompt, List<ChatMessage> conversation,
+    public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                            boolean approved, LoopGuard guard, Consumer<String> onChunk) {
 
-        GraphContext ctx = GraphContext.of(message,
+        GraphContext ctx = GraphContext.of(userId,
+                message,
                 systemPrompt == null ? "" : systemPrompt,
                 conversation == null ? List.of() : conversation,
                 approved,
@@ -307,8 +308,9 @@ public class AgentGraph {
                     .build();
         }
 
+        // 身份从上下文注入，绝不取自模型给的 arguments——模型不知道真实用户是谁，只能编
         ToolResult result = toolRegistry.execute(new ToolCall(
-                "graph_" + round + "_" + index, step.getTool(), arguments, ctx.approved()));
+                "graph_" + round + "_" + index, step.getTool(), arguments, ctx.approved(), ctx.userId()));
 
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
@@ -379,10 +381,14 @@ public class AgentGraph {
     }
 
     private String call(GraphContext ctx, List<ChatMessage> messages) {
-        // 循环护栏与高危确认状态随工具调用下发，框架驱动的工具循环据此把关
-        Map<String, Object> loopContext = Map.of(
-                ToolContextKeys.LOOP_GUARD, ctx.guard(),
-                ToolContextKeys.APPROVED, ctx.approved());
+        // 循环护栏、高危确认与调用者身份随工具调用下发，工具循环据此把关。
+        // 用可变 Map 而非 Map.of：Map.of 不接受 null，身份缺失时会在构造处直接抛 NPE。
+        Map<String, Object> loopContext = new HashMap<>();
+        loopContext.put(ToolContextKeys.LOOP_GUARD, ctx.guard());
+        loopContext.put(ToolContextKeys.APPROVED, ctx.approved());
+        if (ctx.userId() != null) {
+            loopContext.put(ToolContextKeys.USER_ID, ctx.userId());
+        }
         try {
             if (ctx.onChunk() == null) {
                 String content = llmProvider.chat(messages, llmConfig, loopContext).getContent();
@@ -446,13 +452,13 @@ public class AgentGraph {
      * （{@code rawData} 可能是任意业务 DTO，塞进状态会在保存快照时抛
      * {@code NotSerializableException}）。
      */
-    private record GraphContext(String message, String systemPrompt, List<ChatMessage> conversation,
+    private record GraphContext(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                 boolean approved, LoopGuard guard, Consumer<String> onChunk,
                                 List<ToolExecution> executions) {
 
-        static GraphContext of(String message, String systemPrompt, List<ChatMessage> conversation,
+        static GraphContext of(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                boolean approved, LoopGuard guard, Consumer<String> onChunk) {
-            return new GraphContext(message, systemPrompt, conversation, approved, guard, onChunk,
+            return new GraphContext(userId, message, systemPrompt, conversation, approved, guard, onChunk,
                     Collections.synchronizedList(new ArrayList<>()));
         }
     }

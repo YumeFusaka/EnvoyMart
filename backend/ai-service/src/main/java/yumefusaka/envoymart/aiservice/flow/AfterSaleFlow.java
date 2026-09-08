@@ -73,7 +73,7 @@ public class AfterSaleFlow implements DeterministicFlow {
 
         ToolResult query = context.getToolRegistry().execute(new ToolCall(
                 UUID.randomUUID().toString(), "order_query",
-                Map.of("userId", context.getUserId(), "orderId", orderId), true));
+                Map.of("orderId", orderId), true, context.getUserId()));
 
         if (!query.isSuccess() || !(query.getRawData() instanceof OrderResponse order)) {
             String reason = query.getErrorMessage() == null ? "未查询到订单" : query.getErrorMessage();

@@ -25,10 +25,8 @@ public class LogisticsTool implements Tool {
     public ToolDefinition getDefinition() {
         return ToolDefinition.builder()
                 .name("logistics_query")
-                .description("查询订单物流信息。需要用户 ID 和订单 ID。")
+                .description("查询当前用户的订单物流信息。需要订单 ID。")
                 .parameters(Map.of(
-                        "userId", ToolDefinition.ParameterSpec.builder()
-                                .type("string").description("用户 ID").required(true).build(),
                         "orderId", ToolDefinition.ParameterSpec.builder()
                                 .type("integer").description("订单 ID").required(true).build()
                 ))
@@ -38,7 +36,7 @@ public class LogisticsTool implements Tool {
     @Override
     public ToolResult execute(ToolCall call) {
         try {
-            String userId = (String) call.getArguments().get("userId");
+            String userId = call.requireUserId();
             Long orderId = Long.valueOf(call.getArguments().get("orderId").toString());
             var logistics = orderClient.getLogistics(userId, orderId).getData();
             var steps = logistics.getSteps();
