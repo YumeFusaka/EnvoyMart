@@ -29,3 +29,9 @@ services:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
+
+envoymart:
+  payment:
+    # 支付回调验签密钥（HMAC-SHA256）。未配置时拒绝所有回调——资金入口宁可拒绝也不能放宽。
+    # 渠道侧约定：X-Pay-Signature = hex(HMAC-SHA256(secret, orderId|transactionNo|status))
+    callback-secret: ${PAYMENT_CALLBACK_SECRET:}

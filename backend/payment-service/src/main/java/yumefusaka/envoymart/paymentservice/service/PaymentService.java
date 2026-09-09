@@ -6,9 +6,9 @@ import yumefusaka.envoymart.paymentservice.model.PaymentResponse;
 
 public interface PaymentService {
 
-    PaymentResponse createPayment(CreatePaymentRequest request);
+    PaymentResponse createPayment(String userId, CreatePaymentRequest request);
 
     PaymentResponse processCallback(PaymentCallbackRequest request);
 
-    PaymentResponse getPayment(Long orderId);
+    PaymentResponse getPayment(String userId, Long orderId);
 }
