@@ -67,21 +67,24 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public void deductStock(StockDeductRequest request) {
-        ProductEntity entity = requireEntity(request.getProductId());
-        if (entity.getStock() < request.getQuantity()) {
-            throw new IllegalArgumentException(entity.getName() + " 库存不足");
+        // 判断与扣减在数据库端一条语句里完成，避免读-改-写竞态导致的少扣
+        int affected = productMapper.deductStock(request.getProductId(), request.getQuantity());
+        if (affected == 0) {
+            // 影响行数为 0 只有两种可能：商品不存在，或库存不足。分开报错便于排查
+            ProductEntity entity = productMapper.selectById(request.getProductId());
+            throw new IllegalArgumentException(entity == null
+                    ? "商品不存在：" + request.getProductId()
+                    : entity.getName() + " 库存不足");
         }
-        entity.setStock(entity.getStock() - request.getQuantity());
-        productMapper.updateById(entity);
-        // 库存变更后清除缓存，确保强一致性
         productCacheService.evictProductCache(request.getProductId());
     }
 
     @Override
     public void restoreStock(StockDeductRequest request) {
-        ProductEntity entity = requireEntity(request.getProductId());
-        entity.setStock(entity.getStock() + request.getQuantity());
-        productMapper.updateById(entity);
+        int affected = productMapper.restoreStock(request.getProductId(), request.getQuantity());
+        if (affected == 0) {
+            throw new IllegalArgumentException("商品不存在：" + request.getProductId());
+        }
         productCacheService.evictProductCache(request.getProductId());
     }
 

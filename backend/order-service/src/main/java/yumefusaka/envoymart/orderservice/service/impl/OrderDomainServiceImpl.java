@@ -31,6 +31,7 @@ import yumefusaka.envoymart.orderservice.service.OrderDomainService;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -117,34 +118,50 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             throw new IllegalArgumentException("购物车为空，无法下单");
         }
 
-        // 逐商品加分布式锁，防止超卖
-        for (CartItemEntity cartItem : cartItems) {
-            RLock lock = cartCacheService.getStockLock(cartItem.getProductId());
-            try {
-                if (!lock.tryLock(3, 10, TimeUnit.SECONDS)) {
+        // 加锁范围必须与释放范围一致。
+        // 若只把"用锁"的那段包进 try，加锁过程中途失败（并发抢锁超时、Feign 报错、线程中断）
+        // 会让已经拿到的锁一直不释放，只能等租期自然过期，期间同商品的其他用户全部下单失败。
+        List<Long> lockedProductIds = new ArrayList<>();
+        OrderEntity order = null;
+        try {
+            for (CartItemEntity cartItem : cartItems) {
+                RLock lock = cartCacheService.getStockLock(cartItem.getProductId());
+                boolean acquired;
+                try {
+                    acquired = lock.tryLock(3, 10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("获取锁被中断", e);
+                }
+                if (!acquired) {
                     ProductSnapshot p = requireProduct(cartItem.getProductId());
                     throw new IllegalStateException("商品「" + p.getName() + "」当前购买人数过多，请稍后再试");
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("获取锁被中断", e);
+                // 拿锁成功才记账：失败的那把本就没拿到，不需要（也不能）释放
+                lockedProductIds.add(cartItem.getProductId());
             }
-        }
 
-        OrderEntity order = new OrderEntity();
-        order.setOrderNo("YS" + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(LocalDateTime.now())
-                + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase());
-        order.setUserId(userId);
-        order.setRecipientName(request.getRecipientName());
-        order.setRecipientPhone(request.getRecipientPhone());
-        order.setAddress(request.getAddress());
-        order.setStatus("DELIVERING");
-        order.setCreatedAt(LocalDateTime.now());
-        order.setTotalAmount(BigDecimal.ZERO);
-        orderMapper.insert(order);
+            // 先锁后重读：加锁前读到的是陈旧快照，并发的另一次下单可能已经清空了购物车。
+            // 不重读的话锁形同虚设——拿着旧快照继续扣一次库存、再建一张单。
+            cartItems = cartItemMapper.selectList(new LambdaQueryWrapper<CartItemEntity>()
+                    .eq(CartItemEntity::getUserId, userId));
+            if (cartItems.isEmpty()) {
+                throw new IllegalArgumentException("购物车为空，无法下单");
+            }
 
-        BigDecimal total = BigDecimal.ZERO;
-        try {
+            order = new OrderEntity();
+            order.setOrderNo("YS" + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(LocalDateTime.now())
+                    + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase());
+            order.setUserId(userId);
+            order.setRecipientName(request.getRecipientName());
+            order.setRecipientPhone(request.getRecipientPhone());
+            order.setAddress(request.getAddress());
+            order.setStatus("DELIVERING");
+            order.setCreatedAt(LocalDateTime.now());
+            order.setTotalAmount(BigDecimal.ZERO);
+            orderMapper.insert(order);
+
+            BigDecimal total = BigDecimal.ZERO;
             for (CartItemEntity cartItem : cartItems) {
                 ProductSnapshot product = requireProduct(cartItem.getProductId());
                 productClient.deductStock(new StockDeductRequest(product.getId(), cartItem.getQuantity()));
@@ -165,12 +182,13 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             cartItemMapper.delete(new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId));
             cartCacheService.evictCartCache(userId);  // 清除购物车缓存
             // 发布订单创建事件（异步解耦后续流程）
+            List<CartItemEntity> finalItems = cartItems;
             eventPublisher.publishOrderCreated(OrderCreatedEvent.builder()
                     .orderId(order.getId())
                     .orderNo(order.getOrderNo())
                     .userId(userId)
                     .totalAmount(total)
-                    .items(cartItems.stream().map(ci -> {
+                    .items(finalItems.stream().map(ci -> {
                         ProductSnapshot p = requireProduct(ci.getProductId());
                         return OrderItemEvent.builder()
                                 .productId(p.getId())
@@ -183,8 +201,10 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     .build());
             log.info("用户 {} 下单成功，订单号 {}", userId, order.getOrderNo());
         } finally {
-            // 释放所有分布式锁
-            cartItems.forEach(item -> cartCacheService.unlock(item.getProductId()));
+            // 逆序释放，与加锁顺序相反，降低与其他事务交叉持锁时死锁的概率
+            for (int i = lockedProductIds.size() - 1; i >= 0; i--) {
+                cartCacheService.unlock(lockedProductIds.get(i));
+            }
         }
         return getOrder(userId, order.getId());
     }

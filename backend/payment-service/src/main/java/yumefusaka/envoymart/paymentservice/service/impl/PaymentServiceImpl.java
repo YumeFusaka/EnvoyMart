@@ -22,6 +22,9 @@ public class PaymentServiceImpl implements PaymentService {
     private static final String ORDER_EXCHANGE = "envoymart.order";
     private static final String PAYMENT_COMPLETED_KEY = "payment.completed";
 
+    /** 终态集合：进入其中任一状态后不再接受任何变更 */
+    private static final java.util.Set<String> TERMINAL_STATUSES = java.util.Set.of("SUCCESS", "FAILED");
+
     private final PaymentMapper paymentMapper;
     private final RabbitTemplate rabbitTemplate;
 
@@ -32,11 +35,12 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public PaymentResponse createPayment(CreatePaymentRequest request) {
+    public PaymentResponse createPayment(String userId, CreatePaymentRequest request) {
         PaymentEntity entity = new PaymentEntity();
         entity.setOrderId(request.getOrderId());
         entity.setOrderNo(request.getOrderNo());
-        entity.setUserId(request.getUserId());
+        // 归属以网关注入的身份为准，不用请求体里的值——请求体是调用方可改的
+        entity.setUserId(userId);
         entity.setAmount(request.getAmount());
         entity.setStatus("PENDING");
         entity.setCreatedAt(LocalDateTime.now());
@@ -55,15 +59,37 @@ public class PaymentServiceImpl implements PaymentService {
             throw new IllegalArgumentException("支付记录不存在");
         }
 
-        entity.setStatus(request.getStatus());
+        String incoming = request.getStatus();
+        if (!TERMINAL_STATUSES.contains(incoming)) {
+            throw new IllegalArgumentException("不支持的支付状态：" + incoming);
+        }
+
+        // 终态不可再变更。支付渠道是 at-least-once 投递，重复回调是常态：
+        // 同一结果重复到达要幂等吞掉，相反的结果则必须拒绝——
+        // 否则一次迟到的 FAILED 就能把已成功的支付改回失败，钱收了、单却是未支付。
+        if (TERMINAL_STATUSES.contains(entity.getStatus())) {
+            if (entity.getStatus().equals(incoming)) {
+                log.info("[Payment] 重复回调已忽略 orderNo={} status={}", entity.getOrderNo(), incoming);
+                return toResponse(entity);
+            }
+            log.warn("[Payment] 拒绝终态回退 orderNo={} {} -> {}", entity.getOrderNo(), entity.getStatus(), incoming);
+            throw new IllegalStateException("支付已处于终态 " + entity.getStatus() + "，不接受变更为 " + incoming);
+        }
+
+        // 流水号一致性：同一笔支付不该出现两个不同的渠道流水号
+        if (entity.getTransactionNo() != null && !entity.getTransactionNo().equals(request.getTransactionNo())) {
+            throw new IllegalStateException("支付流水号不一致，拒绝处理");
+        }
+
+        entity.setStatus(incoming);
         entity.setTransactionNo(request.getTransactionNo());
-        if ("SUCCESS".equals(request.getStatus())) {
+        if ("SUCCESS".equals(incoming)) {
             entity.setPaidAt(LocalDateTime.now());
         }
         paymentMapper.updateById(entity);
 
-        // 发布支付完成事件，驱动后续流程（订单发货、通知等）
-        if ("SUCCESS".equals(request.getStatus())) {
+        // 只在这里发布：重复回调已在前面的幂等分支返回，不会重复投递下游
+        if ("SUCCESS".equals(incoming)) {
             rabbitTemplate.convertAndSend(ORDER_EXCHANGE, PAYMENT_COMPLETED_KEY,
                     new PaymentCompletedEventPayload(entity.getOrderId(), entity.getOrderNo(),
                             request.getTransactionNo(), entity.getAmount(), entity.getPaidAt()));
@@ -74,11 +100,14 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
-    public PaymentResponse getPayment(Long orderId) {
+    public PaymentResponse getPayment(String userId, Long orderId) {
+        // 带归属查询：只按 orderId 查会让任何人遍历订单号读到他人的金额与流水号
         PaymentEntity entity = paymentMapper.selectOne(
                 new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PaymentEntity>()
-                        .eq(PaymentEntity::getOrderId, orderId));
+                        .eq(PaymentEntity::getOrderId, orderId)
+                        .eq(PaymentEntity::getUserId, userId));
         if (entity == null) {
+            // 不区分"不存在"与"不属于你"，避免成为订单号存在性的探测接口
             throw new IllegalArgumentException("支付记录不存在");
         }
         return toResponse(entity);

@@ -26,6 +26,8 @@ import yumefusaka.envoymart.agent.tool.ToolResult;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 /**
@@ -56,6 +58,14 @@ import java.util.function.Consumer;
  */
 @Slf4j
 public class AgentGraph {
+
+    /**
+     * 单个步骤的执行上限。
+     * <p>
+     * 工具内部是远程调用，下游卡住时不能无限期等——没有这个上限，一个慢下游
+     * 会把整轮对话连同请求线程一起挂住。
+     */
+    private static final long STEP_TIMEOUT_MS = 15_000;
 
     private static final String NODE_PLAN = "plan";
     private static final String NODE_ACT = "act";
@@ -280,11 +290,22 @@ public class AgentGraph {
 
         List<GraphStep> batchResults = new ArrayList<>(batch.size());
         for (int i = 0; i < batch.size(); i++) {
+            int index = batch.get(i);
+            PlanStep step = plan.get(index);
             try {
-                batchResults.add(futures.get(i).get());
+                // 必须带超时：下游工具卡住时裸 get() 会无限期占着请求线程。
+                // 超时后按"该步骤失败"处理，让图继续走 evaluate，而不是把整轮对话拖死。
+                batchResults.add(futures.get(i).get(STEP_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            } catch (TimeoutException e) {
+                log.warn("[Graph] step {} 超时（{}ms），标记为失败", index, STEP_TIMEOUT_MS);
+                // 取消仍在跑的任务，避免它在后台继续占用线程
+                futures.get(i).cancel(true);
+                batchResults.add(GraphStep.builder()
+                        .round(round).index(index).tool(step.getTool())
+                        .optional(step.isOptional())
+                        .success(false).output("执行超时（" + STEP_TIMEOUT_MS + "ms）")
+                        .build());
             } catch (Exception e) {
-                int index = batch.get(i);
-                PlanStep step = plan.get(index);
                 log.warn("[Graph] step {} failed: {}", index, e.getMessage());
                 batchResults.add(GraphStep.builder()
                         .round(round).index(index).tool(step.getTool())

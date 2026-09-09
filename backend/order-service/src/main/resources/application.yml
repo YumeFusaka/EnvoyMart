@@ -13,6 +13,13 @@ spring:
     init:
       mode: always
   cloud:
+    # 外部调用必须有超时：默认 readTimeout 是 60 秒，下游一卡就把调用方线程占满
+    openfeign:
+      client:
+        config:
+          default:
+            connect-timeout: 2000
+            read-timeout: 5000
     nacos:
       discovery:
         enabled: ${NACOS_ENABLED:false}
