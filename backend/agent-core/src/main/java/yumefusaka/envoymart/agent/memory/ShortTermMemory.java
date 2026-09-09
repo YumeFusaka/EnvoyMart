@@ -1,11 +1,19 @@
 package yumefusaka.envoymart.agent.memory;
 
-import java.util.*;
+import java.util.ArrayDeque;
+import java.util.Collection;
+import java.util.Deque;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
  * 短期记忆 —— 每会话滑动窗口，超出上限则丢弃最早条目。
+ * <p>
+ * 隔离维度是 sessionId：这是"这次聊了什么"，跟着会话走，不跨会话。
+ * 需要跨会话延续的事实与偏好归长期记忆，按 userId 隔离。
  */
 public class ShortTermMemory implements Memory {
 
@@ -30,7 +38,9 @@ public class ShortTermMemory implements Memory {
     @Override
     public List<MemoryItem> recent(String sessionId, int limit) {
         Deque<MemoryItem> deque = store.get(sessionId);
-        if (deque == null) return List.of();
+        if (deque == null) {
+            return List.of();
+        }
         synchronized (deque) {
             return deque.stream()
                     .skip(Math.max(0, deque.size() - limit))
@@ -38,14 +48,13 @@ public class ShortTermMemory implements Memory {
         }
     }
 
-    @Override
-    public List<MemoryItem> search(String sessionId, String keyword) {
+    public int size(String sessionId) {
         Deque<MemoryItem> deque = store.get(sessionId);
-        if (deque == null) return List.of();
+        if (deque == null) {
+            return 0;
+        }
         synchronized (deque) {
-            return deque.stream()
-                    .filter(item -> item.getContent().contains(keyword))
-                    .collect(Collectors.toList());
+            return deque.size();
         }
     }
 
