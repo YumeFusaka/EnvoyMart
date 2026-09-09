@@ -9,13 +9,14 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.definition.DefaultToolDefinition;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import yumefusaka.envoymart.agent.llm.ChatMessage;
@@ -24,27 +25,29 @@ import yumefusaka.envoymart.agent.llm.LLMProvider;
 import yumefusaka.envoymart.agent.llm.LLMResponse;
 import yumefusaka.envoymart.agent.llm.PlanStep;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
-import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
 import yumefusaka.envoymart.aiservice.tool.ToolRegistryToolCallback;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
-import yumefusaka.envoymart.agent.tool.ToolResult;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * Spring AI 接入层 —— 把 agent-core 的 LLMProvider 契约适配到 Spring AI 的 ChatModel。
  * <p>
- * 职责边界：
+ * <b>两条路径，分界线是"要不要执行工具"</b>：
  * <ul>
- *   <li>模型接入、消息格式转换、工具定义下发由 Spring AI 负责；</li>
- *   <li>工具的实际执行仍走 agent-core 的 ToolRegistry，并在回调里记录调用轨迹；</li>
- *   <li>推理模式（ReAct / PAE）与上下文预算由 agent-core 编排层决定。</li>
+ *   <li>{@link #chat} —— 单次调用，不挂工具回调。规划、意图分类、记忆抽取走这里，
+ *       它们只要一段文本或一个 JSON，挂上工具定义只会让模型误选。</li>
+ *   <li>{@link #chatWithTools} —— 完整工具循环，走 {@code ChatClient} 的
+ *       {@code ToolCallingAdvisor}。Spring AI 2.0 起这条循环已从所有 {@code ChatModel}
+ *       上移除，只在 advisor 链里存在；直接调 {@code ChatModel.call()} 时模型返回的
+ *       tool_call 不会被执行，也不报错。</li>
  * </ul>
+ * 两条路径的工具执行都走 agent-core 的 {@code ToolRegistry} 并记录调用轨迹；
+ * 循环的边界（预算、重复检测、高危确认、调用者身份）经 toolContext 下发，由编排层决定。
  */
 @Slf4j
 public class SpringAiLLMProvider implements LLMProvider {
@@ -57,6 +60,9 @@ public class SpringAiLLMProvider implements LLMProvider {
     private final LLMConfig defaultConfig;
     /** 模型调用的耗时与 token 走指标而不是只写日志——日志适合排查单次，指标才能看出趋势与成本 */
     private final MeterRegistry meterRegistry;
+
+    /** 只在 ReAct 路径上用到的带工具循环客户端，惰性构建 */
+    private volatile ChatClient chatClient;
 
     public SpringAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig defaultConfig,
                                MeterRegistry meterRegistry) {
@@ -71,16 +77,69 @@ public class SpringAiLLMProvider implements LLMProvider {
         return chat(messages, config, Map.of());
     }
 
+    /**
+     * 单次调用，<b>不挂工具回调</b>。
+     * <p>
+     * 规划、意图分类、记忆抽取走这里。早先无差别地把全部工具定义挂在每次调用上，
+     * 这三类调用本只要一段文本或一个 JSON，却因此可能返回 tool_call——而响应里的
+     * tool_call 在单次调用路径上没有任何人消费，等于白费一次调用。
+     */
     @Override
     public LLMResponse chat(List<ChatMessage> messages, LLMConfig config, Map<String, Object> toolContext) {
+        long startedAt = System.nanoTime();
+        ChatResponse response = chatModel.call(new Prompt(toSpringMessages(messages), buildOptions(config, List.of())));
+        long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
+        return toLLMResponse(response, config, latencyMs, List.of());
+    }
+
+    /**
+     * ReAct 落点：经 {@code ChatClient} 的 {@code ToolCallingAdvisor} 驱动完整工具循环。
+     * <p>
+     * Spring AI 2.0 起，工具执行循环已从所有 {@code ChatModel} 上移除，只在 {@code ChatClient}
+     * 的 advisor 链里存在。直接调 {@code ChatModel.call()} 时模型返回的 tool_call 不会被执行，
+     * 而且不报错、内容为空——这是本次改造要消除的静默失效。
+     */
+    @Override
+    public LLMResponse chatWithTools(List<ChatMessage> messages, LLMConfig config,
+                                     Map<String, Object> toolContext) {
         List<ToolExecution> executions = new ArrayList<>();
         ChatOptions options = buildOptions(config, toToolCallbacks(executions), toolContext);
 
         long startedAt = System.nanoTime();
-        ChatResponse response = chatModel.call(new Prompt(toSpringMessages(messages), options));
+        ChatResponse response = chatClient()
+                .prompt(new Prompt(toSpringMessages(messages), options))
+                .call()
+                .chatClientResponse()
+                .chatResponse();
         long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
-        AssistantMessage output = response.getResult().getOutput();
+        return toLLMResponse(response, config, latencyMs, executions);
+    }
 
+    /**
+     * 惰性构建带工具循环的 {@code ChatClient}。
+     * <p>
+     * 显式挂 {@code ToolCallingAdvisor} 而不依赖自动装配：工具循环是这条路径的<b>全部意义</b>，
+     * 隐式依赖一旦随版本变化失效，表现又是"静默返回空"，排查成本极高。
+     */
+    private ChatClient chatClient() {
+        ChatClient local = chatClient;
+        if (local == null) {
+            synchronized (this) {
+                local = chatClient;
+                if (local == null) {
+                    local = ChatClient.builder(chatModel)
+                            .defaultAdvisors(ToolCallingAdvisor.builder().build())
+                            .build();
+                    chatClient = local;
+                }
+            }
+        }
+        return local;
+    }
+
+    private LLMResponse toLLMResponse(ChatResponse response, LLMConfig config, long latencyMs,
+                                      List<ToolExecution> executions) {
+        AssistantMessage output = response.getResult().getOutput();
         List<ChatMessage.ToolCallRequest> toolCalls = output.getToolCalls() == null
                 ? List.of()
                 : output.getToolCalls().stream()
@@ -111,12 +170,7 @@ public class SpringAiLLMProvider implements LLMProvider {
                 .build();
     }
 
-    /**
-     * 真流式：逐块推送模型输出。
-     * <p>
-     * 工具仍由 Spring AI 在流式过程中执行，调用轨迹照常记录；
-     * 因此首字延迟只取决于模型首个 token，而不是整轮推理 + 工具执行的总时长。
-     */
+    /** 单次流式，不驱动工具循环。 */
     @Override
     public void chatStream(List<ChatMessage> messages, LLMConfig config, java.util.function.Consumer<String> onChunk) {
         chatStream(messages, config, Map.of(), onChunk);
@@ -125,23 +179,64 @@ public class SpringAiLLMProvider implements LLMProvider {
     @Override
     public void chatStream(List<ChatMessage> messages, LLMConfig config, Map<String, Object> toolContext,
                            java.util.function.Consumer<String> onChunk) {
+        // 单次流式，不挂工具：与 chat(messages, config, toolContext) 同一类内部调用
+        streamInternal(messages, config, List.of(), onChunk);
+    }
+
+    /**
+     * 流式版本的 ReAct —— 工具循环由 {@code ChatClient} 的 advisor 驱动。
+     * <p>
+     * advisor 在每轮工具往返结束后才把最终回答推下来，因此首字延迟仍然只取决于
+     * 最终回答的首个 token，而不是整轮工具编排的总时长。
+     */
+    @Override
+    public void chatStreamWithTools(List<ChatMessage> messages, LLMConfig config,
+                                    Map<String, Object> toolContext,
+                                    java.util.function.Consumer<String> onChunk) {
         List<ToolExecution> executions = new ArrayList<>();
         ChatOptions options = buildOptions(config, toToolCallbacks(executions), toolContext);
 
         long startedAt = System.nanoTime();
         StringBuilder full = new StringBuilder();
-        chatModel.stream(new Prompt(toSpringMessages(messages), options)).toIterable().forEach(response -> {
-            AssistantMessage output = response.getResult() == null ? null : response.getResult().getOutput();
-            String text = output == null ? null : output.getText();
-            if (text != null && !text.isEmpty()) {
-                full.append(text);
-                onChunk.accept(text);
-            }
-        });
+        chatClient().prompt(new Prompt(toSpringMessages(messages), options))
+                .stream()
+                .chatClientResponse()
+                .toIterable()
+                .forEach(clientResponse -> {
+                    if (clientResponse.chatResponse() == null || clientResponse.chatResponse().getResult() == null) {
+                        return;
+                    }
+                    String text = clientResponse.chatResponse().getResult().getOutput().getText();
+                    if (text != null && !text.isEmpty()) {
+                        full.append(text);
+                        onChunk.accept(text);
+                    }
+                });
 
         long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
-        log.info("[LLM] stream model={} latencyMs={} chars={} toolExecutions={}",
+        log.info("[LLM] stream+tools model={} latencyMs={} chars={} toolExecutions={}",
                 config.getModel(), latencyMs, full.length(), executions.size());
+        recordLlmMetrics(config.getModel(), true, latencyMs, 0, 0);
+    }
+
+    private void streamInternal(List<ChatMessage> messages, LLMConfig config,
+                                List<ToolCallback> callbacks, java.util.function.Consumer<String> onChunk) {
+        long startedAt = System.nanoTime();
+        StringBuilder full = new StringBuilder();
+        chatModel.stream(new Prompt(toSpringMessages(messages), buildOptions(config, callbacks)))
+                .toIterable()
+                .forEach(response -> {
+                    AssistantMessage output = response.getResult() == null ? null : response.getResult().getOutput();
+                    String text = output == null ? null : output.getText();
+                    if (text != null && !text.isEmpty()) {
+                        full.append(text);
+                        onChunk.accept(text);
+                    }
+                });
+
+        long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
+        log.info("[LLM] stream model={} latencyMs={} chars={}",
+                config.getModel(), latencyMs, full.length());
         // 流式拿不到 token 用量，只记耗时；stream=true 与同步调用分开看，否则首字延迟会被整轮时长污染
         recordLlmMetrics(config.getModel(), true, latencyMs, 0, 0);
     }
@@ -220,9 +315,13 @@ public class SpringAiLLMProvider implements LLMProvider {
                 ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
                         .content("""
                                 你是电商客服任务规划器。根据用户请求和可用工具，输出一个 JSON 数组作为执行计划。
-                                每个元素形如 {"tool":"工具名","arguments":{"参数名":"值"},"reason":"这一步要达成什么","optional":false}。
+                                每个元素形如 {"tool":"工具名","arguments":{"参数名":"值"},"reason":"这一步要达成什么",
+                                "optional":false,"dependsOn":[]}。
                                 规则：只能使用下面列出的工具；工具参数尽量从用户请求与已知背景中提取；
                                 不需要多步就返回只含一个元素的数组；无法完成则返回 []。
+                                dependsOn 填「本步骤依赖的步骤序号」（从 0 开始）：
+                                只有需要用到前面某一步的结果时才填，互不依赖的步骤留空数组，
+                                这样它们会被并发执行。例如先查订单再取消，取消那步就要依赖查询步。
                                 只输出 JSON，不要任何解释。
 
                                 可用工具：
@@ -271,9 +370,28 @@ public class SpringAiLLMProvider implements LLMProvider {
                     .arguments((Map<String, Object>) item.getOrDefault("arguments", Map.of()))
                     .reason(String.valueOf(item.getOrDefault("reason", "")))
                     .optional(Boolean.TRUE.equals(item.get("optional")))
+                    .dependsOn(parseDependsOn(item.get("dependsOn"), steps.size()))
                     .build());
         }
         return steps;
+    }
+
+    /**
+     * 解析步骤依赖。
+     * <p>
+     * 只接受<b>指向更早步骤</b>的合法下标：指向自己或指向后面的步骤都会让分层执行
+     * 陷入环或执行空转，宁可当作无依赖也不要把它带进执行阶段。
+     */
+    private List<Integer> parseDependsOn(Object raw, int currentIndex) {
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(Number.class::isInstance)
+                .map(value -> ((Number) value).intValue())
+                .filter(index -> index >= 0 && index < currentIndex)
+                .distinct()
+                .toList();
     }
 
     /**
