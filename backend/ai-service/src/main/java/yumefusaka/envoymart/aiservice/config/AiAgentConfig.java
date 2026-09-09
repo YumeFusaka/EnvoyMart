@@ -17,7 +17,8 @@ import yumefusaka.envoymart.agent.flow.IntentRouter;
 import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMProvider;
 import yumefusaka.envoymart.agent.llm.MockLLMProvider;
-import yumefusaka.envoymart.agent.memory.LongTermMemory;
+import yumefusaka.envoymart.agent.memory.EpisodicMemory;
+import yumefusaka.envoymart.agent.memory.UserProfileStore;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.ShortTermMemory;
 import yumefusaka.envoymart.agent.rag.*;
@@ -101,9 +102,20 @@ public class AiAgentConfig {
         return new ShortTermMemory(16);
     }
 
+    /**
+     * 情节记忆 —— 用户经历过的事件，按 userId 隔离、按需语义召回。
+     * <p>
+     * 与画像分开：画像结构化且全量注入，情节自由文本且需要检索。
+     */
     @Bean
-    public LongTermMemory longTermMemory(@Qualifier("memoryVectorStore") VectorStore memoryVectorStore) {
-        return new LongTermMemory(memoryVectorStore);
+    public EpisodicMemory episodicMemory(@Qualifier("memoryVectorStore") VectorStore memoryVectorStore) {
+        return new EpisodicMemory(memoryVectorStore);
+    }
+
+    /** 用户画像存储 —— 固定槽位、覆盖式更新，按 userId 隔离 */
+    @Bean
+    public UserProfileStore userProfileStore() {
+        return new UserProfileStore();
     }
 
     @Bean
@@ -260,13 +272,15 @@ public class AiAgentConfig {
                        IntentRouter intentRouter,
                        AgentGraph agentGraph,
                        ShortTermMemory shortTermMemory,
-                       LongTermMemory longTermMemory,
+                       EpisodicMemory episodicMemory,
+                       UserProfileStore userProfileStore,
                        SimpleRAGEngine ragEngine,
                        MemoryConsolidator memoryConsolidator) {
         return new Agent(
-                Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3).build(),
+                Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3)
+                        .consolidationEveryTurns(3).build(),
                 toolRegistry, intentRouter, agentGraph,
-                shortTermMemory, longTermMemory, ragEngine,
+                shortTermMemory, episodicMemory, userProfileStore, ragEngine,
                 memoryConsolidator
         );
     }
