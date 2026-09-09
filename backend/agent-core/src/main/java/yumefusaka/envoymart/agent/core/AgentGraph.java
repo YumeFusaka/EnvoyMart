@@ -14,6 +14,7 @@ import org.bsc.langgraph4j.state.AgentState;
 import yumefusaka.envoymart.agent.llm.ChatMessage;
 import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMProvider;
+import yumefusaka.envoymart.agent.llm.LLMResponse;
 import yumefusaka.envoymart.agent.llm.PlanStep;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
@@ -391,11 +392,16 @@ public class AgentGraph {
         }
         try {
             if (ctx.onChunk() == null) {
-                String content = llmProvider.chat(messages, llmConfig, loopContext).getContent();
+                LLMResponse response = llmProvider.chatWithTools(messages, llmConfig, loopContext);
+                // 节点内的 ReAct 工具调用轨迹同样要回收，否则前端只能看到计划内那部分
+                if (response.getToolExecutions() != null) {
+                    ctx.executions().addAll(response.getToolExecutions());
+                }
+                String content = response.getContent();
                 return content == null || content.isBlank() ? "抱歉，我没能完成这个请求。" : content;
             }
             StringBuilder accumulated = new StringBuilder();
-            llmProvider.chatStream(messages, llmConfig, loopContext, chunk -> {
+            llmProvider.chatStreamWithTools(messages, llmConfig, loopContext, chunk -> {
                 accumulated.append(chunk);
                 ctx.onChunk().accept(chunk);
             });
