@@ -66,7 +66,10 @@ public class CartCacheService {
     }
 
     /**
-     * 尝试加分布式锁，成功返回 true，失败或超时返回 false
+     * 尝试加分布式锁：抢到返回 true，等待超时返回 false。
+     * <p>
+     * 中断不返回 false——那会把「线程被要求停下」和「暂时抢不到锁」混成同一件事，
+     * 调用方据此提示用户"稍后再试"，实际上是该中止的操作被当成了业务繁忙。
      */
     public boolean tryLock(Long productId) {
         RLock lock = getStockLock(productId);
@@ -74,7 +77,7 @@ public class CartCacheService {
             return lock.tryLock(LOCK_WAIT_SECONDS, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return false;
+            throw new IllegalStateException("获取库存锁被中断", e);
         }
     }
 

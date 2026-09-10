@@ -9,11 +9,22 @@ import java.util.List;
  * CI 回归测试（{@code RetrievalQualityTest}）与本地对照实验
  * （{@code RetrievalComparisonTest}）都从这里取数据，避免两处维护导致口径不一致。
  * <p>
- * 评测集独立维护、与生产语料解耦：生产知识库会更新，但评测基准不变，
- * 指标才有历史可比性。语料规模（30 篇）远大于生产的演示语料（4 篇），
- * 因此指标是对线上表现的<b>保守估计</b>——语料越大检索越难。
+ * <b>这批样本的定位是回归防线，不是质量结论，读数字时必须带上这些前提：</b>
+ * <ul>
+ *   <li>30 篇语料与 30 条标注<b>出自同一作者</b>，且每篇文档大致对应一条查询。
+ *       字面档的满分是构造出来的必然结果，不是能力证明。</li>
+ *   <li>这批样本同时用于开发、调参与门禁，<b>没有留出集</b>。门槛贴着实测值设定，
+ *       只能证明"代码没被改坏到突破一两个样本"，不能证明检索质量。</li>
+ *   <li>它与线上知识库（{@code AiAgentConfig.knowledgeDocuments()}）是两套独立数据，
+ *       规模与主题分布接近但内容不重合。两组指标各自描述各自的语料，<b>不可互相推算</b>。</li>
+ * </ul>
+ * 消除这些前提需要的是真实用户日志回流与多标注者一致性校验，不是再补几条样本。
  */
 final class RetrievalFixtures {
+
+    /** 切片参数 —— 与线上 {@code AiAgentConfig} 的 SimpleRAGEngine 保持一致，避免评测与生产走不同切片 */
+    static final int CHUNK_SIZE = 256;
+    static final int CHUNK_OVERLAP = 32;
 
     private RetrievalFixtures() {
     }
@@ -167,11 +178,40 @@ final class RetrievalFixtures {
     /**
      * 随机检索的 Hit Rate@K 基线 —— 用于判断实测值是否只是"碰巧"。
      * <p>
-     * 每例只有 1 篇相关文档时，随机取 K 篇至少命中一篇的概率
-     * = 1 - C(n-K, K)/C(n, K) 化简后 = 1 - (n-K)/n。语料 30 篇、取 top-3 即 0.1。
+     * 单篇相关文档时，随机取 K 篇至少命中一篇的概率是 {@code 1 - C(n-1, K)/C(n, K)}。
+     * <b>必须逐例按各自的相关文档数算再取平均</b>：本夹具里有若干样本标了 2 篇相关文档
+     * （如「优惠券能和满减一起用吗」对应 coupon 与 promotion），套用单文档公式会低估基线。
+     * <p>
+     * （早先这里的注释把公式写成了 {@code 1 - C(n-K,K)/C(n,K)}，代入 30/3 得 0.28，
+     * 与代码实际返回的 0.1 对不上——代码是对的，注释是错的。注释里的推导错误比代码错误更危险，
+     * 因为它会让后来者按错误前提去推理。）
      */
     static double randomBaselineHitRate(int corpusSize, int topK) {
-        return 1.0 - (double) (corpusSize - topK) / corpusSize;
+        return randomBaselineHitRate(corpusSize, topK, allCases());
+    }
+
+    static double randomBaselineHitRate(int corpusSize, int topK, List<RetrievalEvaluator.EvalCase> cases) {
+        if (cases.isEmpty()) {
+            return 0.0;
+        }
+        double sum = 0;
+        for (RetrievalEvaluator.EvalCase evalCase : cases) {
+            int relevant = Math.max(1, evalCase.relevantDocIds().size());
+            sum += 1.0 - combinations(corpusSize - relevant, topK) / combinations(corpusSize, topK);
+        }
+        return sum / cases.size();
+    }
+
+    /** C(n, k)；n < k 时按 0 计（取不出这么多）。 */
+    private static double combinations(int n, int k) {
+        if (n < k || k < 0) {
+            return 0;
+        }
+        double result = 1;
+        for (int i = 0; i < k; i++) {
+            result = result * (n - i) / (k - i);
+        }
+        return result;
     }
 
     private static Document doc(String id, String title, String content, String... tags) {
