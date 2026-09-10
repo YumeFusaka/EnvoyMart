@@ -207,21 +207,71 @@ public class AiAgentConfig {
 
     /**
      * 领域知识文档 —— 同时供 BM25 关键词检索与向量库索引使用。
+     * <p>
+     * <b>语料规模直接影响检索指标的解读</b>：文档数越少、取 top-K 的随机命中率越高。
+     * 早先只有 4 篇，取 top-3 的随机基线就有 0.75，任何检索器都能轻松达标，
+     * 指标失去了区分度。这里扩到十几篇，覆盖同一批业务域下的多个细分主题——
+     * 也正是真实知识库的样子：一个主题下有多篇文档相互竞争，而不是一问对一答。
+     * <p>
+     * 这套语料与 {@code RetrievalFixtures} 的评测语料是<b>两套独立数据</b>，
+     * 规模与主题分布接近，但内容不重合，指标不构成对彼此的复现。
      */
     private List<Document> knowledgeDocuments() {
         return List.of(
+                // —— 活动与优惠 ——
                 Document.builder().id("promo_1").title("平台满减规则")
                         .content("本周数码会场满 199 减 20，满 299 减 40；学生认证用户可叠加 95 折校园券。")
                         .tags(List.of("活动", "满减", "优惠")).scope("promotion").build(),
+                Document.builder().id("promo_2").title("优惠券使用限制")
+                        .content("店铺券与平台券可以叠加，但同类券之间互斥；已使用的优惠券在订单取消后 24 小时内退还。")
+                        .tags(List.of("优惠券", "叠加", "退还")).scope("promotion").build(),
+                Document.builder().id("promo_3").title("会员等级与权益")
+                        .content("会员分普通、银卡、金卡三档，累计消费满 2000 元升银卡享 98 折，满 8000 元升金卡享 95 折与专属客服。")
+                        .tags(List.of("会员", "等级", "折扣")).scope("promotion").build(),
+                Document.builder().id("promo_4").title("秒杀活动规则")
+                        .content("秒杀商品每场限购一件，下单后 15 分钟内未支付自动释放库存，不参与其他优惠叠加。")
+                        .tags(List.of("秒杀", "限购", "库存")).scope("promotion").build(),
+
+                // —— 售后 ——
                 Document.builder().id("after_sale_1").title("七天无理由与售后规则")
                         .content("除定制类和贴身个护商品外，大部分商品支持七天无理由退货；质量问题支持换新与运费补贴。")
                         .tags(List.of("退货", "售后", "退款")).scope("after_sale").build(),
+                Document.builder().id("after_sale_2").title("退货运费承担规则")
+                        .content("无理由退货由买家承担运费；商品本身存在质量问题或发错货的，运费由平台承担并补贴 12 元。")
+                        .tags(List.of("运费", "退货", "补贴")).scope("after_sale").build(),
+                Document.builder().id("after_sale_3").title("换货流程与时效")
+                        .content("换货需先提交申请，审核通过后寄回原商品，平台签收确认后 48 小时内发出新商品。")
+                        .tags(List.of("换货", "流程", "时效")).scope("after_sale").build(),
+                Document.builder().id("after_sale_4").title("价保规则")
+                        .content("自营商品支持 15 天价保，下单后同款商品降价可申请补差价，需提供降价截图且商品未拆封。")
+                        .tags(List.of("价保", "补差价", "降价")).scope("after_sale").build(),
+
+                // —— 物流 ——
                 Document.builder().id("logistics_1").title("物流说明")
                         .content("现货订单通常在 24 小时内出库，华东地区预计 1 到 2 天送达。")
                         .tags(List.of("物流", "快递", "配送")).scope("logistics").build(),
+                Document.builder().id("logistics_2").title("偏远地区配送范围")
+                        .content("新疆、西藏、内蒙古部分地区暂不支持次日达，配送时效为 5 到 8 天，部分大件商品无法送达。")
+                        .tags(List.of("偏远地区", "配送", "时效")).scope("logistics").build(),
+                Document.builder().id("logistics_3").title("签收与验货须知")
+                        .content("贵重商品建议当面验货后再签收；发现外包装破损可拒收并联系客服，拒收不产生额外费用。")
+                        .tags(List.of("签收", "验货", "拒收")).scope("logistics").build(),
+
+                // —— 支付与发票 ——
+                Document.builder().id("payment_1").title("支持的支付方式")
+                        .content("支持微信、支付宝、银联卡与平台余额支付；余额支付可享 99 折，单笔上限 5000 元。")
+                        .tags(List.of("支付", "方式", "余额")).scope("payment").build(),
+                Document.builder().id("invoice_1").title("发票开具与类型")
+                        .content("下单时可申请电子普通发票，确认收货后可补开；增值税专用发票需提供企业资质，3 个工作日开出。")
+                        .tags(List.of("发票", "开票", "增值税")).scope("payment").build(),
+
+                // —— 选购建议 ——
                 Document.builder().id("guide_1").title("百元耳机选购建议")
                         .content("学生党选择百元耳机时，优先看佩戴舒适度、麦克风通话清晰度和续航，通勤场景重视低延迟和抗风噪。")
-                        .tags(List.of("耳机", "学生党", "推荐")).scope("product_guide").build()
+                        .tags(List.of("耳机", "学生党", "推荐")).scope("product_guide").build(),
+                Document.builder().id("guide_2").title("笔记本选购要点")
+                        .content("日常办公优先看重量与续航，16GB 内存起步；涉及视频剪辑或建模需独显，散热规格比纸面参数更重要。")
+                        .tags(List.of("笔记本", "选购", "配置")).scope("product_guide").build()
         );
     }
 

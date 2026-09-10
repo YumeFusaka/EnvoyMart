@@ -2,7 +2,6 @@ package yumefusaka.envoymart.orderservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
-import org.redisson.api.RLock;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.orderservice.client.ProductClient;
@@ -34,7 +33,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -125,15 +123,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         OrderEntity order = null;
         try {
             for (CartItemEntity cartItem : cartItems) {
-                RLock lock = cartCacheService.getStockLock(cartItem.getProductId());
-                boolean acquired;
-                try {
-                    acquired = lock.tryLock(3, 10, TimeUnit.SECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException("获取锁被中断", e);
-                }
-                if (!acquired) {
+                if (!cartCacheService.tryLock(cartItem.getProductId())) {
                     ProductSnapshot p = requireProduct(cartItem.getProductId());
                     throw new IllegalStateException("商品「" + p.getName() + "」当前购买人数过多，请稍后再试");
                 }

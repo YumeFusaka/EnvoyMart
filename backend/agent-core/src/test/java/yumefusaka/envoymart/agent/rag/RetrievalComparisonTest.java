@@ -41,21 +41,22 @@ class RetrievalComparisonTest {
         Retriever bm25Only = new HybridRetriever(
                 new InMemoryVectorStore(new SimpleEmbeddingService()), RetrievalFixtures.DOCS);
 
-        // 配置二与三共用真实向量库：先摄取文档，再复用同一份索引
+        // 配置二与三共用真实向量库。
+        // 先建待测检索器，再让引擎用同一条线上摄取路径（SimpleRAGEngine.ingestBatch）灌数据——
+        // 检索器只在 retrieve() 时读向量库，构造顺序上不构成循环。
+        //
+        // 必须走真实切片：手工造切片时很容易把 chunkId 和 docId 设成同一个值，
+        // 那样「RRF 按 docId 而非 chunkId 对齐」这个修复就完全测不出来——
+        // 两种对齐方式会得到一模一样的结果。真实切片的 chunkId 是 docId_index，两者不同。
         InMemoryVectorStore vectorStore = new InMemoryVectorStore(
                 new DashScopeEmbeddingService(apiKey, EMBEDDING_MODEL));
-        vectorStore.indexBatch(RetrievalFixtures.DOCS.stream()
-                .map(doc -> DocumentChunk.builder()
-                        .chunkId(doc.getId())
-                        .docId(doc.getId())
-                        .content(doc.getContent())
-                        .build())
-                .toList());
-
         Retriever hybrid = new HybridRetriever(vectorStore, RetrievalFixtures.DOCS);
         Retriever hybridWithRerank = new HybridRetriever(
                 vectorStore, RetrievalFixtures.DOCS,
                 new DashScopeReranker(apiKey, RERANK_MODEL));
+        new SimpleRAGEngine(vectorStore, hybrid,
+                RetrievalFixtures.CHUNK_SIZE, RetrievalFixtures.CHUNK_OVERLAP)
+                .ingestBatch(RetrievalFixtures.DOCS);
 
         System.out.println();
         System.out.println("========== 检索效果对照（语料 " + RetrievalFixtures.DOCS.size()

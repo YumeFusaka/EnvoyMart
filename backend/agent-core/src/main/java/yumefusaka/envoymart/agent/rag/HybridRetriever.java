@@ -133,27 +133,39 @@ public class HybridRetriever implements Retriever {
     /**
      * 互惠排名融合。两路结果按 docId 对齐——向量路返回的是切片，
      * 关键词路返回的是文档，只有归一到 docId 才能让同一篇文档的排名真正累加。
+     * <p>
+     * <b>每篇文档在每个列表里只按最佳排名计入一次。</b>
+     * 直接对每次出现都累加 {@code 1/(k+rank)} 会让长文档被系统性抬权：
+     * 一篇被切成 5 片、占满向量路前 5 名的文档，得分是任何单次出现的 5 倍左右，
+     * 足以压过真正更相关但只有一片的短文档。文档长度不该是相关性的代理。
      */
     private List<DocumentChunk> rrfMerge(List<DocumentChunk> vector, List<DocumentChunk> keyword, int topK) {
         Map<String, Double> scores = new HashMap<>();
         Map<String, DocumentChunk> byDocId = new LinkedHashMap<>();
 
-        for (int i = 0; i < vector.size(); i++) {
-            DocumentChunk chunk = vector.get(i);
-            scores.merge(chunk.getDocId(), 1.0 / (RRF_CONST + i), Double::sum);
-            byDocId.putIfAbsent(chunk.getDocId(), chunk);
-        }
-        for (int i = 0; i < keyword.size(); i++) {
-            DocumentChunk chunk = keyword.get(i);
-            scores.merge(chunk.getDocId(), 1.0 / (RRF_CONST + i), Double::sum);
-            byDocId.putIfAbsent(chunk.getDocId(), chunk);
-        }
+        mergeOnce(scores, byDocId, vector);
+        mergeOnce(scores, byDocId, keyword);
 
         return scores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .limit(topK)
                 .map(e -> byDocId.get(e.getKey()))
                 .toList();
+    }
+
+    /** 单个列表内的合并：同一 docId 只取排名最高的那一次。 */
+    private void mergeOnce(Map<String, Double> scores, Map<String, DocumentChunk> byDocId,
+                           List<DocumentChunk> list) {
+        Set<String> counted = new HashSet<>();
+        for (int i = 0; i < list.size(); i++) {
+            DocumentChunk chunk = list.get(i);
+            String docId = chunk.getDocId();
+            byDocId.putIfAbsent(docId, chunk);
+            if (counted.add(docId)) {
+                // rank 从 0 计，故第 1 名得 1/RRF_CONST（标准 RRF 的下标约定）
+                scores.merge(docId, 1.0 / (RRF_CONST + i), Double::sum);
+            }
+        }
     }
 
     private record ScoredDoc(Document doc, double score) {
