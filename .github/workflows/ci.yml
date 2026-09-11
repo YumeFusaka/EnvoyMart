@@ -23,7 +23,11 @@ jobs:
           cache: maven
 
       # 测试包含检索质量门禁（RetrievalQualityTest）：
-      # Hit Rate / MRR / NDCG 跌破阈值即构建失败，防止改动悄悄把检索效果改坏
+      # Hit Rate / MRR / NDCG 跌破阈值即构建失败，防止改动悄悄把检索效果改坏。
+      # 门槛是「回归防线」而非质量结论——这 30 条样本同时用于开发、调参与门禁，没有留出集。
+      #
+      # 不需要 JWT_SECRET：配置里刻意不设默认值（仓库里的默认密钥等于没有密钥），
+      # 但校验发生在 Spring 上下文启动时，而这里是纯单元测试，不加载上下文。
       - name: 构建并运行测试
         run: mvn -B clean test
 

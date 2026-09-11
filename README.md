@@ -25,7 +25,7 @@ EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平�
 - **Agent 编排层**：自研 `agent-core`（入口守卫 / LangGraph4j 执行图 / 循环护栏 / 工具注册 / 记忆 / RAG）
 - **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议；**对话走 DeepSeek V4.1 Flash、向量化与重排走百炼**（DeepSeek 无 embeddings 端点，故按能力拆供应商）
 - **检索**：BM25 + 向量混合召回 → RRF 融合 → gte-rerank 精排；带 Hit Rate / MRR / NDCG 评测
-- **记忆**：LLM 抽取事实/偏好 → 向量库语义召回 → 注入 system prompt
+- **记忆**：分两轨——结构化**用户画像**（固定槽位、覆盖式更新、全量注入）与**情节记忆**（自由文本、按 userId 隔离后语义召回）。冲突在写入时消解，过时按槽位类型分层处理
 - **MCP**：把订单、物流、商品、取消订单能力以 MCP 协议对外发布，端点带鉴权
 - **可靠性**：LoopGuard 统一约束循环预算、高危操作人工确认（HITL）、链路异常整体降级
 - **可观测**：Micrometer + OTLP + Prometheus。业务指标按成本与失败面埋点——`agent_llm_latency` / `agent_llm_tokens`（按模型、按 prompt/completion 分向）、`agent_tool_calls`（按工具与 success/error/**blocked** 分类）、`agent_tool_latency`。护栏拦截计进指标，否则无从判断"预算过紧"还是"模型在失控"
@@ -83,8 +83,8 @@ EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平�
 ```
 ① 入口守卫：能不能确定？能确定就走确定性流程（业务判定零 LLM）
       ↓ 不能确定
-② 执行图（LangGraph4j）：plan → act（并发）→ evaluate → replan → answer
-      图中"计划为空"时转为直接对话——ReAct 循环就发生在那里，由框架驱动
+② 执行图（LangGraph4j）：plan → act（按依赖分层，同层并发）→ evaluate → replan → answer
+      图中"计划为空"时转为直接对话——节点内的 ReAct 工具循环就发生在那里
 ```
 
 ```mermaid
@@ -104,11 +104,17 @@ flowchart TD
 
 **意图路由的分工**：模型判语义（"退货政策第 3 条"与"订单 3 我要退货"的区别是语义的），规则验参数齐备（消息里是否真的给了订单号）。模型不可用时完全退回规则。
 
-**循环护栏 LoopGuard**：一次请求一份，同时约束**图里的环**与**框架驱动的工具循环**——后者经 Spring AI 的 `toolContext` 传进 `ToolCallback`，在调用点拦截。预算是工具调用总数、同一「工具+参数」重复次数、规划轮次三项。
+**循环护栏 LoopGuard**：一次请求一份，同时约束**图里的环**、**计划内步骤执行**与**框架驱动的 ReAct 工具循环**——后者经 Spring AI 的 `toolContext` 传进 `ToolCallback`，在调用点拦截。预算是工具调用总数、同一「工具+参数」重复次数、规划轮次三项。
 
-**ACT 的并发**：计划里带 `dependsOn`，无依赖的步骤并发执行。这是 ReAct 结构上做不到的——它每步都要看上一步结果，天然串行。
+**工具循环落在哪**：Spring AI 2.0 起工具执行循环已从所有 `ChatModel` 上移除，只在 `ChatClient` 的 `ToolCallingAdvisor` 里存在——直接调 `ChatModel.call()` 时模型返回的 tool_call **不会被执行，也不报错**。所以 `LLMProvider` 分了两条路径：`chat()` 单次（规划/分类/抽取）与 `chatWithTools()` 完整循环（ReAct）。
 
-**可靠性护栏**：模型/工具异常整体降级为可读回复；重排/嵌入失败自动回退；无模型 Key / 无 Milvus / 无注册中心均有降级路径。
+**ACT 的并发**：计划里带 `dependsOn`，同层步骤并发执行、有依赖的等前置完成。这是 ReAct 结构上做不到的——它每步都要看上一步结果，天然串行。批内单步有 15s 超时，超时按步骤失败处理，不会把整轮对话挂住。
+
+**记忆**：分两轨——结构化画像（固定槽位、覆盖式更新、全量注入）与情节记忆（自由文本、按 userId 隔离后语义召回）。分轨的理由是两者存储要求相反：画像要全量注入因此必须有界，情节要什么都能记因此必须自由。
+
+**身份不由模型提供**：`userId` 不在工具签名里，由执行上下文注入（Agent 路径来自网关注入的请求头，MCP 路径来自校验过的 JWT），缺失即 fail-closed。
+
+**可靠性护栏**：模型/工具异常整体降级为可读回复；重排/嵌入失败自动回退；无模型 Key / 无 Milvus / 无注册中心均有降级路径。外部调用配超时，库存走原子更新，支付回调有状态机与验签，模型未接入时健康检查报告 `DEGRADED`。
 
 ## 检索评测（可复现）
 
@@ -140,6 +146,11 @@ flowchart TD
 ```bash
 # 0. 依赖 JDK 21（Boot 4.1 最低 17，本项目用 21）
 
+# 0.1 必须提供 JWT 密钥（HS256 要求 ≥ 32 字节）
+#     刻意不设默认值：写在仓库里的默认密钥等于没有密钥，任何读过源码的人都能离线自签 Token。
+#     缺失时服务会拒绝启动并给出提示。
+export JWT_SECRET="$(openssl rand -base64 48)"
+
 # 1. 基础设施（可选，缺失时服务会自动降级）
 docker compose up -d nacos redis rabbitmq mysql elasticsearch milvus
 
@@ -168,6 +179,10 @@ export EMBEDDING_API_KEY=<百炼 Key>        # 向量化与重排
 export LLM_EMBEDDING_MODEL=text-embedding-v4
 # 可选：接入 Milvus 作为向量库
 export SPRING_PROFILES_ACTIVE=milvus
+
+# 支付回调验签密钥（不配则回调一律被拒——资金入口 fail-closed，不会放宽）
+# 渠道侧约定：X-Pay-Signature = hex(HMAC-SHA256(secret, orderId|transactionNo|status))
+export PAYMENT_CALLBACK_SECRET=<随机密钥>
 ```
 
 访问地址：
