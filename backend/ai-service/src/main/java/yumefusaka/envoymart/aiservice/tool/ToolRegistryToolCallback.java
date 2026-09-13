@@ -1,8 +1,5 @@
 package yumefusaka.envoymart.aiservice.tool;
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -39,14 +36,11 @@ public class ToolRegistryToolCallback implements ToolCallback {
     private final ToolDefinition definition;
     /** 调用轨迹收集器，可为 null（如 MCP 外部调用） */
     private final List<ToolExecution> sink;
-    private final MeterRegistry meterRegistry;
 
-    public ToolRegistryToolCallback(ToolRegistry toolRegistry, ToolDefinition definition, List<ToolExecution> sink,
-                                    MeterRegistry meterRegistry) {
+    public ToolRegistryToolCallback(ToolRegistry toolRegistry, ToolDefinition definition, List<ToolExecution> sink) {
         this.toolRegistry = toolRegistry;
         this.definition = definition;
         this.sink = sink;
-        this.meterRegistry = meterRegistry;
     }
 
     @Override
@@ -78,7 +72,7 @@ public class ToolRegistryToolCallback implements ToolCallback {
         LoopGuard guard = (LoopGuard) toolContext.get(ToolContextKeys.LOOP_GUARD);
         if (guard != null && !guard.allowToolCall(definition.getName(), arguments)) {
             log.warn("[Tool] {} blocked by loop guard: {}", definition.getName(), guard.getStopReason());
-            recordToolMetric("blocked", 0);
+            toolRegistry.recordBlocked(definition.getName());
             return guard.getStopReason() + "。请基于已有信息作答，不要再调用工具。";
         }
 
@@ -94,10 +88,9 @@ public class ToolRegistryToolCallback implements ToolCallback {
         arguments = new LinkedHashMap<>(arguments);
         arguments.remove(ToolContextKeys.USER_ID);
 
-        long startedAt = System.nanoTime();
+        // 耗时与结果分类的埋点已下沉到 ToolRegistry.execute（三条调用路径共用），此处不再重复记录
         ToolResult result = toolRegistry.execute(
                 new ToolCall(UUID.randomUUID().toString(), definition.getName(), arguments, approved, userId));
-        long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
 
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
@@ -112,26 +105,8 @@ public class ToolRegistryToolCallback implements ToolCallback {
                     .rawData(result.getRawData())
                     .build());
         }
-        // 拦截也计入指标：护栏触发率是判断"预算是否过紧"还是"模型确实在失控"的唯一依据
-        recordToolMetric(result.isSuccess() ? "success" : "error", latencyMs);
         log.debug("[Tool] {} success={} output={}", definition.getName(), result.isSuccess(), output);
         return output;
-    }
-
-    /** 单个工具的调用次数与耗时，按结果分类——成功率与耗时趋势都从这两个指标来。 */
-    private void recordToolMetric(String outcome, long latencyMs) {
-        if (meterRegistry == null) {
-            return;
-        }
-        Counter.builder("agent.tool.calls")
-                .tag("tool", definition.getName()).tag("outcome", outcome)
-                .register(meterRegistry).increment();
-        if (latencyMs > 0) {
-            Timer.builder("agent.tool.latency")
-                    .tag("tool", definition.getName())
-                    .register(meterRegistry)
-                    .record(java.time.Duration.ofMillis(latencyMs));
-        }
     }
 
     /** 由工具参数定义生成 JSON Schema，供模型/MCP 客户端理解工具签名。 */
