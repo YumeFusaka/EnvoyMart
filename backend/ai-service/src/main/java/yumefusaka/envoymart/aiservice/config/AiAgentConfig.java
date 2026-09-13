@@ -36,6 +36,7 @@ import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
 import io.micrometer.core.instrument.MeterRegistry;
+import yumefusaka.envoymart.aiservice.tool.MicrometerToolCallListener;
 import yumefusaka.envoymart.aiservice.tool.ToolRegistryCallbackProvider;
 
 import java.util.List;
@@ -76,9 +77,16 @@ public class AiAgentConfig {
                 .build();
     }
 
+    /**
+     * 工具注册表 —— 观测点挂在这一层。
+     * <p>
+     * 计划节点、ReAct 循环、MCP 三条来路的工具调用最终都汇到 {@code ToolRegistry.execute}，
+     * 埋点放这里才能一次覆盖全部；放在某一个 ToolCallback 实现里会漏掉不经过它的路径。
+     */
     @Bean
-    public ToolRegistry toolRegistry(OrderClient orderClient, ProductClient productClient) {
-        ToolRegistry registry = new ToolRegistry();
+    public ToolRegistry toolRegistry(OrderClient orderClient, ProductClient productClient,
+                                     MeterRegistry meterRegistry) {
+        ToolRegistry registry = new ToolRegistry(new MicrometerToolCallListener(meterRegistry));
         registry.registerAll(List.of(
                 new OrderTool(orderClient),
                 new LogisticsTool(orderClient),
@@ -93,8 +101,8 @@ public class AiAgentConfig {
      * 同一份工具定义既供 Agent 调用，也供外部 MCP 客户端调用。
      */
     @Bean
-    public ToolCallbackProvider mcpToolCallbackProvider(ToolRegistry toolRegistry, MeterRegistry meterRegistry) {
-        return new ToolRegistryCallbackProvider(toolRegistry, meterRegistry);
+    public ToolCallbackProvider mcpToolCallbackProvider(ToolRegistry toolRegistry) {
+        return new ToolRegistryCallbackProvider(toolRegistry);
     }
 
     @Bean

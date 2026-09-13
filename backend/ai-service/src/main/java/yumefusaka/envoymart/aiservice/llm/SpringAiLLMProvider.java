@@ -400,7 +400,7 @@ public class SpringAiLLMProvider implements LLMProvider {
      */
     private List<ToolCallback> toToolCallbacks(List<ToolExecution> sink) {
         return toolRegistry.listDefinitions().stream()
-                .map(def -> (ToolCallback) new ToolRegistryToolCallback(toolRegistry, def, sink, meterRegistry))
+                .map(def -> (ToolCallback) new ToolRegistryToolCallback(toolRegistry, def, sink))
                 .toList();
     }
 

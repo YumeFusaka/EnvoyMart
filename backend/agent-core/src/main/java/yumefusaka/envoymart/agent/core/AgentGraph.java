@@ -323,6 +323,7 @@ public class AgentGraph {
 
         // 循环护栏：超出预算就不再执行，把原因交回给模型
         if (!ctx.guard().allowToolCall(step.getTool(), arguments)) {
+            toolRegistry.recordBlocked(step.getTool());
             return GraphStep.builder()
                     .round(round).index(index).tool(step.getTool())
                     .reason(step.getReason()).optional(step.isOptional())
