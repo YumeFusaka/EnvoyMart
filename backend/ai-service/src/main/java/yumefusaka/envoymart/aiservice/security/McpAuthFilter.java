@@ -47,6 +47,14 @@ public class McpAuthFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        // 在入口清理，而不是在出口。
+        //
+        // MCP 服务是异步的：servlet 分发一返回，工具执行还会在这条线程上继续。
+        // 出口清理（finally）会在工具真正执行之前就把身份抹掉——实测表现为同一个线程上
+        // 过滤器记到 userId=u1001、工具解析到 null，工具随即以"缺少经过认证的用户身份"失败。
+        // 入口清理同样能防止身份串到下一个请求（线程复用前必先经过这里），且不会与异步执行抢时序。
+        BaseContext.removeCurrentId();
+
         if (!authenticated(request)) {
             log.warn("[MCP] unauthorized request from {} {}", request.getRemoteAddr(), request.getRequestURI());
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
@@ -57,12 +65,7 @@ public class McpAuthFilter extends OncePerRequestFilter {
                     {"jsonrpc":"2.0","error":{"code":-32001,"message":"Unauthorized: 缺少有效的 JWT 或 X-MCP-API-Key"},"id":null}""");
             return;
         }
-        try {
-            chain.doFilter(request, response);
-        } finally {
-            // 线程会被容器复用，身份必须显式清掉，否则会串到下一个请求
-            BaseContext.removeCurrentId();
-        }
+        chain.doFilter(request, response);
     }
 
     private boolean authenticated(HttpServletRequest request) {
@@ -85,6 +88,7 @@ public class McpAuthFilter extends OncePerRequestFilter {
             Object userId = claims.get("id");
             if (userId != null) {
                 BaseContext.setCurrentId(String.valueOf(userId));
+                log.debug("[MCP] 鉴权通过 userId={} thread={}", userId, Thread.currentThread().getName());
             }
             return true;
         } catch (Exception e) {

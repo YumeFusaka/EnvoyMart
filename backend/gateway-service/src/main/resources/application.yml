@@ -58,11 +58,12 @@ jwt:
   secret-key: ${JWT_SECRET:}
 
 ---
-# 本地无注册中心：lb:// 通过静态实例列表解析，生产环境用 NACOS_ENABLED=true + prod profile
+# 本地无注册中心：lb:// 通过静态实例列表解析。
+# 这一段刻意不放在 local profile 下：它是「没有注册中心时的兜底」，与「跑在哪个环境」是两件事。
+# 挂到 profile 上会被全局设置的 SPRING_PROFILES_ACTIVE（如启用 Milvus 时的 milvus）顶掉，
+# 表现为网关全部路由返回 503、日志刷 "No servers available for service"。
+# 静态实例始终下发即可：Nacos 存在时 NacosDiscoveryClient 优先级更高，这段不会被用到。
 spring:
-  config:
-    activate:
-      on-profile: local
   cloud:
     discovery:
       client:

@@ -25,17 +25,18 @@ public class ReviewServiceImpl implements ReviewService {
 
     @Override
     @Transactional
-    public ReviewResponse createReview(CreateReviewRequest request) {
+    public ReviewResponse createReview(String userId, CreateReviewRequest request) {
         ReviewEntity entity = new ReviewEntity();
         entity.setProductId(request.getProductId());
         entity.setOrderId(request.getOrderId());
-        entity.setUserId(request.getUserId());
+        // 归属以网关注入的身份为准，不用请求体里的值——请求体是调用方可改的
+        entity.setUserId(userId);
         entity.setRating(request.getRating());
         entity.setContent(request.getContent());
         entity.setImages(request.getImages());
         entity.setCreatedAt(LocalDateTime.now());
         reviewMapper.insert(entity);
-        log.info("评价已创建: productId={}, userId={}, rating={}", request.getProductId(), request.getUserId(), request.getRating());
+        log.info("评价已创建: productId={}, userId={}, rating={}", request.getProductId(), userId, request.getRating());
         return toResponse(entity);
     }
 
