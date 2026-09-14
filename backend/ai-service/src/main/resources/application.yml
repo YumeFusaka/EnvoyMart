@@ -106,7 +106,15 @@ spring:
     activate:
       on-profile: milvus
   autoconfigure:
-    exclude: []
+    # 只保留必须继续排除的几项。
+    # 注意 YAML 列表是「覆盖」不是「合并」：这里写 exclude: [] 会把基础文档里的排除项
+    # 全部清空，连 OpenAI 音频/图像/审核那几项也一起放回来，容器直接起不来。
+    # 而 Milvus 的自动配置恰恰要在本 profile 下启用，所以它不在下面这份清单里。
+    exclude:
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
   ai:
     vectorstore:
       milvus:
