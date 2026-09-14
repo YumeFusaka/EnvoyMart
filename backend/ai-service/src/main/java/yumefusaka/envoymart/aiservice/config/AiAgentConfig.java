@@ -27,7 +27,6 @@ import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
 import yumefusaka.envoymart.aiservice.flow.AfterSaleFlow;
-import yumefusaka.envoymart.aiservice.rag.DashScopeReranker;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.rag.SpringAiEmbeddingService;
 import yumefusaka.envoymart.aiservice.llm.SpringAiLLMProvider;

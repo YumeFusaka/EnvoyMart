@@ -50,10 +50,10 @@ class RetrievalComparisonTest {
         // 两种对齐方式会得到一模一样的结果。真实切片的 chunkId 是 docId_index，两者不同。
         InMemoryVectorStore vectorStore = new InMemoryVectorStore(
                 new DashScopeEmbeddingService(apiKey, EMBEDDING_MODEL));
+        DashScopeReranker reranker = new DashScopeReranker(apiKey, RERANK_MODEL);
         Retriever hybrid = new HybridRetriever(vectorStore, RetrievalFixtures.DOCS);
         Retriever hybridWithRerank = new HybridRetriever(
-                vectorStore, RetrievalFixtures.DOCS,
-                new DashScopeReranker(apiKey, RERANK_MODEL));
+                vectorStore, RetrievalFixtures.DOCS, reranker);
         new SimpleRAGEngine(vectorStore, hybrid,
                 RetrievalFixtures.CHUNK_SIZE, RetrievalFixtures.CHUNK_OVERLAP)
                 .ingestBatch(RetrievalFixtures.DOCS);
@@ -69,7 +69,22 @@ class RetrievalComparisonTest {
         report("混合+重排", hybridWithRerank);
         System.out.println("======================================================================");
 
+        // 重排降级统计。
+        // 降级后的返回与"配置里根本没接重排"逐位相同，从指标上完全看不出区别——
+        // 实测中同一份代码、同一套数据，语义档在 0.6 与 0.7 之间跳动，差异就来自这里。
+        // 不打出来，任何"重排效果如何"的结论都无从判断可信度。
+        int success = reranker.successCount();
+        int degraded = reranker.degradedCount();
+        System.out.printf("重排调用：生效 %d 次，降级 %d 次%n", success, degraded);
+        if (degraded > 0) {
+            System.out.println("⚠️ 存在降级（原因示例：" + reranker.lastDegradeReason() + "）");
+            System.out.println("   降级等价于不重排 → 本轮的「混合+重排」数字不可复现，不代表重排的真实效果。");
+        }
+
         assertThat(RetrievalFixtures.allCases()).hasSize(30);
+        assertThat(success)
+                .as("全部降级意味着这一档实际是「混合」的副本，不能当作重排结果")
+                .isGreaterThan(0);
     }
 
     private void report(String name, Retriever retriever) {

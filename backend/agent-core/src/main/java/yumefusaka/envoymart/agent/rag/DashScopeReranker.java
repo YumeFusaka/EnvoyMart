@@ -1,10 +1,8 @@
-package yumefusaka.envoymart.aiservice.rag;
+package yumefusaka.envoymart.agent.rag;
 
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
-import yumefusaka.envoymart.agent.rag.DocumentChunk;
-import yumefusaka.envoymart.agent.rag.Reranker;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -20,6 +18,10 @@ import java.util.Map;
  * <p>
  * 召回用双塔向量追求"不漏"，重排用 cross-encoder 让 query 与候选逐对打分，
  * 排序更准。任何异常都降级为「不重排」，不让检索整体失败。
+ * <p>
+ * <b>降级是静默的，所以必须计数。</b>降级后的结果与"配置里根本没用重排"完全一致，
+ * 从指标上看不出任何区别——实测中同一份代码、同一套数据，语义档在 0.6 与 0.7 之间跳动，
+ * 差异就来自这里。不把降级次数暴露出来，任何"重排效果如何"的结论都无从判断可信度。
  */
 @Slf4j
 public class DashScopeReranker implements Reranker {
@@ -32,7 +34,17 @@ public class DashScopeReranker implements Reranker {
     private final String model;
     private final String endpoint;
     private final Duration timeout;
+
+    private final java.util.concurrent.atomic.AtomicInteger successCount =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger degradedCount =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private volatile String lastDegradeReason;
     private final HttpClient httpClient;
+
+    public DashScopeReranker(String apiKey, String model) {
+        this(apiKey, model, DEFAULT_ENDPOINT, Duration.ofSeconds(5));
+    }
 
     public DashScopeReranker(String apiKey, String model, String endpoint, Duration timeout) {
         this.apiKey = apiKey;
@@ -66,7 +78,7 @@ public class DashScopeReranker implements Reranker {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() / 100 != 2) {
                 log.warn("[Rerank] http {} body={}", response.statusCode(), abbreviate(response.body()));
-                return Reranker.NOOP.rerank(query, candidates, topK);
+                return degrade(query, candidates, topK, "http " + response.statusCode());
             }
 
             List<Map<String, Object>> results = MAPPER.readValue(response.body(),
@@ -77,7 +89,7 @@ public class DashScopeReranker implements Reranker {
                     : List.of();
 
             if (results.isEmpty()) {
-                return Reranker.NOOP.rerank(query, candidates, topK);
+                return degrade(query, candidates, topK, "空结果");
             }
 
             List<DocumentChunk> reranked = new ArrayList<>(results.size());
@@ -88,12 +100,33 @@ public class DashScopeReranker implements Reranker {
                 }
             }
             log.info("[Rerank] model={} candidates={} kept={}", model, candidates.size(), reranked.size());
+            successCount.incrementAndGet();
             return reranked.stream().limit(topK).toList();
 
         } catch (Exception e) {
             log.warn("[Rerank] failed, degrade to original order: {}", e.getMessage());
-            return Reranker.NOOP.rerank(query, candidates, topK);
+            return degrade(query, candidates, topK, e.getMessage());
         }
+    }
+
+    /** 真正生效过的重排次数 */
+    public int successCount() {
+        return successCount.get();
+    }
+
+    /** 静默降级为"不重排"的次数——结果与没配重排完全一致 */
+    public int degradedCount() {
+        return degradedCount.get();
+    }
+
+    public String lastDegradeReason() {
+        return lastDegradeReason;
+    }
+
+    private List<DocumentChunk> degrade(String query, List<DocumentChunk> candidates, int topK, String reason) {
+        degradedCount.incrementAndGet();
+        lastDegradeReason = reason;
+        return Reranker.NOOP.rerank(query, candidates, topK);
     }
 
     private String abbreviate(String text) {
