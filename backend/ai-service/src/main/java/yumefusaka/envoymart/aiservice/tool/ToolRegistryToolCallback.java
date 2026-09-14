@@ -85,6 +85,7 @@ public class ToolRegistryToolCallback implements ToolCallback {
             // 走 API Key（机器凭证、无用户身份）时这里仍为 null，需要身份的工具会 fail-closed。
             userId = BaseContext.getCurrentId();
         }
+        log.debug("[Tool] {} 身份解析 userId={} thread={}", definition.getName(), userId, Thread.currentThread().getName());
         arguments = new LinkedHashMap<>(arguments);
         arguments.remove(ToolContextKeys.USER_ID);
 

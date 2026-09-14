@@ -1,6 +1,8 @@
 package yumefusaka.envoymart.reviewservice.controller;
 
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.RequestHeader;
+import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import org.springframework.web.bind.annotation.*;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.reviewservice.model.CreateReviewRequest;
@@ -20,8 +22,10 @@ public class ReviewController {
     }
 
     @PostMapping
-    public Result<ReviewResponse> create(@Valid @RequestBody CreateReviewRequest request) {
-        return Result.success(reviewService.createReview(request));
+    public Result<ReviewResponse> create(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @Valid @RequestBody CreateReviewRequest request) {
+        return Result.success(reviewService.createReview(userId, request));
     }
 
     @GetMapping("/{productId}")

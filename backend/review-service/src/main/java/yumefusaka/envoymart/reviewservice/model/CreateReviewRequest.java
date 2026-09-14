@@ -12,7 +12,6 @@ public class CreateReviewRequest {
     @NotNull
     private Long orderId;
     @NotNull
-    private String userId;
     @NotNull @Min(1) @Max(5)
     private Integer rating;
     private String content;

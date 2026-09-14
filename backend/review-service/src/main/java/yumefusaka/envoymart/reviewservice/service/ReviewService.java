@@ -6,6 +6,6 @@ import yumefusaka.envoymart.reviewservice.model.ReviewResponse;
 import java.util.List;
 
 public interface ReviewService {
-    ReviewResponse createReview(CreateReviewRequest request);
+    ReviewResponse createReview(String userId, CreateReviewRequest request);
     List<ReviewResponse> listReviews(Long productId);
 }

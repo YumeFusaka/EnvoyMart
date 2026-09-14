@@ -98,5 +98,20 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
+        <!--
+            编译器插件必须在这里再声明一次才会生效。
+            pluginManagement 只提供「默认配置」，作用于**确实被声明的插件**；
+            上面那份配置不会自动激活任何东西——它只是让子模块声明时可以省略版本与配置。
+            此前配置只写在 pluginManagement 里且没有任何模块声明该插件，
+            结果 -parameters 从未真正传入编译器：省略 name 的 @RequestParam / @PathVariable
+            在运行时抛 "Name for argument ... not specified"，而且要到实际调用那个接口才暴露。
+        -->
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+        </plugins>
     </build>
 </project>
