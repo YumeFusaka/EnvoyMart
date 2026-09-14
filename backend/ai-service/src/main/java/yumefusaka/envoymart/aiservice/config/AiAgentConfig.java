@@ -283,10 +283,19 @@ public class AiAgentConfig {
     }
 
     @Bean
-    public SimpleRAGEngine ragEngine(VectorStore vectorStore, Retriever retriever) {
+    public SimpleRAGEngine ragEngine(@Qualifier("knowledgeVectorStore") VectorStore vectorStore,
+                                     Retriever retriever) {
         SimpleRAGEngine engine = new SimpleRAGEngine(vectorStore, retriever, 256, 32);
-        // 启动时把领域知识灌入向量库；不调用 ingest 的话 ANN 检索永远返回空
-        engine.ingestBatch(knowledgeDocuments());
+
+        // 启动时把领域知识灌入向量库；不调用 ingest 的话 ANN 检索永远返回空。
+        //
+        // 必须先按 docId 清掉旧切片再写入——**入库没有幂等性，而持久化向量库会跨重启累积**：
+        // 实测接上 Milvus 后连续启动，集合里堆到了 38 条而实际只有 15 篇文档，
+        // 重复条目会挤占 topK、让同一篇文档在结果里出现多次。
+        // 内存向量库每次启动都是空的，所以这个缺陷在本地降级路径下永远不会暴露。
+        List<Document> documents = knowledgeDocuments();
+        documents.forEach(doc -> vectorStore.deleteByDocId(doc.getId()));
+        engine.ingestBatch(documents);
         return engine;
     }
 
