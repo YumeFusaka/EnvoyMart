@@ -12,7 +12,7 @@ public class CreateReviewRequest {
     @NotNull
     private Long orderId;
     @NotNull
-    @NotNull @Min(1) @Max(5)
+    @Min(1) @Max(5)
     private Integer rating;
     private String content;
     private String images;

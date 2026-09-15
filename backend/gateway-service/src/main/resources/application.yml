@@ -4,9 +4,9 @@ server:
 spring:
   application:
     name: gateway-service
-  # 未显式指定 profile 时默认走 local：用静态实例列表代替注册中心，开箱即可路由
+  # 未显式指定 profile 时默认走 standalone：用静态实例列表代替注册中心，开箱即可路由
   profiles:
-    default: local
+    default: standalone
   cloud:
     nacos:
       discovery:
@@ -46,7 +46,7 @@ spring:
                 - Path=/reviews/**
     sentinel:
       transport:
-        dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8718}
+        dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}
       scg:
         fallback:
           mode: response
@@ -58,12 +58,20 @@ jwt:
   secret-key: ${JWT_SECRET:}
 
 ---
-# 本地无注册中心：lb:// 通过静态实例列表解析。
-# 这一段刻意不放在 local profile 下：它是「没有注册中心时的兜底」，与「跑在哪个环境」是两件事。
-# 挂到 profile 上会被全局设置的 SPRING_PROFILES_ACTIVE（如启用 Milvus 时的 milvus）顶掉，
-# 表现为网关全部路由返回 503、日志刷 "No servers available for service"。
-# 静态实例始终下发即可：Nacos 存在时 NacosDiscoveryClient 优先级更高，这段不会被用到。
+# 无注册中心时的静态实例兜底：lb:// 直接解析到本机端口，保证本地开箱即可路由。
+#
+# 放在独立的 standalone profile 下，而不是放在默认配置段里：
+# 静态实例与真实注册中心各自注册一个 DiscoveryClient，Spring Cloud 的
+# CompositeDiscoveryClient 按 order 排序取第一个——而**两者的 order 相同**
+# （都是 LOWEST_PRECEDENCE），同时存在时谁生效是不确定的。实测静态列表会赢，
+# 结果是「Nacos 配了、服务也注册了，但网关从来不查它」。
+#
+# gateway 的 spring.profiles.default 是 standalone，所以不显式指定 profile 时本段生效；
+# 一旦显式激活了别的 profile（如 SPRING_PROFILES_ACTIVE=nacos 或 milvus），本段自动让位。
 spring:
+  config:
+    activate:
+      on-profile: standalone
   cloud:
     discovery:
       client:

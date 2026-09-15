@@ -2,6 +2,7 @@
 import { ElMessage } from 'element-plus'
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { createPayment } from '@/api/payment'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,14 +18,29 @@ const orderInfo = {
 const methods = ['微信支付', '支付宝', '银联云闪付']
 const selected = ref('微信支付')
 
+/**
+ * 支付动作。
+ *
+ * **真实调后端建支付单**（订单归属由网关从 JWT 注入，前端不传 userId），
+ * 但不接真实渠道：支付单停在 PENDING，等渠道回调推进。
+ * 页面上如实说明"演示环境不产生真实扣款"，不谎报支付成功——
+ * 之前这里是个纯 setTimeout 的假成功，点了不看后端是发现不了的。
+ */
 async function handlePay() {
   paying.value = true
-  // 模拟支付流程
-  setTimeout(() => {
-    paying.value = false
+  try {
+    await createPayment({
+      orderId: orderInfo.orderId,
+      orderNo: orderInfo.orderNo,
+      amount: orderInfo.amount,
+    })
     done.value = true
-    ElMessage.success(`订单 ${orderInfo.orderNo} 支付成功`)
-  }, 1500)
+    ElMessage.success(`订单 ${orderInfo.orderNo} 支付单已创建（演示环境，不产生真实扣款）`)
+  } catch {
+    ElMessage.error('支付单创建失败，请稍后重试')
+  } finally {
+    paying.value = false
+  }
 }
 </script>
 
@@ -77,8 +93,8 @@ async function handlePay() {
       <div v-else class="payment-success">
         <el-result
           icon="success"
-          title="支付成功"
-          :sub-title="`订单 ${orderInfo.orderNo} 已完成支付`"
+          title="支付单已创建"
+          :sub-title="`订单 ${orderInfo.orderNo} 已生成支付单，等待渠道回调确认（演示环境，不产生真实扣款）`"
         >
           <template #extra>
             <el-button type="primary" @click="router.push('/orders')">查看订单</el-button>

@@ -36,6 +36,18 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public PaymentResponse createPayment(String userId, CreatePaymentRequest request) {
+        // 幂等：一个订单只应有一张支付单。
+        // 重复创建时写入侧毫无阻碍，读取侧的 selectOne 却会因为多行直接抛
+        // TooManyResultsException——**不加约束的写入会把读取路径打挂**，
+        // 而且只有真正建过两次单才会暴露。
+        PaymentEntity existing = paymentMapper.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PaymentEntity>()
+                        .eq(PaymentEntity::getOrderId, request.getOrderId()));
+        if (existing != null) {
+            log.info("订单 {} 已有支付单，直接复用: status={}", request.getOrderId(), existing.getStatus());
+            return toResponse(existing);
+        }
+
         PaymentEntity entity = new PaymentEntity();
         entity.setOrderId(request.getOrderId());
         entity.setOrderNo(request.getOrderNo());
