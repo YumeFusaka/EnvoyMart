@@ -106,7 +106,7 @@ services:
     restart: unless-stopped
     container_name: envoymart-sentinel
     ports:
-      - "8718:8718"
+      - "8858:8858"   # 控制台 UI；该镜像实际监听 8858（另有 8719 供客户端上报）
     networks:
       - envoymart-net
 
