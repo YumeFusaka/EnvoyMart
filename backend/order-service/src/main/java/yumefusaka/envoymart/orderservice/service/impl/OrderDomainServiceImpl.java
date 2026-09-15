@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.orderservice.client.ProductClient;
 import yumefusaka.envoymart.orderservice.entity.CartItemEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderEntity;
@@ -154,7 +155,12 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             BigDecimal total = BigDecimal.ZERO;
             for (CartItemEntity cartItem : cartItems) {
                 ProductSnapshot product = requireProduct(cartItem.getProductId());
-                productClient.deductStock(new StockDeductRequest(product.getId(), cartItem.getQuantity()));
+                // 必须检查返回的业务码：product-service 的异常被统一包成 HTTP 200 + code=500，
+                // **Feign 只按状态码判断成败，不会抛异常**。直接丢弃返回值等于把扣减失败当成功，
+                // 订单照建、库存不扣——而且整条链路不会报任何错。
+                requireSuccess(productClient.deductStock(
+                        new StockDeductRequest(product.getId(), cartItem.getQuantity())),
+                        "扣减库存 " + product.getName());
                 BigDecimal subtotal = product.getPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity()));
                 total = total.add(subtotal);
                 OrderItemEntity item = new OrderItemEntity();
@@ -262,8 +268,11 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 new LambdaQueryWrapper<OrderItemEntity>().eq(OrderItemEntity::getOrderId, orderId));
         for (OrderItemEntity item : items) {
             try {
-                productClient.restoreStock(new StockDeductRequest(item.getProductId(), item.getQuantity()));
+                requireSuccess(productClient.restoreStock(
+                        new StockDeductRequest(item.getProductId(), item.getQuantity())),
+                        "回补库存 productId=" + item.getProductId());
             } catch (Exception e) {
+                // 回补失败不影响取消本身，但必须留痕——静默吞掉会让库存越差越多且无人察觉
                 log.warn("回补库存失败 orderId={} productId={}: {}", orderId, item.getProductId(), e.getMessage());
             }
         }
@@ -278,6 +287,19 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             throw new IllegalArgumentException("商品不存在");
         }
         return product;
+    }
+
+    /**
+     * 校验跨服务调用的<b>业务码</b>，而不是 HTTP 状态码。
+     * <p>
+     * 本项目用 {@code HTTP 200 + Result.code} 表达业务结果，异常也被统一包成 200 + code=500。
+     * Feign 只看 HTTP 状态码，**下游报错时它不会抛异常，只会安静地返回一个 code=500 的对象**。
+     * 不显式检查，任何下游失败都会被当成成功。
+     */
+    private void requireSuccess(Result<?> result, String action) {
+        if (result == null || result.getCode() == null || result.getCode() != 200) {
+            throw new IllegalStateException(action + "失败：" + (result == null ? "无响应" : result.getMsg()));
+        }
     }
 
     private CartItemEntity requireCartItem(String userId, Long id) {

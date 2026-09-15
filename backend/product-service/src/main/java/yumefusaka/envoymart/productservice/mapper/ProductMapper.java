@@ -19,8 +19,7 @@ public interface ProductMapper extends BaseMapper<ProductEntity> {
      *
      * @return 影响行数，0 表示库存不足（或商品不存在），调用方必须据此判定失败
      */
-    @Update("update product set stock = stock - #{quantity}, updated_at = current_timestamp "
-            + "where id = #{id} and stock >= #{quantity}")
+    @Update("update product set stock = stock - #{quantity} where id = #{id} and stock >= #{quantity}")
     int deductStock(@Param("id") Long id, @Param("quantity") int quantity);
 
     /**
@@ -29,7 +28,6 @@ public interface ProductMapper extends BaseMapper<ProductEntity> {
      * 用 {@code stock = stock + #{quantity}} 而不是读出来加完再写回，
      * 避免与并发的扣减互相覆盖。
      */
-    @Update("update product set stock = stock + #{quantity}, updated_at = current_timestamp "
-            + "where id = #{id}")
+    @Update("update product set stock = stock + #{quantity} where id = #{id}")
     int restoreStock(@Param("id") Long id, @Param("quantity") int quantity);
 }
