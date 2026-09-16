@@ -47,10 +47,9 @@ spring:
     sentinel:
       transport:
         dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}
-      scg:
-        fallback:
-          mode: response
-          response-body: '{"code": 429, "message": "请求过于频繁，请稍后再试"}'
+      # 这里原先配了 scg.fallback.response-body。已移除：它在当前版本组合下从来没生效过
+      # （超限请求拿到的是 HTTP 200 + 空 body，而不是这里的 429），留着只会让人以为改它有作用。
+      # 限流响应的唯一出口是 GatewayErrorHandler。
 
 jwt:
   token-name: token

@@ -24,12 +24,15 @@ import java.util.Set;
  *   <li><b>读接口最宽</b>——商品、评价有 Redis 与 ES 兜着，放行成本低。</li>
  * </ul>
  * 此处是启动默认值，运行时可在 Sentinel 控制台直接调整。被拦下的请求由
- * {@code spring.cloud.sentinel.scg.fallback} 返回 429 与可读提示，不会暴露堆栈。
+ * {@link GatewayErrorHandler} 写成 429 与可读提示，不会暴露堆栈。
  * <p>
  * <b>只用路由级规则，不用参数级（{@code GatewayParamFlowItem}）。</b>
- * 实测在 Spring Cloud Gateway 5.x + Sentinel 1.8.9 上，参数级限流抛出的
- * {@code ParamFlowException} 是在响应已经提交<em>之后</em>才浮出来的——拦截不生效，
- * 反而在日志里刷异常。按来源 IP 的配额留给上游 WAF 或业务侧做，网关这层只做路由总量。
+ * 按来源 IP 的配额留给上游 WAF 或业务侧做，网关这层只做路由总量。
+ * <p>
+ * 有一处反直觉、排查时容易带偏：这套适配器对<b>路由级</b>规则抛出的也是
+ * {@code ParamFlowException}，而不是字面上更对得上的 {@code FlowException}。
+ * {@code sentinel-block.log} 里逐条可查，资源名就是 route id。两者都是
+ * {@code BlockException} 的子类，按父类兜住即可，不要按异常名去判断规则类型。
  */
 @Slf4j
 @Configuration
