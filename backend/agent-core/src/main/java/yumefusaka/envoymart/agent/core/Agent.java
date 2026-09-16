@@ -97,7 +97,7 @@ public class Agent {
         shortTermMemory.add(MemoryItem.builder()
                 .id(UUID.randomUUID().toString())
                 .userId(userId)
-                .sessionId(sessionId)
+                .sessionId(scopedSession(userId, sessionId))
                 .content("user: " + message)
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
@@ -125,7 +125,7 @@ public class Agent {
         shortTermMemory.add(MemoryItem.builder()
                 .id(UUID.randomUUID().toString())
                 .userId(userId)
-                .sessionId(sessionId)
+                .sessionId(scopedSession(userId, sessionId))
                 .content("assistant: " + response.getReply())
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
@@ -160,7 +160,7 @@ public class Agent {
         // 循环护栏一次请求一份，同时约束图里的环与框架驱动的工具循环
         LoopGuard guard = new LoopGuard(config.getLoopBudget());
         AgentGraph.GraphResult graphResult = agentGraph.run(
-                userId, message, systemPrompt, recentConversation(sessionId), approved, guard, onChunk);
+                userId, message, systemPrompt, recentConversation(scopedSession(userId, sessionId)), approved, guard, onChunk);
         log.info("[Agent] loops {}", guard.summary());
 
         // 图的「中断出口」：高危操作未确认，图在此结束，等用户确认后作为新请求重入
@@ -184,8 +184,22 @@ public class Agent {
                 .build();
     }
 
-    private List<ChatMessage> recentConversation(String sessionId) {
-        return shortTermMemory.recent(sessionId, config.getMemoryWindow()).stream()
+    /**
+     * 短期记忆的作用域键 —— <b>把 userId 并进键里</b>。
+     * <p>
+     * sessionId 是客户端传的（前端生成的是时间戳，可枚举）。只按 sessionId 存会话窗口，
+     * 意味着**任何人拿到或猜中别人的 sessionId 就能读到那段对话**——而这段对话会被
+     * 原样注入 prompt，等于直接读到别人的聊天记录。
+     * <p>
+     * 实测确认过：同一个 sessionId 换成另一个 userId 提问，模型能复述出前一个用户的对话。
+     * 把 userId 并进键是最小的修法，且不改变任何调用方的语义。
+     */
+    private String scopedSession(String userId, String sessionId) {
+        return (userId == null ? "" : userId) + "|" + (sessionId == null ? "" : sessionId);
+    }
+
+    private List<ChatMessage> recentConversation(String scopedSessionId) {
+        return shortTermMemory.recent(scopedSessionId, config.getMemoryWindow()).stream()
                 .map(m -> ChatMessage.builder()
                         .role(m.getContent().startsWith("user:") ? ChatMessage.Role.USER : ChatMessage.Role.ASSISTANT)
                         .content(m.getContent().replaceAll("^(user:|assistant:)", "").trim())
@@ -262,7 +276,7 @@ public class Agent {
         }
         try {
             MemoryConsolidator.ConsolidationResult result = consolidator.extract(
-                    userId, shortTermMemory.recent(sessionId, config.getMemoryWindow()));
+                    userId, shortTermMemory.recent(scopedSession(userId, sessionId), config.getMemoryWindow()));
 
             profileStore.update(userId, result.profileEntries());
             // 身份在这里统一打上，存储层不需要也不应该自己推断归属
