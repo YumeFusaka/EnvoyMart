@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.orderservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,7 +26,6 @@ import yumefusaka.envoymart.orderservice.model.UpdateCartItemRequest;
 import yumefusaka.envoymart.orderservice.mq.OrderCreatedEvent;
 import yumefusaka.envoymart.orderservice.mq.OrderEventPublisher;
 import yumefusaka.envoymart.orderservice.mq.OrderItemEvent;
-import yumefusaka.envoymart.orderservice.mq.StockUpdatedEvent;
 import yumefusaka.envoymart.orderservice.service.OrderDomainService;
 
 import java.math.BigDecimal;
@@ -152,29 +152,42 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             order.setTotalAmount(BigDecimal.ZERO);
             orderMapper.insert(order);
 
+            // 记账本：已经成功扣掉的库存，失败时按相反顺序还回去。
+            // 跨服务调用不参与本地事务——product-service 有自己的库和事务，order-service
+            // 回滚不会撤销它已提交的扣减，也没有任何补偿。实测购物车里有 2 件商品、
+            // 排在后面的那件库存不足时，第一件的库存已经被扣且无人归还：本地事务回滚了，
+            // 订单没建、购物车没清，库存却实打实少了一份。反复触发可以在"零订单"的
+            // 情况下把整仓库存刷空。
+            List<StockDeductRequest> deducted = new ArrayList<>();
             BigDecimal total = BigDecimal.ZERO;
-            for (CartItemEntity cartItem : cartItems) {
-                ProductSnapshot product = requireProduct(cartItem.getProductId());
-                // 必须检查返回的业务码：product-service 的异常被统一包成 HTTP 200 + code=500，
-                // **Feign 只按状态码判断成败，不会抛异常**。直接丢弃返回值等于把扣减失败当成功，
-                // 订单照建、库存不扣——而且整条链路不会报任何错。
-                requireSuccess(productClient.deductStock(
-                        new StockDeductRequest(product.getId(), cartItem.getQuantity())),
-                        "扣减库存 " + product.getName());
-                BigDecimal subtotal = product.getPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity()));
-                total = total.add(subtotal);
-                OrderItemEntity item = new OrderItemEntity();
-                item.setOrderId(order.getId());
-                item.setProductId(product.getId());
-                item.setProductName(product.getName());
-                item.setProductImage(product.getImage());
-                item.setUnitPrice(product.getPrice());
-                item.setQuantity(cartItem.getQuantity());
-                item.setSubtotal(subtotal);
-                orderItemMapper.insert(item);
+            try {
+                for (CartItemEntity cartItem : cartItems) {
+                    ProductSnapshot product = requireProduct(cartItem.getProductId());
+                    // 必须检查返回的业务码：product-service 的异常被统一包成 HTTP 200 + code=500，
+                    // **Feign 只按状态码判断成败，不会抛异常**。直接丢弃返回值等于把扣减失败当成功，
+                    // 订单照建、库存不扣——而且整条链路不会报任何错。
+                    requireSuccess(productClient.deductStock(
+                            new StockDeductRequest(product.getId(), cartItem.getQuantity())),
+                            "扣减库存 " + product.getName());
+                    deducted.add(new StockDeductRequest(product.getId(), cartItem.getQuantity()));
+                    BigDecimal subtotal = product.getPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity()));
+                    total = total.add(subtotal);
+                    OrderItemEntity item = new OrderItemEntity();
+                    item.setOrderId(order.getId());
+                    item.setProductId(product.getId());
+                    item.setProductName(product.getName());
+                    item.setProductImage(product.getImage());
+                    item.setUnitPrice(product.getPrice());
+                    item.setQuantity(cartItem.getQuantity());
+                    item.setSubtotal(subtotal);
+                    orderItemMapper.insert(item);
+                }
+                order.setTotalAmount(total);
+                orderMapper.updateById(order);
+            } catch (RuntimeException e) {
+                compensateStock(deducted);
+                throw e;
             }
-            order.setTotalAmount(total);
-            orderMapper.updateById(order);
             cartItemMapper.delete(new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId));
             cartCacheService.evictCartCache(userId);  // 清除购物车缓存
             // 发布订单创建事件（异步解耦后续流程）
@@ -260,8 +273,18 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             throw new IllegalStateException("已支付订单请走退款流程");
         }
 
+        // 状态判断下沉到 SQL 的 where 里，由数据库裁决并发，而不是在内存里"读-判断-写"。
+        // 纯内存判断挡不住并发：两个取消请求各自读到 DELIVERING，双双通过上面的守卫，
+        // 于是一笔订单回补两次库存——实测 8 个并发取消，库存比正确值多出整整一倍。
+        // 条件更新只有一个能命中，其余 updated=0，据此拒绝，回补也就只发生一次。
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getStatus, order.getStatus())
+                .set(OrderEntity::getStatus, "CANCELLED"));
+        if (updated == 0) {
+            throw new IllegalStateException("订单状态刚刚发生变化，请刷新后重试");
+        }
         order.setStatus("CANCELLED");
-        orderMapper.updateById(order);
 
         // 回补库存，避免取消后商品被"锁死"
         List<OrderItemEntity> items = orderItemMapper.selectList(
@@ -272,13 +295,69 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                         new StockDeductRequest(item.getProductId(), item.getQuantity())),
                         "回补库存 productId=" + item.getProductId());
             } catch (Exception e) {
-                // 回补失败不影响取消本身，但必须留痕——静默吞掉会让库存越差越多且无人察觉
-                log.warn("回补库存失败 orderId={} productId={}: {}", orderId, item.getProductId(), e.getMessage());
+                // 不能因为回补失败就回滚整个取消：多件商品时前面的可能已经回补成功，
+                // 回滚只会把订单状态退回去而库存已经还了，变成"库存多出来"。
+                // 但必须以 ERROR 留痕——静默吞掉会让库存越差越多且无人察觉。
+                // 已知的最终一致性问题：这里没有重试也没有对账任务，product-service
+                // 长时间不可用时需要人工把库存补回。
+                log.error("回补库存失败，订单已取消但库存未归还 orderId={} productId={} quantity={}: {}",
+                        orderId, item.getProductId(), item.getQuantity(), e.getMessage());
             }
         }
 
         log.info("用户 {} 取消订单 {}", userId, order.getOrderNo());
         return toOrderResponse(order);
+    }
+
+    @Override
+    @Transactional
+    public void markPaid(Long orderId) {
+        OrderEntity order = orderMapper.selectById(orderId);
+        if (order == null) {
+            log.error("[Order] 收到支付完成事件但订单不存在 orderId={}", orderId);
+            return;
+        }
+        if ("PAID".equals(order.getStatus())) {
+            return;  // 重复投递，幂等吞掉
+        }
+        if ("CANCELLED".equals(order.getStatus())) {
+            // 钱收了、单却取消了——这是资金问题，留明确记录等人工退款，
+            // 不能自动改成 PAID 把矛盾掩盖过去
+            log.error("[Order] 订单已取消却收到支付完成事件，需要人工退款 orderId={} orderNo={}",
+                    orderId, order.getOrderNo());
+            return;
+        }
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getStatus, order.getStatus())
+                .set(OrderEntity::getStatus, "PAID"));
+        if (updated == 0) {
+            log.warn("[Order] 订单状态并发变更，支付完成事件未生效 orderId={}", orderId);
+            return;
+        }
+        log.info("[Order] 订单已标记为已支付 orderId={} orderNo={}", orderId, order.getOrderNo());
+    }
+
+    /**
+     * 反序归还已扣减的库存。
+     * <p>
+     * 反序是为了与扣减顺序相反，和加解锁的约定一致，降低与其他事务交叉时的死锁概率。
+     * 补偿本身再失败就只能留 ERROR：远端已经提交，本地既无法回滚也没有重试机制，
+     * 属于需要人工介入的最终一致性问题——宁可吵，不可静默。
+     */
+    private void compensateStock(List<StockDeductRequest> deducted) {
+        for (int i = deducted.size() - 1; i >= 0; i--) {
+            StockDeductRequest request = deducted.get(i);
+            try {
+                requireSuccess(productClient.restoreStock(request),
+                        "补偿回补库存 productId=" + request.getProductId());
+                log.warn("[Order] 下单失败，已回补库存 productId={} quantity={}",
+                        request.getProductId(), request.getQuantity());
+            } catch (Exception e) {
+                log.error("[Order] 下单失败且库存补偿失败，需要人工处理 productId={} quantity={}: {}",
+                        request.getProductId(), request.getQuantity(), e.getMessage());
+            }
+        }
     }
 
     private ProductSnapshot requireProduct(Long productId) {

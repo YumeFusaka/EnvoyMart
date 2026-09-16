@@ -28,13 +28,11 @@ public class OrderEventConfig {
     // ========== 队列 ==========
     public static final String ORDER_CREATED_QUEUE = "order.created.queue";
     public static final String PAYMENT_COMPLETED_QUEUE = "payment.completed.queue";
-    public static final String STOCK_UPDATED_QUEUE = "stock.updated.queue";
     public static final String ORDER_DLX_QUEUE = "order.dlx.queue";
 
     // ========== 路由键 ==========
     public static final String ORDER_CREATED_KEY = "order.created";
     public static final String PAYMENT_COMPLETED_KEY = "payment.completed";
-    public static final String STOCK_UPDATED_KEY = "stock.updated";
 
     @Bean
     public TopicExchange orderExchange() {
@@ -74,11 +72,6 @@ public class OrderEventConfig {
     }
 
     @Bean
-    public Queue stockUpdatedQueue() {
-        return QueueBuilder.durable(STOCK_UPDATED_QUEUE).build();
-    }
-
-    @Bean
     public Queue orderDlxQueue() {
         return QueueBuilder.durable(ORDER_DLX_QUEUE).build();
     }
@@ -93,12 +86,6 @@ public class OrderEventConfig {
     public Binding paymentCompletedBinding(TopicExchange orderExchange,
                                                 @Qualifier("paymentCompletedQueue") Queue paymentCompletedQueue) {
         return BindingBuilder.bind(paymentCompletedQueue).to(orderExchange).with(PAYMENT_COMPLETED_KEY);
-    }
-
-    @Bean
-    public Binding stockUpdatedBinding(TopicExchange orderExchange,
-                                            @Qualifier("stockUpdatedQueue") Queue stockUpdatedQueue) {
-        return BindingBuilder.bind(stockUpdatedQueue).to(orderExchange).with(STOCK_UPDATED_KEY);
     }
 
     @Bean

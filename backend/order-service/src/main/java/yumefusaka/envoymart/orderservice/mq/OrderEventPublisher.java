@@ -5,7 +5,13 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * 订单事件发布器：发送事件到 RabbitMQ
+ * 订单事件发布器：发送事件到 RabbitMQ。
+ * <p>
+ * 只保留真正在发的事件。原先这里还有 {@code publishStockUpdated} 与
+ * {@code publishPaymentCompleted}，两者都没有调用方——前者让整条 stock.updated
+ * 队列/绑定/消费者一起悬空（队列建了、消费者在、事件类也建了，就是没人发），
+ * 后者的事件实际由 payment-service 用自己的 RabbitTemplate 发出。
+ * 留着不会报错，但会让"这个事件到底谁在发"变成回答不了的问题。
  */
 @Slf4j
 @Component
@@ -23,21 +29,5 @@ public class OrderEventPublisher {
                 OrderEventConfig.ORDER_CREATED_KEY,
                 event);
         log.info("[MQ] 订单创建事件已发布: orderNo={}, amount={}", event.getOrderNo(), event.getTotalAmount());
-    }
-
-    public void publishPaymentCompleted(PaymentCompletedEvent event) {
-        rabbitTemplate.convertAndSend(
-                OrderEventConfig.ORDER_EXCHANGE,
-                OrderEventConfig.PAYMENT_COMPLETED_KEY,
-                event);
-        log.info("[MQ] 支付完成事件已发布: orderNo={}, transactionNo={}", event.getOrderNo(), event.getTransactionNo());
-    }
-
-    public void publishStockUpdated(StockUpdatedEvent event) {
-        rabbitTemplate.convertAndSend(
-                OrderEventConfig.ORDER_EXCHANGE,
-                OrderEventConfig.STOCK_UPDATED_KEY,
-                event);
-        log.info("[MQ] 库存更新事件已发布: productId={}, deducted={}", event.getProductId(), event.getDeductedQuantity());
     }
 }
