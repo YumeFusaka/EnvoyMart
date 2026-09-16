@@ -10,7 +10,6 @@ import yumefusaka.envoymart.orderservice.model.CartItemResponse;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 /**
  * Redis 缓存包装层：购物车缓存 & 分布式锁
@@ -38,21 +37,33 @@ public class CartCacheService {
 
     // ========== 购物车缓存 ==========
 
-    @SuppressWarnings("unchecked")
+    /**
+     * 缓存载荷 —— 存在的唯一理由是「给列表套一个具体类型的壳」。
+     * <p>
+     * 不能直接缓存 {@code List<CartItemResponse>}：序列化器开了 defaultTyping，
+     * 写<b>单个对象</b>时会带上根类型的 {@code @class}，写 <b>List</b> 时却不会——
+     * 而读取端的目标类型是 {@code Object}，碰到以 {@code [} 开头的 JSON 就要求根类型 id，
+     * 于是抛 {@code Unexpected token (END_ARRAY), expected VALUE_STRING}。
+     * <p>
+     * 失败发生在<b>读取侧</b>：写入一声不吭，读的时候 100% 挂。表现为购物车「第一次能用、
+     * 刷新就 500」，且加购/改数量/下单都会 evict 缓存，于是现象变成一次好一次坏地交替，
+     * 很容易被当成偶发抖动。包一层具体类型后根类型 id 会被正常写入，往返一致。
+     */
+    public record CachedCart(List<CartItemResponse> items) {
+    }
+
     public List<CartItemResponse> getCachedCart(String userId) {
         String key = cartKey(userId);
         Object cached = redisTemplate.opsForValue().get(key);
-        if (cached instanceof List<?> list) {
-            return list.stream()
-                    .filter(CartItemResponse.class::isInstance)
-                    .map(CartItemResponse.class::cast)
-                    .collect(Collectors.toList());
+        if (cached instanceof CachedCart cart) {
+            return cart.items();
         }
         return Collections.emptyList();
     }
 
     public void cacheCart(String userId, List<CartItemResponse> items) {
-        redisTemplate.opsForValue().set(cartKey(userId), items, CART_TTL_HOURS, TimeUnit.HOURS);
+        redisTemplate.opsForValue().set(cartKey(userId),
+                new CachedCart(List.copyOf(items)), CART_TTL_HOURS, TimeUnit.HOURS);
     }
 
     public void evictCartCache(String userId) {
