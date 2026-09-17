@@ -4,6 +4,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/YumeFusaka/EnvoyMart/actions/workflows/ci.yml"><img src="https://github.com/YumeFusaka/EnvoyMart/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/Java-21-589636" />
   <img src="https://img.shields.io/badge/Spring%20Boot-4.1.1-6DB33F" />
   <img src="https://img.shields.io/badge/Spring%20Cloud-2025.1.3-6DB33F" />
