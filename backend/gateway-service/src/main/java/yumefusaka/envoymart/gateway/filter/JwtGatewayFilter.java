@@ -11,6 +11,7 @@ import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -20,15 +21,20 @@ import reactor.core.publisher.Mono;
 import yumefusaka.envoymart.common.properties.JwtProperties;
 import yumefusaka.envoymart.common.util.JwtUtils;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
+import yumefusaka.envoymart.common.web.InternalAuth;
 
 @Slf4j
 @Component
 public class JwtGatewayFilter implements GlobalFilter, Ordered {
 
     private final JwtProperties jwtProperties;
+    private final String internalToken;
 
-    public JwtGatewayFilter(JwtProperties jwtProperties) {
+    public JwtGatewayFilter(JwtProperties jwtProperties,
+                            @Value("${envoymart.internal.token:}") String internalToken) {
         this.jwtProperties = jwtProperties;
+        // 网关是注入方：拿不到令牌就无法把身份可信地传给下游，同样拒绝启动
+        this.internalToken = InternalAuth.requireValid(internalToken);
     }
 
     /**
@@ -103,8 +109,12 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
         }
         try {
             Claims claims = JwtUtils.parseToken(jwtProperties.getSecretKey(), token);
+            // 身份头与「这是我加的」的凭证一起注入。下游两个都要看：只有身份头说明不了
+            // 它是网关加的，还是调用方自己塞的；而下游服务的端口是直接监听的，直连就能绕过网关。
+            // 两者绑在一起，「这个身份声明可信」才有依据。
             ServerHttpRequest request = exchange.getRequest().mutate()
                     .header(IdentityHeaderInterceptor.USER_ID_HEADER, String.valueOf(claims.get("id")))
+                    .header(InternalAuth.TOKEN_HEADER, internalToken)
                     .build();
             return chain.filter(exchange.mutate().request(request).build());
         } catch (Exception exception) {

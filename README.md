@@ -156,17 +156,31 @@ flowchart TD
 
 ```bash
 cd backend
-printf 'export JWT_SECRET="%s"\n' "$(openssl rand -base64 48 | tr -d '\n')" > .env.local
-printf 'export PAYMENT_CALLBACK_SECRET="%s"\n' "$(openssl rand -hex 32)" >> .env.local
+{
+  printf 'export JWT_SECRET="%s"\n' "$(openssl rand -base64 48 | tr -d '\n')"
+  printf 'export PAYMENT_CALLBACK_SECRET="%s"\n' "$(openssl rand -hex 32)"
+  printf 'export INTERNAL_TOKEN="%s"\n' "$(openssl rand -hex 32)"
+} > .env.local
 ```
 
-**为什么是文件而不是每次 `export`**：`JWT_SECRET` 必须让所有服务拿到**同一个值**。
-如果按"每个终端各执行一次 `openssl rand`"来启动，gateway 与 auth-service 会拿到不同的密钥——
+三个密钥都是**缺失即拒绝启动**，刻意不设默认值——写在仓库里的默认密钥等于没有密钥。
+
+| 变量 | 作用 |
+|------|------|
+| `JWT_SECRET` | 用户令牌的签发与校验 |
+| `PAYMENT_CALLBACK_SECRET` | 支付回调的 HMAC 验签 |
+| `INTERNAL_TOKEN` | 服务间调用的身份凭证：网关注入 `X-Internal-Token`，下游校验通过才认 `X-User-Id` |
+
+**为什么写成文件而不是每次 `export`**：`JWT_SECRET` 必须让所有服务拿到**同一个值**。
+按"每个终端各执行一次 `openssl rand`"来启动，gateway 与 auth-service 会拿到不同的密钥——
 症状是「登录成功，但之后所有接口 401」，而 token 本身完全正常（拿到 ai-service 的 MCP 端点
-甚至能验签通过），排查成本极高。`JWT_SECRET` 刻意不设默认值：写在仓库里的默认密钥等于
-没有密钥，读过源码的人都能离线自签 Token；缺失时服务拒绝启动。
+甚至能验签通过），排查成本极高。
 
 启动日志会打印**密钥指纹**（如 `[JWT] 密钥指纹=53700840`），各服务一致即说明配对了。
+
+> **调试提示**：带了 `INTERNAL_TOKEN` 之后，直连服务端口（9001-9006）调用需要身份的接口会被拒
+> （401「缺少服务间调用凭证」）——这正是它要防的。要直连调试就自己带上这个头：
+> `curl -H "X-User-Id: u1001" -H "X-Internal-Token: $INTERNAL_TOKEN" http://127.0.0.1:9003/orders`
 
 模型相关的变量见下方「AI 能力所需的模型配置」，也可以一并写进 `.env.local`。
 
