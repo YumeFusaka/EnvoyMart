@@ -1,7 +1,9 @@
 package yumefusaka.envoymart.agent.memory;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 

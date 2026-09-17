@@ -31,10 +31,31 @@ public class ProductSearchService {
         this.elasticsearchOperations = elasticsearchOperations;
     }
 
+    /** ES 的 max_result_window 默认就是 10000，from+size 超过它查询直接失败。 */
+    private static final int MAX_RESULT_WINDOW = 10_000;
+    private static final int MAX_PAGE_SIZE = 100;
+
     /**
      * 多字段语义搜索：商品名、副标题、描述、分类、品牌
+     * <p>
+     * 分页参数在这里校验，而不是直接交给 {@code PageRequest.of} 和 ES。原先两个参数都是裸的：
+     * {@code page=-1} / {@code size=0} 会被 Spring Data 拒绝并抛出它自己的文案
+     * （"Page index must not be less than zero"），{@code size=10001} 又会撞上 ES 的
+     * max_result_window 报 "all shards failed"。两种情况都以 code=500 的形式回给调用方，
+     * 而且这个接口<b>匿名可达</b>——分不清是参数写错了还是服务端挂了，还顺带把
+     * Spring Data 与 ES 的内部消息读了出去。
      */
     public List<ProductResponse> search(String keyword, String category, int page, int size) {
+        if (page < 0) {
+            throw new IllegalArgumentException("页码不能为负");
+        }
+        if (size < 1 || size > MAX_PAGE_SIZE) {
+            throw new IllegalArgumentException("每页条数需在 1 到 " + MAX_PAGE_SIZE + " 之间");
+        }
+        if ((long) page * size >= MAX_RESULT_WINDOW) {
+            throw new IllegalArgumentException("页码超出可检索范围，请缩小范围或改用分类筛选");
+        }
+
         BoolQuery.Builder boolBuilder = new BoolQuery.Builder();
 
         // 关键词多字段匹配
@@ -103,6 +124,7 @@ public class ProductSearchService {
                 .image(index.getImage())
                 .salesCopy(index.getSalesCopy())
                 .description(index.getDescription())
+                .tags(ProductResponse.splitTags(index.getTags()))
                 .build();
     }
 }

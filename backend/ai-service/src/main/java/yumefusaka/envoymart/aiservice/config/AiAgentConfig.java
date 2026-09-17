@@ -20,6 +20,7 @@ import yumefusaka.envoymart.agent.llm.MockLLMProvider;
 import yumefusaka.envoymart.agent.memory.EpisodicMemory;
 import yumefusaka.envoymart.agent.memory.UserProfileStore;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
+import yumefusaka.envoymart.agent.memory.ProfileRepository;
 import yumefusaka.envoymart.agent.memory.ShortTermMemory;
 import yumefusaka.envoymart.agent.rag.*;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
@@ -119,10 +120,15 @@ public class AiAgentConfig {
         return new EpisodicMemory(memoryVectorStore);
     }
 
-    /** 用户画像存储 —— 固定槽位、覆盖式更新，按 userId 隔离 */
+    /**
+     * 用户画像存储 —— 固定槽位、覆盖式更新，按 userId 隔离。
+     * <p>
+     * 挂上 {@link ProfileRepository}（Redis 实现）后重启不丢，与写在向量库里的情节记忆对称。
+     * 仓库不可用时 {@code UserProfileStore} 内部会兜住并降级为纯内存，不影响对话。
+     */
     @Bean
-    public UserProfileStore userProfileStore() {
-        return new UserProfileStore();
+    public UserProfileStore userProfileStore(ProfileRepository profileRepository) {
+        return new UserProfileStore(profileRepository);
     }
 
     @Bean

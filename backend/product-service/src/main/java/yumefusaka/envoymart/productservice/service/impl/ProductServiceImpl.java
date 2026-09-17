@@ -1,12 +1,15 @@
 package yumefusaka.envoymart.productservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import yumefusaka.envoymart.productservice.entity.ProductEntity;
 import yumefusaka.envoymart.productservice.mapper.ProductMapper;
 import yumefusaka.envoymart.productservice.model.ProductResponse;
 import yumefusaka.envoymart.productservice.model.StockDeductRequest;
+import yumefusaka.envoymart.productservice.search.ProductSyncService;
 import yumefusaka.envoymart.productservice.service.ProductService;
 
 import java.util.Arrays;
@@ -15,16 +18,21 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 public class ProductServiceImpl implements ProductService {
 
     private final ProductMapper productMapper;
     private final ProductCacheService productCacheService;
+    /** 可能不注册（{@code product.search.sync-on-startup=false} 时），所以用 ObjectProvider 而不是直接注入 */
+    private final ObjectProvider<ProductSyncService> searchSync;
 
     public ProductServiceImpl(ProductMapper productMapper,
-                              ProductCacheService productCacheService) {
+                              ProductCacheService productCacheService,
+                              ObjectProvider<ProductSyncService> searchSync) {
         this.productMapper = productMapper;
         this.productCacheService = productCacheService;
+        this.searchSync = searchSync;
     }
 
     @Override
@@ -77,6 +85,7 @@ public class ProductServiceImpl implements ProductService {
                     : entity.getName() + " 库存不足");
         }
         productCacheService.evictProductCache(request.getProductId());
+        syncSearchIndex(request.getProductId());
     }
 
     @Override
@@ -86,6 +95,33 @@ public class ProductServiceImpl implements ProductService {
             throw new IllegalArgumentException("商品不存在：" + request.getProductId());
         }
         productCacheService.evictProductCache(request.getProductId());
+        syncSearchIndex(request.getProductId());
+    }
+
+    /**
+     * 把变更后的库存写回搜索索引。
+     * <p>
+     * 索引原先只在 {@code @PostConstruct} 里全量灌一次，运行期的库存变更永远不写回：
+     * 实测扣减 5 件后 {@code GET /products/1} 返回 115，而 {@code /products/search} 仍返回 120，
+     * 同一件商品两个接口给出不同库存，要等到下次重启全量同步才被纠正。索引里的 stock
+     * 会被前端拿去做库存提示和加购联动，长期失真比"干脆没有这个字段"更糟。
+     * <p>
+     * 同步失败只记日志：搜索索引是派生数据，ES 抖动不该让扣库存这种核心操作跟着失败。
+     * 漏掉的那次由下次启动的全量同步兜底。
+     */
+    private void syncSearchIndex(Long productId) {
+        ProductSyncService sync = searchSync.getIfAvailable();
+        if (sync == null) {
+            return;
+        }
+        try {
+            ProductEntity entity = productMapper.selectById(productId);
+            if (entity != null) {
+                sync.syncOne(entity);
+            }
+        } catch (Exception e) {
+            log.warn("同步商品 {} 到搜索索引失败: {}", productId, e.getMessage());
+        }
     }
 
     private ProductEntity requireEntity(Long id) {
@@ -127,7 +163,7 @@ public class ProductServiceImpl implements ProductService {
                 .image(entity.getImage())
                 .salesCopy(entity.getSalesCopy())
                 .description(entity.getDescription())
-                .tags(entity.getTags() == null ? List.of() : Arrays.stream(entity.getTags().split(",")).map(String::trim).toList())
+                .tags(ProductResponse.splitTags(entity.getTags()))
                 .build();
     }
 
