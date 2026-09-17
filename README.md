@@ -149,29 +149,56 @@ flowchart TD
 
 ## 快速启动
 
+依赖 **JDK 21**（Boot 4.1 最低 17，本项目用 21）。注意 `JAVA_HOME` 指向更低版本时会报
+`UnsupportedClassVersionError: class file version 65.0`——看起来像构建坏了，其实是运行时 JDK 比编译时低。
+
+### 1. 准备密钥（只做一次）
+
 ```bash
-# 0. 依赖 JDK 21（Boot 4.1 最低 17，本项目用 21）
+cd backend
+printf 'export JWT_SECRET="%s"\n' "$(openssl rand -base64 48 | tr -d '\n')" > .env.local
+printf 'export PAYMENT_CALLBACK_SECRET="%s"\n' "$(openssl rand -hex 32)" >> .env.local
+```
 
-# 0.1 必须提供 JWT 密钥（HS256 要求 ≥ 32 字节）
-#     刻意不设默认值：写在仓库里的默认密钥等于没有密钥，任何读过源码的人都能离线自签 Token。
-#     缺失时服务会拒绝启动并给出提示。
-export JWT_SECRET="$(openssl rand -base64 48)"
+**为什么是文件而不是每次 `export`**：`JWT_SECRET` 必须让所有服务拿到**同一个值**。
+如果按"每个终端各执行一次 `openssl rand`"来启动，gateway 与 auth-service 会拿到不同的密钥——
+症状是「登录成功，但之后所有接口 401」，而 token 本身完全正常（拿到 ai-service 的 MCP 端点
+甚至能验签通过），排查成本极高。`JWT_SECRET` 刻意不设默认值：写在仓库里的默认密钥等于
+没有密钥，读过源码的人都能离线自签 Token；缺失时服务拒绝启动。
 
-# 1. 基础设施（可选，缺失时服务会自动降级）
-docker compose up -d nacos redis rabbitmq mysql elasticsearch milvus
+启动日志会打印**密钥指纹**（如 `[JWT] 密钥指纹=53700840`），各服务一致即说明配对了。
 
-# 2. 后端
+模型相关的变量见下方「AI 能力所需的模型配置」，也可以一并写进 `.env.local`。
+
+### 2. 启动
+
+```bash
+docker compose up -d          # 基础设施（可选，缺失时服务自动降级）
+
 cd backend
 mvn clean install -DskipTests
+./run-local.sh                # 启动全部服务并等待就绪
+./run-local.sh stop           # 停止全部
+./run-local.sh auth-service   # 只启动某一个
+```
 
-# 启动网关与业务服务
-mvn -pl gateway-service spring-boot:run
-mvn -pl auth-service spring-boot:run
-mvn -pl product-service spring-boot:run
-mvn -pl order-service spring-boot:run
-mvn -pl ai-service spring-boot:run
+`run-local.sh` 会从 `backend/.env.local` 读取密钥并统一注入每个服务，
+所以你不需要在多个终端里手动对齐环境变量。
 
-# 3. 前端
+<details>
+<summary>手动逐个启动（不用脚本时）</summary>
+
+```bash
+cd backend
+set -a; source .env.local; set +a     # 每个服务都用同一个 .env.local
+mvn -pl gateway-service spring-boot:run   # 依次启动 gateway / auth / product / order / ai / payment / review
+```
+
+</details>
+
+### 3. 前端
+
+```bash
 cd frontend && pnpm install && pnpm dev
 ```
 
@@ -183,7 +210,7 @@ export LLM_API_KEY=<DeepSeek Key>          # 对话
 export LLM_MODEL=deepseek-flash
 export EMBEDDING_API_KEY=<百炼 Key>        # 向量化与重排
 export LLM_EMBEDDING_MODEL=text-embedding-v4
-# 可选：接入 Milvus 作为向量库
+# 可选：接入 Milvus 作为向量库（run-local.sh 已为 ai-service 带上这个 profile）
 export SPRING_PROFILES_ACTIVE=milvus
 
 # 支付回调验签密钥（不配则回调一律被拒——资金入口 fail-closed，不会放宽）

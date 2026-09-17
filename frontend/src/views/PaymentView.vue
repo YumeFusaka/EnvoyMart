@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { createPayment } from '@/api/payment'
 
@@ -9,11 +9,21 @@ const router = useRouter()
 const paying = ref(false)
 const done = ref(false)
 
+/**
+ * URL 里的订单号与金额只用作**进入页面时的占位**。
+ * 真正生效的是支付单创建后服务端返回的那份——后端以订单服务为准，
+ * 不再采信请求体里的金额，所以这里的显示也必须跟着服务端走，
+ * 否则页面写着 0.01 元、实际建出来的是 79 元，用户不知道该信哪个。
+ */
 const orderInfo = {
   orderId: Number(route.query.orderId),
   orderNo: String(route.query.orderNo || ''),
   amount: Number(route.query.amount || 0),
 }
+
+const confirmed = ref<{ orderNo: string; amount: number } | null>(null)
+const displayNo = computed(() => confirmed.value?.orderNo ?? orderInfo.orderNo)
+const displayAmount = computed(() => confirmed.value?.amount ?? orderInfo.amount)
 
 const methods = ['微信支付', '支付宝', '银联云闪付']
 const selected = ref('微信支付')
@@ -25,19 +35,17 @@ const selected = ref('微信支付')
  * 但不接真实渠道：支付单停在 PENDING，等渠道回调推进。
  * 页面上如实说明"演示环境不产生真实扣款"，不谎报支付成功——
  * 之前这里是个纯 setTimeout 的假成功，点了不看后端是发现不了的。
+ *
+ * 失败提示交给 axios 拦截器统一弹（它会带上后端返回的 msg），
+ * 这里再弹一次会出现两条互相矛盾的提示。
  */
 async function handlePay() {
   paying.value = true
   try {
-    await createPayment({
-      orderId: orderInfo.orderId,
-      orderNo: orderInfo.orderNo,
-      amount: orderInfo.amount,
-    })
+    const res = await createPayment({ orderId: orderInfo.orderId })
+    confirmed.value = { orderNo: res.data.data.orderNo, amount: res.data.data.amount }
     done.value = true
-    ElMessage.success(`订单 ${orderInfo.orderNo} 支付单已创建（演示环境，不产生真实扣款）`)
-  } catch {
-    ElMessage.error('支付单创建失败，请稍后重试')
+    ElMessage.success(`订单 ${displayNo.value} 支付单已创建（演示环境，不产生真实扣款）`)
   } finally {
     paying.value = false
   }
@@ -61,11 +69,11 @@ async function handlePay() {
         <h3>订单摘要</h3>
         <div class="summary-row">
           <span>订单编号</span>
-          <strong>{{ orderInfo.orderNo }}</strong>
+          <strong>{{ displayNo }}</strong>
         </div>
         <div class="summary-row total">
           <span>应付金额</span>
-          <strong>¥{{ orderInfo.amount.toFixed(2) }}</strong>
+          <strong>¥{{ displayAmount.toFixed(2) }}</strong>
         </div>
       </div>
 
@@ -86,7 +94,7 @@ async function handlePay() {
           type="primary"
           @click="handlePay"
         >
-          {{ paying ? '支付处理中...' : `确认支付 ¥${orderInfo.amount.toFixed(2)}` }}
+          {{ paying ? '支付处理中...' : `确认支付 ¥${displayAmount.toFixed(2)}` }}
         </el-button>
       </div>
 
@@ -94,7 +102,7 @@ async function handlePay() {
         <el-result
           icon="success"
           title="支付单已创建"
-          :sub-title="`订单 ${orderInfo.orderNo} 已生成支付单，等待渠道回调确认（演示环境，不产生真实扣款）`"
+          :sub-title="`订单 ${displayNo} 已生成支付单，等待渠道回调确认（演示环境，不产生真实扣款）`"
         >
           <template #extra>
             <el-button type="primary" @click="router.push('/orders')">查看订单</el-button>
