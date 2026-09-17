@@ -7,7 +7,9 @@
   <img src="https://img.shields.io/badge/Java-21-589636" />
   <img src="https://img.shields.io/badge/Spring%20Boot-4.1.1-6DB33F" />
   <img src="https://img.shields.io/badge/Spring%20Cloud-2025.1.3-6DB33F" />
-  <img src="https://img.shields.io/badge/Spring%20AI-2.0.1-6DB33F" />
+  <img src="https://img.shields.io/badge/LangChain4j-1.20.0-1C3C3C" />
+  <img src="https://img.shields.io/badge/LangGraph4j-1.8.27-1C3C3C" />
+  <img src="https://img.shields.io/badge/MCP%20SDK-2.0.1-1C3C3C" />
   <img src="https://img.shields.io/badge/Vue-3.5-4FC08D" />
   <img src="https://img.shields.io/badge/license-MIT-blue" />
 </p>
