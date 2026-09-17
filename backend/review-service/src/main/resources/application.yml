@@ -18,6 +18,9 @@ spring:
         enabled: ${NACOS_ENABLED:false}
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
 
+services:
+  order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
+
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true

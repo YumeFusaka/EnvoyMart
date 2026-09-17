@@ -43,6 +43,16 @@ public class ProductSyncService {
         log.info("ES 商品索引同步完成，共 {} 条", indices.size());
     }
 
+    /**
+     * 同步单个商品的索引 —— 库存变更后调用。
+     * <p>
+     * 只靠启动时的全量同步不够：索引里的 stock 会停在"服务启动那一刻"，而运行期的
+     * 扣减/回补一直在发生。{@code save} 走 upsert 语义（主键相同即覆盖），重复调用安全。
+     */
+    public void syncOne(ProductEntity entity) {
+        searchRepository.save(toIndex(entity));
+    }
+
     private ProductIndex toIndex(ProductEntity entity) {
         return ProductIndex.builder()
                 .id(entity.getId())

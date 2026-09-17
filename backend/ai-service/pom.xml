@@ -74,6 +74,13 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-openfeign</artifactId>
         </dependency>
+        <!-- 用户画像的持久化。情节记忆本就在 Milvus 里持久，画像原先只在进程内存里，
+             重启即丢——两轨对不上：助手能记得"你上次抱怨过物流慢"，却说不出"你的预算多少"。
+             Redis 已是本项目的基础设施（order/product 都在用），复用比另起一套存储更省事。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>

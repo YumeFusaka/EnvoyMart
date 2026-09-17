@@ -4,6 +4,12 @@ server:
 spring:
   application:
     name: ai-service
+  # 用户画像的持久化（见 RedisProfileRepository）。Redis 不可用时画像读写会失败，
+  # 但 UserProfileStore 会兜住并降级为纯内存，对话本身不受影响。
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
   # 关闭本项目用不到的自动配置：
   # - Milvus：本地无 Milvus 时走内存向量库降级，启用方式 SPRING_PROFILES_ACTIVE=milvus
   # - OpenAI 的音频/图像/审核：它们各自要求凭证，而对话与向量化的 Key 已拆分配置，

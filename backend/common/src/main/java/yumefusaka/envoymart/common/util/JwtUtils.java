@@ -6,7 +6,10 @@ import io.jsonwebtoken.security.Keys;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Date;
+import java.util.HexFormat;
 import java.util.Map;
 
 public final class JwtUtils {
@@ -41,6 +44,28 @@ public final class JwtUtils {
      */
     public static void validateSecretKey(String signKey) {
         secretKey(signKey);
+    }
+
+    /**
+     * 密钥指纹 —— 用于核对多个服务是否配了<b>同一个</b>密钥，而不泄漏密钥本身。
+     * <p>
+     * 网关与 auth-service 各自从环境变量读 {@code JWT_SECRET}。如果各服务是在不同 shell 里
+     * 分别启动的，而每个 shell 都重新执行过一次随机生成（README 里那句
+     * {@code export JWT_SECRET="$(openssl rand -base64 48)"} 就会这样），
+     * 两个服务拿到的就是两个不同的密钥。症状是「登录成功，但之后所有接口 401」，
+     * 网关日志只有一行 Token parse failed——排查成本很高，因为 token 看起来完全正常，
+     * 它在别的服务（如 ai-service 的 MCP 端点）甚至能验签通过。
+     * <p>
+     * 指纹相同即同一密钥，不同即配错了。日志里对一眼就能定位，不用去猜进程环境变量。
+     */
+    public static String fingerprint(String signKey) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(signKey == null ? new byte[0] : signKey.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest, 0, 4);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("JVM 不支持 SHA-256", e);
+        }
     }
 
     private static SecretKey secretKey(String signKey) {
