@@ -39,7 +39,16 @@ public class InternalCallFilter extends OncePerRequestFilter {
 
     private final String expectedToken;
 
-    public InternalCallFilter(@Value("${envoymart.internal.token:}") String expectedToken) {
+    /**
+     * 直接读环境变量名而不是走 {@code envoymart.internal.token} 配置项。
+     * <p>
+     * 这不是风格选择，是踩过才写下来的：{@code @Value("${envoymart.internal.token:}")}
+     * 对应的环境变量是 {@code ENVOYMART_INTERNAL_TOKEN}，而部署脚本注入的是
+     * {@code INTERNAL_TOKEN}——名字对不上，于是"配了却读不到"，表现为<b>所有服务启动即失败</b>，
+     * 报的却是"未配置"。项目里 {@code JWT_SECRET} 没这个问题，是因为它在 yml 里显式写了
+     * {@code secret-key: ${JWT_SECRET:}} 做了一层映射；这里没有那层，所以直接引用环境变量名。
+     */
+    public InternalCallFilter(@Value("${INTERNAL_TOKEN:}") String expectedToken) {
         this.expectedToken = InternalAuth.requireValid(expectedToken);
     }
 
