@@ -50,7 +50,11 @@ class RetrievalComparisonTest {
         // 两种对齐方式会得到一模一样的结果。真实切片的 chunkId 是 docId_index，两者不同。
         InMemoryVectorStore vectorStore = new InMemoryVectorStore(
                 new DashScopeEmbeddingService(apiKey, EMBEDDING_MODEL));
-        DashScopeReranker reranker = new DashScopeReranker(apiKey, RERANK_MODEL);
+        // 超时放宽到 30 秒：线上默认 5 秒是给单次交互用的，评测要连续打 240 次，
+        // 服务端在密集请求下响应变慢就会超时——而 HttpTimeoutException 的 getMessage()
+        // 返回 null，降级原因看上去"没有原因"，排查时极易被误读成"服务端返回了坏数据"。
+        DashScopeReranker reranker = new DashScopeReranker(
+                apiKey, RERANK_MODEL, null, java.time.Duration.ofSeconds(30));
         Retriever hybrid = new HybridRetriever(vectorStore, RetrievalFixtures.DOCS);
         Retriever hybridWithRerank = new HybridRetriever(
                 vectorStore, RetrievalFixtures.DOCS, reranker);
@@ -81,7 +85,9 @@ class RetrievalComparisonTest {
             System.out.println("   降级等价于不重排 → 本轮的「混合+重排」数字不可复现，不代表重排的真实效果。");
         }
 
-        assertThat(RetrievalFixtures.allCases()).hasSize(30);
+        // 夹具自检：三档必须等量，否则分档指标不可横向比较
+        assertThat(RetrievalFixtures.LEXICAL_CASES).hasSameSizeAs(RetrievalFixtures.PARAPHRASE_CASES);
+        assertThat(RetrievalFixtures.PARAPHRASE_CASES).hasSameSizeAs(RetrievalFixtures.HARD_CASES);
         assertThat(success)
                 .as("全部降级意味着这一档实际是「混合」的副本，不能当作重排结果")
                 .isGreaterThan(0);

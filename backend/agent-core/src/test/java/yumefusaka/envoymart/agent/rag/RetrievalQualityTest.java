@@ -23,8 +23,9 @@ class RetrievalQualityTest {
 
         System.out.println("[检索评测-字面] " + report);
 
-        assertThat(report.hitRate()).isGreaterThanOrEqualTo(0.8);
-        assertThat(report.mrr()).isGreaterThanOrEqualTo(0.7);
+        // 实测 0.975 / 0.883（90 篇语料下不再是满分——同主题的多篇文档开始产生干扰）
+        assertThat(report.hitRate()).isGreaterThanOrEqualTo(0.90);
+        assertThat(report.mrr()).isGreaterThanOrEqualTo(0.80);
     }
 
     @Test
@@ -55,10 +56,12 @@ class RetrievalQualityTest {
                 RetrievalFixtures.DOCS.size(), TOP_K,
                 RetrievalFixtures.randomBaselineHitRate(RetrievalFixtures.DOCS.size(), TOP_K));
 
-        assertThat(report.caseCount()).isEqualTo(30);
-        assertThat(report.hitRate()).isGreaterThanOrEqualTo(0.6);
-        assertThat(report.mrr()).isGreaterThanOrEqualTo(0.58);
-        assertThat(report.ndcg()).isGreaterThanOrEqualTo(0.55);
+        assertThat(report.caseCount()).isEqualTo(RetrievalFixtures.allCases().size());
+        // 门槛按 90 篇语料 / 120 条样本的实测值（0.633 / 0.565 / 0.572）下留余量设定。
+        // 关键词路无外部依赖、结果确定，余量留的是"分词或融合策略改动带来的正常波动"。
+        assertThat(report.hitRate()).isGreaterThanOrEqualTo(0.58);
+        assertThat(report.mrr()).isGreaterThanOrEqualTo(0.52);
+        assertThat(report.ndcg()).isGreaterThanOrEqualTo(0.52);
     }
 
     @Test
