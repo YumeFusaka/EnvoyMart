@@ -1,6 +1,6 @@
 <p align="center">
   <strong>EnvoyMart · 智能电商平台</strong><br/>
-  Spring Cloud 微服务 + Spring AI Agent + Vue 3 全栈
+  Spring Cloud 微服务 + LangChain4j Agent + Vue 3 全栈
 </p>
 
 <p align="center">
@@ -16,14 +16,14 @@
 
 ## 项目简介
 
-EnvoyMart 是基于 Spring Cloud Alibaba + Spring AI + Vue 3 的智能电商平台，覆盖用户、商品、订单、支付、物流、评价等核心业务，并在其上构建 Agent 能力：RAG 知识问答、多步工具编排、长期记忆、MCP 工具发布。
+EnvoyMart 是基于 Spring Cloud Alibaba + LangChain4j + Vue 3 的智能电商平台，覆盖用户、商品、订单、支付、物流、评价等核心业务，并在其上构建 Agent 能力：RAG 知识问答、多步工具编排、长期记忆、MCP 工具发布。
 
 **工程重点不在于"接了个大模型"，而在于让 Agent 可观测、可评测、可降级。**
 
 - **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个 Maven 模块
 - **网关限流**：Sentinel 按路由分档限流（AI 接口 5rps ~ 商品接口 100rps），阈值按「一次请求的代价」定，超限返回 429 与可读提示
 - **Agent 编排层**：自研 `agent-core`（入口守卫 / LangGraph4j 执行图 / 循环护栏 / 工具注册 / 记忆 / RAG）
-- **模型接入层**：Spring AI 2.0 `ChatModel`，OpenAI 兼容协议；**对话走 DeepSeek V4.1 Flash、向量化与重排走百炼**（DeepSeek 无 embeddings 端点，故按能力拆供应商）
+- **模型接入层**：LangChain4j `ChatModel` / `StreamingChatModel`，OpenAI 兼容协议；**对话走 DeepSeek V4.1 Flash、向量化与重排走百炼**（DeepSeek 无 embeddings 端点，故按能力拆供应商）
 - **检索**：BM25 + 向量混合召回 → RRF 融合 → gte-rerank 精排；带 Hit Rate / MRR / NDCG 评测
 - **记忆**：分两轨——结构化**用户画像**（固定槽位、覆盖式更新、全量注入）与**情节记忆**（自由文本、按 userId 隔离后语义召回）。冲突在写入时消解，过时按槽位类型分层处理
 - **MCP**：把订单、物流、商品、取消订单能力以 MCP 协议对外发布，端点带鉴权
@@ -104,9 +104,11 @@ flowchart TD
 
 **意图路由的分工**：模型判语义（"退货政策第 3 条"与"订单 3 我要退货"的区别是语义的），规则验参数齐备（消息里是否真的给了订单号）。模型不可用时完全退回规则。
 
-**循环护栏 LoopGuard**：一次请求一份，同时约束**图里的环**、**计划内步骤执行**与**框架驱动的 ReAct 工具循环**——后者经 Spring AI 的 `toolContext` 传进 `ToolCallback`，在调用点拦截。预算是工具调用总数、同一「工具+参数」重复次数、规划轮次三项。
+**循环护栏 LoopGuard**：一次请求一份，同时约束**图里的环**、**计划内步骤执行**与 **ReAct 工具循环**——最后一处就在 `LangChain4jLLMProvider` 的循环体内（护栏是循环里的局部变量，不经框架回调传递）。预算是工具调用总数、同一「工具+参数」重复次数、规划轮次三项。
 
-**工具循环落在哪**：Spring AI 2.0 起工具执行循环已从所有 `ChatModel` 上移除，只在 `ChatClient` 的 `ToolCallingAdvisor` 里存在——直接调 `ChatModel.call()` 时模型返回的 tool_call **不会被执行，也不报错**。所以 `LLMProvider` 分了两条路径：`chat()` 单次（规划/分类/抽取）与 `chatWithTools()` 完整循环（ReAct）。
+**工具循环落在哪**：**在 `LangChain4jLLMProvider` 自己的代码里**——LangChain4j 的 `ChatModel.chat()` 不执行工具，官方要求调用方自己跑往返，所以循环、护栏、结果回填都在一处。`LLMProvider` 分了两条路径：`chat()` 单次（规划/分类/抽取，本就不该有工具）与 `chatWithTools()` 完整循环（ReAct）。
+
+> （历史注记：本项目原用 Spring AI 2.0，它把工具执行循环收进 `ChatClient` 的 `ToolCallingAdvisor`——直接调 `ChatModel.call()` 时模型返回的 tool_call **不会被执行，也不报错**。那个静默失效的坑记在下面「踩过的坑」里。迁到 LangChain4j 后循环归调用方，"以为框架会执行"的误解空间从根上消失了。）
 
 **ACT 的并发**：计划里带 `dependsOn`，同层步骤并发执行、有依赖的等前置完成。这是 ReAct 结构上做不到的——它每步都要看上一步结果，天然串行。批内单步有 15s 超时，超时按步骤失败处理，不会把整轮对话挂住。
 
@@ -245,7 +247,7 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 |------|------|
 | 语言 | Java 21, TypeScript |
 | 微服务 | Spring Boot 4.1.1, Spring Cloud 2025.1.3, Spring Cloud Alibaba 2025.1.0.0 |
-| AI 框架 | Spring AI 2.0.1（ChatModel / Tool Calling / MCP Server / EmbeddingModel） |
+| AI 框架 | LangChain4j 1.20.0（ChatModel / StreamingChatModel / EmbeddingModel）+ MCP Java SDK 2.0.1 |
 | Agent 图 | LangGraph4j 1.8.27（LangGraph 的 Java 实现，零 Spring 依赖） |
 | Agent | 自研 agent-core：入口守卫、执行图编排、循环护栏、ToolRegistry |
 | 检索 | BM25 + 向量混合召回、RRF 融合、gte-rerank 精排、Hit Rate/MRR/NDCG 评测 |
@@ -268,7 +270,7 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 EnvoyMart/
 ├── docker-compose.yml
 ├── backend/
-│   ├── pom.xml                 # 聚合 POM（Boot 4.1.1 + Spring AI 2.0.1）
+│   ├── pom.xml                 # 聚合 POM（Boot 4.1.1 + LangChain4j 1.20.0）
 │   ├── Dockerfile
 │   ├── common/                 # Result / JWT / 异常处理 / 身份透传
 │   ├── gateway-service/
@@ -286,7 +288,7 @@ EnvoyMart/
 │   │       ├── flow/           # DeterministicFlow / IntentRouter
 │   │       ├── loop/           # LoopGuard / LoopBudget
 │   │       └── tool/           # Tool / ToolRegistry / MCP 适配
-│   └── ai-service/             # Agent 装配、Spring AI 接入、MCP Server、记忆与 RAG 实现
+│   └── ai-service/             # Agent 装配、LangChain4j 接入、MCP Server、记忆与 RAG 实现
 ├── frontend/
 │   └── src/                    # 页面 / 组件 / API / 状态管理
 └── docs/

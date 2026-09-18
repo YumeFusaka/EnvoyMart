@@ -1,14 +1,11 @@
 package yumefusaka.envoymart.aiservice.llm;
 
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.PlanStep;
 import yumefusaka.envoymart.agent.tool.Tool;
@@ -31,16 +28,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PlanParsingTest {
 
-    private SpringAiLLMProvider providerReturning(String json) {
+    private LangChain4jLLMProvider providerReturning(String json) {
         ChatModel stub = new ChatModel() {
             @Override
-            public ChatResponse call(Prompt prompt) {
-                return new ChatResponse(List.of(new Generation(new AssistantMessage(json))));
-            }
-
-            @Override
-            public ChatOptions getOptions() {
-                return ToolCallingChatOptions.builder().build();
+            public ChatResponse chat(ChatRequest request) {
+                return ChatResponse.builder().aiMessage(AiMessage.from(json)).build();
             }
         };
         ToolRegistry registry = new ToolRegistry();
@@ -66,7 +58,7 @@ class PlanParsingTest {
                 return ToolResult.builder().success(true).output("ok").build();
             }
         });
-        return new SpringAiLLMProvider(stub, registry,
+        return new LangChain4jLLMProvider(stub, null, registry,
                 LLMConfig.builder().model("stub").build(), new SimpleMeterRegistry());
     }
 

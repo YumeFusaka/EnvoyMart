@@ -36,6 +36,18 @@ public class McpAuthFilter extends OncePerRequestFilter {
 
     private static final String API_KEY_HEADER = "X-MCP-API-Key";
 
+    /**
+     * 认证结果在 request 上的键 —— 供 MCP 的 contextExtractor 取走。
+     * <p>
+     * <b>为什么不能只靠 {@link BaseContext}</b>：MCP 传输把工具执行调度到 Reactor 的
+     * boundedElastic 线程上，与这里的请求线程不是同一个，ThreadLocal 送不到工具调用点。
+     * 实测：本过滤器在 {@code http-nio-9004-exec-4} 记到 userId=u1001，
+     * 工具在 {@code boundedElastic-1} 解析到 null，需要身份的工具随即 fail-closed。
+     * <p>
+     * 挂在 request 上的值由 MCP SDK 随每次工具调用送达，与线程无关。
+     */
+    public static final String USER_ID_ATTRIBUTE = "envoymart.mcp.userId";
+
     private final String jwtSecret;
     private final String apiKey;
 
@@ -88,6 +100,7 @@ public class McpAuthFilter extends OncePerRequestFilter {
             Object userId = claims.get("id");
             if (userId != null) {
                 BaseContext.setCurrentId(String.valueOf(userId));
+                request.setAttribute(USER_ID_ATTRIBUTE, String.valueOf(userId));
                 log.debug("[MCP] 鉴权通过 userId={} thread={}", userId, Thread.currentThread().getName());
             }
             return true;

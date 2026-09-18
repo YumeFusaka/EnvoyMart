@@ -27,21 +27,32 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Spring AI：模型接入层（OpenAI 兼容协议，可指向 DashScope / DeepSeek / Ollama） -->
+        <!--
+            LangChain4j：模型接入层（OpenAI 兼容协议，可指向 DashScope / DeepSeek / Ollama）。
+            只引核心库、不引 langchain4j-spring-boot4-starter：starter 当前是 beta 线，
+            且其 POM pin 的是 Spring Boot 4.0.5（本项目 4.1.1）；核心库零 Spring 依赖，
+            手工装配反而更贴本模块既有风格（AiAgentConfig 本就是手工 new 的）。
+            也刻意不引 langchain4j 聚合包——需要的东西 open-ai 会传递带来。
+        -->
         <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-model-openai</artifactId>
-        </dependency>
-        <!-- 向量库：Milvus -->
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-vector-store-milvus</artifactId>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
         </dependency>
 
-        <!-- MCP Server：把业务能力以 MCP 协议对外发布 -->
+        <!-- 向量库：Milvus。用 v2 而非 legacy v1——后者官方标注基于已废弃的 SDK -->
         <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-milvus-v2</artifactId>
+        </dependency>
+
+        <!--
+            MCP Server：把业务能力以 MCP 协议对外发布。
+            LangChain4j 只提供 MCP client，server 端没有对应物，用官方 Java SDK。
+        -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>${mcp.sdk.version}</version>
         </dependency>
 
         <!-- 可观测性：Micrometer Tracing -> OTLP（可接 Langfuse / Jaeger / Tempo） -->

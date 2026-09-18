@@ -67,6 +67,16 @@
             <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
+        <!--
+            服务间凭证注入要用到 feign 的 RequestInterceptor 接口。
+            用 optional：common 被 7 个模块依赖，但只有真正发 Feign 请求的几个需要它，
+            网关（WebFlux、不带 Feign）不该被塞进这个依赖。配 @ConditionalOnClass 条件装配。
+        -->
+        <dependency>
+            <groupId>io.github.openfeign</groupId>
+            <artifactId>feign-core</artifactId>
+            <optional>true</optional>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
