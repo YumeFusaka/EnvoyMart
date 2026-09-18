@@ -31,7 +31,7 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
     private final String internalToken;
 
     public JwtGatewayFilter(JwtProperties jwtProperties,
-                            @Value("${envoymart.internal.token:}") String internalToken) {
+                            @Value("${INTERNAL_TOKEN:}") String internalToken) {
         this.jwtProperties = jwtProperties;
         // 网关是注入方：拿不到令牌就无法把身份可信地传给下游，同样拒绝启动
         this.internalToken = InternalAuth.requireValid(internalToken);
