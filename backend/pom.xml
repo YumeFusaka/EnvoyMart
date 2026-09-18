@@ -29,7 +29,9 @@
         <spring.boot.version>4.1.1</spring.boot.version>
         <spring.cloud.version>2025.1.3</spring.cloud.version>
         <spring.cloud.alibaba.version>2025.1.0.0</spring.cloud.alibaba.version>
-        <spring.ai.version>2.0.1</spring.ai.version>
+        <!-- LangChain4j：AI 接入层。核心是正式版，Milvus/MCP 等集成模块仍在 beta 线 -->
+        <langchain4j.version>1.20.0</langchain4j.version>
+        <mcp.sdk.version>2.0.1</mcp.sdk.version>
         <mybatis.plus.version>3.5.17</mybatis.plus.version>
         <redisson.version>4.7.0</redisson.version>
         <jjwt.version>0.13.0</jjwt.version>
@@ -61,10 +63,15 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!--
+                必须在 langgraph4j 之前生效：langgraph4j 1.8.27 的 parent pom 把
+                langchain4j 版本 pin 在 1.19.0，会作为传递依赖带进来。
+                这里 import 的 BOM 覆盖传递依赖版本，把它拉到 1.20.0。
+            -->
             <dependency>
-                <groupId>org.springframework.ai</groupId>
-                <artifactId>spring-ai-bom</artifactId>
-                <version>${spring.ai.version}</version>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-bom</artifactId>
+                <version>${langchain4j.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

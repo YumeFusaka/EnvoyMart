@@ -1,7 +1,13 @@
 package yumefusaka.envoymart.aiservice.config;
 
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallbackProvider;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import dev.langchain4j.store.embedding.milvus.v2.MilvusV2EmbeddingStore;
+import io.milvus.v2.common.ConsistencyLevel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
@@ -28,38 +34,123 @@ import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
 import yumefusaka.envoymart.aiservice.flow.AfterSaleFlow;
+import yumefusaka.envoymart.aiservice.rag.LangChain4jEmbeddingService;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
-import yumefusaka.envoymart.aiservice.rag.SpringAiEmbeddingService;
-import yumefusaka.envoymart.aiservice.llm.SpringAiLLMProvider;
+import yumefusaka.envoymart.aiservice.llm.LangChain4jLLMProvider;
 import yumefusaka.envoymart.aiservice.tool.CancelOrderTool;
 import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
 import io.micrometer.core.instrument.MeterRegistry;
 import yumefusaka.envoymart.aiservice.tool.MicrometerToolCallListener;
-import yumefusaka.envoymart.aiservice.tool.ToolRegistryCallbackProvider;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
  * Agent 框架的 Spring 配置 —— 将自研 agent-core 组件注入 Spring 容器。
  * <p>
- * 所有组件都可替换：切换 MockLLMProvider → OpenaiLLMProvider 即可接入真实模型。
+ * 所有组件都可替换：切换 MockLLMProvider → LangChain4jLLMProvider 即可接入真实模型。
+ * <p>
+ * <b>这里刻意不用 langchain4j-spring-boot4-starter</b>，而是手工构造模型实例：
+ * 一是本项目只需要核心库（它零 Spring 依赖），二是装配方式与本文件既有的手工风格一致，
+ * 三是避开了 starter 当前所处的 beta 线与其 POM 里 pin 的 Spring Boot 版本。
  */
 @Configuration
 public class AiAgentConfig {
 
+    // ==================== 模型接入 ====================
+
     /**
-     * 配了模型 API Key 就走 Spring AI 接入层；没配则回退 Mock，
+     * 对话模型。留空 API Key 时下面整个 bean 不创建，服务回退到 {@link MockLLMProvider}，
      * 保证本地无 Key 也能启动并跑通链路。
      */
     @Bean
-    @ConditionalOnExpression("'${spring.ai.openai.chat.api-key:}'.length() > 0")
-    public LLMProvider springAiLLMProvider(ChatModel chatModel, ToolRegistry toolRegistry, LLMConfig llmConfig,
-                                           MeterRegistry meterRegistry) {
-        return new SpringAiLLMProvider(chatModel, toolRegistry, llmConfig, meterRegistry);
+    @ConditionalOnExpression("'${envoymart.llm.api-key:}'.length() > 0")
+    public ChatModel chatModel(@Value("${envoymart.llm.api-key}") String apiKey,
+                               @Value("${envoymart.llm.base-url}") String baseUrl,
+                               @Value("${envoymart.llm.model}") String model,
+                               @Value("${envoymart.llm.timeout-ms:60000}") long timeoutMs,
+                               @Value("${envoymart.llm.thinking:}") String thinking) {
+        return OpenAiChatModel.builder()
+                .apiKey(apiKey)
+                .baseUrl(baseUrl)
+                .modelName(model)
+                .timeout(Duration.ofMillis(timeoutMs))
+                .customParameters(thinkingParameters(thinking))
+                .build();
+    }
+
+    /**
+     * 流式对话模型。
+     * <p>
+     * {@code accumulateToolCallId(false)} 是接 DeepSeek / Qwen 这类端点的必需项：
+     * 它们在每个 chunk 里都携带完整的 tool call id，默认的累加行为会把 id 重复拼接，
+     * 导致回填的工具结果对不上请求。
+     */
+    @Bean
+    @ConditionalOnExpression("'${envoymart.llm.api-key:}'.length() > 0")
+    public StreamingChatModel streamingChatModel(@Value("${envoymart.llm.api-key}") String apiKey,
+                                                 @Value("${envoymart.llm.base-url}") String baseUrl,
+                                                 @Value("${envoymart.llm.model}") String model,
+                                                 @Value("${envoymart.llm.timeout-ms:60000}") long timeoutMs,
+                                                 @Value("${envoymart.llm.thinking:}") String thinking) {
+        return OpenAiStreamingChatModel.builder()
+                .apiKey(apiKey)
+                .baseUrl(baseUrl)
+                .modelName(model)
+                .timeout(Duration.ofMillis(timeoutMs))
+                .accumulateToolCallId(false)
+                .customParameters(thinkingParameters(thinking))
+                .build();
+    }
+
+    /**
+     * DeepSeek 默认开启思考模式，会返回 reasoning_content 并占用输出 token。
+     * Agent 的调用多为分类/规划/合成，不需要深度推理，关掉以降低延迟与成本。
+     */
+    private Map<String, Object> thinkingParameters(String thinking) {
+        return (thinking == null || thinking.isBlank())
+                ? Map.of()
+                : Map.of("thinking", Map.of("type", thinking));
+    }
+
+    /**
+     * 向量化模型 —— 与对话模型分开配置：两者可以来自不同供应商。
+     * DeepSeek 只有 Chat Completions、没有 Embeddings 端点，所以向量化留在百炼。
+     */
+    @Bean
+    @ConditionalOnExpression("'${envoymart.embedding.api-key:}'.length() > 0")
+    public EmbeddingModel embeddingModel(@Value("${envoymart.embedding.api-key}") String apiKey,
+                                         @Value("${envoymart.embedding.base-url}") String baseUrl,
+                                         @Value("${envoymart.embedding.model}") String model,
+                                         @Value("${envoymart.embedding.dimension:1024}") int dimension,
+                                         @Value("${envoymart.embedding.timeout-ms:30000}") long timeoutMs) {
+        return OpenAiEmbeddingModel.builder()
+                .apiKey(apiKey)
+                .baseUrl(baseUrl)
+                .modelName(model)
+                .dimensions(dimension)
+                .timeout(Duration.ofMillis(timeoutMs))
+                .build();
+    }
+
+    /**
+     * 配了模型 Key 就走 LangChain4j 接入层；没配则回退 Mock。
+     * <p>
+     * 条件按<b>配置项</b>判断而不是 {@code @ConditionalOnBean(ChatModel.class)}：
+     * 后者在同一个配置类内依赖 bean 定义的注册顺序，评估可能早于 chatModel 注册，结果不可靠。
+     */
+    @Bean
+    @ConditionalOnExpression("'${envoymart.llm.api-key:}'.length() > 0")
+    public LLMProvider langChain4jLLMProvider(ChatModel chatModel,
+                                              @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel,
+                                              ToolRegistry toolRegistry, LLMConfig llmConfig,
+                                              MeterRegistry meterRegistry) {
+        return new LangChain4jLLMProvider(chatModel, streamingChatModel, toolRegistry, llmConfig, meterRegistry);
     }
 
     @Bean
@@ -69,13 +160,17 @@ public class AiAgentConfig {
     }
 
     @Bean
-    public LLMConfig llmConfig(@Value("${spring.ai.openai.chat.model:mock}") String model) {
+    public LLMConfig llmConfig(@Value("${envoymart.llm.model:mock}") String model,
+                               @Value("${envoymart.llm.temperature:0.7}") double temperature,
+                               @Value("${envoymart.llm.max-tokens:2048}") int maxTokens) {
         return LLMConfig.builder()
                 .model(model)
-                .temperature(0.7)
-                .maxTokens(2048)
+                .temperature(temperature)
+                .maxTokens(maxTokens)
                 .build();
     }
+
+    // ==================== 工具 ====================
 
     /**
      * 工具注册表 —— 观测点挂在这一层。
@@ -96,14 +191,7 @@ public class AiAgentConfig {
         return registry;
     }
 
-    /**
-     * 把 ToolRegistry 的工具发布给 Spring AI，MCP Server 会自动注册为 MCP 工具。
-     * 同一份工具定义既供 Agent 调用，也供外部 MCP 客户端调用。
-     */
-    @Bean
-    public ToolCallbackProvider mcpToolCallbackProvider(ToolRegistry toolRegistry) {
-        return new ToolRegistryCallbackProvider(toolRegistry);
-    }
+    // ==================== 记忆 ====================
 
     @Bean
     public ShortTermMemory shortTermMemory() {
@@ -136,11 +224,13 @@ public class AiAgentConfig {
         return new LlmMemoryConsolidator(llmProvider, llmConfig);
     }
 
-    /** 配了模型 Key 就用 Spring AI 的 EmbeddingModel（语义召回才有意义）。 */
+    // ==================== 向量化与向量库 ====================
+
+    /** 配了模型 Key 就用百炼/OpenAI 的 EmbeddingModel（语义召回才有意义）。 */
     @Bean
-    @ConditionalOnExpression("'${spring.ai.openai.embedding.api-key:}'.length() > 0")
-    public EmbeddingService springAiEmbeddingService(org.springframework.ai.embedding.EmbeddingModel embeddingModel) {
-        return new SpringAiEmbeddingService(embeddingModel);
+    @ConditionalOnExpression("'${envoymart.embedding.api-key:}'.length() > 0")
+    public EmbeddingService langChain4jEmbeddingService(EmbeddingModel embeddingModel) {
+        return new LangChain4jEmbeddingService(embeddingModel);
     }
 
     /** 无 Key 时退回本地 Ollama（nomic-embed-text），不可用再降级到哈希向量。 */
@@ -158,12 +248,17 @@ public class AiAgentConfig {
         return new InMemoryVectorStore(embeddingService);
     }
 
-    /** 知识库：生产用 Milvus，向量化由 Spring AI 的 EmbeddingModel 完成。 */
+    /** 知识库：生产用 Milvus。 */
     @Bean("knowledgeVectorStore")
     @Primary
     @Profile("milvus")
-    public VectorStore milvusKnowledgeVectorStore(org.springframework.ai.vectorstore.VectorStore delegate) {
-        return new MilvusVectorStore(delegate);
+    public VectorStore milvusKnowledgeVectorStore(
+            EmbeddingService embeddingService,
+            @Value("${envoymart.milvus.host:127.0.0.1}") String host,
+            @Value("${envoymart.milvus.port:19530}") int port,
+            @Value("${envoymart.embedding.dimension:1024}") int dimension) {
+        return new MilvusVectorStore(
+                newMilvusStore("envoymart_knowledge", host, port, dimension), embeddingService);
     }
 
     /**
@@ -178,23 +273,34 @@ public class AiAgentConfig {
 
     @Bean("memoryVectorStore")
     @Profile("milvus")
-    public VectorStore milvusMemoryVectorStore(io.milvus.client.MilvusServiceClient milvusClient,
-                                               org.springframework.ai.embedding.EmbeddingModel embeddingModel) {
-        org.springframework.ai.vectorstore.milvus.MilvusVectorStore delegate =
-                org.springframework.ai.vectorstore.milvus.MilvusVectorStore
-                        .builder(milvusClient, embeddingModel)
-                        .collectionName("envoymart_memory")
-                        .embeddingDimension(embeddingModel.dimensions())
-                        .initializeSchema(true)
-                        .build();
-        try {
-            // 手工构造的实例不走 Spring 生命周期，需显式触发建表
-            delegate.afterPropertiesSet();
-        } catch (Exception e) {
-            throw new IllegalStateException("初始化 Milvus 记忆库失败", e);
-        }
-        return new MilvusVectorStore(delegate);
+    public VectorStore milvusMemoryVectorStore(
+            EmbeddingService embeddingService,
+            @Value("${envoymart.milvus.host:127.0.0.1}") String host,
+            @Value("${envoymart.milvus.port:19530}") int port,
+            @Value("${envoymart.embedding.dimension:1024}") int dimension) {
+        return new MilvusVectorStore(
+                newMilvusStore("envoymart_memory", host, port, dimension), embeddingService);
     }
+
+    /**
+     * 构造一个 Milvus 向量库。
+     * <p>
+     * <b>一致性等级用 Strong。</b>入库前要先按 docId 删旧切片（见下面 ragEngine 的说明），
+     * 而删除的可见性受一致性等级约束——低于 Strong 时删掉的条目可能仍被检索到，
+     * 表现为「重启后同一篇文档在结果里出现多次」这个本已修掉的缺陷换个形式回来。
+     * 本项目语料只有十几篇，Strong 的代价可以忽略。
+     */
+    private MilvusV2EmbeddingStore newMilvusStore(String collection, String host, int port, int dimension) {
+        return MilvusV2EmbeddingStore.builder()
+                .host(host)
+                .port(port)
+                .collectionName(collection)
+                .dimension(dimension)
+                .consistencyLevel(ConsistencyLevel.STRONG)
+                .build();
+    }
+
+    // ==================== 检索 ====================
 
     /** 配了重排 Key 就用百炼 gte-rerank 做 cross-encoder 精排（默认复用 embedding 的 Key）。 */
     @Bean
@@ -304,6 +410,8 @@ public class AiAgentConfig {
         engine.ingestBatch(documents);
         return engine;
     }
+
+    // ==================== 执行图 ====================
 
     /**
      * 确定性流程注册 —— 业务判定由代码完成，不交给模型自由发挥。
