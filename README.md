@@ -229,8 +229,10 @@ mkdir -p skywalking-agent && docker create --name sw-tmp apache/skywalking-java-
 **不能直接用仓库里的路径**：`-javaagent` 走完 Maven 的参数拼接后非 ASCII 字符会变成乱码，
 而上级目录「面试训练」拿不到 8.3 短名，只能用纯 ASCII 的落地路径绕开。
 
-**性能验证时必须关掉**：`ENVOYMART_SKYWALKING=off ./run-local.sh`。
-javaagent 逐方法插桩，实测会把 30 并发下单的成功数从 10 拉到 3，看起来像业务缺陷。
+**压测时可以关掉**：`ENVOYMART_SKYWALKING=off ./run-local.sh`。
+javaagent 逐方法插桩，关掉才能拿到"除掉观测之后还剩多少"的干净数字。
+但它是**为了取准数字**，不是为了避免故障——曾经以为它会把并发下单的成功数从 10 拉到 3，
+后来查明那是压测脚本自己不是幂等（购物车跨轮次累加）。修掉之后，开关追踪都是稳定 10 单。
 
 </details>
 
@@ -290,6 +292,7 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 | 记忆 | LLM 事实抽取 + 向量语义召回，知识与记忆分库隔离；**会话窗口落 Redis**（跨重启、跨实例） |
 | 可观测 | **SkyWalking 10.2**（javaagent，覆盖全部 7 个服务）+ Micrometer Tracing + OTLP + Prometheus |
 | 熔断降级 | Sentinel `DegradeRule`（慢调用比例 + 异常比例）；扣库存被熔断后**快速失败**，不降级为成功 |
+| 分布式事务 | Seata 2.5 AT（`@GlobalTransactional`）提供崩溃可恢复的跨服务回滚；另有手写 Saga（显式记账 + 反序补偿）。两者的取舍见 `docker-compose.yml` 的注释 |
 | 数据库 | MySQL 8.4 / H2（本地） |
 | ORM | MyBatis-Plus 3.5.17 |
 | 缓存 | Redis 7.4 + Redisson 4.7；覆盖穿透（空值哨兵）/ 雪崩（TTL 抖动）/ 击穿（SETNX 互斥），删除失败落 MQ 补偿重试 |

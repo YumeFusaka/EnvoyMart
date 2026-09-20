@@ -29,7 +29,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "RUN_RETRIEVAL_COMPARISON", matches = "true")
 class RetrievalComparisonTest {
 
-    private static final int TOP_K = 3;
+    /**
+     * 取几篇进 prompt。默认 3，与线上 {@code Agent.Config.ragTopK(3)} 保持一致——
+     * 评测的 K 必须等于线上真正用的 K，否则测的是一个不存在的配置。
+     * <p>
+     * 可用 {@code RETRIEVAL_TOP_K=5} 跑一份 @5：用来回答"提高 topK 能换来多少召回"。
+     * 注意 @3 与 @5 不是同一把尺子，**读数必须连随机基线一起看**——K 一大，
+     * 基线本身也在涨。
+     */
+    private static final int TOP_K = Integer.parseInt(System.getenv().getOrDefault("RETRIEVAL_TOP_K", "3"));
     private static final String EMBEDDING_MODEL = "text-embedding-v4";
     private static final String RERANK_MODEL = "gte-rerank-v2";
 
@@ -65,7 +73,7 @@ class RetrievalComparisonTest {
         System.out.println();
         System.out.println("========== 检索效果对照（语料 " + RetrievalFixtures.DOCS.size()
                 + " 篇，样本 " + RetrievalFixtures.allCases().size() + " 条，topK=" + TOP_K + "）==========");
-        System.out.printf("随机基线 Hit Rate@3 = %.3f%n%n",
+        System.out.printf("随机基线 Hit Rate@%d = %.3f%n%n", TOP_K,
                 RetrievalFixtures.randomBaselineHitRate(RetrievalFixtures.DOCS.size(), TOP_K));
 
         report("仅关键词(BM25)", bm25Only);

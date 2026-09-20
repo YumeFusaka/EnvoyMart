@@ -30,8 +30,12 @@ LOG_DIR=../logs/logs-local
 # 上级目录「面试训练」没有生成短名。所以启动前把 agent 同步到用户目录（纯 ASCII）。
 AGENT_SRC="$(cd .. && pwd)/skywalking-agent"
 AGENT_HOME="$HOME/.envoymart/skywalking-agent"
-# 压测/性能验证时用 ENVOYMART_SKYWALKING=off 关掉——它给每个方法插桩，
-# 实测会把并发下单的成功数从 10 拉到 3，看起来像业务缺陷，其实是观测开销。
+# 用 ENVOYMART_SKYWALKING=off 可以关掉追踪——它给每个方法插桩，压测时要量的
+# 本来就是"除掉观测之后还剩多少"，关掉才能拿到干净数字。
+#
+# 但**它不影响正确性**。曾经以为"开了追踪并发下单就从 10 单掉到 3 单"，
+# 排查到最后发现是 StockConcurrencyTest 自己不是幂等的（购物车跨轮次累加）。
+# 修掉测试后，开/关追踪都是稳定 10 单。
 if [ "${ENVOYMART_SKYWALKING:-on}" = "on" ] && [ -d "$AGENT_SRC" ]; then
   if [ ! -f "$AGENT_HOME/skywalking-agent.jar" ]; then
     mkdir -p "$AGENT_HOME"
