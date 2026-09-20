@@ -28,6 +28,7 @@ import yumefusaka.envoymart.agent.memory.UserProfileStore;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.ProfileRepository;
 import yumefusaka.envoymart.agent.memory.ShortTermMemory;
+import yumefusaka.envoymart.agent.memory.ShortTermMemoryStore;
 import yumefusaka.envoymart.agent.rag.*;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.aiservice.client.OrderClient;
@@ -193,9 +194,16 @@ public class AiAgentConfig {
 
     // ==================== 记忆 ====================
 
+    /**
+     * 会话窗口 —— 内存里留一份作为读缓存，同时落 Redis。
+     * <p>
+     * 落盘之后才有了两件事：<b>重启不丢上下文</b>，以及<b>多实例时同一用户落到哪个实例都接得上</b>。
+     * 在此之前，业务层无状态可水平扩、AI 层却因这一处内存状态扩不了——这个不对称会让
+     * "支持分布式"在架构上站不住。
+     */
     @Bean
-    public ShortTermMemory shortTermMemory() {
-        return new ShortTermMemory(16);
+    public ShortTermMemory shortTermMemory(ShortTermMemoryStore shortTermMemoryStore) {
+        return new ShortTermMemory(16, shortTermMemoryStore);
     }
 
     /**
