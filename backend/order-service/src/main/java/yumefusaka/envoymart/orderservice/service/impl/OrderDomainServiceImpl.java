@@ -3,6 +3,7 @@ package yumefusaka.envoymart.orderservice.service.impl;
 import com.alibaba.csp.sentinel.Entry;
 import com.alibaba.csp.sentinel.SphU;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
+import io.seata.spring.annotation.GlobalTransactional;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
@@ -114,6 +115,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
     @Override
     @Transactional
+    @GlobalTransactional(name = "envoymart-checkout", rollbackFor = Exception.class)
     public OrderResponse checkout(String userId, CheckoutRequest request) {
         List<CartItemEntity> cartItems = cartItemMapper.selectList(new LambdaQueryWrapper<CartItemEntity>()
                 .eq(CartItemEntity::getUserId, userId));

@@ -33,6 +33,21 @@ spring:
         retry:
           enabled: true
 
+# 分布式事务的参与方：扣库存要能被全局事务回滚
+seata:
+  enabled: ${SEATA_ENABLED:true}
+  application-id: ${spring.application.name}
+  tx-service-group: envoymart_tx_group
+  service:
+    vgroup-mapping:
+      envoymart_tx_group: default
+    grouplist:
+      default: ${SEATA_SERVER:127.0.0.1:8091}
+  registry:
+    type: file
+  config:
+    type: file
+
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true

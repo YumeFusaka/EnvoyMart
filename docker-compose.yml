@@ -215,3 +215,20 @@ services:
       - skywalking-oap
     networks:
       - envoymart-net
+
+  # ========== 分布式事务协调器 ==========
+  # 版本刻意与客户端对齐：SCA 2025.1.0.0 的 BOM 管的是 seata 2.5.0，
+  # 服务端用别的版本会踩协议差异。
+  # 存储用 file：本地开发不引额外存储，重启丢全局事务日志（生产应换 db/redis）。
+  seata-server:
+    image: apache/seata-server:2.5.0
+    restart: unless-stopped
+    container_name: envoymart-seata
+    environment:
+      SEATA_PORT: 8091
+      STORE_MODE: file
+    ports:
+      - "8091:8091"   # 事务协调器（客户端连接）
+      - "7091:7091"   # 控制台
+    networks:
+      - envoymart-net
