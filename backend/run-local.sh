@@ -21,6 +21,26 @@ cd "$(dirname "$0")"
 ENV_FILE=.env.local
 LOG_DIR=../logs/logs-local
 
+# 链路追踪（可选）：agent 由 `docker cp` 从官方镜像提取，不入库（见 .gitignore）
+#
+# **必须落到纯 ASCII 路径**：项目所在目录名含中文，而 `-javaagent` 的参数在 Windows 上
+# 过一遍 Maven 的 JVM 参数拼接后，非 ASCII 字符变成乱码，JVM 报
+# "Error opening zip file or JAR manifest missing"——用相对路径也不行，因为
+# spring-boot:run fork 出的 JVM 工作目录并不是脚本目录；cygpath 的 8.3 短名也救不了，
+# 上级目录「面试训练」没有生成短名。所以启动前把 agent 同步到用户目录（纯 ASCII）。
+AGENT_SRC="$(cd .. && pwd)/skywalking-agent"
+AGENT_HOME="$HOME/.envoymart/skywalking-agent"
+if [ -d "$AGENT_SRC" ]; then
+  if [ ! -f "$AGENT_HOME/skywalking-agent.jar" ]; then
+    mkdir -p "$AGENT_HOME"
+    cp -r "$AGENT_SRC"/. "$AGENT_HOME"/
+  fi
+  AGENT_JAR="$(cygpath -w "$AGENT_HOME/skywalking-agent.jar" 2>/dev/null || echo "$AGENT_HOME/skywalking-agent.jar")"
+else
+  AGENT_JAR=""
+fi
+SW_OAP="${SW_OAP_ADDRESS:-127.0.0.1:11800}"
+
 if [ ! -f "$ENV_FILE" ]; then
   cat >&2 <<'EOF'
 缺少 backend/.env.local。先生成一次（之后一直复用）：
@@ -78,9 +98,19 @@ start_one() {
   # AI 服务接 Milvus 作为向量库；不指定则该 profile 不生效，退回内存向量库
   [ "$svc" = "ai-service" ] && extra+=(SPRING_PROFILES_ACTIVE=milvus)
 
+  # 链路追踪：SkyWalking javaagent 是**不改一行业务代码**就能覆盖全部服务的方式，
+  # 这正是选它而不是给六个服务逐个加 OTel 依赖的原因。
+  # agent 不存在时静默跳过——没装追踪不该妨碍把服务跑起来。
+  local agent_args=()
+  if [ -n "$AGENT_JAR" ]; then
+    agent_args+=(-Dspring-boot.run.jvmArguments="-javaagent:$AGENT_JAR -Dskywalking.agent.service_name=$svc -Dskywalking.collector.backend_service=$SW_OAP")
+  else
+    echo "  （未找到 SkyWalking agent，$svc 将不带链路追踪启动）" >&2
+  fi
+
   mkdir -p "$LOG_DIR"
   echo "启动 $svc (端口 ${PORT_OF[$idx]}) → $LOG_DIR/$svc.log"
-  env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run > "$LOG_DIR/$svc.log" 2>&1 &
+  env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run "${agent_args[@]}" > "$LOG_DIR/$svc.log" 2>&1 &
 }
 
 stop_all() {

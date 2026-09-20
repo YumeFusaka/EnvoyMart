@@ -169,3 +169,49 @@ services:
       - minio
     networks:
       - envoymart-net
+
+  # ========== 链路追踪 ==========
+  # 在此之前只有 ai-service 一条链路有 OTel 埋点，其余六个业务服务只有健康检查。
+  # SkyWalking 用 javaagent 接入——不改一行业务代码就覆盖全部服务。
+  #
+  # 存储用 JDBC + 本机 MySQL，不新起存储容器。两条路都试过才落到这里：
+  #   - H2：SkyWalking 10.x 已移除该存储（classpath 里只剩 es / banyandb / jdbc）
+  #   - ES 9.4：OAP 10.2 报 "Unsupported version: ElasticSearch 9.4"，它跟不上 ES 的版本
+  # 库要事先建好（OAP 会自动建表）：CREATE DATABASE skywalking。
+  skywalking-oap:
+    image: apache/skywalking-oap-server:10.2.0
+    restart: unless-stopped
+    container_name: envoymart-skywalking-oap
+    environment:
+      # selector 的值是 mysql 而不是 jdbc——配置段本身叫 mysql（见 application.yml 的
+      # storage.mysql），写 jdbc 会报 "no provider found for module storage"
+      SW_STORAGE: mysql
+      # MySQL 装在宿主机而非容器里，用 host.docker.internal 回到宿主。
+      # rewriteBatchedStatements 与 allowMultiQueries 是官方默认值里带的，批量写表需要
+      SW_JDBC_URL: jdbc:mysql://host.docker.internal:3306/skywalking?rewriteBatchedStatements=true&allowMultiQueries=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+      SW_DATA_SOURCE_USER: ${DB_USERNAME:-yumefusaka}
+      SW_DATA_SOURCE_PASSWORD: ${DB_PASSWORD:-j}
+    volumes:
+      # OAP 镜像自带 PostgreSQL 驱动但没带 MySQL 的，挂进去补上。
+      # 目录由 README 里的说明从本地 maven 仓库拷贝，不入库（见 .gitignore）
+      - ./skywalking-libs:/skywalking/ext-libs:ro
+    ports:
+      - "11800:11800"   # agent 上报（gRPC）
+      - "12800:12800"   # UI 查询（HTTP）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - envoymart-net
+
+  skywalking-ui:
+    image: apache/skywalking-ui:10.2.0
+    restart: unless-stopped
+    container_name: envoymart-skywalking-ui
+    environment:
+      SW_OAP_ADDRESS: http://skywalking-oap:12800
+    ports:
+      - "8088:8080"
+    depends_on:
+      - skywalking-oap
+    networks:
+      - envoymart-net

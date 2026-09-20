@@ -31,3 +31,9 @@ dist/
 
 # Generated docs
 backend/HELP.md
+
+# SkyWalking Java Agent（从镜像提取的二进制，由 run-local.sh 自动带上）
+/skywalking-agent/
+
+# SkyWalking OAP 的 MySQL 驱动（从本地 maven 仓库拷入，OAP 镜像未自带）
+/skywalking-libs/
