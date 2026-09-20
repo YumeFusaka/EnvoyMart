@@ -6,6 +6,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.paymentservice.client.OrderClient;
@@ -93,7 +94,7 @@ class PaymentCallbackTest {
         var response = service.processCallback(callback("SUCCESS", "TX-1"));
 
         assertThat(response.getStatus()).isEqualTo("SUCCESS");
-        verify(rabbitTemplate, times(1)).convertAndSend(anyString(), anyString(), any(Object.class));
+        verify(rabbitTemplate, times(1)).convertAndSend(anyString(), anyString(), any(Object.class), any(CorrelationData.class));
         verify(paymentMapper, times(1)).update(any(), any());
     }
 
@@ -105,7 +106,7 @@ class PaymentCallbackTest {
 
         assertThat(response.getStatus()).isEqualTo("SUCCESS");
         verify(rabbitTemplate, never())
-                .convertAndSend(anyString(), anyString(), any(Object.class));
+                .convertAndSend(anyString(), anyString(), any(Object.class), any(CorrelationData.class));
         verify(paymentMapper, never()).update(any(), any());
     }
 
@@ -157,7 +158,7 @@ class PaymentCallbackTest {
 
         assertThat(response.getStatus()).isEqualTo("SUCCESS");
         verify(rabbitTemplate, never())
-                .convertAndSend(anyString(), anyString(), any(Object.class));
+                .convertAndSend(anyString(), anyString(), any(Object.class), any(CorrelationData.class));
     }
 
     /**
@@ -176,7 +177,7 @@ class PaymentCallbackTest {
                 .hasMessageContaining("并发");
 
         verify(rabbitTemplate, never())
-                .convertAndSend(anyString(), anyString(), any(Object.class));
+                .convertAndSend(anyString(), anyString(), any(Object.class), any(CorrelationData.class));
     }
 
     /**
