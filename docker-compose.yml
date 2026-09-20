@@ -60,7 +60,14 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes
+    # 持久化用 AOF：订单与库存的缓存随时可重建，但用户画像与会话窗口丢了就是丢了。
+    #
+    # 淘汰策略选 noeviction 而不是 allkeys-lru：本项目只有一个 Redis 实例，
+    # 缓存与分布式锁共用。allkeys-lru 在内存压力下会淘汰「最久未用」的 key——
+    # 而一把被持有的锁恰恰可能很久没被访问，被淘汰就等于互斥静默失效，
+    # 库存直接超卖。noeviction 在内存满时让写入报错，那是**可见的失败**，
+    # 比"锁没了但没人知道"好得多。
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
     networks:
       - envoymart-net
 

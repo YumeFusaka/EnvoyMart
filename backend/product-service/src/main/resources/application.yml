@@ -19,6 +19,19 @@ spring:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
   elasticsearch:
     uris: ${ELASTICSEARCH_URIS:http://127.0.0.1:9200}
+  # 只用于消费缓存失效的补偿消息，不发消息（生产者确认见 order/payment 两个服务）
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:envoymart}
+    password: ${RABBITMQ_PASSWORD:envoymart123}
+    listener:
+      simple:
+        acknowledge-mode: auto
+        # 重试耗尽仍删不掉的消息进死信队列等人看，而不是无限 requeue 或静默丢弃
+        default-requeue-rejected: false
+        retry:
+          enabled: true
 
 mybatis-plus:
   configuration:

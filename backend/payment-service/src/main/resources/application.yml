@@ -22,6 +22,12 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:envoymart}
     password: ${RABBITMQ_PASSWORD:envoymart123}
+    # 生产端确认见 common 的 RabbitPublisherConfirms。支付完成事件驱动订单转 PAID，
+    # 这条消息静默丢失意味着"用户付了钱、订单状态不动"——比普通事件更不能容忍
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
 
 services:
   order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}

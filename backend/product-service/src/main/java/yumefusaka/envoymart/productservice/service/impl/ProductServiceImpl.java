@@ -49,12 +49,16 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public ProductResponse getProduct(Long id) {
-        ProductResponse cached = productCacheService.getCachedProduct(id);
-        if (cached != null) {
-            return cached;
+        // 读缓存 / 回源 / 回填（含"确认不存在"的空值）都收在缓存服务里，
+        // 三种防护（穿透、雪崩、击穿）发生在同一个窗口，散在这里写必然有漏
+        ProductResponse product = productCacheService.getOrLoad(id, () -> {
+            ProductEntity entity = productMapper.selectById(id);
+            return entity == null ? null : toResponse(entity);
+        });
+        if (product == null) {
+            // 缓存已标记不存在，与回源查不到是同一种结果，保持原有的异常语义
+            throw new IllegalArgumentException("商品不存在");
         }
-        ProductResponse product = toResponse(requireEntity(id));
-        productCacheService.cacheProduct(product);
         return product;
     }
 

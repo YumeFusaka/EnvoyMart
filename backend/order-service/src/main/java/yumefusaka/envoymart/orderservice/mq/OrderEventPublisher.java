@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.orderservice.mq;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 
@@ -24,10 +25,13 @@ public class OrderEventPublisher {
     }
 
     public void publishOrderCreated(OrderCreatedEvent event) {
+        // 带上 CorrelationData：确认回调靠它的 id 才能指出"是哪一条消息没到 broker"，
+        // 否则只留下一句"有消息丢了"，排查时无从对上号
         rabbitTemplate.convertAndSend(
                 OrderEventConfig.ORDER_EXCHANGE,
                 OrderEventConfig.ORDER_CREATED_KEY,
-                event);
+                event,
+                new CorrelationData(event.getOrderNo()));
         log.info("[MQ] 订单创建事件已发布: orderNo={}, amount={}", event.getOrderNo(), event.getTotalAmount());
     }
 }

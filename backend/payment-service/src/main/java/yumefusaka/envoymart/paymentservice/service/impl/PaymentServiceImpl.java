@@ -3,6 +3,7 @@ package yumefusaka.envoymart.paymentservice.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -152,7 +153,8 @@ public class PaymentServiceImpl implements PaymentService {
         if ("SUCCESS".equals(incoming)) {
             rabbitTemplate.convertAndSend(ORDER_EXCHANGE, PAYMENT_COMPLETED_KEY,
                     new PaymentCompletedEventPayload(entity.getOrderId(), entity.getOrderNo(),
-                            request.getTransactionNo(), entity.getAmount(), entity.getPaidAt()));
+                            request.getTransactionNo(), entity.getAmount(), entity.getPaidAt()),
+                    new CorrelationData(entity.getOrderNo()));
             log.info("支付成功事件已发布: orderNo={}, txNo={}", entity.getOrderNo(), request.getTransactionNo());
         }
 

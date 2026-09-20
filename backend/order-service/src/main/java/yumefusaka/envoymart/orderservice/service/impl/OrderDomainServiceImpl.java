@@ -1,5 +1,8 @@
 package yumefusaka.envoymart.orderservice.service.impl;
 
+import com.alibaba.csp.sentinel.Entry;
+import com.alibaba.csp.sentinel.SphU;
+import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
@@ -7,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.orderservice.client.ProductClient;
+import yumefusaka.envoymart.orderservice.config.SentinelDegradeConfig;
 import yumefusaka.envoymart.orderservice.entity.CartItemEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderItemEntity;
@@ -166,9 +170,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     // 必须检查返回的业务码：product-service 的异常被统一包成 HTTP 200 + code=500，
                     // **Feign 只按状态码判断成败，不会抛异常**。直接丢弃返回值等于把扣减失败当成功，
                     // 订单照建、库存不扣——而且整条链路不会报任何错。
-                    requireSuccess(productClient.deductStock(
-                            new StockDeductRequest(product.getId(), cartItem.getQuantity())),
-                            "扣减库存 " + product.getName());
+                    deductStockWithCircuitBreaker(product.getId(), cartItem.getQuantity(), product.getName());
                     deducted.add(new StockDeductRequest(product.getId(), cartItem.getQuantity()));
                     BigDecimal subtotal = product.getPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity()));
                     total = total.add(subtotal);
@@ -378,6 +380,36 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     private void requireSuccess(Result<?> result, String action) {
         if (result == null || result.getCode() == null || result.getCode() != 200) {
             throw new IllegalStateException(action + "失败：" + (result == null ? "无响应" : result.getMsg()));
+        }
+    }
+
+    /**
+     * 扣减库存，带熔断保护。
+     * <p>
+     * <b>熔断与超时解决的不是一回事</b>：原先只有超时（read 5s），下游挂掉后每个请求
+     * 仍要干等 5 秒才失败——并发一上来，调用方线程先被占满，故障从下游蔓延到上游。
+     * 熔断打开后直接拒绝，不占用等待时间。
+     * <p>
+     * <b>熔断后刻意不降级为"成功"</b>：库存扣减没有这个选项，扣不了就是不能下单。
+     * 这里抛业务异常快速失败，与"库存不足"一样让本次下单失败，只是错误信息不同——
+     * 前者是下游暂时不可用（可重试），后者是库存真的不够（重试无用）。
+     */
+    private void deductStockWithCircuitBreaker(Long productId, Integer quantity, String productName) {
+        Entry entry = null;
+        try {
+            entry = SphU.entry(SentinelDegradeConfig.RESOURCE_DEDUCT_STOCK);
+            // 必须检查返回的业务码：product-service 的异常被统一包成 HTTP 200 + code=500，
+            // **Feign 只按状态码判断成败，不会抛异常**。直接丢弃返回值等于把扣减失败当成功，
+            // 订单照建、库存不扣——而且整条链路不会报任何错。
+            requireSuccess(productClient.deductStock(new StockDeductRequest(productId, quantity)),
+                    "扣减库存 " + productName);
+        } catch (BlockException e) {
+            log.warn("[Sentinel] 扣减库存被熔断: productId={}", productId);
+            throw new IllegalStateException("库存服务暂时不可用，请稍后重试");
+        } finally {
+            if (entry != null) {
+                entry.exit();
+            }
         }
     }
 

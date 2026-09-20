@@ -20,6 +20,12 @@ spring:
           default:
             connect-timeout: 2000
             read-timeout: 5000
+    # 熔断规则见 SentinelDegradeConfig（代码里加载，不依赖控制台常驻）
+    sentinel:
+      transport:
+        dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}
+      # 启动即初始化，而不是等第一次调用来触发
+      eager: true
     nacos:
       discovery:
         enabled: ${NACOS_ENABLED:false}
@@ -33,6 +39,14 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:envoymart}
     password: ${RABBITMQ_PASSWORD:envoymart123}
+    # 生产端确认：消息到达 broker 后回调，未到达则记录。没有它，发送方把消息
+    # 交给客户端就认为成功，而消息可能根本没到 broker——静默丢失。
+    publisher-confirm-type: correlated
+    # 消息到了 broker 但路由不到任何队列时回调。交换机存在、路由键写错时，
+    # 没有它同样是静默丢弃。
+    publisher-returns: true
+    template:
+      mandatory: true
     listener:
       simple:
         acknowledge-mode: auto
