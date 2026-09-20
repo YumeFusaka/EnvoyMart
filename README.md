@@ -71,13 +71,13 @@ EnvoyMart 是基于 Spring Cloud Alibaba + LangChain4j + Vue 3 的智能电商�
 |------|------|------|
 | `gateway-service` | 8080 | 网关：路由 + JWT 鉴权 + Sentinel 限流 |
 | `auth-service` | 9001 | 用户认证与 JWT 签发 |
-| `product-service` | 9002 | 商品 CRUD + ES 搜索 + Redis 热点缓存 |
-| `order-service` | 9003 | 订单与购物车 + Redisson 分布式锁 + RabbitMQ 事件 |
+| `product-service` | 9002 | 商品 CRUD + ES 搜索 + Redis 热点缓存（三防 + 删除补偿） |
+| `order-service` | 9003 | 订单与购物车 + Redisson 分布式锁 + RabbitMQ 事件 + Sentinel 熔断 |
 | `ai-service` | 9004 | Agent 编排、RAG、记忆、MCP Server |
 | `payment-service` | 9005 | 支付创建/回调 |
 | `review-service` | 9006 | 商品评价 |
 | `agent-core` | — | 自研 Agent 编排层（纯 Java 库，无 Spring 依赖） |
-| `common` | — | 公共模块（Result / JWT / 异常处理 / 上下文透传） |
+| `common` | — | 公共模块（Result / JWT / 异常处理 / 上下文透传 / MQ 生产端确认 / Feign 内部凭证） |
 
 ## Agent 执行链路
 
@@ -209,6 +209,33 @@ mvn clean install -DskipTests
 所以你不需要在多个终端里手动对齐环境变量。
 
 <details>
+<summary>链路追踪（SkyWalking，可选）</summary>
+
+`docker compose up -d` 会一并起 OAP 与 UI（UI 在 `http://localhost:8088`），但有两样东西不在镜像里，需要先手工准备一次（两个目录都已 gitignore）：
+
+```bash
+# 1. OAP 存储用本机 MySQL，库要事先建好（表由 OAP 自动建）
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS skywalking"
+
+# 2. OAP 镜像自带 PostgreSQL 驱动、没带 MySQL 的，从本地 maven 仓库拷进去
+mkdir -p skywalking-libs && cp ~/.m2/repository/com/mysql/mysql-connector-j/*/mysql-connector-j-*.jar skywalking-libs/
+
+# 3. javaagent 从镜像里提取一次（后端启动时由 run-local.sh 自动带上）
+mkdir -p skywalking-agent && docker create --name sw-tmp apache/skywalking-java-agent:9.4.0-java21 \
+  && docker cp sw-tmp:/skywalking/agent/. skywalking-agent/ && docker rm sw-tmp
+```
+
+`run-local.sh` 会把 agent 同步到 `$HOME/.envoymart/skywalking-agent` 再启动——
+**不能直接用仓库里的路径**：`-javaagent` 走完 Maven 的参数拼接后非 ASCII 字符会变成乱码，
+而上级目录「面试训练」拿不到 8.3 短名，只能用纯 ASCII 的落地路径绕开。
+
+**性能验证时必须关掉**：`ENVOYMART_SKYWALKING=off ./run-local.sh`。
+javaagent 逐方法插桩，实测会把 30 并发下单的成功数从 10 拉到 3，看起来像业务缺陷。
+
+</details>
+
+
+<details>
 <summary>手动逐个启动（不用脚本时）</summary>
 
 ```bash
@@ -247,6 +274,7 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 - 接口文档：`http://localhost:9001/swagger-ui/index.html`（各服务同路径）
 - MCP 端点：`http://localhost:9004/mcp`（Streamable HTTP）
 - 指标：`http://localhost:9004/actuator/prometheus`
+- 链路追踪 UI：`http://localhost:8088`（SkyWalking）
 
 ## 技术栈
 
@@ -259,12 +287,13 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 | Agent | 自研 agent-core：入口守卫、执行图编排、循环护栏、ToolRegistry |
 | 检索 | BM25 + 向量混合召回、RRF 融合、gte-rerank 精排、Hit Rate/MRR/NDCG 评测 |
 | 向量库 | Milvus（生产）/ 内存 IVF 索引（本地降级） |
-| 记忆 | LLM 事实抽取 + 向量语义召回，知识与记忆分库隔离 |
-| 可观测 | Micrometer Tracing + OTLP + Prometheus，逐次调用记录 token 与耗时 |
+| 记忆 | LLM 事实抽取 + 向量语义召回，知识与记忆分库隔离；**会话窗口落 Redis**（跨重启、跨实例） |
+| 可观测 | **SkyWalking 10.2**（javaagent，覆盖全部 7 个服务）+ Micrometer Tracing + OTLP + Prometheus |
+| 熔断降级 | Sentinel `DegradeRule`（慢调用比例 + 异常比例）；扣库存被熔断后**快速失败**，不降级为成功 |
 | 数据库 | MySQL 8.4 / H2（本地） |
 | ORM | MyBatis-Plus 3.5.17 |
-| 缓存 | Redis 7.4 + Redisson 4.7 |
-| 消息队列 | RabbitMQ 4.1 |
+| 缓存 | Redis 7.4 + Redisson 4.7；覆盖穿透（空值哨兵）/ 雪崩（TTL 抖动）/ 击穿（SETNX 互斥），删除失败落 MQ 补偿重试 |
+| 消息队列 | RabbitMQ 4.1（生产端 confirm + returns，消费端死信队列 + 重试） |
 | 搜索引擎 | Elasticsearch 9.4.5 |
 | 前端 | Vue 3.5, Vite 8, Element Plus, Pinia, Axios |
 | 接口文档 | springdoc-openapi 3.1.1 |
@@ -290,7 +319,7 @@ EnvoyMart/
 │   │   └── src/main/java/.../agent/
 │   │       ├── core/           # Agent(入口守卫) / AgentGraph(执行图)
 │   │       ├── llm/            # LLMProvider 契约、PlanStep、ToolExecution
-│   │       ├── memory/         # 短期/长期记忆与固化器
+│   │       ├── memory/         # 短期/长期记忆与固化器（窗口持久化契约）
 │   │       ├── rag/            # 分词、混合检索、重排、向量库、评测器
 │   │       ├── flow/           # DeterministicFlow / IntentRouter
 │   │       ├── loop/           # LoopGuard / LoopBudget
