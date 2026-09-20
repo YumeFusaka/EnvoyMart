@@ -5,6 +5,7 @@ import com.alibaba.csp.sentinel.SphU;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import io.seata.spring.annotation.GlobalTransactional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -113,6 +114,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @GlobalTransactional(name = "envoymart-checkout", rollbackFor = Exception.class)
     @Transactional
     public OrderResponse checkout(String userId, CheckoutRequest request) {
         List<CartItemEntity> cartItems = cartItemMapper.selectList(new LambdaQueryWrapper<CartItemEntity>()

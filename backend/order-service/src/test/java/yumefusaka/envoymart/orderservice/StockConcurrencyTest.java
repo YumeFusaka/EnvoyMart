@@ -36,11 +36,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 「读库存 → 判断够不够 → 扣减」每一步都正确，测出来永远是绿的——
  * 只有让 30 个请求真正同时抵达，才能证明防超卖真的生效。
  * <p>
- * <b>⚠️ 跑之前先关掉 SkyWalking：</b>{@code ENVOYMART_SKYWALKING=off ./run-local.sh}。
- * javaagent 给每个方法插桩，单次请求的耗时会明显变长，而本测试的请求要先等
- * Redisson 锁（3 秒）——耗时一涨，后面排队的请求就等不到锁了。实测**成功数会从
- * 稳定的 10 掉到 3**，看上去像防超卖坏了，其实只是观测开销。
- * 只改测试环境、不动业务代码，是这里唯一正确的处理。
+ * <b>⚠️ 这个测试必须自己保证前置状态幂等</b>——见
+ * {@link #ensureCartHasExactlyOne}。曾经因为没做到，把"购物车跨轮次累加"
+ * 误判成了"加了 SkyWalking / Seata 之后并发就崩了"，排查花了很久。
  * <p>
  * 运行：
  * <pre>
@@ -81,12 +79,12 @@ class StockConcurrencyTest {
         adjustStockTo(TARGET_STOCK);
         assertThat(readStock()).as("库存调整失败，后续断言无意义").isEqualTo(TARGET_STOCK);
 
-        // 每个用户购物车里放 1 件同款商品 —— 购物车按 userId 隔离，互不干扰
+        // 每个用户购物车里**恰好** 1 件同款商品 —— 购物车按 userId 隔离，互不干扰
         List<String> users = new ArrayList<>(CONCURRENCY);
         for (int i = 0; i < CONCURRENCY; i++) {
             String userId = "stock-test-" + i;
             users.add(userId);
-            addToCart(userId, PRODUCT_ID, 1);
+            ensureCartHasExactlyOne(userId, PRODUCT_ID);
         }
 
         // 同步屏障：所有线程就位后同时发起，避免"谁先启动谁先抢"退化成串行
@@ -154,10 +152,37 @@ class StockConcurrencyTest {
         return Integer.parseInt(m.group(1));
     }
 
-    private static void addToCart(String userId, long productId, int quantity) throws Exception {
-        boolean ok = call(ORDER_URL + "/cart/items",
-                "{\"productId\":" + productId + ",\"quantity\":" + quantity + "}", userId) != null;
-        assertThat(ok).as("加购失败，用户=" + userId).isTrue();
+    /**
+     * 把用户的购物车设成"恰好买 1 件"。
+     * <p>
+     * <b>不能只用 {@code POST /cart/items}</b>：那个接口是<b>累加</b>
+     * （{@code quantity += request.quantity}），而购物车<b>只在下单成功时清空</b>——
+     * 库存在这一轮被抢光的 20 个用户，购物车会原样留到下一轮。
+     * 于是每跑一次测试，这些用户的购物车里就多一件：下一轮的第一个请求可能一次吃掉 4 件，
+     * 10 件库存被两三个请求就分完，**成功数从 10 掉到个位数**。
+     * <p>
+     * <b>这个缺陷曾经把我带偏很久</b>：现象是"加了 SkyWalking / Seata 之后并发就崩了"，
+     * 于是去排查观测开销、排查双重加锁、甚至据此回退了 Seata——而真正的原因是
+     * <b>测试自己不是幂等的</b>，跑得越多越糟，与那两个组件毫无关系。
+     * 清空购物车后，四种开关组合实测全部是"成功 10 / 库存归零"。
+     * <p>
+     * 修法：先加购（保证条目存在），再读回条目 id，用 {@code PUT} <b>覆盖</b>成 1。
+     * 覆盖而非累加，跨轮次就幂等了。
+     */
+    private static void ensureCartHasExactlyOne(String userId, long productId) throws Exception {
+        call(ORDER_URL + "/cart/items",
+                "{\"productId\":" + productId + ",\"quantity\":1}", userId);
+
+        String cart = call(ORDER_URL + "/cart", null, userId);
+        // data 数组里取第一个条目对象，再从里面拿 id —— 直接匹配全局第一个 "id" 会拿到包装层的字段
+        Matcher item = Pattern.compile("\"data\"\\s*:\\s*\\[\\s*\\{([^}]*)}").matcher(cart);
+        assertThat(item.find()).as("购物车响应里找不到条目，用户=" + userId + "：" + cart).isTrue();
+        Matcher idMatcher = Pattern.compile("\"id\"\\s*:\\s*(\\d+)").matcher(item.group(1));
+        assertThat(idMatcher.find()).as("购物车条目里没有 id，用户=" + userId + "：" + cart).isTrue();
+        long itemId = Long.parseLong(idMatcher.group(1));
+
+        boolean ok = call("PUT", ORDER_URL + "/cart/items/" + itemId, "{\"quantity\":1}", userId) != null;
+        assertThat(ok).as("设置购物车数量失败，用户=" + userId + " itemId=" + itemId).isTrue();
     }
 
     /**
@@ -172,13 +197,21 @@ class StockConcurrencyTest {
         return call(ORDER_URL + "/orders/checkout", body, userId) != null;
     }
 
+    /** 发一次请求，方法按 body 是否为 null 推断：有 body 用 POST，无 body 用 GET。 */
+    private static String call(String url, String body, String userId) throws Exception {
+        return call(body == null ? "GET" : "POST", url, body, userId);
+    }
+
     /**
      * 发一次请求。
      *
+     * @param method HTTP 方法。<b>必须显式传</b>——早先这里只按 body 推断 GET/POST，
+     *               于是 PUT 被静默当成 POST 发出去，接口匹配不上、返回 null，
+     *               表现为"设置购物车数量失败"，而真正的原因在测试的 helper 里
      * @param userId 非空时带 {@code X-User-Id}；为 null 时是服务间调用
      * @return 业务成功时返回响应体，否则返回 null
      */
-    private static String call(String url, String body, String userId) throws Exception {
+    private static String call(String method, String url, String body, String userId) throws Exception {
         HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(15))
                 .header("Accept", "application/json")
@@ -186,12 +219,13 @@ class StockConcurrencyTest {
         if (userId != null) {
             b.header("X-User-Id", userId);
         }
-        if (body == null) {
-            b.GET();
-        } else {
-            b.header("Content-Type", "application/json; charset=UTF-8")
-                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        HttpRequest.BodyPublisher publisher = body == null
+                ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8);
+        if (body != null) {
+            b.header("Content-Type", "application/json; charset=UTF-8");
         }
+        b.method(method, publisher);
 
         HttpResponse<String> resp = HTTP.send(b.build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));

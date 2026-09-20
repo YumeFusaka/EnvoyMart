@@ -3,6 +3,7 @@ package yumefusaka.envoymart.orderservice.service.impl;
 import tools.jackson.databind.ObjectMapper;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.orderservice.model.CartItemResponse;
@@ -20,8 +21,21 @@ public class CartCacheService {
     private static final String CART_KEY_PREFIX = "cart:user:";
     private static final String STOCK_LOCK_PREFIX = "stock:lock:";
     private static final long CART_TTL_HOURS = 72;
-    private static final long LOCK_WAIT_SECONDS = 3;
     private static final long LOCK_LEASE_SECONDS = 10;
+
+    /**
+     * 抢锁等待上限（秒）。
+     * <p>
+     * <b>为什么做成可配置</b>：它是一个纯粹的余量参数，取决于"临界区持有时长 × 并发数"。
+     * 临界区里加了观测（javaagent）或事务协调（Seata）之后，持有时长会变，这个值就得跟着调——
+     * 写死在代码里意味着每次都要重编译才能试一个数。
+     * <p>
+     * <b>调大的代价</b>：它把"快速拒绝"换成了"慢速排队"。等待期内线程一直被占着，
+     * 真实高并发下会让上游线程池先耗尽。所以正确的方向是缩短临界区，而不是一直加大这个值——
+     * 它只是个安全余量，不是容量。
+     */
+    @Value("${envoymart.stock.lock-wait-seconds:3}")
+    private long lockWaitSeconds;
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final RedissonClient redissonClient;
@@ -85,7 +99,7 @@ public class CartCacheService {
     public boolean tryLock(Long productId) {
         RLock lock = getStockLock(productId);
         try {
-            return lock.tryLock(LOCK_WAIT_SECONDS, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
+            return lock.tryLock(lockWaitSeconds, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("获取库存锁被中断", e);

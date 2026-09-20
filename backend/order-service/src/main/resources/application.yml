@@ -62,6 +62,22 @@ spring:
 services:
   product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
 
+# 分布式事务（AT 模式）。注册与配置都用 file：本地一个 TC，直连即可，
+# 不必再引 Nacos 做注册中心（那会让本地启动多一个依赖）。
+seata:
+  enabled: ${SEATA_ENABLED:true}
+  application-id: ${spring.application.name}
+  tx-service-group: envoymart_tx_group
+  service:
+    vgroup-mapping:
+      envoymart_tx_group: default
+    grouplist:
+      default: ${SEATA_SERVER:127.0.0.1:8091}
+  registry:
+    type: file
+  config:
+    type: file
+
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
