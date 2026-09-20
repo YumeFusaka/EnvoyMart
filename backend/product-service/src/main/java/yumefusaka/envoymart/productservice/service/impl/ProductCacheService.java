@@ -50,9 +50,19 @@ public class ProductCacheService {
 
     /** 重建锁的持有时间：够一次回源即可，太长会在回源失败时把后续请求也挡在门外 */
     private static final long REBUILD_LOCK_SECONDS = 10;
-    /** 没抢到重建锁时的等待与重试：等别人填好缓存，而不是自己也去打库 */
-    private static final long WAIT_FOR_REBUILD_MILLIS = 50;
-    private static final int WAIT_RETRIES = 3;
+    /**
+     * 没抢到重建锁时的等待与重试。
+     * <p>
+     * <b>只等一次、且极短</b>：这里是商品查询，回源就是一条主键查询，本身很便宜——
+     * 等待的代价可能比直接回源还高。更关键的是它出现在下单链路上：并发下单时每个请求
+     * 都要查商品，而上一单刚 evict 过缓存，于是每次都撞上重建窗口，
+     * 等待会沿着链路累积，把后面对着库存锁等待的请求一起拖超时。
+     * <p>
+     * 击穿防护对付的是"极热点 key 失效瞬间打爆数据库"，本项目没有这种热点——
+     * 保留它是因为它零风险，但不该为它付出等待成本。
+     */
+    private static final long WAIT_FOR_REBUILD_MILLIS = 10;
+    private static final int WAIT_RETRIES = 1;
 
     /**
      * 空值哨兵 —— 与"没缓存"区分开。

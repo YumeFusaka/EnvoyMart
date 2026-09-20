@@ -36,6 +36,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 「读库存 → 判断够不够 → 扣减」每一步都正确，测出来永远是绿的——
  * 只有让 30 个请求真正同时抵达，才能证明防超卖真的生效。
  * <p>
+ * <b>⚠️ 跑之前先关掉 SkyWalking：</b>{@code ENVOYMART_SKYWALKING=off ./run-local.sh}。
+ * javaagent 给每个方法插桩，单次请求的耗时会明显变长，而本测试的请求要先等
+ * Redisson 锁（3 秒）——耗时一涨，后面排队的请求就等不到锁了。实测**成功数会从
+ * 稳定的 10 掉到 3**，看上去像防超卖坏了，其实只是观测开销。
+ * 只改测试环境、不动业务代码，是这里唯一正确的处理。
+ * <p>
  * 运行：
  * <pre>
  * RUN_STOCK_CONCURRENCY_TEST=true INTERNAL_TOKEN=xxx \

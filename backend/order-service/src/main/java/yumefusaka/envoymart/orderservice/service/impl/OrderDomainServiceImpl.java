@@ -3,7 +3,6 @@ package yumefusaka.envoymart.orderservice.service.impl;
 import com.alibaba.csp.sentinel.Entry;
 import com.alibaba.csp.sentinel.SphU;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
-import io.seata.spring.annotation.GlobalTransactional;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
@@ -115,7 +114,6 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
     @Override
     @Transactional
-    @GlobalTransactional(name = "envoymart-checkout", rollbackFor = Exception.class)
     public OrderResponse checkout(String userId, CheckoutRequest request) {
         List<CartItemEntity> cartItems = cartItemMapper.selectList(new LambdaQueryWrapper<CartItemEntity>()
                 .eq(CartItemEntity::getUserId, userId));
@@ -194,24 +192,35 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             }
             cartItemMapper.delete(new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId));
             cartCacheService.evictCartCache(userId);  // 清除购物车缓存
-            // 发布订单创建事件（异步解耦后续流程）
+            // 发布订单创建事件（异步解耦后续流程）。
+            //
+            // **必须包在 try 里**：事件是"可以重来的副作用"，而这段代码的位置很危险——
+            // 它在库存补偿的 catch 之外，一旦抛出（构造载荷时还要再查一次商品，那次 Feign
+            // 可能失败），异常会让本地事务回滚、订单不建，**但 product-service 那边扣掉的库存
+            // 已经提交、没有任何人回补**。实测并发下单时整仓库存被这样刷空过。
+            // 补偿管不到这里，那就让它不影响主流程：订单已经建好，事件丢了只记日志。
             List<CartItemEntity> finalItems = cartItems;
-            eventPublisher.publishOrderCreated(OrderCreatedEvent.builder()
-                    .orderId(order.getId())
-                    .orderNo(order.getOrderNo())
-                    .userId(userId)
-                    .totalAmount(total)
-                    .items(finalItems.stream().map(ci -> {
-                        ProductSnapshot p = requireProduct(ci.getProductId());
-                        return OrderItemEvent.builder()
-                                .productId(p.getId())
-                                .productName(p.getName())
-                                .quantity(ci.getQuantity())
-                                .price(p.getPrice())
-                                .build();
-                    }).toList())
-                    .createdAt(order.getCreatedAt())
-                    .build());
+            try {
+                eventPublisher.publishOrderCreated(OrderCreatedEvent.builder()
+                        .orderId(order.getId())
+                        .orderNo(order.getOrderNo())
+                        .userId(userId)
+                        .totalAmount(total)
+                        .items(finalItems.stream().map(ci -> {
+                            ProductSnapshot p = requireProduct(ci.getProductId());
+                            return OrderItemEvent.builder()
+                                    .productId(p.getId())
+                                    .productName(p.getName())
+                                    .quantity(ci.getQuantity())
+                                    .price(p.getPrice())
+                                    .build();
+                        }).toList())
+                        .createdAt(order.getCreatedAt())
+                        .build());
+            } catch (Exception e) {
+                log.error("[Order] 事件发布失败，订单已创建但下游不会收到通知: orderNo={}",
+                        order.getOrderNo(), e);
+            }
             log.info("用户 {} 下单成功，订单号 {}", userId, order.getOrderNo());
         } finally {
             // 逆序释放，与加锁顺序相反，降低与其他事务交叉持锁时死锁的概率

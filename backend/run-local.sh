@@ -30,7 +30,9 @@ LOG_DIR=../logs/logs-local
 # 上级目录「面试训练」没有生成短名。所以启动前把 agent 同步到用户目录（纯 ASCII）。
 AGENT_SRC="$(cd .. && pwd)/skywalking-agent"
 AGENT_HOME="$HOME/.envoymart/skywalking-agent"
-if [ -d "$AGENT_SRC" ]; then
+# 压测/性能验证时用 ENVOYMART_SKYWALKING=off 关掉——它给每个方法插桩，
+# 实测会把并发下单的成功数从 10 拉到 3，看起来像业务缺陷，其实是观测开销。
+if [ "${ENVOYMART_SKYWALKING:-on}" = "on" ] && [ -d "$AGENT_SRC" ]; then
   if [ ! -f "$AGENT_HOME/skywalking-agent.jar" ]; then
     mkdir -p "$AGENT_HOME"
     cp -r "$AGENT_SRC"/. "$AGENT_HOME"/

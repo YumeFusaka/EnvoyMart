@@ -88,6 +88,8 @@ public class ProductServiceImpl implements ProductService {
                     ? "商品不存在：" + request.getProductId()
                     : entity.getName() + " 库存不足");
         }
+        log.debug("[Stock] 扣减成功 productId={} quantity={}",
+                request.getProductId(), request.getQuantity());
         productCacheService.evictProductCache(request.getProductId());
         syncSearchIndex(request.getProductId());
     }
