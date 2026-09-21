@@ -178,6 +178,15 @@ services:
   #   - H2：SkyWalking 10.x 已移除该存储（classpath 里只剩 es / banyandb / jdbc）
   #   - ES 9.4：OAP 10.2 报 "Unsupported version: ElasticSearch 9.4"，它跟不上 ES 的版本
   # 库要事先建好（OAP 会自动建表）：CREATE DATABASE skywalking。
+  #
+  # 已知无害现象：OAP 日志会周期性出现主键冲突，形如
+  #   Duplicate entry '202609210935_b3JkZXItc2VydmljZQ==.1_...'
+  #   for key 'service_instance_relation_client_side_20260921.PRIMARY'
+  # 排查结论：那条关系是 order-service → MySQL（agent 自动插桩了 JDBC 调用），
+  # 而库里每个分钟窗口**恰好只有一条记录**——第一次写入是成功的，报错的是
+  # 窗口边界上对同一个 key 的第二次写入。数据没丢，对功能无影响。
+  # 也已验证与持久化并发无关：把 asyncBatchPersistentPoolSize 从 4 改成 1 之后
+  # 跑同样的压测照样复现，所以别再试图用改这个参数来"修"它。
   skywalking-oap:
     image: apache/skywalking-oap-server:10.2.0
     restart: unless-stopped
@@ -186,6 +195,11 @@ services:
       # selector 的值是 mysql 而不是 jdbc——配置段本身叫 mysql（见 application.yml 的
       # storage.mysql），写 jdbc 会报 "no provider found for module storage"
       SW_STORAGE: mysql
+      # 启用健康检查端点（默认值是 "-"，即不加载该模块）。不启用时 OAP 在 12800 上
+      # 没有 /healthcheck，UI 的 Armeria HealthCheckedEndpointGroup 会把唯一的后端
+      # 判定为不健康，把每个请求挂起等健康判定——表现就是 UI 一直转圈，
+      # OAP 侧日志记到 duration 十几秒、最后 Broken pipe。OAP 本身一直是好的。
+      SW_HEALTH_CHECKER: default
       # MySQL 装在宿主机而非容器里，用 host.docker.internal 回到宿主。
       # rewriteBatchedStatements 与 allowMultiQueries 是官方默认值里带的，批量写表需要
       SW_JDBC_URL: jdbc:mysql://host.docker.internal:3306/skywalking?rewriteBatchedStatements=true&allowMultiQueries=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
