@@ -3,7 +3,10 @@ package yumefusaka.envoymart.productservice.service.impl;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import yumefusaka.envoymart.productservice.cache.ProductLocalCache;
+import yumefusaka.envoymart.productservice.config.ProductCacheInvalidationConfig;
 import yumefusaka.envoymart.productservice.model.ProductResponse;
 import yumefusaka.envoymart.productservice.mq.CacheEvictConfig;
 import yumefusaka.envoymart.productservice.mq.CacheEvictEvent;
@@ -96,9 +99,31 @@ public class ProductCacheService {
     /** 熔断到期时间戳（毫秒）。now 小于它 = 处于熔断中，跳过一切缓存操作直接回源。 */
     private final AtomicLong cacheCircuitOpenUntil = new AtomicLong(0L);
 
-    public ProductCacheService(RedisTemplate<String, Object> redisTemplate, RabbitTemplate rabbitTemplate) {
+    /** 一级缓存（进程内）。挡在 Redis 前面，热点 key 的读不再产生网络往返。 */
+    private final ProductLocalCache localCache;
+
+    /**
+     * 专门用来发失效广播。
+     * <p>
+     * <b>不能复用上面那个 {@code RedisTemplate}</b>：它的 value 序列化器是 Jackson，
+     * 把字符串 {@code 1} 序列化成 JSON 字符串 {@code "1"}（带引号），
+     * 而订阅端 {@code Long.parseLong("\"1\"")} 会抛异常 —— 广播一条都生效不了，
+     * 而且是<b>静默</b>的：功能悄悄退化成"只能等本地 TTL"。
+     * <p>
+     * 这个坑实测踩过：两个实例都订阅成功（{@code PUBSUB NUMSUB} 显示 2），
+     * 但一个商品的库存改了之后，另一个实例仍然返回旧值。<b>订阅成功不等于消息能读懂。</b>
+     * 用 {@code StringRedisTemplate}（key/value 都是原样字符串）发，就不存在这层转换。
+     */
+    private final StringRedisTemplate pubSubTemplate;
+
+    public ProductCacheService(RedisTemplate<String, Object> redisTemplate,
+                               RabbitTemplate rabbitTemplate,
+                               ProductLocalCache localCache,
+                               StringRedisTemplate pubSubTemplate) {
         this.redisTemplate = redisTemplate;
         this.rabbitTemplate = rabbitTemplate;
+        this.localCache = localCache;
+        this.pubSubTemplate = pubSubTemplate;
     }
 
     /**
@@ -144,8 +169,17 @@ public class ProductCacheService {
      * @return 商品；确认不存在时返回 {@code null}
      */
     public ProductResponse getOrLoad(Long id, Supplier<ProductResponse> loader) {
+        // 一级缓存：进程内，纳秒级。热点商品的读绝大多数在这里就返回了，
+        // **根本不产生网络往返**——这是加这一层的全部意义。
+        ProductResponse local = localCache.get(id);
+        if (local != null) {
+            return local;
+        }
+
+        // 二级缓存：Redis，跨实例共享
         ProductResponse cached = read(id);
         if (cached != null) {
+            localCache.put(id, cached);   // 回填一级，下次不走网络
             return cached;
         }
         // 缓存里明确标记过"不存在"：直接返回，不必回源
@@ -191,6 +225,9 @@ public class ProductCacheService {
      * 但那条路径会留下 ERROR 日志，不是静默的。
      */
     public void evictProductCache(Long id) {
+        // 本实例先清本地副本：不等广播回来，自己立刻一致。
+        // 依赖"pub/sub 会回显给发布者"是把正确性押在中间件的行为细节上。
+        localCache.invalidate(id);
         try {
             deleteCacheOnly(id);
         } catch (Exception e) {
@@ -205,13 +242,21 @@ public class ProductCacheService {
     }
 
     /**
-     * 只删缓存，失败即抛。
+     * 删 Redis 并广播给其他实例清本地副本，失败即抛。
      * <p>
      * 补偿消费者走这条路径而不是 {@link #evictProductCache}——后者在失败时会再发补偿消息，
      * 从消费者里调它就成了自我循环：一条删不掉的消息会无限复制自己。
+     * <p>
+     * <b>广播这一步不能省</b>：补偿消息由 RabbitMQ 分发给<b>某一个</b>实例消费，
+     * 它清得掉 Redis 与自己的本地缓存，却清不掉其他实例的。
+     * 少了广播，那些实例会一直返回旧库存直到本地 TTL 到期——
+     * 而这正是"缓存删了但还是读到旧值"这类最难查的问题。
      */
     public void deleteCacheOnly(Long id) {
         redisTemplate.delete(key(id));
+        // 广播失败不单独兜底：让它抛出去，由补偿队列连同上面的删除一起重试
+        // （删除是幂等的，重试一次没有副作用）
+        pubSubTemplate.convertAndSend(ProductCacheInvalidationConfig.INVALIDATION_CHANNEL, String.valueOf(id));
     }
 
     // ==================== 读写 ====================
@@ -250,6 +295,10 @@ public class ProductCacheService {
     }
 
     private void write(Long id, ProductResponse product) {
+        // 一级缓存**不依赖 Redis**：即使 Redis 正熔断着，本地这一层照样填。
+        // 于是 Redis 挂掉期间，热点商品仍然不查库——多级缓存顺带把容灾也补了一截。
+        localCache.put(id, product);
+
         if (!cacheUsable()) {
             return;
         }
