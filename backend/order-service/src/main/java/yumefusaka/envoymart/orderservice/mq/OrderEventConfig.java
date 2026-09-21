@@ -76,21 +76,31 @@ public class OrderEventConfig {
         return QueueBuilder.durable(ORDER_DLX_QUEUE).build();
     }
 
+    // 下面三个 Binding 的**每个参数都显式 @Qualifier**，不靠形参名消歧。
+    // 这里有两个 TopicExchange（orderExchange / deadLetterExchange）与三个 Queue，
+    // 原本第一个参数只写形参名，那是依赖字节码里的 MethodParameters 属性——
+    // Maven 传了 -parameters 所以能跑，IDE 用自己的编译设置写同一份 target/classes 时
+    // 不传这个标志，参数名就丢了，启动直接报「expected single matching bean but found 2」。
+    // 症状是"时好时坏、mvn clean 有时能修"，取决于最后写 class 的是谁。
+
     @Bean
-    public Binding orderCreatedBinding(TopicExchange orderExchange,
-                                             @Qualifier("orderCreatedQueue") Queue orderCreatedQueue) {
+    public Binding orderCreatedBinding(
+            @Qualifier("orderExchange") TopicExchange orderExchange,
+            @Qualifier("orderCreatedQueue") Queue orderCreatedQueue) {
         return BindingBuilder.bind(orderCreatedQueue).to(orderExchange).with(ORDER_CREATED_KEY);
     }
 
     @Bean
-    public Binding paymentCompletedBinding(TopicExchange orderExchange,
-                                                @Qualifier("paymentCompletedQueue") Queue paymentCompletedQueue) {
+    public Binding paymentCompletedBinding(
+            @Qualifier("orderExchange") TopicExchange orderExchange,
+            @Qualifier("paymentCompletedQueue") Queue paymentCompletedQueue) {
         return BindingBuilder.bind(paymentCompletedQueue).to(orderExchange).with(PAYMENT_COMPLETED_KEY);
     }
 
     @Bean
-    public Binding dlxBinding(TopicExchange deadLetterExchange,
-                                 @Qualifier("orderDlxQueue") Queue orderDlxQueue) {
+    public Binding dlxBinding(
+            @Qualifier("deadLetterExchange") TopicExchange deadLetterExchange,
+            @Qualifier("orderDlxQueue") Queue orderDlxQueue) {
         return BindingBuilder.bind(orderDlxQueue).to(deadLetterExchange).with("dead.#");
     }
 }

@@ -34,6 +34,11 @@ spring:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
+      # 默认 60 秒——Redis 挂掉时请求要等满 60 秒才抛异常，缓存降级的 try-catch
+      # 就形同虚设（捕获一个 60 秒后才来的异常不是降级，是慢速失败）。
+      # 降到 1 秒：缓存拿不到就立刻走数据库。
+      timeout: 1s
+      connect-timeout: 1s
   rabbitmq:
     host: ${RABBITMQ_HOST:127.0.0.1}
     port: ${RABBITMQ_PORT:5672}

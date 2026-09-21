@@ -58,17 +58,30 @@ public class CacheEvictConfig {
         return QueueBuilder.durable(EVICT_DLX_QUEUE).build();
     }
 
+    /**
+     * <b>两个参数都显式 @Qualifier，不靠参数名消歧。</b>
+     * <p>
+     * 这里有两个 {@code TopicExchange} 与两个 {@code Queue}，Spring 只能靠 bean 名或
+     * {@code @Qualifier} 区分。原先第一个参数只写形参名 {@code cacheExchange}，
+     * 那是**依赖字节码里的 {@code MethodParameters} 属性**——Maven 传了 {@code -parameters}
+     * 所以能跑，但 IDE（VS Code 的 Java 语言服务器）用自己的编译设置写同一份
+     * {@code target/classes}，它不传这个标志，参数名就丢了，启动直接报
+     * 「expected single matching bean but found 2」。
+     * <p>
+     * 症状是"时好时坏、{@code mvn clean} 有时能修"，因为取决于最后写 class 的是谁。
+     * 显式声明后与编译标志无关，从根上消失。
+     */
     @Bean
-    public Binding cacheEvictBinding(TopicExchange cacheExchange,
-                                     @org.springframework.beans.factory.annotation.Qualifier("cacheEvictQueue")
-                                     Queue cacheEvictQueue) {
+    public Binding cacheEvictBinding(
+            @org.springframework.beans.factory.annotation.Qualifier("cacheExchange") TopicExchange cacheExchange,
+            @org.springframework.beans.factory.annotation.Qualifier("cacheEvictQueue") Queue cacheEvictQueue) {
         return BindingBuilder.bind(cacheEvictQueue).to(cacheExchange).with(EVICT_KEY);
     }
 
     @Bean
-    public Binding cacheEvictDlxBinding(TopicExchange cacheDlxExchange,
-                                        @org.springframework.beans.factory.annotation.Qualifier("cacheEvictDlxQueue")
-                                        Queue cacheEvictDlxQueue) {
+    public Binding cacheEvictDlxBinding(
+            @org.springframework.beans.factory.annotation.Qualifier("cacheDlxExchange") TopicExchange cacheDlxExchange,
+            @org.springframework.beans.factory.annotation.Qualifier("cacheEvictDlxQueue") Queue cacheEvictDlxQueue) {
         return BindingBuilder.bind(cacheEvictDlxQueue).to(cacheDlxExchange).with("dead.cache.evict");
     }
 }

@@ -10,6 +10,8 @@ import yumefusaka.envoymart.productservice.mq.CacheEvictEvent;
 
 import java.time.Duration;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 /**
@@ -50,6 +52,15 @@ public class ProductCacheService {
 
     /** 重建锁的持有时间：够一次回源即可，太长会在回源失败时把后续请求也挡在门外 */
     private static final long REBUILD_LOCK_SECONDS = 10;
+
+    /**
+     * 缓存故障后的熔断冷却时长。
+     * <p>
+     * 取值是一笔权衡：太短则熔断期内仍会频繁撞击（每次代价一个超时），
+     * 太长则 Redis 恢复后要等更久才切回缓存。3 秒在两者之间——
+     * 期间正常请求全部直连数据库（主键查询 5ms），代价可接受。
+     */
+    private static final long CACHE_CIRCUIT_COOLDOWN_MILLIS = 3_000;
     /**
      * 没抢到重建锁时的等待与重试。
      * <p>
@@ -74,9 +85,56 @@ public class ProductCacheService {
     /** 删除失败时的补偿通道；没有它就只能靠 TTL 兜底 */
     private final RabbitTemplate rabbitTemplate;
 
+    /**
+     * 缓存是否处于不可用状态 —— 用来把日志从"每条一次"压成"状态变化时一次"。
+     * <p>
+     * Redis 长时间不可用时会持续抛异常，若每次都记一条，日志会被刷爆、把别的信号淹掉，
+     * 运维反而看不到。所以只在**状态翻转**时各记一条（挂了记 ERROR、恢复记 INFO）。
+     */
+    private final AtomicBoolean cacheUnavailable = new AtomicBoolean(false);
+
+    /** 熔断到期时间戳（毫秒）。now 小于它 = 处于熔断中，跳过一切缓存操作直接回源。 */
+    private final AtomicLong cacheCircuitOpenUntil = new AtomicLong(0L);
+
     public ProductCacheService(RedisTemplate<String, Object> redisTemplate, RabbitTemplate rabbitTemplate) {
         this.redisTemplate = redisTemplate;
         this.rabbitTemplate = rabbitTemplate;
+    }
+
+    /**
+     * 缓存故障时<b>降级为直连数据库</b>，而不是把异常抛给调用方。
+     * <p>
+     * <b>为什么读路径是 fail-open</b>：缓存是加速层，数据在 MySQL 里是好的。
+     * 它挂了只该让接口变慢，不该让接口变失败——实测 Redis 一停，商品详情直接超时无响应，
+     * 而库里的数据完全正常。这是典型的"故障放大"：一个辅助组件的故障被放大成了业务不可用。
+     * <p>
+     * <b>注意与写路径的不对称，那是刻意的</b>：删除缓存失败也不抛（见
+     * {@link #evictProductCache}），但**下单链路要拒绝**——Redisson 锁拿不到时必须失败，
+     * 因为下单是资金相关操作，Redis 不可用时放行可能建出重复订单。
+     * 一句话：<b>读可以降级，写不能赌</b>。
+     */
+    private void reportCacheFailure(String op, Exception e) {
+        // 打开熔断一小段时间：这期间不再尝试 Redis，直接回源。
+        // **没有它，一次请求要撞 5 次 Redis、每次各等满超时**——实测商品详情 6 秒、
+        // 购物车 10 秒。加上熔断后只有撞上的那一次付超时成本，其余请求直接查库。
+        cacheCircuitOpenUntil.set(System.currentTimeMillis() + CACHE_CIRCUIT_COOLDOWN_MILLIS);
+        if (cacheUnavailable.compareAndSet(false, true)) {
+            log.error("[Cache] Redis 不可用，已降级为直连数据库（{}ms 后重试，成功则自动切回）: op={} err={}",
+                    CACHE_CIRCUIT_COOLDOWN_MILLIS, op,
+                    e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    /** 熔断期内一律跳过缓存：这是"降级"与"慢速失败"的区别所在。 */
+    private boolean cacheUsable() {
+        return System.currentTimeMillis() >= cacheCircuitOpenUntil.get();
+    }
+
+    private void reportCacheRecovered() {
+        cacheCircuitOpenUntil.set(0L);
+        if (cacheUnavailable.compareAndSet(true, false)) {
+            log.info("[Cache] Redis 已恢复，重新启用缓存");
+        }
     }
 
     /**
@@ -95,7 +153,8 @@ public class ProductCacheService {
             return null;
         }
 
-        if (!tryAcquireRebuildLock(id)) {
+        boolean rebuildLockHeld = tryAcquireRebuildLock(id);
+        if (!rebuildLockHeld) {
             // 别人正在重建：等它填好再读一次，而不是自己也去打库——
             // 这正是击穿防护的意义所在
             ProductResponse afterWait = waitForRebuild(id);
@@ -111,7 +170,13 @@ public class ProductCacheService {
             write(id, loaded);
             return loaded;
         } finally {
-            releaseRebuildLock(id);
+            // **只释放自己拿到的那把锁。**
+            // 原先无条件 release，于是没抢到锁的请求（等超时后自己回源）也会去 delete ——
+            // 那把锁是**真正持锁者**的，删掉之后第三个请求又能"抢到"，互斥从
+            // 「一个重建者」退化成「好几个」，恰好在数据库已经有压力时失效。
+            if (rebuildLockHeld) {
+                releaseRebuildLock(id);
+            }
         }
     }
 
@@ -152,39 +217,83 @@ public class ProductCacheService {
     // ==================== 读写 ====================
 
     private ProductResponse read(Long id) {
-        Object cached = redisTemplate.opsForValue().get(key(id));
-        if (cached == null || NULL_SENTINEL.equals(cached)) {
+        if (!cacheUsable()) {
             return null;
         }
-        return (ProductResponse) cached;
+        try {
+            Object cached = redisTemplate.opsForValue().get(key(id));
+            reportCacheRecovered();
+            if (cached == null || NULL_SENTINEL.equals(cached)) {
+                return null;
+            }
+            return (ProductResponse) cached;
+        } catch (Exception e) {
+            // 读失败 = 未命中，交给调用方回源。缓存挂了不该让读接口跟着挂
+            reportCacheFailure("read", e);
+            return null;
+        }
     }
 
     private boolean isKnownMissing(Long id) {
-        // 必须用 equals 而不是 ==：从 Redis 读回来的是反序列化出的新对象，
-        // 引用比较永远不成立——那样空值缓存会静默失效，穿透防护等于没做
-        return NULL_SENTINEL.equals(redisTemplate.opsForValue().get(key(id)));
+        if (!cacheUsable()) {
+            return false;
+        }
+        try {
+            // 必须用 equals 而不是 ==：从 Redis 读回来的是反序列化出的新对象，
+            // 引用比较永远不成立——那样空值缓存会静默失效，穿透防护等于没做
+            return NULL_SENTINEL.equals(redisTemplate.opsForValue().get(key(id)));
+        } catch (Exception e) {
+            // 判不出来就当"没标记过"，让调用方回源。宁可多打一次库，也不误判成"不存在"
+            reportCacheFailure("isKnownMissing", e);
+            return false;
+        }
     }
 
     private void write(Long id, ProductResponse product) {
-        if (product == null) {
-            redisTemplate.opsForValue().set(key(id), NULL_SENTINEL, Duration.ofMinutes(NULL_TTL_MINUTES));
+        if (!cacheUsable()) {
             return;
         }
-        // TTL 加抖动：同一批写入的 key 不会在同一秒集体失效
-        long jitterMinutes = ThreadLocalRandom.current().nextLong(JITTER_MAX_MINUTES + 1);
-        redisTemplate.opsForValue().set(key(id), product,
-                Duration.ofMinutes(PRODUCT_TTL_HOURS * 60 + jitterMinutes));
+        try {
+            if (product == null) {
+                redisTemplate.opsForValue().set(key(id), NULL_SENTINEL, Duration.ofMinutes(NULL_TTL_MINUTES));
+                return;
+            }
+            // TTL 加抖动：同一批写入的 key 不会在同一秒集体失效
+            long jitterMinutes = ThreadLocalRandom.current().nextLong(JITTER_MAX_MINUTES + 1);
+            redisTemplate.opsForValue().set(key(id), product,
+                    Duration.ofMinutes(PRODUCT_TTL_HOURS * 60 + jitterMinutes));
+            reportCacheRecovered();
+        } catch (Exception e) {
+            // 回填失败只意味着"下次还得回源"，数据已经拿到了，不影响本次返回
+            reportCacheFailure("write", e);
+        }
     }
 
     // ==================== 击穿防护 ====================
 
     private boolean tryAcquireRebuildLock(Long id) {
-        return Boolean.TRUE.equals(redisTemplate.opsForValue()
-                .setIfAbsent(REBUILD_LOCK_PREFIX + id, "1", Duration.ofSeconds(REBUILD_LOCK_SECONDS)));
+        if (!cacheUsable()) {
+            return false;
+        }
+        try {
+            return Boolean.TRUE.equals(redisTemplate.opsForValue()
+                    .setIfAbsent(REBUILD_LOCK_PREFIX + id, "1", Duration.ofSeconds(REBUILD_LOCK_SECONDS)));
+        } catch (Exception e) {
+            // 拿不到锁就当成"没抢到"，走等待→自行回源的路径。
+            // 击穿防护是优化项，不该因为它不可用就让查询失败
+            reportCacheFailure("tryAcquireRebuildLock", e);
+            return false;
+        }
     }
 
     private void releaseRebuildLock(Long id) {
-        redisTemplate.delete(REBUILD_LOCK_PREFIX + id);
+        try {
+            redisTemplate.delete(REBUILD_LOCK_PREFIX + id);
+        } catch (Exception e) {
+            // 这个方法在 finally 里调用，**抛出去会把已经加载成功的返回值吞掉** ——
+            // 锁等它自己 TTL 过期即可，不必让整个请求失败
+            reportCacheFailure("releaseRebuildLock", e);
+        }
     }
 
     private ProductResponse waitForRebuild(Long id) {

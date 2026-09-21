@@ -4,6 +4,20 @@ server:
 spring:
   application:
     name: product-service
+  # 缓存读停顿时长。
+  #
+  # **默认值是 60 秒**，这是个坑：Redis 挂掉时每个请求都要等满 60 秒才抛异常，
+  # 于是"捕获异常后降级查库"根本救不了接口——实测就是这样，商品详情直接超时无响应。
+  # **捕获一个 60 秒后才抛的异常，不是降级，是把"快速失败"改成了"慢速失败"。**
+  #
+  # 缓存是加速层，拿不到就该立刻放弃、直接回源（一次主键查询 5ms 就够）。
+  # 1 秒的阈值：比它更慢的缓存本身就不产生价值，让位给数据库更快。
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      timeout: 1s
+      connect-timeout: 1s
   datasource:
     driver-class-name: ${DB_DRIVER:org.h2.Driver}
     url: ${DB_URL:jdbc:h2:mem:productdb;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}

@@ -1,5 +1,6 @@
 package yumefusaka.envoymart.orderservice.service.impl;
 
+import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.ObjectMapper;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
@@ -11,12 +12,29 @@ import yumefusaka.envoymart.orderservice.model.CartItemResponse;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Redis 缓存包装层：购物车缓存 & 分布式锁
  */
+@Slf4j
 @Service
 public class CartCacheService {
+
+    /** 缓存是否不可用，用来把故障日志压成"状态翻转时一次"（见 reportCacheFailure） */
+    private final AtomicBoolean cacheUnavailable = new AtomicBoolean(false);
+
+    /** 熔断到期时间戳（毫秒）。now 小于它 = 处于熔断中，跳过缓存直接查库。 */
+    private final AtomicLong cacheCircuitOpenUntil = new AtomicLong(0L);
+
+    /**
+     * 缓存故障后的熔断冷却时长。
+     * <p>
+     * **没有它，降级就是假的**：一次请求要撞多次 Redis、每次各等满超时——
+     * 实测购物车在 Redis 挂掉后要 10 秒才返回。熔断后只有撞上的那一次付超时成本。
+     */
+    private static final long CACHE_CIRCUIT_COOLDOWN_MILLIS = 3_000;
 
     private static final String CART_KEY_PREFIX = "cart:user:";
     private static final String STOCK_LOCK_PREFIX = "stock:lock:";
@@ -66,18 +84,71 @@ public class CartCacheService {
     public record CachedCart(List<CartItemResponse> items) {
     }
 
+    /**
+     * 读购物车缓存。**Redis 不可用时降级为空**，由调用方回源数据库。
+     * <p>
+     * 返回空列表而不是抛异常，是因为调用方 {@code listCartItems} 本来就是
+     * 「缓存没有就查库」的写法——空 = 未命中，正好落到那条路径上。
+     * <p>
+     * <b>注意与下单路径的区别</b>：这里可以降级，但 {@link #tryLock} 不行。
+     * 读可以退回数据库，而"下单要不要拿锁"没有降级选项——放行等于可能建出重复订单。
+     */
     public List<CartItemResponse> getCachedCart(String userId) {
-        String key = cartKey(userId);
-        Object cached = redisTemplate.opsForValue().get(key);
-        if (cached instanceof CachedCart cart) {
-            return cart.items();
+        if (!cacheUsable()) {
+            return Collections.emptyList();
+        }
+        try {
+            Object cached = redisTemplate.opsForValue().get(cartKey(userId));
+            if (cached instanceof CachedCart cart) {
+                return cart.items();
+            }
+            reportCacheRecovered();
+        } catch (Exception e) {
+            reportCacheFailure("getCachedCart", e);
         }
         return Collections.emptyList();
     }
 
+    /** 回填失败只意味着"下次还得查库"，数据已经在手上，不该影响本次返回。 */
     public void cacheCart(String userId, List<CartItemResponse> items) {
-        redisTemplate.opsForValue().set(cartKey(userId),
-                new CachedCart(List.copyOf(items)), CART_TTL_HOURS, TimeUnit.HOURS);
+        if (!cacheUsable()) {
+            return;
+        }
+        try {
+            redisTemplate.opsForValue().set(cartKey(userId),
+                    new CachedCart(List.copyOf(items)), CART_TTL_HOURS, TimeUnit.HOURS);
+            reportCacheRecovered();
+        } catch (Exception e) {
+            reportCacheFailure("cacheCart", e);
+        }
+    }
+
+    /**
+     * 缓存故障的日志按<b>状态翻转</b>记，而不是每条一次。
+     * <p>
+     * Redis 长时间不可用时会持续抛异常，逐条记会把日志刷爆、把真正的信号淹掉。
+     * 挂的那一下记 ERROR、恢复的那一下记 INFO，中间保持安静。
+     */
+    private void reportCacheFailure(String op, Exception e) {
+        // 打开熔断，冷却期内不再尝试 Redis
+        cacheCircuitOpenUntil.set(System.currentTimeMillis() + CACHE_CIRCUIT_COOLDOWN_MILLIS);
+        if (cacheUnavailable.compareAndSet(false, true)) {
+            log.error("[CartCache] Redis 不可用，缓存已降级（{}ms 后重试，成功则自动切回）: op={} err={}",
+                    CACHE_CIRCUIT_COOLDOWN_MILLIS, op,
+                    e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    /** 熔断期内一律跳过缓存 —— 这是"降级"与"慢速失败"的区别所在。 */
+    private boolean cacheUsable() {
+        return System.currentTimeMillis() >= cacheCircuitOpenUntil.get();
+    }
+
+    private void reportCacheRecovered() {
+        cacheCircuitOpenUntil.set(0L);
+        if (cacheUnavailable.compareAndSet(true, false)) {
+            log.info("[CartCache] Redis 已恢复，重新启用缓存");
+        }
     }
 
     public void evictCartCache(String userId) {
