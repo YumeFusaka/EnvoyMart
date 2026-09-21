@@ -128,6 +128,12 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         // 会让已经拿到的锁一直不释放，只能等租期自然过期，期间同商品的其他用户全部下单失败。
         List<Long> lockedProductIds = new ArrayList<>();
         OrderEntity order = null;
+        // 声明在 try 之外：事件发布已经挪到锁外，这几个值要带出去
+        BigDecimal total = BigDecimal.ZERO;
+        // 事件载荷要的商品信息，**在下面的扣减循环里已经查过一次了**，顺手收起来即可。
+        // 原先为了拼事件又对每件商品调了一次 requireProduct——那是凭空多出来的 N 次
+        // 跨服务调用，而且全部发生在库存锁里。
+        List<OrderItemEvent> eventItems = new ArrayList<>();
         try {
             for (CartItemEntity cartItem : cartItems) {
                 if (!cartCacheService.tryLock(cartItem.getProductId())) {
@@ -165,7 +171,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             // 订单没建、购物车没清，库存却实打实少了一份。反复触发可以在"零订单"的
             // 情况下把整仓库存刷空。
             List<StockDeductRequest> deducted = new ArrayList<>();
-            BigDecimal total = BigDecimal.ZERO;
+            total = BigDecimal.ZERO;
             try {
                 for (CartItemEntity cartItem : cartItems) {
                     ProductSnapshot product = requireProduct(cartItem.getProductId());
@@ -185,6 +191,12 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     item.setQuantity(cartItem.getQuantity());
                     item.setSubtotal(subtotal);
                     orderItemMapper.insert(item);
+                    eventItems.add(OrderItemEvent.builder()
+                            .productId(product.getId())
+                            .productName(product.getName())
+                            .quantity(cartItem.getQuantity())
+                            .price(product.getPrice())
+                            .build());
                 }
                 order.setTotalAmount(total);
                 orderMapper.updateById(order);
@@ -194,35 +206,6 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             }
             cartItemMapper.delete(new LambdaQueryWrapper<CartItemEntity>().eq(CartItemEntity::getUserId, userId));
             cartCacheService.evictCartCache(userId);  // 清除购物车缓存
-            // 发布订单创建事件（异步解耦后续流程）。
-            //
-            // **必须包在 try 里**：事件是"可以重来的副作用"，而这段代码的位置很危险——
-            // 它在库存补偿的 catch 之外，一旦抛出（构造载荷时还要再查一次商品，那次 Feign
-            // 可能失败），异常会让本地事务回滚、订单不建，**但 product-service 那边扣掉的库存
-            // 已经提交、没有任何人回补**。实测并发下单时整仓库存被这样刷空过。
-            // 补偿管不到这里，那就让它不影响主流程：订单已经建好，事件丢了只记日志。
-            List<CartItemEntity> finalItems = cartItems;
-            try {
-                eventPublisher.publishOrderCreated(OrderCreatedEvent.builder()
-                        .orderId(order.getId())
-                        .orderNo(order.getOrderNo())
-                        .userId(userId)
-                        .totalAmount(total)
-                        .items(finalItems.stream().map(ci -> {
-                            ProductSnapshot p = requireProduct(ci.getProductId());
-                            return OrderItemEvent.builder()
-                                    .productId(p.getId())
-                                    .productName(p.getName())
-                                    .quantity(ci.getQuantity())
-                                    .price(p.getPrice())
-                                    .build();
-                        }).toList())
-                        .createdAt(order.getCreatedAt())
-                        .build());
-            } catch (Exception e) {
-                log.error("[Order] 事件发布失败，订单已创建但下游不会收到通知: orderNo={}",
-                        order.getOrderNo(), e);
-            }
             log.info("用户 {} 下单成功，订单号 {}", userId, order.getOrderNo());
         } finally {
             // 逆序释放，与加锁顺序相反，降低与其他事务交叉持锁时死锁的概率
@@ -230,7 +213,41 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 cartCacheService.unlock(lockedProductIds.get(i));
             }
         }
+
+        // 事件发布挪到**锁外**。
+        //
+        // 它是"可以重来的副作用"，没有理由占着库存锁：一次 MQ 发布是一次网络往返，
+        // 留在锁里就直接计入临界区时长——而「临界区时长 × 并发数」正是队尾请求要等的时间，
+        // 这条线实测过（30 并发下单时它是决定成败的那个量）。
+        publishOrderCreatedQuietly(order, userId, total, eventItems);
+
         return getOrder(userId, order.getId());
+    }
+
+    /**
+     * 发布订单创建事件，失败只记日志。
+     * <p>
+     * **不能让它影响主流程**：订单已经建好，本地事务也已经提交，事件丢了只该留一条 ERROR。
+     * 这个异常如果抛出去，本地事务会回滚、订单不建，**而 product-service 那边扣掉的库存
+     * 已经提交、没有任何人回补**——实测并发下单时整仓库存被这样刷空过。
+     * <p>
+     * 调用点刻意放在加锁的 try/finally 之外，所以这里不需要考虑锁的释放。
+     */
+    private void publishOrderCreatedQuietly(OrderEntity order, String userId,
+                                            BigDecimal total, List<OrderItemEvent> items) {
+        try {
+            eventPublisher.publishOrderCreated(OrderCreatedEvent.builder()
+                    .orderId(order.getId())
+                    .orderNo(order.getOrderNo())
+                    .userId(userId)
+                    .totalAmount(total)
+                    .items(items)
+                    .createdAt(order.getCreatedAt())
+                    .build());
+        } catch (Exception e) {
+            log.error("[Order] 事件发布失败，订单已创建但下游不会收到通知: orderNo={}",
+                    order.getOrderNo(), e);
+        }
     }
 
     @Override
