@@ -313,7 +313,7 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 | 分布式事务 | Seata 2.5 AT（`@GlobalTransactional`）提供崩溃可恢复的跨服务回滚；另有手写 Saga（显式记账 + 反序补偿）。两者的取舍见 `docker-compose.yml` 的注释 |
 | 数据库 | MySQL 8.4 / H2（本地） |
 | ORM | MyBatis-Plus 3.5.17 |
-| 缓存 | Redis 7.4 + Redisson 4.7；覆盖穿透（空值哨兵）/ 雪崩（TTL 抖动）/ 击穿（SETNX 互斥），删除失败落 MQ 补偿重试 |
+| 缓存 | **两级**：Caffeine 本地（热点 key 不产生网络往返）+ Redis 7.4；失效走 pub/sub 广播，本地 TTL 兜底。穿透用**布隆过滤器 + 空值哨兵**两道，雪崩用 TTL 抖动，击穿用 SETNX 互斥；Redis 不可用时读路径降级查库 + 熔断，删除失败落 MQ 补偿重试 |
 | 消息队列 | RabbitMQ 4.1（生产端 confirm + returns，消费端死信队列 + 重试） |
 | 搜索引擎 | Elasticsearch 9.4.5 |
 | 前端 | Vue 3.5, Vite 8, Element Plus, Pinia, Axios |
