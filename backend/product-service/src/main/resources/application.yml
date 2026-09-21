@@ -1,6 +1,14 @@
 server:
   port: 9002
 
+# 指标端点。缓存命中率、穿透拦截量、库存扣减这些都在本服务，
+# 不暴露就只能靠"感觉变快了"判断防护有没有生效——而那种判断不可验证。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
 spring:
   application:
     name: product-service

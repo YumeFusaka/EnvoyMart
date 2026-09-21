@@ -1,10 +1,13 @@
 package yumefusaka.envoymart.productservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import yumefusaka.envoymart.productservice.cache.ProductBloomFilter;
 import yumefusaka.envoymart.productservice.entity.ProductEntity;
 import yumefusaka.envoymart.productservice.mapper.ProductMapper;
 import yumefusaka.envoymart.productservice.model.ProductResponse;
@@ -26,13 +29,23 @@ public class ProductServiceImpl implements ProductService {
     private final ProductCacheService productCacheService;
     /** 可能不注册（{@code product.search.sync-on-startup=false} 时），所以用 ObjectProvider 而不是直接注入 */
     private final ObjectProvider<ProductSyncService> searchSync;
+    /** 缓存穿透的第一道防线，详见 getProduct 与 ProductBloomFilter 的注释 */
+    private final ProductBloomFilter bloomFilter;
+    /** 被布隆过滤器拦下的请求数 —— 穿透防护是否真的在生效，看这个数字 */
+    private final Counter bloomRejections;
 
     public ProductServiceImpl(ProductMapper productMapper,
                               ProductCacheService productCacheService,
-                              ObjectProvider<ProductSyncService> searchSync) {
+                              ObjectProvider<ProductSyncService> searchSync,
+                              ProductBloomFilter bloomFilter,
+                              MeterRegistry meterRegistry) {
         this.productMapper = productMapper;
         this.productCacheService = productCacheService;
         this.searchSync = searchSync;
+        this.bloomFilter = bloomFilter;
+        this.bloomRejections = Counter.builder("product.bloom.rejected")
+                .description("被布隆过滤器直接拒绝的商品查询数（未触及缓存与数据库）")
+                .register(meterRegistry);
     }
 
     @Override
@@ -49,6 +62,24 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public ProductResponse getProduct(Long id) {
+        // 布隆过滤器是**第一道**，且它是唯一能在"不碰任何下游"的前提下拒绝请求的一层。
+        //
+        // 它与空值哨兵挡的不是同一类：
+        //   空值哨兵缓存的是"这个 id 不存在"，对**重复**查同一个不存在的 id 有效；
+        //   随机 id 扫描每次都是新 key、永远不命中，可以一直打到数据库——这正是过滤器挡的。
+        //
+        // 注意 id 为 null 或过滤器未加载时 mightContain 返回 true（放行），
+        // 不让一个"防穿透"的组件把正常流量拦掉。
+        if (!bloomFilter.mightContain(id)) {
+            // 单独计数：这个数字直接回答"穿透防护到底拦下了多少"。
+            // 没有它，就只能靠"响应变快了"这类间接感受去判断，而那种判断不可验证——
+            // 实测时我想用 MySQL 的 Com_select 差量来证明"没打库"，
+            // 结果背景噪声（健康检查、后台任务）比信号还大，压根测不出来。
+            // **能被验证的指标，比"我觉得生效了"值钱。**
+            bloomRejections.increment();
+            throw new IllegalArgumentException("商品不存在");
+        }
+
         // 读缓存 / 回源 / 回填（含"确认不存在"的空值）都收在缓存服务里，
         // 三种防护（穿透、雪崩、击穿）发生在同一个窗口，散在这里写必然有漏
         ProductResponse product = productCacheService.getOrLoad(id, () -> {
