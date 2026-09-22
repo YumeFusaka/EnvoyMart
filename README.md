@@ -243,6 +243,8 @@ mkdir -p skywalking-agent && docker create --name sw-tmp apache/skywalking-java-
   && docker cp sw-tmp:/skywalking/agent/. skywalking-agent/ && docker rm sw-tmp
 ```
 
+**`docker-compose.yml` 里给 OAP 设的 `SW_HEALTH_CHECKER: default` 不要删**：OAP 的 health-checker 模块默认不加载，缺了它 12800 上就没有 `/healthcheck`；而 UI 的 Armeria 客户端探不到健康端点会把每个请求**挂起等判定**——表现是 UI 一直转圈、OAP 日志记到十几秒后 `Broken pipe`，**而 OAP 本身完全正常**。
+
 `run-local.sh` 会把 agent 同步到 `$HOME/.envoymart/skywalking-agent` 再启动——
 **不能直接用仓库里的路径**：`-javaagent` 走完 Maven 的参数拼接后非 ASCII 字符会变成乱码，
 而上级目录「面试训练」拿不到 8.3 短名，只能用纯 ASCII 的落地路径绕开。
