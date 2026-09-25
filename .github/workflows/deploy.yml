@@ -55,10 +55,22 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-          # 诊断：确认私钥内容完整（行数与首行是判断 Secret 有没有被截断的快速手段）
-          echo "私钥行数: $(wc -l < ~/.ssh/deploy_key)"
-          echo "私钥首行: $(head -1 ~/.ssh/deploy_key)"
-          echo "私钥尾行: $(tail -1 ~/.ssh/deploy_key)"
+          # 诊断：确认私钥内容完整。
+          # 打印 SHA256 前 16 位（不是私钥本身）—— 本地对同一文件算一次就能比对出
+          # Secret 里存的内容有没有被改动。
+          {
+            echo "### SSH 诊断"
+            echo ""
+            echo "| 检查项 | 值 |"
+            echo "|---|---|"
+            echo "| 私钥行数 | $(wc -l < ~/.ssh/deploy_key) |"
+            echo "| 私钥首行 | \`$(head -1 ~/.ssh/deploy_key)\` |"
+            echo "| 私钥尾行 | \`$(tail -1 ~/.ssh/deploy_key)\` |"
+            echo "| 私钥 SHA256(前16) | \`$(sha256sum ~/.ssh/deploy_key | cut -c1-16)\` |"
+            echo "| SSH_HOST | \`${{ secrets.SSH_HOST }}\` |"
+            echo "| SSH_USER | \`${{ secrets.SSH_USER }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
 
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
           echo "known_hosts 行数: $(wc -l < ~/.ssh/known_hosts)"
@@ -67,9 +79,15 @@ jobs:
           if ! ssh -i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes \
                    ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
                    "echo 'SSH 连接成功，主机名:' \$(hostname)"; then
-            echo "===== SSH 连接失败，以下是握手详情 ====="
-            ssh -vv -i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes \
-                ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo ok" 2>&1 | tail -30
+            {
+              echo ""
+              echo "### ❌ SSH 连接失败 —— 握手详情"
+              echo ""
+              echo '```'
+              ssh -vv -i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes \
+                  ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo ok" 2>&1 | tail -25
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
