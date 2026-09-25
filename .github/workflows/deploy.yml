@@ -17,6 +17,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GHCR 要求仓库路径全小写，而 GitHub 用户名可能含大写（本仓库是 YumeFusaka），
+      # 直接用 github.repository_owner 会被 registry 拒绝："repository name must be lowercase"
+      - name: 计算镜像地址（转小写）
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE=ghcr.io/${OWNER}/envoymart-auth" >> "$GITHUB_ENV"
+          echo "镜像地址: ${IMAGE}"
+
       - name: 登录 ghcr.io
         uses: docker/login-action@v3
         with:
@@ -34,7 +42,7 @@ jobs:
           build-args: |
             SERVICE=auth-service
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/envoymart-auth:${{ github.sha }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
 
       # 用 SSH 隧道访问集群 API —— 不在服务器上对外开放 6443 端口。
       # 这台机器一直被人扫 SSH，不该再多开一个入口。
