@@ -1,3 +1,4 @@
+# 构建产物：多阶段构建，运行阶段只含 JRE 与 jar
 # 通用镜像构建 —— 一份 Dockerfile 构建所有服务，靠 --build-arg SERVICE=xxx 切换。
 #
 # 为什么做多阶段：构建需要 Maven + JDK + 整个源码树（约 1GB），
