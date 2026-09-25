@@ -85,6 +85,19 @@
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
                     <version>${spring.boot.version}</version>
+                    <!-- repackage 会把普通 jar 重新打成「可执行 jar」（补上 Main-Class 与依赖）。
+                         本项目的父 pom 不是 spring-boot-starter-parent（模块是手写的），
+                         所以这个 goal 不会被自动绑定，必须显式声明 —— 否则打出来的 jar
+                         只有类文件、没有入口，容器里一跑就报 "no main manifest attribute"。
+                         放在 pluginManagement 里：7 个服务模块各自声明了本插件，会自动继承；
+                         common / agent-core 是库、没声明，因此不受影响（它们没有 main class）。 -->
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>repackage</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
