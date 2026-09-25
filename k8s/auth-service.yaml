@@ -1,0 +1,95 @@
+# auth-service 在 k3s 上的部署清单。
+#
+# 不用 Ingress：k3s 装的时候关掉了 traefik，直接走 NodePort 访问，
+# 少一个组件、少一份内存占用。
+#
+# 密钥（DB_PASSWORD / JWT_SECRET）不写在这里 —— 用命令创建 Secret，
+# 避免凭据随代码进仓库：
+#   kubectl create secret generic auth-secret \
+#     --from-literal=DB_USERNAME=envoymart \
+#     --from-literal=DB_PASSWORD="$(cat /root/.envoymart_k8s_db_pwd)" \
+#     --from-literal=JWT_SECRET="$(openssl rand -base64 48)"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-config
+data:
+  # 连宿主机的 MySQL（不是 Pod 里的）。10.1.0.12 是宿主内网地址。
+  # 中间件不进集群：单机内存有限，有状态组件用 Docker 跑在宿主机更省事。
+  DB_DRIVER: "com.mysql.cj.jdbc.Driver"
+  DB_URL: "jdbc:mysql://10.1.0.12:3306/envoymart_auth?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8"
+  # 单服务部署，不需要注册中心
+  NACOS_ENABLED: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  labels:
+    app: auth-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  strategy:
+    # 单副本 + 小内存：先删旧的再起新的，避免滚动更新时两个 Pod 同时占内存
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+        - name: auth-service
+          # 这个 tag 由 CI 在部署时替换成 commit SHA
+          image: ghcr.io/yumefusaka/envoymart-auth:PLACEHOLDER
+          ports:
+            - name: http
+              containerPort: 9001
+          envFrom:
+            - configMapRef:
+                name: auth-config
+            - secretRef:
+                name: auth-secret
+          resources:
+            requests:
+              memory: "320Mi"
+              cpu: "100m"
+            limits:
+              # 上限给到 600Mi：JVM 堆按 MaxRAMPercentage=55 算，约 330Mi
+              memory: "600Mi"
+          # 就绪探针 —— 滚动更新零停机的关键。
+          # 没有它，K8s 会认为容器一启动就能接流量，而 Spring Boot 这时还没起完，
+          # 用户会看到 502。
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 9001
+            initialDelaySeconds: 25
+            periodSeconds: 10
+            failureThreshold: 3
+          # 存活探针 —— 卡死了自动重启
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 9001
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+spec:
+  # NodePort：集群外可直接访问 <节点IP>:30001，用于验证部署成功
+  type: NodePort
+  selector:
+    app: auth-service
+  ports:
+    - name: http
+      port: 9001
+      targetPort: 9001
+      nodePort: 30001

@@ -1,0 +1,75 @@
+name: Deploy
+
+# 只在 main 分支的 push 上跑 —— PR 不部署（部署是要落到真实环境的行为）
+on:
+  push:
+    branches: [main]
+  # 支持手动触发，便于排查
+  workflow_dispatch:
+
+jobs:
+  deploy-auth:
+    name: 构建镜像并部署 auth-service
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # 推 ghcr.io 需要
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 镜像 tag 用 commit SHA —— 这是可追溯与可回滚的前提。
+      # 用 latest 的话，回滚时「回滚到哪个 latest？」是答不上来的。
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          build-args: |
+            SERVICE=auth-service
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/envoymart-auth:${{ github.sha }}
+
+      # 用 SSH 隧道访问集群 API —— 不在服务器上对外开放 6443 端口。
+      # 这台机器一直被人扫 SSH，不该再多开一个入口。
+      - name: 建立到服务器的 SSH 隧道
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          # -f 后台、-N 不执行命令、-L 本地 6443 转发到服务器的 k3s API
+          ssh -i ~/.ssh/deploy_key -f -N \
+              -o ExitOnForwardFailure=yes \
+              -L 6443:127.0.0.1:6443 \
+              ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}
+          echo "隧道已建立"
+
+      - name: 部署到 k3s
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          # kubeconfig 里的 server 已是 https://127.0.0.1:6443，正好走上面那条隧道
+          kubectl config set-cluster default --server=https://127.0.0.1:6443
+
+          echo "--- 部署前状态 ---"
+          kubectl get deploy auth-service 2>/dev/null || echo "（首次部署）"
+
+          # 把清单里的 PLACEHOLDER 换成这次构建的 tag，然后整体 apply。
+          # 不用 `set image`：那样只改镜像，清单里其他改动（探针、资源限制）不会生效；
+          # 也不能先 apply 再 set image：apply 会把 tag 打回 PLACEHOLDER，白白重启一次。
+          sed "s|PLACEHOLDER|${{ github.sha }}|" k8s/auth-service.yaml | kubectl apply -f -
+
+          echo "--- 等待滚动完成 ---"
+          kubectl rollout status deployment/auth-service --timeout=240s
+
+          echo "--- 部署后状态 ---"
+          kubectl get pods -l app=auth-service
+          kubectl get svc auth-service
