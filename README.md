@@ -298,6 +298,35 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 - 指标：`http://localhost:9004/actuator/prometheus`
 - 链路追踪 UI：`http://localhost:8088`（SkyWalking）
 
+## 容器化部署（k3s + GitOps）
+
+上面是**本地开发**的启动方式。**部署到 Kubernetes** 走另一条链路：
+
+```
+push 到 main
+      ↓  GitHub Actions
+  构建镜像（多阶段构建，tag = commit SHA）→ 推 ghcr.io
+      ↓
+  CI 把新 tag 写进 k8s/ 清单并提交
+      ↓  Argo CD（跑在集群里）监测到变化
+    拉取 → 渲染 → 应用
+      ↓
+   Pod 滚动更新
+```
+
+**为什么让 Argo CD 拉、而不是 CI 里直接 `kubectl`**：
+
+- **CI 不持有集群凭据** —— 直接 `kubectl` 得把 `kubeconfig` 存成 GitHub Secret，等于把集群写权限交给了别人的 runner
+- **回滚即 `git revert`** —— 集群状态与 Git 一一对应；CI 脚本里的 `kubectl set image` 执行完就没了
+- **自动收敛** —— 有人手改集群，Argo CD 会把它改回 Git 里的样子
+
+**怎么验证「线上跑的是哪个版本」**：镜像构建时注入 commit SHA，`GET /actuator/info` 可直接查——
+排查问题时把**本地 HEAD、部署的镜像 tag、接口返回的 build-sha** 三者比对即可。这也是端到端验证链路时用的方法。
+
+**前置条件**：一台能跑 k3s 的机器 + 一个镜像仓库（本仓库用 ghcr.io 的公开包，集群拉取无需认证）。
+
+清单在 `k8s/`，构建定义在 `backend/Dockerfile`（一份 Dockerfile 构建所有服务，靠 `--build-arg SERVICE=xxx` 切换）。
+
 ## 技术栈
 
 | 类别 | 技术 |
@@ -320,6 +349,7 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 | 搜索引擎 | Elasticsearch 9.4.5 |
 | 前端 | Vue 3.5, Vite 8, Element Plus, Pinia, Axios |
 | 接口文档 | springdoc-openapi 3.1.1 |
+| 交付 | **Docker 多阶段构建**（运行镜像只含 JRE + jar）+ **k3s** 编排（Deployment / Service / ConfigMap / Secret，含就绪探针）；**Argo CD** 做 GitOps 发布——CI 只把新镜像 tag 写进 `k8s/` 清单，集群侧自动同步，**CI 全程不持有集群凭据**。镜像 tag 绑 commit SHA，可追溯、回滚即 `git revert` |
 | 鉴权 | jjwt 0.13 |
 | 包管理 | Maven, pnpm |
 
@@ -327,10 +357,13 @@ export PAYMENT_CALLBACK_SECRET=<随机密钥>
 
 ```
 EnvoyMart/
+├── .github/workflows/          # CI（测试 + 构建）· Deploy（构建镜像 + 更新 k8s 清单）
 ├── docker-compose.yml
+├── k8s/                        # Kubernetes 清单 —— Argo CD 监测此目录并自动同步
+│   └── auth-service.yaml       # ConfigMap / Deployment（含就绪探针）/ Service
 ├── backend/
 │   ├── pom.xml                 # 聚合 POM（Boot 4.1.1 + LangChain4j 1.20.0）
-│   ├── Dockerfile
+│   ├── Dockerfile              # 一份构建所有服务（--build-arg SERVICE=xxx）
 │   ├── common/                 # Result / JWT / 异常处理 / 身份透传
 │   ├── gateway-service/
 │   ├── auth-service/

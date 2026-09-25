@@ -9,9 +9,11 @@ name: Deploy
 on:
   push:
     branches: [main]
-    # 清单变更由 Argo CD 处理，不该再触发一次构建（否则会自我循环）
+    # 清单变更由 Argo CD 处理，不该再触发一次构建（否则会自我循环）；
+    # 文档变更也不影响代码，没必要重启一次 Pod。
     paths-ignore:
       - 'k8s/**'
+      - '**.md'
   workflow_dispatch:
 
 jobs:

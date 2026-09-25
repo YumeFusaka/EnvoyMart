@@ -3,9 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-    # 部署清单（k8s/）由 Argo CD 负责同步，改动它没必要重跑测试与构建
+    # 部署清单（k8s/）由 Argo CD 负责同步；文档改动不影响代码——两者都不必重跑测试与构建
     paths-ignore:
       - 'k8s/**'
+      - '**.md'
   pull_request:
 
 jobs:
