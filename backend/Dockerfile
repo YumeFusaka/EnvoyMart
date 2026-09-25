@@ -36,7 +36,13 @@ FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
 ARG SERVICE=auth-service
+# 构建信息注入：CI 把 commit SHA 与构建时间传进来，运行时可从 /actuator/info 查到
+ARG BUILD_SHA=unknown
+ARG BUILD_TIME=unknown
 COPY --from=builder /build/${SERVICE}/target/*.jar app.jar
+
+ENV BUILD_SHA=${BUILD_SHA}
+ENV BUILD_TIME=${BUILD_TIME}
 
 # 容器里 JVM 默认按「宿主机内存」算堆大小，不显式限制就会吃满。
 # 这是把 Spring Boot 塞进小内存节点的必做项。

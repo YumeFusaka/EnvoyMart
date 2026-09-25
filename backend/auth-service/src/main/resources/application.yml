@@ -28,3 +28,21 @@ jwt:
   token-name: token
   ttl: ${JWT_TTL:604800000}
   secret-key: ${JWT_SECRET:}
+
+# 构建信息可追溯：镜像构建时把 commit SHA 注入（见 Dockerfile 的 BUILD_SHA），
+# 运行时通过 /actuator/info 就能查到当前跑的是哪个提交 —— 排查线上问题时，
+# 「这个 Pod 到底是哪个版本」是第一个要确认的事。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: auth-service
+    build-sha: ${BUILD_SHA:local-unknown}
+    build-time: ${BUILD_TIME:unknown}
