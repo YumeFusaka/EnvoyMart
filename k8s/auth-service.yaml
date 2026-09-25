@@ -43,8 +43,9 @@ spec:
     spec:
       containers:
         - name: auth-service
-          # 这个 tag 由 CI 在部署时替换成 commit SHA
-          image: ghcr.io/yumefusaka/envoymart-auth:PLACEHOLDER
+          # 这个 tag 由 CI 在构建完成后提交更新（Argo CD 监测到变化即同步）。
+          # 不要用 latest：出问题时无法回答「回滚到哪个版本」，commit 对应的镜像 tag 才是可追溯的。
+          image: ghcr.io/yumefusaka/envoymart-auth:af698f960b7986e62fd3c53517d71ae3b968b437
           ports:
             - name: http
               containerPort: 9001

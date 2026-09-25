@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    # 部署清单（k8s/）由 Argo CD 负责同步，改动它没必要重跑测试与构建
+    paths-ignore:
+      - 'k8s/**'
   pull_request:
 
 jobs:
