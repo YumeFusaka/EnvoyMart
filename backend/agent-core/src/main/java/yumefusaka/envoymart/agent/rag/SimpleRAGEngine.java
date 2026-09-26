@@ -2,7 +2,6 @@ package yumefusaka.envoymart.agent.rag;
 
 import lombok.extern.slf4j.Slf4j;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -13,20 +12,28 @@ public class SimpleRAGEngine implements RAGEngine {
 
     private final VectorStore vectorStore;
     private final Retriever retriever;
+    private final TextSplitter splitter;
 
-    /** 切片大小（字符数） */
-    private final int chunkSize;
-    /** 切片重叠（字符数） */
-    private final int chunkOverlap;
-
+    /**
+     * 使用定长滑动窗口切分 —— 与历史行为完全一致。
+     * <p>
+     * 保留这个签名是为了不动现有调用方（{@code AiAgentConfig}）；
+     * 换用其他策略请走下面的 {@link TextSplitter} 重载。
+     */
     public SimpleRAGEngine(VectorStore vectorStore,
                            Retriever retriever,
                            int chunkSize,
                            int chunkOverlap) {
+        this(vectorStore, retriever, new FixedSizeSplitter(chunkSize, chunkOverlap));
+    }
+
+    /** 指定切分策略。 */
+    public SimpleRAGEngine(VectorStore vectorStore,
+                           Retriever retriever,
+                           TextSplitter splitter) {
         this.vectorStore = vectorStore;
         this.retriever = retriever;
-        this.chunkSize = chunkSize;
-        this.chunkOverlap = chunkOverlap;
+        this.splitter = splitter;
     }
 
     @Override
@@ -56,20 +63,6 @@ public class SimpleRAGEngine implements RAGEngine {
     }
 
     private List<DocumentChunk> chunk(Document doc) {
-        List<DocumentChunk> chunks = new ArrayList<>();
-        String text = doc.getContent();
-        int start = 0;
-        int index = 0;
-        while (start < text.length()) {
-            int end = Math.min(start + chunkSize, text.length());
-            chunks.add(DocumentChunk.builder()
-                    .chunkId(doc.getId() + "_" + index)
-                    .docId(doc.getId())
-                    .content(text.substring(start, end))
-                    .chunkIndex(index++)
-                    .build());
-            start += chunkSize - chunkOverlap;
-        }
-        return chunks;
+        return splitter.split(doc);
     }
 }
