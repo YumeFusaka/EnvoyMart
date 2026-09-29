@@ -232,6 +232,61 @@ public class GraphService {
     }
 
     /**
+     * 图谱召回 —— 从一段自由文本出发，取出图上与它有关的<b>依据边</b>。
+     * <p>
+     * <b>这是文本检索够不着的那条路。</b>语料里写着「深海鱼油与华法林合用可能增加出血风险」，
+     * 而用户问的是「SPU5 和华法林冲突吗」——{@code SPU5} 这三个字符在<b>任何一篇文档里都不出现</b>，
+     * BM25 与向量都无从下手。图谱知道 {@code spu5 → 深海鱼油}，于是那条风险边捞得回来。
+     * <p>
+     * 返回边而不是渲染好的文本：图上的一条边<b>自带完整出处</b>
+     * （docId / chunkId / 偏移 / 逐字引文），调用方拿到它就能拼出与知识库切片
+     * 同构的一份依据，两路证据在回答里长得一样、点得回原文。返回文本的话
+     * 这一层就要开始管措辞，而措辞属于回答侧。
+     * <p>
+     * 失败一律返回空列表、不抛异常：这是<b>增强路</b>，图谱挂了不该让整个回答失败。
+     * 但「挂了」与「没有相关依据」在调用方看来都是空列表——所以可用性由
+     * {@link #stats()} 与 {@link #interactions} 那条路径如实外露，检索侧不重复报。
+     */
+    public List<GraphEdge> recall(String query, int limit) {
+        if (!graphStore.isAvailable() || query == null || query.isBlank()) {
+            return List.of();
+        }
+        List<String> linked = graphStore.linkEntities(query);
+        if (linked.isEmpty()) {
+            return List.of();
+        }
+
+        // 与相互作用查询同一套展开：用户说的可能是商品，而依据挂在成分或营养素上
+        List<Substance> substances = graphStore.expandSubstances(linked);
+        Set<String> scope = new LinkedHashSet<>(linked);
+        substances.forEach(s -> scope.add(s.name()));
+
+        // 两类边都要：风险边是结论，组成边是「为什么这个东西和那个东西有关」。
+        // 只给风险边的话，用户会看到一条关于「深海鱼油」的警告，
+        // 而他从没提过深海鱼油——看起来像答非所问。
+        //
+        // **组成边排前面**，因为下面会按 limit 截断：它的条数等于用户点到的商品数
+        // （只有 PRODUCT 作头的边才是组成边），天然就少；而风险边可能几十条。
+        // 反过来排的话，一次「SPU7 有什么禁忌」正好会在第 5 条上把那条唯一的桥截掉，
+        // 剩下的全是没有来路的警告——正是这段话开头说的那种答非所问
+        List<GraphEdge> edges = new ArrayList<>(graphStore.compositionOf(linked));
+        edges.addAll(graphStore.risksOf(List.copyOf(scope)));
+        if (edges.isEmpty()) {
+            return List.of();
+        }
+
+        // 同一个切片上前几条边只是同一句话支撑的不同三元组，对检索而言是一片依据。
+        // 去重放在这里而不是让调用方做：切片粒度是这一层的概念
+        Map<String, GraphEdge> unique = new LinkedHashMap<>();
+        for (GraphEdge e : edges) {
+            unique.putIfAbsent(e.docId() + '\u0000' + e.chunkId() + '\u0000' + e.relation(), e);
+        }
+        return withTitles(List.copyOf(unique.values())).stream()
+                .limit(Math.max(1, limit))
+                .toList();
+    }
+
+    /**
      * 这条风险边是从哪条链上够到的 —— 取端点里第一个能被本 root 展开到的物质。
      * <p>
      * 找不到就返回空链：边的两端可能都属于别的 root（同一个物质被两样商品共同提供），

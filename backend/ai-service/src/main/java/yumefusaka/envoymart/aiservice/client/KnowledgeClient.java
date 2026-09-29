@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import yumefusaka.envoymart.common.result.Result;
+import yumefusaka.envoymart.contract.GraphEdge;
 import yumefusaka.envoymart.contract.GraphIngestPayload;
 import yumefusaka.envoymart.contract.GraphIngestResult;
 import yumefusaka.envoymart.contract.InteractionReport;
@@ -49,4 +50,18 @@ public interface KnowledgeClient {
      */
     @GetMapping("/knowledge/graph/interactions")
     Result<InteractionReport> interactions(@RequestParam("items") String items);
+
+    /**
+     * 图谱召回 —— 混合检索的第三路。
+     * <p>
+     * 与 {@link #interactions} 的分工：那条路是用户点名要查的东西，逐项下结论；
+     * 这条路只负责「从问题里认出实体、把图上相关的依据捞出来」，
+     * 认不出就返回空——<b>空列表不等于「没有风险」</b>，它只是「这一路没捞到」，
+     * 而降级的判断权在调用方（{@code GraphEvidenceRetriever}）。
+     * <p>
+     * 返回的每条边自带 docId / chunkId / 逐字引文，调用方据此拼出与知识库切片同构的依据。
+     */
+    @GetMapping("/knowledge/graph/recall")
+    Result<List<GraphEdge>> recallGraph(@RequestParam("query") String query,
+                                        @RequestParam("limit") int limit);
 }

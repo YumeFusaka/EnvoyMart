@@ -20,6 +20,19 @@ import java.util.List;
  * <b>没有分数时放行（fail-open）。</b>{@code score} 为 null 只说明这条链路没提供相关性信号
  * （例如纯关键词命中），不说明它不相关。因为一个缺失的指标就拒绝回答，
  * 是把工程缺陷转嫁成用户的损失。
+ * <p>
+ * <b>图谱依据在场时判定不低于 SUFFICIENT。</b>这条规则看着像开后门，其实是在纠正一把
+ * 用错了的尺子：跨编码器量的是 query 与文本的<b>字面语义距离</b>，而图谱依据的相关性
+ * 是<b>结构</b>给的——用户问「SPU7 有什么禁忌」，原文写「出血性疾病患者……应咨询医师」，
+ * 这两句话本来就不像，任何文本相似度都会给它打低分，而它恰恰是唯一正确的答案。
+ * 实测到过这个失效：整轮重排分 0.126–0.157 全在阈值 0.20 之下，判定成 WEAK，
+ * 于是模型答对了却要补一句「该条目相关度不足，不能作为权威依据」——
+ * 系统明明握着一句原文，却告诉用户别信它。
+ * <p>
+ * 敢这么放行的依据是图谱依据的<b>准入门槛不在这一层</b>：能出现在这里的边，
+ * 已经过实体链接、关系类型过滤，且引文必须逐字出现在<b>事实源文档</b>里
+ * （见 knowledge-service 的 {@code TripleValidator}）。一条「两个实体之间确有这个关系、
+ * 文档里确有这句话」的依据，比一条「语义上很像但可能答非所问」的切片更硬。
  */
 public final class EvidenceGate {
 
@@ -66,8 +79,15 @@ public final class EvidenceGate {
         }
 
         DocumentChunk top = null;
+        boolean hasGraph = false;
         for (DocumentChunk chunk : chunks) {
-            if (chunk == null || chunk.getScore() == null) {
+            if (chunk == null) {
+                continue;
+            }
+            if (DocumentChunk.SOURCE_GRAPH.equals(chunk.getSource())) {
+                hasGraph = true;
+            }
+            if (chunk.getScore() == null) {
                 continue;
             }
             if (top == null || chunk.getScore() > top.getScore()) {
@@ -86,6 +106,12 @@ public final class EvidenceGate {
         double score = top.getScore();
 
         if (score < threshold) {
+            // 图谱依据在场时分数照报（日志要如实记下这一轮文本路有多弱），但判定提到 SUFFICIENT
+            if (hasGraph) {
+                return new Decision(Level.SUFFICIENT, score,
+                        "%s %.4f 低于阈值 %.2f，但本轮有图谱依据在场，按足够处理"
+                                .formatted(scale, score, threshold));
+            }
             return new Decision(Level.WEAK, score,
                     "%s %.4f 低于阈值 %.2f".formatted(scale, score, threshold));
         }

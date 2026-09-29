@@ -87,6 +87,29 @@ class KnowledgePromptTest {
     }
 
     /**
+     * 证据不足时<b>不下发「低于可信阈值」这句内部判断</b>。
+     * <p>
+     * 曾经这里写着「相关度 0.12 低于可信阈值」，模型就照着念给用户听
+     * （实测原话：「该条目相关度低于可信阈值，不能作为权威依据」）——
+     * 系统在替自己免责，用户读到的却是「你可能查到了什么，但我不告诉你」。
+     * <p>
+     * 保留的 {@code 相关度 0.12} 是切片的客观属性（和版本号同一类），
+     * 模型要靠它横向比较几条依据；被拿掉的是那句阈值判决。
+     * 判决本身仍进日志：{@link EvidenceGate.Decision#topScore()}。
+     */
+    @Test
+    void 证据不足时不下发阈值判决只下发条目事实() {
+        var section = KnowledgePrompt.render(
+                List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.12)), T);
+
+        assertThat(section.text())
+                .doesNotContain("低于可信阈值")
+                .contains("不要向用户提及相关度")
+                .contains("相关度 0.12");
+        assertThat(section.decision().topScore()).isEqualTo(0.12);
+    }
+
+    /**
      * 位置缺失时退到标题，<b>不能退到 docId</b>。
      * <p>
      * 曾经 {@code KnowledgeSnippet.title} 填的就是 docId，前端渲染成「[1] doc_12」——

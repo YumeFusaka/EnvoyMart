@@ -83,6 +83,14 @@ envoymart:
     api-key: ${RERANK_API_KEY:${EMBEDDING_API_KEY:}}
     model: ${RERANK_MODEL:gte-rerank-v2}
     timeout-ms: ${RERANK_TIMEOUT_MS:5000}
+  rag:
+    # 【公开项】图谱召回（混合检索的第三路）。
+    # 开着时，问题里出现图上收录的实体（SPU 编号、成分名、药名）就会把图谱依据
+    # 并入候选池；关掉则退回 BM25 + 向量的两路检索，行为与历史完全一致。
+    # 留这个开关是为了能当场演示「同一句话，开与关各答一次」，
+    # 而不是为了兜某个环境——图谱连不上时这一路本来就会自己降级成空。
+    graph-recall:
+      enabled: ${RAG_GRAPH_RECALL:true}
 
 management:
   endpoints:

@@ -75,6 +75,25 @@ public class GraphController {
         return Result.success(graphService.interactions(keys));
     }
 
+    /**
+     * 图谱召回 —— 从一段自由文本出发，取出图上与它有关的依据边。
+     * <p>
+     * <b>与 {@link #interactions} 的分工</b>：那条路是用户明确点了名要查的东西，
+     * 逐项下结论（含「没有收录」这种否定回答）；这条路是回答侧的<b>增强召回</b>，
+     * 从问题里认得出多少实体就给多少依据，认不出就返回空——它是检索的第三路，
+     * 不承担下结论的责任。
+     *
+     * @param query 用户问题原文。实体链接在这一层做（词典就是图上的实体集合）
+     * @param limit 最多返回几条依据，默认 10，上限 50
+     */
+    @GetMapping("/recall")
+    public Result<List<GraphEdge>> recall(@RequestParam("query") String query,
+                                          @RequestParam(value = "limit", defaultValue = "10") int limit) {
+        Result<List<GraphEdge>> unavailable = requireGraph();
+        return unavailable != null ? unavailable
+                : Result.success(graphService.recall(query, Math.clamp(limit, 1, 50)));
+    }
+
     /** 图谱规模与各类关系条数，用于确认「图到底建起来没有」 */
     @GetMapping("/stats")
     public Result<Map<String, Object>> stats() {

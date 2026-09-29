@@ -44,6 +44,17 @@ public class DocumentChunk {
     /** 来源标识（manual / faq / policy / spec …）。同样是政策，厂商说明书与平台规则的可信度不同 */
     private String source;
 
+    /**
+     * {@link #source} 的取值之一：这条依据<b>不是文档里的某一段原文</b>，
+     * 而是由图谱上的关系推出来的（正文里带着支撑它的逐字引文）。
+     * <p>
+     * 放在这里而不是检索器里，是因为<b>读它的人不止一个</b>：渲染要给用户换个说法
+     * （说成「厂商说明书」会让用户以为自己看到的是原文），
+     * 拒答门还要据此换一把尺子（见 {@link EvidenceGate}）。
+     * 字符串写两遍，迟早只改一处。
+     */
+    public static final String SOURCE_GRAPH = "graph";
+
     /** 领域范围（promotion / after_sale / nutrition …），随切片一起下发供前端分类展示 */
     private String scope;
 

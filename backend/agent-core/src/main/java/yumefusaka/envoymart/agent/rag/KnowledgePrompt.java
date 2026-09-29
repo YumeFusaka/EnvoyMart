@@ -32,7 +32,7 @@ public final class KnowledgePrompt {
         EvidenceGate.Decision decision = EvidenceGate.evaluate(chunks, thresholds);
         return new Section(switch (decision.level()) {
             case SUFFICIENT -> sufficient(chunks);
-            case WEAK -> weak(chunks, decision);
+            case WEAK -> weak(chunks);
             case NONE -> none();
         }, decision);
     }
@@ -55,11 +55,17 @@ public final class KnowledgePrompt {
                 """).toString();
     }
 
-    private static String weak(List<DocumentChunk> chunks, EvidenceGate.Decision decision) {
+    /**
+     * 相关度不足的分支。
+     * <p>
+     * <b>刻意不把分值交给模型</b>：给了数字，模型就会把它念给用户听（实测出现过
+     * 「该条目相关度 0.13 低于可信阈值」这种话）。分值是内部标尺，对用户没有意义，
+     * 该说给用户听的是「平台暂时没有查到明确依据」。分数只进日志与审计
+     * （{@link EvidenceGate.Decision#topScore()}）。
+     */
+    private static String weak(List<DocumentChunk> chunks) {
         StringBuilder sb = new StringBuilder("\n\n## 知识依据（相关度不足，仅供参考）\n")
-                .append("检索到以下条目，但相关度 ")
-                .append(fmt(decision.topScore()))
-                .append(" 低于可信阈值，**不得作为结论依据**：\n\n");
+                .append("检索到以下条目，但都不足以支撑结论，**不得作为结论依据**：\n\n");
         for (int i = 0; i < chunks.size(); i++) {
             sb.append(entry(i + 1, chunks.get(i)));
         }
@@ -69,6 +75,8 @@ public final class KnowledgePrompt {
                 - 不要基于这些条目给出确定的规则、金额、时效或成分用量。
                 - 可以提示用户「可能有相关内容」，同时明确说明依据不足，建议以商品页标注或人工客服为准。
                 - 不得编造条目中没有出现的数字与条款。
+                - 不要向用户提及相关度、分数、阈值、检索或知识库条目这类系统内部说法，
+                  只说「平台暂时没有查到明确依据」。
                 """).toString();
     }
 

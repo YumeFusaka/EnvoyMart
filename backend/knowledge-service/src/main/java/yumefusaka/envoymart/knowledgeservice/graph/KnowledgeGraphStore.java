@@ -50,6 +50,14 @@ public class KnowledgeGraphStore implements DisposableBean {
     private static final List<String> RISK_RELATIONS = List.of("INTERACTS_WITH", "CAUTION_FOR");
     /** 邻域查询最大跳数。再深下去图上什么都连着什么，返回的图没有可读性 */
     private static final int MAX_DEPTH = 3;
+    /**
+     * 图谱召回单次返回的组成关系上限。
+     * <p>
+     * 只加在<b>召回</b>路径上，不加在 {@code risksOf} 上：召回多一条少一条只是
+     * 候选池大小的差别，而相互作用查询的结果是要直接下结论的，
+     * 在那里截断等于悄悄漏掉一条风险。
+     */
+    private static final int MAX_RECALL_EDGES = 40;
 
     private final Driver driver;
     private final Duration queryTimeout;
@@ -398,6 +406,69 @@ public class KnowledgeGraphStore implements DisposableBean {
     }
 
     /**
+     * 从一段自由文本里认出图上已有的实体 —— 实体链接。
+     * <p>
+     * <b>词典匹配，不是语义匹配</b>：词典就是图上的全部实体（name 与 label 两套写法），
+     * 判据是「规范化后的文本里是否包含规范化后的实体名」。之所以够用，是因为它服务的
+     * 是<b>召回</b>而不是判定——多认出一个实体只会多带一条候选依据进检索池，
+     * 由重排器决定要不要；漏认的代价只是这次少一条图谱依据。两者都是软的。
+     * （{@code interactions} 那条路径上的解析就完全不同：它每次都要下结论，
+     * 所以那里只认精确匹配。）
+     * <p>
+     * <b>长度下限 2</b>：单字实体（{@code 钙}）会在几乎任何句子里命中，
+     * 而它带来的是一条与问题无关的依据——图谱依据一旦看着像噪声，
+     * 后面的「可溯源」就没有说服力了。
+     * <p>
+     * <b>规模上限写在明处</b>：每次查询都要把全图实体取回来做包含判断。
+     * 十几到几百个实体是毫秒级；到几千个时该换成写入时维护一份内存词典
+     * （多一份要与图同步的状态，非必要不引入），再往上才是 AC 自动机那一类。
+     *
+     * @return 命中的实体键，按名字长度降序——长名更具体，先匹配到长的能避免
+     *         {@code 深海鱼油} 被 {@code 鱼油} 抢先
+     */
+    public List<String> linkEntities(String text) {
+        if (!isAvailable() || text == null || text.isBlank()) {
+            return List.of();
+        }
+        String haystack = TripleValidator.normalizeName(text);
+        if (haystack.isEmpty()) {
+            return List.of();
+        }
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                var result = tx.run("MATCH (n:Entity) RETURN n.name AS name, n.label AS label");
+                record Candidate(String name, String needle) {
+                }
+                List<Candidate> candidates = new ArrayList<>();
+                while (result.hasNext()) {
+                    Record r = result.next();
+                    String name = r.get("name").asString();
+                    if (matches(haystack, name)) {
+                        candidates.add(new Candidate(name, name));
+                    }
+                    String label = r.get("label").asString(null);
+                    if (label != null && !TripleValidator.normalizeName(label).equals(name)
+                            && matches(haystack, label)) {
+                        candidates.add(new Candidate(name, TripleValidator.normalizeName(label)));
+                    }
+                }
+                // 长的名字更具体，排在前面：同一次召回里先放「深海鱼油」，再放「鱼油」
+                candidates.sort((a, b) -> Integer.compare(b.needle().length(), a.needle().length()));
+                return candidates.stream().map(Candidate::name).distinct().toList();
+            }, txConfig());
+        } catch (RuntimeException e) {
+            markUnavailable("实体链接 text=" + text, e);
+            return List.of();
+        }
+    }
+
+    /** 实体名要在文本里<b>完整出现</b>，且长度过短的一律不要（见 {@link #linkEntities}） */
+    private static boolean matches(String haystack, String candidate) {
+        String needle = TripleValidator.normalizeName(candidate);
+        return needle.length() >= 2 && haystack.contains(needle);
+    }
+
+    /**
      * 把调用方给出的写法解析成图谱的节点键。
      * <p>
      * <b>为什么需要这一步</b>：商品节点的键是 SPU 编号（{@code spu5}），而用户和模型
@@ -529,6 +600,44 @@ public class KnowledgeGraphStore implements DisposableBean {
             }, txConfig());
         } catch (RuntimeException e) {
             markUnavailable("风险关系查询 names=" + names, e);
+            return List.of();
+        }
+    }
+
+    /**
+     * 从给定实体出发的组成关系（商品 → 成分 → 营养素），<b>按方向匹配</b>。
+     * <p>
+     * 与 {@link #risksOf} 的无向匹配刚好相反，因为这两类关系的方向性质不同：
+     * 相互作用是谁和谁一起吃都成立，而「本品主要成分为深海鱼油」只在商品那一头说得通。
+     * 按无向匹配会把「哪些商品含有 EPA」这种反向结果也捞进来——那些是选品信息，
+     * 不是用户问「我买的这个是什么」时要看的东西。
+     * <p>
+     * 这条边本身也是<b>依据</b>：用户问「SPU5 能不能和华法林一起吃」，
+     * 说明书里「本品主要成分为深海鱼油」那一条正是答案的开头——它解释了
+     * 后面那条风险为什么和用户手上的东西有关。
+     */
+    public List<GraphEdge> compositionOf(List<String> names) {
+        if (!isAvailable() || names == null || names.isEmpty()) {
+            return List.of();
+        }
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                var result = tx.run("""
+                        MATCH (a:Entity)-[r:REL]->(b:Entity)
+                        WHERE a.name IN $names AND r.relation IN $allowed
+                        RETURN %s
+                        ORDER BY r.docId
+                        LIMIT $limit
+                        """.formatted(EDGE_COLUMNS),
+                        Map.of("names", names, "allowed", SUBSTANCE_RELATIONS, "limit", MAX_RECALL_EDGES));
+                List<GraphEdge> edges = new ArrayList<>();
+                while (result.hasNext()) {
+                    edges.add(toEdge(result.next()));
+                }
+                return edges;
+            }, txConfig());
+        } catch (RuntimeException e) {
+            markUnavailable("组成关系查询 names=" + names, e);
             return List.of();
         }
     }

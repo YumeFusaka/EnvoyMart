@@ -94,4 +94,41 @@ class EvidenceGateTest {
         assertThat(decision.level()).isEqualTo(EvidenceGate.Level.SUFFICIENT);
         assertThat(decision.topScore()).isEqualTo(0.66);
     }
+
+    private DocumentChunk graphChunk(Double score) {
+        return DocumentChunk.builder()
+                .chunkId("KB-0006_2").docId("KB-0006").title("深海鱼油软胶囊产品说明书")
+                .source(DocumentChunk.SOURCE_GRAPH)
+                .content("图谱推导：深海鱼油 人群禁忌 出血性疾病患者\n原文：出血性疾病患者……应咨询医师。")
+                .score(score).reranked(Boolean.TRUE)
+                .build();
+    }
+
+    /**
+     * 图谱依据在场时，文本路的低分不再单独决定判定。
+     * <p>
+     * 实测到的失效：用户问「SPU7 有什么禁忌」，唯一正确的依据是图谱推出的
+     * 「深海鱼油 → 人群禁忌 → 出血性疾病患者」，而它的重排分只有 0.13。
+     * 跨编码器量的是<b>字面语义距离</b>，这两句话本来就不像 —— 拿它判「可不可信」，
+     * 结论必然是模型答对了还要补一句「该条目不能作为权威依据」。
+     */
+    @Test
+    void 图谱依据在场时不因文本分低而判为不足() {
+        var chunks = List.of(chunk(0.13, true), graphChunk(0.13));
+
+        var decision = EvidenceGate.evaluate(chunks, T);
+
+        assertThat(decision.level()).isEqualTo(EvidenceGate.Level.SUFFICIENT);
+        assertThat(decision.topScore())
+                .as("分数照样如实报出来给日志，只是不再决定判定")
+                .isEqualTo(0.13);
+        assertThat(decision.reason()).contains("图谱依据在场");
+    }
+
+    /** 这条规则的另一半：没有图谱依据时，低分就是低分，别把口子开大 */
+    @Test
+    void 没有图谱依据时低分仍判为不足() {
+        assertThat(EvidenceGate.evaluate(List.of(chunk(0.13, true)), T).level())
+                .isEqualTo(EvidenceGate.Level.WEAK);
+    }
 }

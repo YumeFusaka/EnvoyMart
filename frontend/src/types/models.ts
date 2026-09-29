@@ -304,6 +304,90 @@ export interface KnowledgeSnippet {
   content: string
 }
 
+/**
+ * 图谱上的一个实体。
+ *
+ * `name` 是**节点键**（跨服务稳定标识，商品形如 `spu7`，其余是规范化后的中文名），
+ * `label` 是给人看的显示名。两者都要：用键去查下一跳，用标签去渲染 ——
+ * 拿显示名去查会在「商品改名」之后查不到，拿键去渲染会让用户看见 `spu7`。
+ */
+export interface GraphNode {
+  name: string
+  label: string
+  /** 实体类型：PRODUCT / INGREDIENT / NUTRIENT / DRUG / DRUG_CLASS / POPULATION */
+  kind: string
+}
+
+/**
+ * 图谱上的一条边，自带完整出处。
+ *
+ * 一条边**不是**一句渲染好的结论，而是「哪两个实体、什么关系、依据是文档里的哪一句」
+ * 这三件事的组合。界面据此既能画出一条连线，也能在点它时把那句原文摆出来 ——
+ * 这正是图谱结论与「模型自己编的」之间唯一的区别。
+ */
+export interface GraphEdge {
+  head: GraphNode
+  /** 关系枚举名：CONTAINS / PROVIDES / INTERACTS_WITH / CAUTION_FOR */
+  relation: string
+  /** 关系的后果，如「可能增加出血风险」。可能为空 */
+  effect: string | null
+  tail: GraphNode
+  docId: string
+  docTitle: string | null
+  /** 引文落在哪一片；点击跳原文的锚点 */
+  chunkId: string | null
+  quoteStart: number
+  quoteEnd: number
+  /** 支持这条关系的**逐字引文** —— 溯源链的终点 */
+  quote: string
+  /**
+   * 「对方」那一端。
+   *
+   * 查「华法林」时，边的两端可能都是它自己（`华法林 -禁忌-> 孕妇`），
+   * 这时直接渲染 head/tail 会输出「华法林与华法林」；`counterpart` 说明的是
+   * 这一端之外的另一端。只有相互作用查询会填，邻域查询为 null。
+   */
+  counterpart: GraphNode | null
+  /** 关联路径，如 `["鱼油软胶囊", "深海鱼油", "华法林"]`。空数组表示直连 */
+  chain: string[]
+}
+
+/** 一种被查的物质（商品展开后的成分/营养素） */
+export interface Substance {
+  rootName: string
+  rootLabel: string
+  name: string
+  label: string
+  kind: string
+  /** 从 root 走到它的路径，如 `["鱼油软胶囊", "深海鱼油"]` */
+  chain: string[]
+}
+
+/** 「我手上这几样能不能一起吃」的报告 */
+export interface InteractionReport {
+  /**
+   * 这一次查询**是否真的做成了**。
+   *
+   * false 表示图谱没查成 —— 界面必须说「未检查」，绝不能说「无冲突」。
+   * 两者在数据结构上都是「一堆空列表」，对用户却是相反的两句话。
+   */
+  available: boolean
+  /** 不可用时的原因，供界面如实转述 */
+  note: string | null
+  items: InteractionItem[]
+}
+
+export interface InteractionItem {
+  /** 用户自己的写法，原样回显 */
+  input: string
+  label: string
+  /** 图谱里有没有收录它。false 时 substances/risks 必然为空 */
+  found: boolean
+  substances: Substance[]
+  /** 已知的相互作用与人群禁忌，每条都带原文引文 */
+  risks: GraphEdge[]
+}
+
 /** 文档列表项，不含正文 */
 export interface DocumentSummary {
   docNo: string

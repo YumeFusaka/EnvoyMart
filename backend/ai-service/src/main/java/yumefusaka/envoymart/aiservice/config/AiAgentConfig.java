@@ -38,6 +38,7 @@ import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
 import yumefusaka.envoymart.aiservice.flow.AfterSaleFlow;
 import yumefusaka.envoymart.aiservice.knowledge.KnowledgeCorpus;
 import yumefusaka.envoymart.aiservice.knowledge.KnowledgeGraphBuilder;
+import yumefusaka.envoymart.aiservice.rag.GraphEvidenceRetriever;
 import yumefusaka.envoymart.aiservice.rag.LangChain4jEmbeddingService;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.llm.LangChain4jLLMProvider;
@@ -372,16 +373,24 @@ public class AiAgentConfig {
      * <p>
      * 切分是纯函数，这里与 {@code ragEngine} 各自用同一个 splitter 切一遍，得到的是
      * 同一组切片——这样装配上不必让 retriever 反过来依赖 engine（那会形成循环依赖）。
+     * <p>
+     * <b>第三路（图谱）通过 {@code envoymart.rag.graph-recall.enabled} 开关接入</b>，
+     * 关掉时传 null，检索行为与只有两路时逐字节一致。留这个开关是为了能当场演示
+     * 「同一句话，开与关各答一次」——这条路的增益必须能被看见或被证否，
+     * 而不是靠一段架构描述让人相信它有用。
      */
     @Bean
     public HybridRetriever retriever(@Qualifier("knowledgeVectorStore") VectorStore vectorStore,
                                      Reranker reranker,
                                      TextSplitter textSplitter,
-                                     KnowledgeCorpus corpus) {
+                                     KnowledgeCorpus corpus,
+                                     KnowledgeClient knowledgeClient,
+                                     @Value("${envoymart.rag.graph-recall.enabled:true}") boolean graphRecall) {
         List<DocumentChunk> chunks = corpus.documents().stream()
                 .flatMap(doc -> textSplitter.split(doc).stream())
                 .toList();
-        return HybridRetriever.overChunks(vectorStore, chunks, reranker);
+        return HybridRetriever.overChunks(vectorStore, chunks, reranker,
+                graphRecall ? new GraphEvidenceRetriever(knowledgeClient) : null);
     }
 
     /**

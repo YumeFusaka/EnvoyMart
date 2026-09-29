@@ -53,6 +53,9 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             PublicRule.of("GET", "/knowledge/documents"),
             PublicRule.of("GET", "/knowledge/documents/**"),
             PublicRule.of("GET", "/knowledge/chunks/**"),
+            // 图谱同上：它返回的每一条边都带着知识库文档里的原文引文，
+            // 公开它和公开那些文档是同一件事。真实用户数据一条都没有
+            PublicRule.of("GET", "/knowledge/graph/**"),
             PublicRule.of("POST", "/payments/callback")
     );
 

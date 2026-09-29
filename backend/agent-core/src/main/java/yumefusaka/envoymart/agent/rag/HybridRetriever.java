@@ -5,9 +5,17 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.*;
 
 /**
- * 混合检索器 —— BM25 关键词 + ANN 向量语义的 fusion。
+ * 混合检索器 —— BM25 关键词 + ANN 向量语义 + 图谱依据的 fusion。
  * <p>
- * 使用互惠排名融合（RRF）合并两路结果，k = 60。
+ * 使用互惠排名融合（RRF）合并各路结果，k = 60。
+ * <p>
+ * <b>三路各自补的是别人的盲区</b>：BM25 认词面，向量认语义，图谱认<b>关系</b>。
+ * 前两路的前提都是「问题里出现了与文档相同的、或语义相近的表述」；
+ * 只要用户问的是「SPU5 和华法林冲突吗」这种<b>实体编号</b>，
+ * 而文档里从头到尾只有「深海鱼油」，两条路就都没有可匹配的东西——
+ * 那一句风险提示在索引里躺着，但谁也够不着它。图谱知道这两个名字指的是什么，
+ * 于是这条路能把那片依据拖进候选池。第三路是可选的
+ * （见 {@link #overChunks(VectorStore, List, Reranker, Retriever)}）。
  * <p>
  * <b>两种粒度，两个入口</b>：
  * <ul>
@@ -38,6 +46,14 @@ public class HybridRetriever implements Retriever {
     private final Reranker reranker;
     /** true：按 docId 归一（防抬权）；false：按 chunkId 归一（切片级召回）。 */
     private final boolean groupByDocId;
+    /**
+     * 第三路：图谱依据。可为 null（没接图谱时就是两路，行为与历史完全一致）。
+     * <p>
+     * 它是一个 {@link Retriever} 而不是一个「图谱客户端」：这一层是检索算法的所在地，
+     * 不该知道图谱长什么样、走 HTTP 还是走本地。转换（边 → 切片）在 ai-service 侧的
+     * 适配器里做，这一层拿到的就是切片。
+     */
+    private final Retriever graphRetriever;
 
     /** BM25 参数 */
     private static final double K1 = 1.5;
@@ -51,15 +67,16 @@ public class HybridRetriever implements Retriever {
     }
 
     public HybridRetriever(VectorStore vectorStore, List<Document> localDocs, Reranker reranker) {
-        this(vectorStore, asChunks(localDocs), reranker, true);
+        this(vectorStore, asChunks(localDocs), reranker, true, null);
     }
 
     private HybridRetriever(VectorStore vectorStore, List<DocumentChunk> chunks,
-                            Reranker reranker, boolean groupByDocId) {
+                            Reranker reranker, boolean groupByDocId, Retriever graphRetriever) {
         this.vectorStore = vectorStore;
         this.localChunks = chunks;
         this.reranker = reranker;
         this.groupByDocId = groupByDocId;
+        this.graphRetriever = graphRetriever;
     }
 
     /**
@@ -70,7 +87,25 @@ public class HybridRetriever implements Retriever {
      */
     public static HybridRetriever overChunks(VectorStore vectorStore, List<DocumentChunk> chunks,
                                              Reranker reranker) {
-        return new HybridRetriever(vectorStore, chunks, reranker, false);
+        return new HybridRetriever(vectorStore, chunks, reranker, false, null);
+    }
+
+    /**
+     * 切片级检索 + 图谱第三路。
+     * <p>
+     * <b>它补的是词面与语义都够不着的那些问题。</b>语料里写着「深海鱼油与华法林合用可能增加
+     * 出血风险」，用户问「SPU5 和华法林冲突吗」——{@code SPU5} 在任何一篇文档里都不出现，
+     * BM25 没有词可匹配，向量空间里也没有任何文本与这三个字符相近。图谱知道
+     * {@code spu5 → 深海鱼油}，于是那条风险边还能被捞回来。
+     * <p>
+     * 三路结果<b>平等地</b>进 RRF：图谱路的第一名得 {@code 1/60}，与向量路、关键词路的
+     * 第一名同分。不给图谱路加权重，是因为「名次」在三路之间已经是同一种量纲，
+     * 再乘一个手调的系数就成了没有依据的调参；图谱路的精度体现在<b>它召回的条目少而准</b>，
+     * 不体现在它该拿更高的名次分。
+     */
+    public static HybridRetriever overChunks(VectorStore vectorStore, List<DocumentChunk> chunks,
+                                             Reranker reranker, Retriever graphRetriever) {
+        return new HybridRetriever(vectorStore, chunks, reranker, false, graphRetriever);
     }
 
     /**
@@ -121,12 +156,40 @@ public class HybridRetriever implements Retriever {
         // 2. BM25 关键词检索
         List<DocumentChunk> keywordResults = bm25Search(query);
 
-        // 3. RRF 融合后多留候选，交给重排精排
-        List<DocumentChunk> fused = rrfMerge(vectorResults, keywordResults,
+        // 3. 图谱依据（没接图谱时为空的第三路）
+        List<DocumentChunk> graphResults = graphRetrieve(query, topK);
+
+        // 4. RRF 融合后多留候选，交给重排精排
+        List<DocumentChunk> fused = rrfMerge(vectorResults, keywordResults, graphResults,
                 Math.max(topK * RERANK_CANDIDATES, topK));
 
-        // 4. 重排（未配置时是直接截断）
+        // 5. 重排（未配置时是直接截断）
         return reranker.rerank(query, fused, topK);
+    }
+
+    /**
+     * 图谱路召回。<b>失败一律降级为空列表</b>——这是增强路，图谱挂了就该退化成
+     * 纯文本检索的两路结果，而不是整个回答失败。
+     * <p>
+     * <b>为什么要在这里兜底而不是只靠适配器内部</b>：这一层是检索主流程，
+     * 任何一路抛出的异常都会顺着 {@code retrieve} 冒到回答侧，表现成用户看不到回答。
+     * 一个「可选增强」的失败代价不该是主功能不可用。适配器里也有一层兜底（它要
+     * 记更具体的日志），两层不冲突：外面这层防的是「适配器没料到的异常类型」。
+     * <p>
+     * 降级记 warn 而不是静默：图谱长期不可用而没人发现的话，表现就是
+     * 「这个功能好像没什么用」，与「它本来就没用」在指标上完全一样。
+     */
+    private List<DocumentChunk> graphRetrieve(String query, int topK) {
+        if (graphRetriever == null) {
+            return List.of();
+        }
+        try {
+            List<DocumentChunk> chunks = graphRetriever.retrieve(query, topK);
+            return chunks == null ? List.of() : chunks;
+        } catch (RuntimeException e) {
+            log.warn("[Retriever] 图谱路召回失败，本次退化为文本两路：{}", e.toString());
+            return List.of();
+        }
     }
 
     /**
@@ -197,15 +260,24 @@ public class HybridRetriever implements Retriever {
     }
 
     /**
-     * 互惠排名融合。两路的归一 key 由 {@link #groupByDocId} 决定——
-     * 文档级两路都能归一到同一把尺子上，切片级则按切片各自计分。
+     * 互惠排名融合。各路结果的归一 key 由 {@link #groupByDocId} 决定——
+     * 文档级各路都能归一到同一把尺子上，切片级则按切片各自计分。
+     * <p>
+     * <b>图谱路与文本两路走同一把尺子，靠的是「切片身份」这件事被对齐过</b>：
+     * 图谱边自带 docId 与 chunkId，适配器据此拼出的切片，与知识库切出来的那一片
+     * 是<b>同一个 key</b>。于是同一片依据被两路同时召回时，RRF 会把它累加
+     * （{@code 1/60 + 1/62}）——这正是 RRF 想要的：两路独立认为它相关，
+     * 比只有一路认为它相关更可信。如果适配器给图谱切片另起一套 id，
+     * 这一路就变成了「往候选池里塞重复项」，融合的语义就没了。
      */
-    private List<DocumentChunk> rrfMerge(List<DocumentChunk> vector, List<DocumentChunk> keyword, int topK) {
+    private List<DocumentChunk> rrfMerge(List<DocumentChunk> vector, List<DocumentChunk> keyword,
+                                         List<DocumentChunk> graph, int topK) {
         Map<String, Double> scores = new HashMap<>();
         Map<String, DocumentChunk> byKey = new LinkedHashMap<>();
 
         mergeOnce(scores, byKey, vector);
         mergeOnce(scores, byKey, keyword);
+        mergeOnce(scores, byKey, graph);
 
         return scores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
@@ -240,6 +312,11 @@ public class HybridRetriever implements Retriever {
      * <b>切片级（groupByDocId=false）</b>：按 chunkId 归一，长文档的多个相关切片各自
      * 占据候选位。这里不再限制同文档的出现次数——切片级检索的目的正是让"文档里
      * 那一条真正相关的规则"能独立地被选中，而不是被整篇文档的代表挤掉。
+     * <p>
+     * {@code byKey.putIfAbsent} 保持<b>先到者胜</b>，而调用顺序是 向量 → 关键词 → 图谱。
+     * 于是图谱切片只在文本两路都没捞到这一片时才会被采用：这是图谱路唯一有价值的场景，
+     * 也正是它该赢的场景。反过来，文本路捞到了就用原文切片——图谱那版正文是
+     * 「图谱推导：… + 原文」的转述，作为给模型的证据不如原文本身。
      */
     private void mergeOnce(Map<String, Double> scores, Map<String, DocumentChunk> byKey,
                            List<DocumentChunk> list) {

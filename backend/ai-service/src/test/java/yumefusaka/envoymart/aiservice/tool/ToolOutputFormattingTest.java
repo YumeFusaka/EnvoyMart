@@ -19,6 +19,8 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -62,8 +64,39 @@ class ToolOutputFormattingTest {
                 .as("价格必须是「元」而不是原始的分，也不能是 null")
                 .contains("49.00 元-89.00 元")
                 .contains("有货")
-                .contains("编号 7")
+                .as("编号要写成 SPU7——那是同一个商品在图谱与 interaction_check 里的名字。"
+                        + "印成裸数字，模型就有两个名字而不知道它们指同一个东西")
+                .contains("编号 SPU7")
                 .doesNotContain("null");
+    }
+
+    @Test
+    void 商品工具认得出图谱用的编号写法() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.getProduct(7L)).thenReturn(Result.success(
+                ProductSummary.builder().id(7L).name("鱼油软胶囊").minPrice(9900L).maxPrice(9900L).build()));
+
+        for (String written : List.of("SPU7", "spu7", "SPU 7", "spu007")) {
+            ToolResult result = new ProductTool(client).execute(call("product_search", Map.of("query", written)));
+
+            assertThat(result.getOutput())
+                    .as("%s 应当被当成编号精确查到，而不是拿去当关键词搜——"
+                            + "拿编号当关键词永远搜不到，而那会被模型读成「这个商品不存在」", written)
+                    .contains("鱼油软胶囊").contains("SPU7");
+        }
+        verify(client, never()).recommend(anyString(), anyInt());
+    }
+
+    @Test
+    void 按编号查不到时的说法不能被读成编号格式不对() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.getProduct(7L)).thenReturn(Result.error(404, "商品不存在"));
+
+        assertThat(new ProductTool(client).execute(call("product_search", Map.of("query", "SPU7"))).getOutput())
+                .contains("目录里没有编号 SPU7")
+                .as("实测过：把这种情况说成「没搜到相关内容」，模型会给用户编一段"
+                        + "「平台编号可能是别的写法」，而真正的原因是商品已下架")
+                .doesNotContain("没有找到与");
     }
 
     @Test
