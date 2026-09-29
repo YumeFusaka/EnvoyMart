@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.common.result.Result;
@@ -57,6 +58,31 @@ public class OrderController {
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @PathVariable("id") Long id) {
         return Result.success(orderDomainService.cancelOrder(userId, id));
+    }
+
+    /**
+     * 确认收货。用户动作 —— 它是售后与评价的前置条件：
+     * 没有这一步，订单永远停在「已发货」，政策引擎要求的「已收货」不可达。
+     */
+    @PostMapping("/{id}/receive")
+    public Result<OrderResponse> confirmReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("id") Long id) {
+        return Result.success(orderDomainService.confirmReceipt(userId, id));
+    }
+
+    /**
+     * 发货 —— 管理侧动作，网关已屏蔽，只有服务间或运维直连可达。
+     * <p>
+     * 它同时创建履约单与首条物流轨迹，轨迹因此是**真实落库的数据**。
+     */
+    @PostMapping("/internal/{id}/ship")
+    public Result<OrderResponse> ship(
+            @PathVariable("id") Long id,
+            @RequestParam("carrierCode") String carrierCode,
+            @RequestParam("carrierName") String carrierName,
+            @RequestParam("trackingNo") String trackingNo) {
+        return Result.success(orderDomainService.shipOrder(id, carrierCode, carrierName, trackingNo));
     }
 
     @GetMapping("/{id}/logistics")

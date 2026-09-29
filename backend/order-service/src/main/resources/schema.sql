@@ -73,6 +73,9 @@ create table if not exists shop_order_item (
     order_no varchar(32) not null,
     spu_id bigint not null,
     sku_id bigint not null,
+    -- 类目也进快照：售后政策按类目判定（食品拆封不退、特殊商品不支持无理由），
+    -- 而订单行不引用商品表，不存下来就无从判断
+    category_id bigint,
     -- 商品快照：商品改名、改价、下架之后，历史订单必须还原下单当时的样子。
     -- 这是订单行不直接引用商品表的唯一理由
     spu_name varchar(255) not null,

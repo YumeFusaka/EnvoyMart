@@ -13,6 +13,8 @@ public class SkuSnapshot {
 
     private Long id;
     private Long spuId;
+    /** SPU 所属类目。下单时一并快照进订单行，供售后政策按类目判定 */
+    private Long categoryId;
     private String spuName;
     private String specText;
     private String image;

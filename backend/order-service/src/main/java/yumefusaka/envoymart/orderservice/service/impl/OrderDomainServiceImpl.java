@@ -11,20 +11,29 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.util.Times;
+import yumefusaka.envoymart.orderservice.client.PaymentClient;
 import yumefusaka.envoymart.orderservice.client.ProductClient;
 import yumefusaka.envoymart.orderservice.config.SentinelDegradeConfig;
 import yumefusaka.envoymart.orderservice.entity.CartItemEntity;
+import yumefusaka.envoymart.orderservice.entity.OrderDeliveryEntity;
+import yumefusaka.envoymart.orderservice.entity.OrderDeliveryTraceEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderItemEntity;
+import yumefusaka.envoymart.orderservice.entity.OrderStatusLogEntity;
 import yumefusaka.envoymart.orderservice.mapper.CartItemMapper;
+import yumefusaka.envoymart.orderservice.mapper.OrderDeliveryMapper;
+import yumefusaka.envoymart.orderservice.mapper.OrderDeliveryTraceMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderItemMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderMapper;
+import yumefusaka.envoymart.orderservice.mapper.OrderStatusLogMapper;
 import yumefusaka.envoymart.orderservice.model.CheckoutRequest;
 import yumefusaka.envoymart.orderservice.model.LogisticsResponse;
 import yumefusaka.envoymart.orderservice.model.LogisticsStepResponse;
 import yumefusaka.envoymart.orderservice.model.OrderItemResponse;
 import yumefusaka.envoymart.orderservice.model.OrderResponse;
 import yumefusaka.envoymart.orderservice.model.OrderStatus;
+import yumefusaka.envoymart.orderservice.model.RefundRequest;
+import yumefusaka.envoymart.orderservice.model.RefundSnapshot;
 import yumefusaka.envoymart.orderservice.model.SkuSnapshot;
 import yumefusaka.envoymart.orderservice.model.StockChangeRequest;
 import yumefusaka.envoymart.orderservice.mq.OrderCreatedEvent;
@@ -52,23 +61,38 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
     private static final String BIZ_TYPE_ORDER = "ORDER";
 
+    /** 商品服务里「在售」的取值 */
+    private static final int STATUS_ON = 1;
+
     private final CartItemMapper cartItemMapper;
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
+    private final OrderStatusLogMapper orderStatusLogMapper;
+    private final OrderDeliveryMapper deliveryMapper;
+    private final OrderDeliveryTraceMapper deliveryTraceMapper;
     private final ProductClient productClient;
+    private final PaymentClient paymentClient;
     private final CartCacheService cartCacheService;
     private final OrderEventPublisher eventPublisher;
 
     public OrderDomainServiceImpl(CartItemMapper cartItemMapper,
                                   OrderMapper orderMapper,
                                   OrderItemMapper orderItemMapper,
+                                  OrderStatusLogMapper orderStatusLogMapper,
+                                  OrderDeliveryMapper deliveryMapper,
+                                  OrderDeliveryTraceMapper deliveryTraceMapper,
                                   ProductClient productClient,
+                                  PaymentClient paymentClient,
                                   CartCacheService cartCacheService,
                                   OrderEventPublisher eventPublisher) {
         this.cartItemMapper = cartItemMapper;
         this.orderMapper = orderMapper;
         this.orderItemMapper = orderItemMapper;
+        this.orderStatusLogMapper = orderStatusLogMapper;
+        this.deliveryMapper = deliveryMapper;
+        this.deliveryTraceMapper = deliveryTraceMapper;
         this.productClient = productClient;
+        this.paymentClient = paymentClient;
         this.cartCacheService = cartCacheService;
         this.eventPublisher = eventPublisher;
     }
@@ -110,6 +134,25 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 throw new IllegalArgumentException("请先勾选要结算的商品");
             }
 
+            // 提前把所有 SKU 查出来并挡住失效项。
+            // **必须在建单之前**：建完单再发现商品下架，事务会回滚，但用户拿到的提示
+            // 是一句没有指向的「库存不足」，而真正的原因（某件商品已下架）看不到。
+            // 而且失效条目可能根本没出现在前端的结算页上 —— 用户连是哪件都不知道
+            Map<Long, SkuSnapshot> skus = fetchSkus(
+                    cartItems.stream().map(CartItemEntity::getSkuId).toList());
+            long unavailable = cartItems.stream()
+                    .map(CartItemEntity::getSkuId)
+                    .filter(skuId -> {
+                        SkuSnapshot sku = skus.get(skuId);
+                        return sku == null || sku.getStatus() == null
+                                || sku.getStatus() != STATUS_ON;
+                    })
+                    .count();
+            if (unavailable > 0) {
+                throw new IllegalStateException("购物车中有 " + unavailable
+                        + " 件商品已下架，请到购物车中移除后再结算");
+            }
+
             order = new OrderEntity();
             order.setOrderNo(generateOrderNo());
             order.setUserId(userId);
@@ -129,9 +172,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             order.setCreatedAt(now);
             order.setExpireAt(now.plusMinutes(PAYMENT_WINDOW_MINUTES));
             orderMapper.insert(order);
-
-            Map<Long, SkuSnapshot> skus = fetchSkus(
-                    cartItems.stream().map(CartItemEntity::getSkuId).toList());
+            writeStatusLog(order.getId(), null, OrderStatus.CREATED, "USER", userId, "用户提交订单");
 
             try {
                 for (CartItemEntity cartItem : cartItems) {
@@ -158,6 +199,9 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     item.setOrderNo(order.getOrderNo());
                     item.setSpuId(sku.getSpuId());
                     item.setSkuId(sku.getId());
+                    // 类目也进快照：售后政策按类目判定（食品拆封不退），
+                    // 而订单行不引用商品表，不存下来就无从判断
+                    item.setCategoryId(sku.getCategoryId());
                     // 快照：商品改名改价之后，历史订单必须还原当时的样子
                     item.setSpuName(sku.getSpuName());
                     item.setSkuSpecText(sku.getSpecText());
@@ -277,21 +321,38 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     @Override
     public LogisticsResponse getLogistics(String userId, Long orderId) {
         OrderResponse order = getOrder(userId, orderId);
-        LocalDateTime createdAt = order.getCreatedAt();
+
+        OrderDeliveryEntity delivery = deliveryMapper.selectOne(
+                new LambdaQueryWrapper<OrderDeliveryEntity>()
+                        .eq(OrderDeliveryEntity::getOrderId, orderId));
+        if (delivery == null) {
+            // 未发货就是没有轨迹。**返回空而不是按时间推算出来的假轨迹** ——
+            // 编造的物流信息比「暂无轨迹」糟糕得多，用户会照着它去催件
+            return LogisticsResponse.builder()
+                    .orderId(order.getId())
+                    .orderNo(order.getOrderNo())
+                    .steps(List.of())
+                    .build();
+        }
+
+        List<LogisticsStepResponse> steps = deliveryTraceMapper.selectList(
+                        new LambdaQueryWrapper<OrderDeliveryTraceEntity>()
+                                .eq(OrderDeliveryTraceEntity::getDeliveryId, delivery.getId())
+                                .orderByAsc(OrderDeliveryTraceEntity::getHappenAt))
+                .stream()
+                .map(trace -> LogisticsStepResponse.builder()
+                        .status(trace.getStatus())
+                        .detail(trace.getDescription())
+                        .time(trace.getHappenAt())
+                        .build())
+                .toList();
+
         return LogisticsResponse.builder()
                 .orderId(order.getId())
                 .orderNo(order.getOrderNo())
-                .carrier("演示承运商")
-                .trackingNo("DEMO" + order.getOrderNo().substring(2, 12))
-                .steps(List.of(
-                        LogisticsStepResponse.builder().status("已下单").detail("订单已创建，等待付款")
-                                .time(createdAt).build(),
-                        LogisticsStepResponse.builder().status("已出库").detail("包裹已完成打包并离开仓库")
-                                .time(createdAt.plusHours(4)).build(),
-                        LogisticsStepResponse.builder().status("运输中").detail("包裹正在前往目的城市分拨中心")
-                                .time(createdAt.plusHours(18)).build(),
-                        LogisticsStepResponse.builder().status("派送中").detail("快递员正在派送，请保持电话畅通")
-                                .time(createdAt.plusDays(1)).build()))
+                .carrier(delivery.getCarrierName())
+                .trackingNo(delivery.getTrackingNo())
+                .steps(steps)
                 .build();
     }
 
@@ -327,6 +388,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             throw new IllegalStateException("订单状态刚刚发生变化，请刷新后重试");
         }
         order.setStatus(OrderStatus.CANCELLED.name());
+        writeStatusLog(orderId, current, OrderStatus.CANCELLED, "USER", userId, "用户取消订单");
 
         restoreStockQuietly(order);
         log.info("用户 {} 取消订单 {}", userId, order.getOrderNo());
@@ -361,6 +423,8 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 continue;
             }
             order.setStatus(OrderStatus.CLOSED.name());
+            writeStatusLog(order.getId(), OrderStatus.CREATED, OrderStatus.CLOSED,
+                    "SYSTEM", null, "超时未支付，自动关闭");
             restoreStockQuietly(order);
             closed++;
         }
@@ -399,6 +463,122 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
     @Override
     @Transactional
+    public OrderResponse shipOrder(Long orderId, String carrierCode, String carrierName, String trackingNo) {
+        OrderEntity order = orderId == null ? null : orderMapper.selectById(orderId);
+        if (order == null) {
+            throw new IllegalArgumentException("订单不存在");
+        }
+        OrderStatus current = OrderStatus.parse(order.getStatus());
+        if (current != OrderStatus.PAID) {
+            throw new IllegalStateException("只有已支付的订单可以发货，当前状态：" + statusText(current));
+        }
+
+        LocalDateTime now = Times.now();
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getStatus, current.name())
+                .set(OrderEntity::getStatus, OrderStatus.SHIPPED.name())
+                .set(OrderEntity::getShippedAt, now));
+        if (updated == 0) {
+            throw new IllegalStateException("订单状态刚刚发生变化，请刷新后重试");
+        }
+
+        OrderDeliveryEntity delivery = new OrderDeliveryEntity();
+        delivery.setOrderId(order.getId());
+        delivery.setOrderNo(order.getOrderNo());
+        delivery.setCarrierCode(carrierCode);
+        delivery.setCarrierName(carrierName);
+        delivery.setTrackingNo(trackingNo);
+        delivery.setStatus("PICKED_UP");
+        delivery.setShippedAt(now);
+        deliveryMapper.insert(delivery);
+
+        writeTrace(delivery.getId(), "PICKED_UP", "包裹已由承运商揽收", null, now);
+
+        writeStatusLog(order.getId(), current, OrderStatus.SHIPPED, "ADMIN", null,
+                "商家发货，运单号 " + trackingNo);
+        order.setStatus(OrderStatus.SHIPPED.name());
+        order.setShippedAt(now);
+        log.info("订单已发货 orderNo={} carrier={} trackingNo={}",
+                order.getOrderNo(), carrierName, trackingNo);
+        return toOrderResponse(order);
+    }
+
+    @Override
+    @Transactional
+    public OrderResponse confirmReceipt(String userId, Long orderId) {
+        OrderEntity order = orderMapper.selectOne(new LambdaQueryWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getUserId, userId));
+        if (order == null) {
+            throw new IllegalArgumentException("订单不存在");
+        }
+        OrderStatus current = OrderStatus.parse(order.getStatus());
+        if (current != OrderStatus.SHIPPED) {
+            throw new IllegalStateException("只有已发货的订单可以确认收货，当前状态：" + statusText(current));
+        }
+
+        LocalDateTime now = Times.now();
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getStatus, current.name())
+                .set(OrderEntity::getStatus, OrderStatus.RECEIVED.name())
+                .set(OrderEntity::getReceivedAt, now));
+        if (updated == 0) {
+            throw new IllegalStateException("订单状态刚刚发生变化，请刷新后重试");
+        }
+
+        // 履约单同步签收。用条件更新而不是按 orderId 全量改：
+        // 同一订单只该有一条履约单，但万一日后支持拆单，这里也不会误伤别的包裹
+        deliveryMapper.update(null, new LambdaUpdateWrapper<OrderDeliveryEntity>()
+                .eq(OrderDeliveryEntity::getOrderId, orderId)
+                .set(OrderDeliveryEntity::getStatus, "SIGNED")
+                .set(OrderDeliveryEntity::getSignedAt, now));
+
+        OrderDeliveryEntity delivery = deliveryMapper.selectOne(
+                new LambdaQueryWrapper<OrderDeliveryEntity>().eq(OrderDeliveryEntity::getOrderId, orderId));
+        if (delivery != null) {
+            writeTrace(delivery.getId(), "SIGNED", "包裹已签收", null, now);
+        }
+
+        writeStatusLog(order.getId(), current, OrderStatus.RECEIVED, "USER", userId, "用户确认收货");
+        order.setStatus(OrderStatus.RECEIVED.name());
+        order.setReceivedAt(now);
+        log.info("订单已确认收货 orderNo={}", order.getOrderNo());
+        return toOrderResponse(order);
+    }
+
+    /**
+     * 写一条状态流水。**每一次状态变更都要调它** ——
+     * 建了表却没有写入代码，等于没有流水；而用户问「为什么是这个状态」时，
+     * 唯一的答案就在这里。
+     */
+    private void writeStatusLog(Long orderId, OrderStatus from, OrderStatus to,
+                                String operatorType, String operatorId, String remark) {
+        OrderStatusLogEntity log = new OrderStatusLogEntity();
+        log.setOrderId(orderId);
+        log.setFromStatus(from == null ? null : from.name());
+        log.setToStatus(to.name());
+        log.setOperatorType(operatorType);
+        log.setOperatorId(operatorId);
+        log.setRemark(remark);
+        log.setCreatedAt(Times.now());
+        orderStatusLogMapper.insert(log);
+    }
+
+    private void writeTrace(Long deliveryId, String status, String description,
+                            String location, LocalDateTime happenAt) {
+        OrderDeliveryTraceEntity trace = new OrderDeliveryTraceEntity();
+        trace.setDeliveryId(deliveryId);
+        trace.setHappenAt(happenAt);
+        trace.setStatus(status);
+        trace.setDescription(description);
+        trace.setLocation(location);
+        deliveryTraceMapper.insert(trace);
+    }
+
+    @Override
+    @Transactional
     public void markPaid(Long orderId) {
         OrderEntity order = orderMapper.selectById(orderId);
         if (order == null) {
@@ -410,22 +590,64 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             return;  // 重复投递，幂等吞掉
         }
         if (current.isTerminal()) {
-            // 钱收了、单却取消了 —— 这是资金问题，留明确记录等人工退款，
-            // 不能自动改成 PAID 把矛盾掩盖过去
-            log.error("[Order] 订单已{}却收到支付完成事件，需要人工退款 orderId={} orderNo={}",
+            // 钱收了、单却关了（超时关单或用户取消），**自动发起全额退款**。
+            // 之前这里只写一行 log.error("需要人工退款")，而退款入口全仓库零调用方 ——
+            // 于是「自动退款」这件事从来没有任何人做过，用户的钱只能靠人翻日志找回来
+            refundPaidButClosedOrder(order, current);
+            return;
+        }
+        // 用状态机判定，而不是「非终态就放行」。后者会让一条迟到/重复的支付事件
+        // 把已发货的订单改回待发货 —— 而 ALLOWED 里 SHIPPED 只允许去 RECEIVED/REFUNDING
+        if (!current.canTransitTo(OrderStatus.PAID)) {
+            log.error("[Order] 订单当前状态「{}」不允许流转到已支付，拒绝 orderId={} orderNo={}",
                     statusText(current), orderId, order.getOrderNo());
             return;
         }
+
+        LocalDateTime now = Times.now();
         int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
                 .eq(OrderEntity::getId, orderId)
                 .eq(OrderEntity::getStatus, current.name())
                 .set(OrderEntity::getStatus, OrderStatus.PAID.name())
-                .set(OrderEntity::getPaidAt, Times.now()));
+                .set(OrderEntity::getPaidAt, now));
         if (updated == 0) {
             log.warn("[Order] 订单状态并发变更，支付完成事件未生效 orderId={}", orderId);
             return;
         }
+        writeStatusLog(orderId, current, OrderStatus.PAID, "SYSTEM", null, "支付完成");
+        order.setStatus(OrderStatus.PAID.name());
+        order.setPaidAt(now);
         log.info("[Order] 订单已标记为已支付 orderId={} orderNo={}", orderId, order.getOrderNo());
+    }
+
+    /**
+     * 已关闭的订单收到了支付 —— 自动退款。
+     * <p>
+     * 这是「超时关单」与「迟到支付」撞在一起的必然结果：用户在窗口末尾建了支付单，
+     * 关单任务把订单关掉并回补了库存，随后渠道的成功回调才到。
+     * <p>
+     * <b>失败要抛出去</b>：这条路径由 MQ 消费触发，抛异常会走重试、最终进死信队列，
+     * 人能捞得回来。只记日志等于把「用户的钱没退」这件事埋进日志里。
+     */
+    private void refundPaidButClosedOrder(OrderEntity order, OrderStatus current) {
+        try {
+            Result<RefundSnapshot> result = paymentClient.refundForOrder(RefundRequest.builder()
+                    .orderId(order.getId())
+                    // 金额留空 = 全额退。订单已关闭，没有任何部分退的理由
+                    .reason("订单已" + statusText(current) + "，支付结果迟到，自动全额退款")
+                    .build());
+            if (result == null || result.getCode() == null || result.getCode() != 200) {
+                throw new IllegalStateException(result == null ? "无响应" : result.getMsg());
+            }
+            log.warn("[Order] 订单已{}却收到支付，已自动全额退款 orderNo={} refundNo={}",
+                    statusText(current), order.getOrderNo(),
+                    result.getData() == null ? "" : result.getData().getRefundNo());
+        } catch (Exception e) {
+            log.error("[Order] 已关闭订单收到支付且自动退款失败，需要人工介入 orderNo={} orderId={}: {}",
+                    order.getOrderNo(), order.getId(), e.getMessage());
+            // 抛出去让 MQ 重试；重试耗尽会进死信队列，那是人能接手的地方
+            throw new IllegalStateException("自动退款失败，订单号 " + order.getOrderNo(), e);
+        }
     }
 
     private Map<Long, SkuSnapshot> fetchSkus(List<Long> skuIds) {

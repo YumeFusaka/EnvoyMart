@@ -21,6 +21,8 @@ public class OrderItemEntity {
     private String orderNo;
     private Long spuId;
     private Long skuId;
+    /** 类目进快照：售后政策按类目判定，而订单行不引用商品表 */
+    private Long categoryId;
 
     private String spuName;
     /** 形如 "规格:400IU×90粒;包装:瓶装" */
