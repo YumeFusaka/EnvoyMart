@@ -22,6 +22,20 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 
+# 知识图谱。连不上时**不阻断启动**：图谱是检索的增强路，不是知识库的主存储，
+# 因为增强件不可用就让文档也读不了是本末倒置。但「不可用」必须喊出来并且能被查到，
+# 否则「图谱里确实没有这条关系」会被误读成「两者可以一起吃」——对一个药品营养场景，
+# 这个区别是要命的。
+envoymart:
+  graph:
+    enabled: ${NEO4J_ENABLED:true}
+    uri: ${NEO4J_URI:bolt://127.0.0.1:7687}
+    username: ${NEO4J_USERNAME:neo4j}
+    password: ${NEO4J_PASSWORD:envoymart123}
+    # 建连与每次查询的上限。图查询是**查询路径上的**，一次挂起的查询会拖住整个检索
+    connect-timeout-ms: 3000
+    query-timeout-ms: 5000
+
 management:
   endpoints:
     web:

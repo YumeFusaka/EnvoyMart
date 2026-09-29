@@ -50,6 +50,15 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- 知识图谱。用官方驱动直接写 Cypher，不引 Spring Data Neo4j：
+             图里只有实体与带属性的关系，没有需要 OGM 的对象图映射；
+             图查询的价值恰恰在 Cypher 的表达力（可变长路径、子图匹配），
+             隔一层 Repository 派生查询反而把它藏起来。 -->
+        <dependency>
+            <groupId>org.neo4j.driver</groupId>
+            <artifactId>neo4j-java-driver</artifactId>
+            <version>${neo4j.driver.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>

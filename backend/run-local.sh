@@ -142,9 +142,21 @@ start_one() {
   # 链路追踪：SkyWalking javaagent 是**不改一行业务代码**就能覆盖全部服务的方式，
   # 这正是选它而不是给六个服务逐个加 OTel 依赖的原因。
   # agent 不存在时静默跳过——没装追踪不该妨碍把服务跑起来。
+  # 关掉 SkyWalking 的 Neo4j 插件（插件名取自它自己的 skywalking-plugin.def）。
+  #
+  # 它是给 neo4j-java-driver 4.x 写的，本项目用 5.26.0。插桩之后，凡是<b>真的写进去关系</b>
+  # 的事务都会抛 "RuntimeException: Can not do async finish for the span repeatedly."，
+  # 而同一个 Cypher 在 cypher-shell 里手工跑完全正常——所以极易误判成 Cypher 语法或连接超时。
+  # 症状是知识图谱一条边都进不去，且只发生在「有边可写」的文档上：
+  # 只跑一条 DELETE 的事务反而成功，看起来像随机失败。
+  #
+  # 代价：Neo4j 调用不再作为独立出口 span 出现在链路里，服务级与 HTTP 链路追踪不受影响。
+  # 要拿回 Neo4j span 的办法是升级插件，不是打开它——打开就是上面那条报错。
   local agent_args=()
   if [ -n "$AGENT_JAR" ]; then
-    agent_args+=(-Dspring-boot.run.jvmArguments="-javaagent:$AGENT_JAR -Dskywalking.agent.service_name=$svc -Dskywalking.collector.backend_service=$SW_OAP")
+    local sw_args="-javaagent:$AGENT_JAR -Dskywalking.agent.service_name=$svc -Dskywalking.collector.backend_service=$SW_OAP"
+    [ "$svc" = "knowledge-service" ] && sw_args="$sw_args -Dskywalking.plugin.exclude_plugins=neo4j-4.x"
+    agent_args+=(-Dspring-boot.run.jvmArguments="$sw_args")
   else
     echo "  （未找到 SkyWalking agent，$svc 将不带链路追踪启动）" >&2
   fi

@@ -19,6 +19,14 @@ public interface ProductService {
     List<ProductSummary> recommend(String query, int limit);
 
     /**
+     * 全量在售商品，供 ai-service 建知识图谱时做实体链接（文档里的「本品」要落到具体商品）。
+     * <p>
+     * 不分页：目录是几十条的规模，而分页会把一次完整的链接变成若干次可以中途失败的调用，
+     * 漏掉的那一页在图上的表现是「这几个商品查不到任何关系」——一个不报错的错误。
+     */
+    List<ProductSummary> catalog();
+
+    /**
      * 按 SKU id 批量取快照，供购物车与订单组装。
      * <p>
      * 返回顺序与入参无关，调用方按 id 自行匹配；找不到的 id 会**直接缺席**

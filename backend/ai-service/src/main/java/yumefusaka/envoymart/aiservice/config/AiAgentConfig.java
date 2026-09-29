@@ -31,11 +31,13 @@ import yumefusaka.envoymart.agent.memory.ShortTermMemory;
 import yumefusaka.envoymart.agent.memory.ShortTermMemoryStore;
 import yumefusaka.envoymart.agent.rag.*;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
+import yumefusaka.envoymart.aiservice.client.KnowledgeClient;
 import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
 import yumefusaka.envoymart.aiservice.flow.AfterSaleFlow;
 import yumefusaka.envoymart.aiservice.knowledge.KnowledgeCorpus;
+import yumefusaka.envoymart.aiservice.knowledge.KnowledgeGraphBuilder;
 import yumefusaka.envoymart.aiservice.rag.LangChain4jEmbeddingService;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.llm.LangChain4jLLMProvider;
@@ -231,6 +233,17 @@ public class AiAgentConfig {
     @Bean
     public MemoryConsolidator memoryConsolidator(LLMProvider llmProvider, LLMConfig llmConfig) {
         return new LlmMemoryConsolidator(llmProvider, llmConfig);
+    }
+
+    /**
+     * 知识图谱抽取器。与索引一样属于「从语料派生出的一份结构」，
+     * 由 {@link yumefusaka.envoymart.aiservice.knowledge.KnowledgeIndexer} 在重建时统一驱动。
+     */
+    @Bean
+    public KnowledgeGraphBuilder knowledgeGraphBuilder(LLMProvider llmProvider, LLMConfig llmConfig,
+                                                       KnowledgeClient knowledgeClient,
+                                                       ProductClient productClient) {
+        return new KnowledgeGraphBuilder(llmProvider, llmConfig, knowledgeClient, productClient);
     }
 
     // ==================== 向量化与向量库 ====================

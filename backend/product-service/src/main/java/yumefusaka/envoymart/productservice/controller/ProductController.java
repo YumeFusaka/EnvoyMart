@@ -82,6 +82,22 @@ public class ProductController {
     }
 
     /**
+     * 内部接口：全量商品目录，供 ai-service 建知识图谱时做实体链接。
+     * <p>
+     * 走 {@code /internal/} 而不是复用公开的 {@code /products}：后者分页且每页上限 100，
+     * 图谱要的是「一次拿到全部」——分页拉取会把一次完整的目录变成若干次可以中途失败的调用，
+     * 而漏掉的那一页商品在图上的表现是「这几个商品查不到任何关系」。
+     * <p>
+     * <b>网关必须为这个前缀配反向排除</b>（见 {@code JwtGatewayFilter} 的
+     * {@code INTERNAL_ONLY_PREFIXES}）：{@code /products/**} 是公开规则，
+     * 只加接口不改网关的话，这个「内部」接口会连匿名请求一起放行。
+     */
+    @GetMapping("/internal/catalog")
+    public Result<List<ProductSummary>> catalog() {
+        return Result.success(productService.catalog());
+    }
+
+    /**
      * 内部接口：扣减 / 回补库存。网关对 {@code /products/stock/} 前缀一律 404，
      * 只有服务间通过 Feign 直连才够得着。
      * <p>

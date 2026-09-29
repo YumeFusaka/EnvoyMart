@@ -44,6 +44,15 @@ public class ProductServiceImpl implements ProductService {
     private static final int STATUS_ON = 1;
 
     /**
+     * 目录一次最多取多少条。
+     * <p>
+     * 取值等于 {@link ProductQuery#safeSize()} 的上限。写死在这里而不是各调各的，
+     * 是为了让「目录有没有被截断」这件事有一个能被检查的数字——
+     * 真要超过这条线，得改的是取数方式（流式 / 内部专用查询），不是把数字调大。
+     */
+    private static final int MAX_CATALOG_SIZE = 100;
+
+    /**
      * 排序白名单。
      * <p>
      * 排序子句**必须**走白名单映射：那个位置没法用参数占位符，把请求里的字符串直接拼进去
@@ -195,6 +204,16 @@ public class ProductServiceImpl implements ProductService {
         productQuery.setKeyword(query);
         productQuery.setSort("sales");
         productQuery.setSize(limit);
+        return list(productQuery).getRecords();
+    }
+
+    @Override
+    public List<ProductSummary> catalog() {
+        ProductQuery productQuery = new ProductQuery();
+        // 分页上限是 100，而这里要的是「全部」。目录规模是几十条，一次拿完；
+        // 真涨过 100 条时应当改成流式或加内部专用查询，而不是把 size 悄悄调大后
+        // 拿到一个**被静默截断**的目录——截断的商品在图上的表现是「查不到任何关系」
+        productQuery.setSize(MAX_CATALOG_SIZE);
         return list(productQuery).getRecords();
     }
 

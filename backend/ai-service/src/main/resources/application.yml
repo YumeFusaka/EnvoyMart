@@ -18,6 +18,17 @@ spring:
           default:
             connect-timeout: 2000
             read-timeout: 5000
+          # knowledge-service 单独放宽：它的调用全是**批处理**，不是有人在页面上等的读。
+          #
+          # 5 秒那档是按「用户等一个页面」定的。图谱写入是几百条边的事务，而且实测首次写入
+          # 要 5.2 秒（Cypher 首次编译 + 连接预热），同一批里后续文档只要 0.1 秒——
+          # 冷启动正好压在 5 秒线上，于是失败与否取决于机器快慢。
+          #
+          # 代价不对称：超时发生在客户端，服务端**照样会把边写完**，而调用方据此把这篇文档
+          # 记成「失败」。也就是说这个超时不会保护任何东西，只会制造一条不存在的故障记录。
+          knowledge-service:
+            connect-timeout: 2000
+            read-timeout: 30000
     nacos:
       discovery:
         enabled: ${NACOS_ENABLED:false}

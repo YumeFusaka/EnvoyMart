@@ -32,6 +32,7 @@ public class KnowledgeIndexer {
     private final VectorStore vectorStore;
     private final TextSplitter splitter;
     private final HybridRetriever retriever;
+    private final KnowledgeGraphBuilder graphBuilder;
 
     /**
      * 是否在启动时自动构建索引。
@@ -45,11 +46,13 @@ public class KnowledgeIndexer {
                             @Qualifier("knowledgeVectorStore") VectorStore vectorStore,
                             TextSplitter splitter,
                             HybridRetriever retriever,
+                            KnowledgeGraphBuilder graphBuilder,
                             @Value("${envoymart.rag.auto-index:true}") boolean autoIndex) {
         this.corpus = corpus;
         this.vectorStore = vectorStore;
         this.splitter = splitter;
         this.retriever = retriever;
+        this.graphBuilder = graphBuilder;
         this.autoIndex = autoIndex;
     }
 
@@ -85,11 +88,38 @@ public class KnowledgeIndexer {
         // BM25 侧整份替换：切分结果一变，片数与编号全变，没有逐篇对齐的可能
         retriever.rebuild(chunks);
 
-        log.info("[Knowledge] 索引重建完成：文档 {} 篇，切片 {} 片", documents.size(), chunks.size());
-        return new Result(documents.size(), chunks.size());
+        // 图谱放在索引之后，且**单独兜住异常**：它要调十几次模型、还依赖一个外部图库，
+        // 任何一步失败都不该把已经建好的检索索引一起算成失败——检索是主链路，
+        // 图谱是它的增强，增强挂了主链路必须照常可用。
+        KnowledgeGraphBuilder.BuildReport graph = buildGraph(documents);
+
+        log.info("[Knowledge] 索引重建完成：文档 {} 篇，切片 {} 片；图谱入库 {} 条",
+                documents.size(), chunks.size(), graph == null ? 0 : graph.accepted());
+        return new Result(documents.size(), chunks.size(),
+                graph == null ? 0 : graph.accepted(),
+                graph == null ? 0 : graph.rejected(),
+                graph == null ? 0 : graph.failed(),
+                graph != null && graph.graphAvailable());
     }
 
-    /** 重建结果 —— 管理台要显示「重建了几篇、几片」，而不只是「成功」 */
-    public record Result(int documentCount, int chunkCount) {
+    private KnowledgeGraphBuilder.BuildReport buildGraph(List<Document> documents) {
+        try {
+            return graphBuilder.build(documents);
+        } catch (RuntimeException e) {
+            log.error("[Knowledge] 图谱构建失败，本次不更新图谱；检索索引已建好不受影响", e);
+            return null;
+        }
+    }
+
+    /**
+     * 重建结果 —— 管理台要显示「重建了几篇、几片」，而不只是「成功」。
+     * <p>
+     * 图谱的四个数字单独回传而不是合成一个布尔：{@code rejected} 高说明提示词或校验在掐掉
+     * 大量结果，{@code failed} 高说明模型或写入有问题，{@code graphAvailable=false} 说明
+     * 图库根本没连上——三种情况的处置完全不同，一个「图谱构建失败」把它们抹平了就没法排查。
+     */
+    public record Result(int documentCount, int chunkCount,
+                         int graphAccepted, int graphRejected, int graphFailed,
+                         boolean graphAvailable) {
     }
 }
