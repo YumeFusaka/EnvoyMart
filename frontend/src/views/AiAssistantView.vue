@@ -3,32 +3,57 @@ import { chatStream } from '@/api/ai'
 import ChatMessageList from '@/components/ai/ChatMessageList.vue'
 import QuickPromptBar from '@/components/ai/QuickPromptBar.vue'
 import { useUserStore } from '@/stores'
-import type { ChatMessage, Product } from '@/types/models'
+import type { ChatMessage, ProductSummary } from '@/types/models'
 import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
 const userStore = useUserStore()
-const sessionId = `session-${Date.now()}`
 const loading = ref(false)
 const input = ref('')
+
+/**
+ * 会话 id 要跟着用户留下来，而不是每次进页面重新生成。
+ * <p>
+ * 原先写的是 `session-${Date.now()}` —— 每次点进导航都换一个，于是**去商品页看一眼
+ * 再回来，上下文就没了**。而多轮对话的记忆是按 sessionId 挂在服务端的：
+ * 前端换号，服务端那边就换了一段记忆，用户看到的是「它突然不记得我刚才说过什么」。
+ * <p>
+ * 用 sessionStorage 而不是 localStorage：关掉标签页就结束一段会话是符合直觉的，
+ * 而且下一段会话本来就该是干净的上下文。按 userId 分开，避免换账号后接上前一个人的记忆。
+ */
+const SESSION_KEY = 'envoymart.ai.session'
+function resolveSessionId(): string {
+  const owner = userStore.profile?.id ?? 'anonymous'
+  const key = `${SESSION_KEY}.${owner}`
+  const existing = sessionStorage.getItem(key)
+  if (existing) return existing
+  // 会话号带上用户，服务端排查「这段对话是谁的」时不必再查一次表
+  const created = `${owner}-${Date.now()}`
+  sessionStorage.setItem(key, created)
+  return created
+}
+const sessionId = resolveSessionId()
 
 const prompts = [
   '推荐适合学生党的百元内耳机',
   '活动满减规则是什么',
   '七天无理由退货怎么处理',
-  '帮我查一下这个订单物流到哪了'
+  '帮我查一下这个订单物流到哪了',
 ]
 
 const messages = ref<ChatMessage[]>([
   {
     id: 'welcome',
     role: 'assistant',
-    content: '欢迎来到 EnvoyMart 智能客服台。你可以问我商品推荐、活动规则、售后政策，或者让我帮你查询订单和物流。'
-  }
+    content:
+      '欢迎来到 EnvoyMart 智能客服台。你可以问我商品推荐、活动规则、售后政策，或者让我帮你查询订单和物流。',
+  },
 ])
 
-const assistantCount = computed(() => messages.value.filter((item) => item.role === 'assistant').length)
+const assistantCount = computed(
+  () => messages.value.filter((item) => item.role === 'assistant').length,
+)
 
 async function sendMessage(message = input.value) {
   const content = message.trim()
@@ -37,7 +62,7 @@ async function sendMessage(message = input.value) {
   messages.value.push({
     id: `user-${Date.now()}`,
     role: 'user',
-    content
+    content,
   })
   input.value = ''
   loading.value = true
@@ -46,7 +71,7 @@ async function sendMessage(message = input.value) {
   const assistantMessage = reactive<ChatMessage>({
     id: `assistant-${Date.now()}`,
     role: 'assistant',
-    content: ''
+    content: '',
   })
   messages.value.push(assistantMessage)
 
@@ -65,8 +90,8 @@ async function sendMessage(message = input.value) {
         },
         onError: (msg) => {
           assistantMessage.content = msg
-        }
-      }
+        },
+      },
     )
   } catch {
     assistantMessage.content = '智能助手暂时不可用，请稍后再试。'
@@ -75,13 +100,15 @@ async function sendMessage(message = input.value) {
   }
 }
 
-function openProduct(product: Product) {
-  router.push({
-    path: '/shop',
-    query: {
-      keyword: product.name
-    }
-  })
+/**
+ * 推荐卡片点开要进**商品详情**，不是拿商品名去搜索。
+ * <p>
+ * 原先跳的是 `/shop?keyword=<商品名>` —— 用户点的是一个具体商品，落到的却是一页
+ * 搜索结果；商品名稍有出入（规格、副标题）就一条都搜不到，看到的是空列表。
+ * 推荐卡片带着 id，直接进详情是唯一不会错的做法。
+ */
+function openProduct(product: ProductSummary) {
+  router.push({ name: 'product-detail', params: { id: product.id } })
 }
 </script>
 

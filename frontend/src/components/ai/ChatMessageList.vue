@@ -1,43 +1,85 @@
 <script setup lang="ts">
+import CitationList from '@/components/ai/CitationList.vue'
+import MessageContent from '@/components/ai/MessageContent.vue'
 import RecommendationCards from '@/components/ai/RecommendationCards.vue'
-import type { ChatMessage, Product } from '@/types/models'
+import type { ChatMessage, ProductSummary } from '@/types/models'
+import { nextTick, ref } from 'vue'
 
 defineProps<{
   messages: ChatMessage[]
 }>()
 
 const emit = defineEmits<{
-  openProduct: [product: Product]
+  openProduct: [product: ProductSummary]
 }>()
+
+/**
+ * 工具名的中文说法。只在这一个组件里用得上，所以不单独抽文件。
+ * 未知工具名原样显示 —— 服务端加了新工具而前端还没跟上时，看到 `coupon_query`
+ * 也比看到空白强。
+ */
+const TOOL_LABELS: Record<string, string> = {
+  product_search: '商品检索',
+  order_query: '订单查询',
+  logistics_query: '物流查询',
+  order_cancel: '订单取消',
+}
+
+/** 当前被点亮的引用角标。`[n]` 点下去要能一眼看到它对应的是哪张卡片 */
+const activeCite = ref<{ messageId: string; index: number } | null>(null)
+
+async function handleCite(messageId: string, index: number) {
+  activeCite.value = { messageId, index }
+  await nextTick()
+  const target = document.getElementById(`cite-${messageId}-${index}`)
+  target?.scrollIntoView({
+    block: 'nearest',
+    // 动效降级是硬要求：开「减少动态效果」的用户不该被强制看一段滚动动画
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+  })
+}
+
+function isActive(messageId: string, index: number) {
+  return activeCite.value?.messageId === messageId && activeCite.value.index === index
+}
+
+function toolLabel(tool: string) {
+  return TOOL_LABELS[tool] ?? tool
+}
 </script>
 
 <template>
   <div class="message-list">
-    <article
-      v-for="message in messages"
-      :key="message.id"
-      :class="['message-card', message.role]"
-    >
+    <article v-for="message in messages" :key="message.id" :class="['message-card', message.role]">
       <header>
         <strong>{{ message.role === 'assistant' ? 'Yume AI' : '你' }}</strong>
       </header>
-      <p>{{ message.content }}</p>
 
-      <div v-if="message.knowledge?.length" class="supplement-box">
-        <h4>知识检索</h4>
-        <div v-for="item in message.knowledge" :key="`${message.id}-${item.title}`" class="supplement-item">
-          <strong>{{ item.title }}</strong>
-          <span>{{ item.content }}</span>
-        </div>
-      </div>
+      <MessageContent
+        :content="message.content"
+        :citation-count="message.knowledge?.length ?? 0"
+        @cite="(index) => handleCite(message.id, index)"
+      />
 
-      <div v-if="message.toolCalls?.length" class="supplement-box">
-        <h4>工具调用</h4>
-        <div v-for="tool in message.toolCalls" :key="`${message.id}-${tool.tool}`" class="supplement-item">
-          <strong>{{ tool.tool }}</strong>
-          <span>{{ tool.output }}</span>
+      <!--
+        工具轨迹用原生 details：它自带键盘可达与展开态语义，
+        比手写一个「点标题切换 v-if」少一半代码，还白拿一层可访问性。
+      -->
+      <details v-if="message.toolCalls?.length" class="trace">
+        <summary>工具轨迹 {{ message.toolCalls.length }} 次</summary>
+        <div v-for="(call, i) in message.toolCalls" :key="`${message.id}-${i}`" class="trace__item">
+          <p class="trace__name">{{ toolLabel(call.tool) }}</p>
+          <p class="trace__io"><span>入参</span>{{ call.input }}</p>
+          <p class="trace__io"><span>返回</span>{{ call.output }}</p>
         </div>
-      </div>
+      </details>
+
+      <CitationList
+        v-if="message.knowledge?.length"
+        :items="message.knowledge"
+        :list-id="message.id"
+        :active-index="activeCite?.messageId === message.id ? activeCite.index : null"
+      />
 
       <RecommendationCards
         v-if="message.recommendedProducts?.length"
@@ -51,46 +93,77 @@ const emit = defineEmits<{
 <style scoped>
 .message-list {
   display: grid;
-  gap: 18px;
+  gap: var(--ys-space-5);
 }
 
 .message-card {
-  padding: 18px;
-  border-radius: 20px;
-  line-height: 1.7;
+  padding: var(--ys-space-5);
+  border-radius: var(--ys-radius-lg);
+  line-height: var(--ys-leading-base);
 }
 
 .message-card.user {
-  background: rgba(182, 91, 46, 0.12);
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary-border);
 }
 
 .message-card.assistant {
-  background: rgba(255, 251, 245, 0.9);
-  border: 1px solid rgba(84, 55, 23, 0.08);
+  background: var(--color-bg-surface);
+  border: var(--card-border);
 }
 
-.message-card p {
-  margin: 10px 0 0;
-  white-space: pre-wrap;
-}
-
-.supplement-box {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px dashed rgba(84, 55, 23, 0.12);
-}
-
-.supplement-box h4 {
-  margin: 0 0 10px;
-}
-
-.supplement-item {
-  display: grid;
-  gap: 4px;
-  margin-bottom: 10px;
-}
-
-.supplement-item span {
+.message-card header strong {
+  font-size: var(--ys-font-sm);
   color: var(--color-text-secondary);
+}
+
+.trace {
+  margin-top: var(--ys-space-3);
+  padding: var(--ys-space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-md);
+  background: var(--color-bg-surface-muted);
+}
+
+.trace summary {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
+  cursor: pointer;
+}
+
+.trace summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--ys-radius-sm);
+}
+
+.trace__item {
+  margin-top: var(--ys-space-2);
+  padding-top: var(--ys-space-2);
+  border-top: 1px dashed var(--color-border);
+}
+
+.trace__name {
+  margin: 0;
+  font-size: var(--ys-font-sm);
+  font-weight: 600;
+}
+
+.trace__io {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: var(--ys-space-2);
+  margin: var(--ys-space-1) 0 0;
+  color: var(--color-text-secondary);
+  font-family: var(--ys-font-mono);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.trace__io span {
+  color: var(--color-text-muted);
+  font-family: var(--ys-font-sans);
 }
 </style>

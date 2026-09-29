@@ -95,6 +95,20 @@ const router = createRouter({
           meta: { title: '智能助手' },
         },
         {
+          // 知识库是**公开**的：AI 回答里的引用要能让任何人自己核对，
+          // 点开引用却要求先登录，等于把「可追溯」变成了「本店会员可追溯」。
+          path: 'knowledge',
+          name: 'knowledge',
+          component: () => import('@/views/KnowledgeListView.vue'),
+          meta: { public: true, title: '知识库' },
+        },
+        {
+          path: 'knowledge/:docNo',
+          name: 'knowledge-doc',
+          component: () => import('@/views/KnowledgeDocView.vue'),
+          meta: { public: true, title: '知识文档' },
+        },
+        {
           path: 'profile',
           name: 'profile',
           component: () => import('@/views/ProfileView.vue'),

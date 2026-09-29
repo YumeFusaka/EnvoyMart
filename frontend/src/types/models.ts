@@ -36,21 +36,6 @@ export interface UserAddress {
   updatedAt: string
 }
 
-export interface Product {
-  id: number
-  name: string
-  subtitle: string
-  category: string
-  brand: string
-  price: number
-  stock: number
-  monthlySales: number
-  image: string
-  salesCopy: string
-  description: string
-  tags: string[]
-}
-
 export interface CartItem {
   id: number
   spuId: number
@@ -287,10 +272,90 @@ export interface Logistics {
   steps: LogisticsStep[]
 }
 
+// ==================== 知识层 ====================
+
+/**
+ * 引用片段 —— 回答里 `[n]` 背后那条依据。
+ *
+ * 字段是照着「用户能不能自己核对」定的：写了什么（content）、出自哪一篇的哪一节
+ * （position）、哪一版（version）缺一样都核不了。`chunkId` 与 `charOffset` 是
+ * 「点引用跳原文」的锚点，服务端返回的数组顺序**就是**引用序号——`[n]` 对应
+ * `knowledge[n - 1]`，两边不再各排一次。
+ */
 export interface KnowledgeSnippet {
+  /** 切片标识，跳原文的锚点 */
+  chunkId: string
+  /** 所属文档编号，形如 KB-0005 */
+  docId: string
   title: string
-  content: string
+  /** 领域范围：nutrition / after_sale / logistics / promotion / ... */
   scope: string
+  /** 文档类型：manual 说明书 / policy 平台规则 / regulation 监管规范 / spec / guide */
+  source: string
+  version: string
+  /** 形如《维生素 D3 说明书》 > 第二章 用法用量 > 2.2 */
+  position: string
+  /** 命中位置在原文中的字符偏移（UTF-16 码元），供前端高亮 */
+  charOffset: number | null
+  /** 相关性分 [0,1]；null 表示该链路未提供相关性信号，不是「不相关」 */
+  score: number | null
+  /** 分数是否来自重排。两种分数的量纲不同，措辞也该不同 */
+  reranked: boolean | null
+  content: string
+}
+
+/** 文档列表项，不含正文 */
+export interface DocumentSummary {
+  docNo: string
+  title: string
+  source: string
+  scope: string
+  version: string
+  /** 逗号分隔的标签串（服务端原样存储，不在这里拆） */
+  tags: string | null
+  /** 0 停用 / 1 启用 */
+  status: number
+  chunkCount: number
+  contentLength: number
+  updatedAt: string
+}
+
+/** 切片索引项，只够在原文里定位 */
+export interface ChunkRef {
+  chunkId: string
+  chunkIndex: number
+  position: string
+  charOffset: number | null
+  /** 该片在原文中的结束位置（不含）。最后一片取正文长度 */
+  charEnd: number | null
+}
+
+/** 文档详情，带全文 —— 「点引用跳原文」的目的地 */
+export interface DocumentDetail {
+  docNo: string
+  title: string
+  source: string
+  scope: string
+  version: string
+  tags: string | null
+  status: number
+  /** 正文全文，charOffset 就是它上面的下标 */
+  content: string
+  updatedAt: string
+  chunks: ChunkRef[]
+}
+
+/** 切片详情 —— 引用回跳的唯一入口 */
+export interface ChunkDetail extends ChunkRef {
+  content: string
+  docNo: string
+  title: string
+  source: string
+  scope: string
+  version: string
+  status: number
+  /** 所属文档全文，就地高亮用，省掉第二次请求 */
+  documentContent: string
 }
 
 export interface ToolCall {
@@ -304,7 +369,10 @@ export interface ChatResponse {
   reply: string
   knowledge: KnowledgeSnippet[]
   toolCalls: ToolCall[]
-  recommendedProducts: Product[]
+  /** 与商品列表页同一个类型 —— 之前这里写的是另一套字段，卡片全是空的 */
+  recommendedProducts: ProductSummary[]
+  /** 等待用户确认的高危工具 */
+  pendingActions: string[] | null
 }
 
 export interface ChatMessage {
@@ -313,7 +381,7 @@ export interface ChatMessage {
   content: string
   knowledge?: KnowledgeSnippet[]
   toolCalls?: ToolCall[]
-  recommendedProducts?: Product[]
+  recommendedProducts?: ProductSummary[]
 }
 
 // ==================== 商品域 ====================

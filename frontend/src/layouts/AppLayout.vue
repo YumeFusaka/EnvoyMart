@@ -8,6 +8,7 @@ import {
   Fold,
   Goods,
   List,
+  Reading,
   RefreshLeft,
   ShoppingCart,
   SwitchButton,
@@ -29,7 +30,17 @@ const navItems = [
   { to: '/after-sales', label: '退款/售后', icon: RefreshLeft },
   { to: '/coupons', label: '领券中心', icon: Discount },
   { to: '/assistant', label: '智能助手', icon: ChatDotRound },
+  // 知识库对外公开（引用要让任何人能自己核对），所以它也是**未登录**时唯一能用的入口
+  { to: '/knowledge', label: '知识库', icon: Reading },
 ]
+
+/**
+ * 未登录时只留公开入口，而不是把整条导航渲染成一片点了就跳登录页的死链。
+ * 知识库与它底下的原文页是公开的——这是登录页之外第一次出现「不需要账号也能看的页面」，
+ * 顶栏必须能在这个状态下站得住。
+ */
+const publicNavItems = navItems.filter((item) => item.to === '/knowledge')
+const visibleNavItems = computed(() => (userStore.token ? navItems : publicNavItems))
 
 const displayName = computed(
   () => userStore.profile?.nickname || userStore.profile?.username || '用户',
@@ -49,7 +60,10 @@ function closeDrawer() {
 onMounted(() => {
   // 顶栏角标要显示件数，所以进任意页面都拉一次。
   // 拉失败就只是不显示角标 —— 一次购物车查询失败不该让整个页面打不开
-  cart.load().catch(() => undefined)
+  // 未登录不发这一枪：公开页（知识库）上它必然 401，白白在控制台留一条红字
+  if (userStore.token) {
+    cart.load().catch(() => undefined)
+  }
 })
 </script>
 
@@ -64,7 +78,7 @@ onMounted(() => {
 
         <nav class="app-nav" aria-label="主导航">
           <RouterLink
-            v-for="item in navItems"
+            v-for="item in visibleNavItems"
             :key="item.to"
             :to="item.to"
             class="app-nav__link"
@@ -76,13 +90,13 @@ onMounted(() => {
         </nav>
 
         <div class="app-header__actions">
-          <RouterLink to="/cart" class="app-cart" aria-label="购物车">
+          <RouterLink v-if="userStore.token" to="/cart" class="app-cart" aria-label="购物车">
             <el-badge :value="cart.totalQuantity" :hidden="cart.totalQuantity === 0" :max="99">
               <el-icon :size="18"><ShoppingCart /></el-icon>
             </el-badge>
           </RouterLink>
 
-          <el-dropdown trigger="click">
+          <el-dropdown v-if="userStore.token" trigger="click">
             <button class="app-user" type="button" aria-label="账号菜单">
               <el-avatar :size="26" :src="userStore.profile?.avatar ?? undefined">
                 {{ displayName.slice(0, 1) }}
@@ -99,6 +113,9 @@ onMounted(() => {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+
+          <!-- 未登录时给的是登录入口而不是一个点不开的头像 -->
+          <RouterLink v-else class="app-login" :to="{ name: 'login' }">登录</RouterLink>
 
           <button
             class="app-menu-toggle"
@@ -119,7 +136,7 @@ onMounted(() => {
     <el-drawer v-model="drawerOpen" direction="rtl" size="260px" title="导航">
       <nav class="app-nav app-nav--drawer" aria-label="主导航">
         <RouterLink
-          v-for="item in navItems"
+          v-for="item in visibleNavItems"
           :key="item.to"
           :to="item.to"
           class="app-nav__link"
@@ -128,9 +145,13 @@ onMounted(() => {
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.label }}</span>
         </RouterLink>
-        <RouterLink to="/profile" class="app-nav__link" @click="closeDrawer">
+        <RouterLink v-if="userStore.token" to="/profile" class="app-nav__link" @click="closeDrawer">
           <el-icon><User /></el-icon>
           <span>个人中心</span>
+        </RouterLink>
+        <RouterLink v-else to="/login" class="app-nav__link" @click="closeDrawer">
+          <el-icon><User /></el-icon>
+          <span>登录 / 注册</span>
         </RouterLink>
       </nav>
     </el-drawer>
@@ -259,6 +280,22 @@ onMounted(() => {
 
 .app-user__name {
   font-size: var(--ys-font-sm);
+}
+
+.app-login {
+  padding: 6px 16px;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--ys-radius-full);
+  color: var(--color-primary);
+  font-size: var(--ys-font-sm);
+  transition:
+    background-color var(--ys-duration-fast) var(--ys-ease-out),
+    color var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.app-login:hover {
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
 }
 
 .app-menu-toggle {

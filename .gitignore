@@ -37,3 +37,6 @@ backend/HELP.md
 
 # SkyWalking OAP 的 MySQL 驱动（从本地 maven 仓库拷入，OAP 镜像未自带）
 /skywalking-libs/
+
+# 界面截图（scripts/screenshot.mjs 的产物，本地比对用）
+/frontend/.screenshots/

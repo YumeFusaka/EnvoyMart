@@ -10,12 +10,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="quick-prompts">
-    <el-button
-      v-for="prompt in prompts"
-      :key="prompt"
-      round
-      @click="emit('select', prompt)"
-    >
+    <el-button v-for="prompt in prompts" :key="prompt" round @click="emit('select', prompt)">
       {{ prompt }}
     </el-button>
   </div>
