@@ -13,6 +13,7 @@ import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.productservice.model.ProductDetail;
 import yumefusaka.envoymart.productservice.model.ProductQuery;
 import yumefusaka.envoymart.productservice.model.ProductSummary;
+import yumefusaka.envoymart.productservice.model.SkuSnapshot;
 import yumefusaka.envoymart.productservice.model.StockChangeRequest;
 import yumefusaka.envoymart.productservice.search.ProductSearchService;
 import yumefusaka.envoymart.productservice.service.ProductService;
@@ -61,6 +62,17 @@ public class ProductController {
     @GetMapping("/{id}")
     public Result<ProductDetail> detail(@PathVariable("id") Long id) {
         return Result.success(productService.detail(id));
+    }
+
+    /**
+     * 按 SKU id 批量取快照，供购物车与订单组装。
+     * <p>
+     * 与 {@code /{id}} 不冲突：Spring 里字面量路径优先于模板路径，
+     * 不会把它当成「id 为 skus」的详情请求。
+     */
+    @GetMapping("/skus")
+    public Result<List<SkuSnapshot>> skus(@RequestParam("ids") List<Long> ids) {
+        return Result.success(productService.skus(ids));
     }
 
     @GetMapping("/recommendations")

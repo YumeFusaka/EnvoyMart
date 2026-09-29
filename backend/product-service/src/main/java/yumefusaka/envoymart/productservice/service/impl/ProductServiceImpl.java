@@ -24,6 +24,7 @@ import yumefusaka.envoymart.productservice.model.ProductDetail;
 import yumefusaka.envoymart.productservice.model.ProductQuery;
 import yumefusaka.envoymart.productservice.model.ProductSummary;
 import yumefusaka.envoymart.productservice.model.SkuSpecView;
+import yumefusaka.envoymart.productservice.model.SkuSnapshot;
 import yumefusaka.envoymart.productservice.model.SkuView;
 import yumefusaka.envoymart.productservice.model.SpecGroup;
 import yumefusaka.envoymart.productservice.service.CategoryService;
@@ -138,6 +139,7 @@ public class ProductServiceImpl implements ProductService {
                 .images(splitByComma(spu.getImages()))
                 .detailHtml(spu.getDetailHtml())
                 .status(spu.getStatus())
+                .tags(ProductSummary.parseTags(spu.getTags()))
                 .sales(spu.getSales())
                 .ratingAvg(spu.getRatingAvg())
                 .reviewCount(spu.getReviewCount())
@@ -193,6 +195,46 @@ public class ProductServiceImpl implements ProductService {
         productQuery.setSort("sales");
         productQuery.setSize(limit);
         return list(productQuery).getRecords();
+    }
+
+    @Override
+    public List<SkuSnapshot> skus(List<Long> skuIds) {
+        if (skuIds == null || skuIds.isEmpty()) {
+            return List.of();
+        }
+        List<ProductSkuEntity> skus = skuMapper.selectByIds(skuIds.stream().distinct().toList());
+        if (skus.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Long, String> spuNames = spuMapper.selectByIds(
+                        skus.stream().map(ProductSkuEntity::getSpuId).collect(Collectors.toSet()))
+                .stream()
+                .collect(Collectors.toMap(ProductSpuEntity::getId, ProductSpuEntity::getName));
+
+        // 规格文本拼一次就够：购物车每行都要展示它，而组装每一行时再查一次
+        // 就是把 N+1 从外层挪到了里层
+        Map<Long, String> specTexts = skuSpecMapper.selectBySkuIds(
+                        skus.stream().map(ProductSkuEntity::getId).toList())
+                .stream()
+                .collect(Collectors.groupingBy(
+                        SkuSpecView::getSkuId,
+                        Collectors.mapping(
+                                view -> view.getSpecName() + ":" + view.getSpecValue(),
+                                Collectors.joining(";"))));
+
+        return skus.stream()
+                .map(sku -> SkuSnapshot.builder()
+                        .id(sku.getId())
+                        .spuId(sku.getSpuId())
+                        .spuName(spuNames.get(sku.getSpuId()))
+                        .specText(specTexts.get(sku.getId()))
+                        .image(sku.getImage())
+                        .price(sku.getPrice())
+                        .stock(sku.getStock())
+                        .status(sku.getStatus())
+                        .build())
+                .toList();
     }
 
     // ==================== 查询条件 ====================

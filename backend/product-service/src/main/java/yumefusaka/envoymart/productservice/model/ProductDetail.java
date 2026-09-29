@@ -32,6 +32,7 @@ public class ProductDetail {
     private List<String> images;
     private String detailHtml;
     private Integer status;
+    private List<String> tags;
     private Integer sales;
     private BigDecimal ratingAvg;
     private Integer reviewCount;
