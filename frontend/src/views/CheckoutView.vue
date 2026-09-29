@@ -5,9 +5,10 @@ import { ElMessage } from 'element-plus'
 import { listAddresses } from '@/api/address'
 import { checkout } from '@/api/order'
 import { formatPrice } from '@/api/product'
+import { listMyCoupons } from '@/api/coupon'
 import { useCartStore } from '@/stores'
 import ErrorState from '@/components/ui/ErrorState.vue'
-import type { UserAddress } from '@/types/models'
+import type { UserAddress, UserCoupon } from '@/types/models'
 
 const router = useRouter()
 const cart = useCartStore()
@@ -16,6 +17,30 @@ const addresses = ref<UserAddress[]>([])
 const selectedAddressId = ref<number | null>(null)
 const remark = ref('')
 const submitting = ref(false)
+
+/** 我的券（带可用性）。传订单金额进去，服务端算出每张「能不能用、差多少」 */
+const coupons = ref<UserCoupon[]>([])
+const selectedCouponId = ref<number | null>(null)
+
+const selectedCoupon = computed(
+  () => coupons.value.find((item) => item.id === selectedCouponId.value) ?? null,
+)
+
+/** 券面的抵扣金额（分）。真正的抵扣由服务端在核销时算，这里只用于展示 */
+const couponDiscount = computed(() => {
+  const coupon = selectedCoupon.value
+  if (!coupon || coupon.usable === false) {
+    return 0
+  }
+  if (coupon.type === 'DISCOUNT' && coupon.ruleText) {
+    const match = coupon.ruleText.match(/(\d+(?:\.\d+)?)\s*折/)
+    if (match) {
+      const rate = Number(match[1]) / 10
+      return Math.max(0, cart.selectedAmount - Math.floor(cart.selectedAmount * rate))
+    }
+  }
+  return Math.min(coupon.amount ?? 0, cart.selectedAmount)
+})
 /** 地址加载完成之前不渲染空态 —— 否则有地址的用户会看到一帧「还没有收货地址」 */
 const addressLoading = ref(true)
 const addressFailed = ref(false)
@@ -26,7 +51,17 @@ const selectedAddress = computed(
 
 /** 运费规则尚未实现，先按包邮处理 —— 与后端 checkout 里的 FREIGHT_FREE 一致 */
 const freight = 0
-const payAmount = computed(() => cart.selectedAmount + freight)
+const payAmount = computed(() => cart.selectedAmount + freight - couponDiscount.value)
+
+async function loadCoupons() {
+  try {
+    // 带上订单金额：服务端会算出每张券现在能不能用、不能用时差多少
+    coupons.value = await listMyCoupons('UNUSED', cart.selectedAmount)
+  } catch {
+    // 券拉不到不该挡住下单 —— 用户按原价结算就是了
+    coupons.value = []
+  }
+}
 
 async function submit() {
   const address = selectedAddress.value
@@ -47,6 +82,7 @@ async function submit() {
       receiverDistrict: address.district,
       receiverDetail: address.detail,
       remark: remark.value || undefined,
+      userCouponId: selectedCouponId.value ?? undefined,
     })
     // 下单成功后车里的已结算条目已被后端清掉，本地也要同步
     await cart.load()
@@ -88,6 +124,7 @@ onMounted(async () => {
     return
   }
   await loadAddresses()
+  await loadCoupons()
 })
 </script>
 
@@ -155,6 +192,33 @@ onMounted(async () => {
       </ul>
     </section>
 
+    <section v-if="coupons.length" class="surface">
+      <h2 class="section-title">优惠券</h2>
+      <!-- 不可用的券也列出来并写明原因：用户会想知道自己那张券为什么没出现在这里 -->
+      <div class="coupons">
+        <button
+          type="button"
+          class="coupon-pick"
+          :class="{ 'is-active': selectedCouponId === null }"
+          @click="selectedCouponId = null"
+        >
+          不使用优惠券
+        </button>
+        <button
+          v-for="item in coupons"
+          :key="item.id"
+          type="button"
+          class="coupon-pick"
+          :class="{ 'is-active': selectedCouponId === item.id, 'is-disabled': item.usable === false }"
+          :disabled="item.usable === false"
+          @click="selectedCouponId = item.id"
+        >
+          <span class="coupon-pick__rule">{{ item.ruleText }}</span>
+          <span v-if="item.unusableReason" class="coupon-pick__hint">{{ item.unusableReason }}</span>
+        </button>
+      </div>
+    </section>
+
     <section class="surface">
       <h2 class="section-title">订单备注</h2>
       <el-input
@@ -171,6 +235,9 @@ onMounted(async () => {
       <dl class="summary">
         <div><dt>商品金额</dt><dd>{{ formatPrice(cart.selectedAmount) }}</dd></div>
         <div><dt>运费</dt><dd>{{ freight === 0 ? '包邮' : formatPrice(freight) }}</dd></div>
+        <div v-if="couponDiscount > 0">
+          <dt>优惠券</dt><dd class="summary__discount">-{{ formatPrice(couponDiscount) }}</dd>
+        </div>
         <div class="summary__total">
           <dt>应付</dt>
           <dd>{{ formatPrice(payAmount) }}</dd>
@@ -313,6 +380,48 @@ onMounted(async () => {
   color: var(--color-primary);
   font-size: var(--ys-font-xl);
   font-weight: 700;
+}
+
+.summary__discount {
+  color: var(--color-danger);
+}
+
+.coupons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-2);
+}
+
+.coupon-pick {
+  display: grid;
+  gap: 2px;
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: var(--ys-font-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.coupon-pick.is-active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.coupon-pick.is-disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.coupon-pick__hint {
+  font-size: var(--ys-font-xs);
+  font-weight: 400;
+  color: var(--color-text-muted);
 }
 
 @media (max-width: 720px) {

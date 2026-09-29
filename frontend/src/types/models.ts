@@ -212,6 +212,50 @@ export interface AfterSale {
   skuImage: string | null
 }
 
+// ==================== 营销 ====================
+
+export interface Coupon {
+  id: number
+  name: string
+  /** FIXED 满减 / DISCOUNT 折扣 */
+  type: string
+  /** 「满 200 元减 30 元」这类人话，服务端拼好的 */
+  ruleText: string
+  amount: number | null
+  discount: number | null
+  /** 使用门槛（分），0 表示无门槛 */
+  threshold: number
+  scopeType: string
+  totalCount: number
+  receivedCount: number
+  remainingCount: number
+  validFrom: string | null
+  validTo: string | null
+  /** 当前用户是否已领过 */
+  received: boolean
+}
+
+export interface UserCoupon {
+  id: number
+  couponId: number
+  name: string
+  type: string | null
+  ruleText: string | null
+  amount: number | null
+  threshold: number | null
+  /** UNUSED / USED / EXPIRED */
+  status: string
+  statusText: string
+  orderNo: string | null
+  receivedAt: string
+  usedAt: string | null
+  expireAt: string
+  /** 传入订单金额时才有：这张券现在能不能用 */
+  usable: boolean | null
+  /** 不能用时的原因，如「差 5000 分可用」 */
+  unusableReason: string | null
+}
+
 export interface Payment {
   id: number
   paymentNo: string

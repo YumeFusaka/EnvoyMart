@@ -9,6 +9,8 @@ export interface CheckoutPayload {
   receiverDistrict: string
   receiverDetail: string
   remark?: string
+  /** 使用的优惠券（用户券 id），选填。传的是用户券而不是模板 */
+  userCouponId?: number
 }
 
 /**

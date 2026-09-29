@@ -65,6 +65,18 @@ const router = createRouter({
           meta: { title: '订单详情' },
         },
         {
+          path: 'coupons',
+          name: 'coupons',
+          component: () => import('@/views/CouponCenterView.vue'),
+          meta: { title: '领券中心' },
+        },
+        {
+          path: 'coupons/mine',
+          name: 'my-coupons',
+          component: () => import('@/views/MyCouponView.vue'),
+          meta: { title: '我的优惠券' },
+        },
+        {
           path: 'after-sales',
           name: 'after-sales',
           component: () => import('@/views/AfterSaleListView.vue'),

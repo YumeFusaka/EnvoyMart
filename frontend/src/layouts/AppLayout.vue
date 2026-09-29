@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   ChatDotRound,
+  Discount,
   Fold,
   Goods,
   List,
@@ -26,6 +27,7 @@ const navItems = [
   { to: '/shop', label: '商城', icon: Goods },
   { to: '/orders', label: '我的订单', icon: List },
   { to: '/after-sales', label: '退款/售后', icon: RefreshLeft },
+  { to: '/coupons', label: '领券中心', icon: Discount },
   { to: '/assistant', label: '智能助手', icon: ChatDotRound },
 ]
 
