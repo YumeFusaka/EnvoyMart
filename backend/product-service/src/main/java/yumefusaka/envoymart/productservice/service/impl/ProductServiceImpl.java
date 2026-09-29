@@ -207,10 +207,10 @@ public class ProductServiceImpl implements ProductService {
             return List.of();
         }
 
-        Map<Long, String> spuNames = spuMapper.selectByIds(
+        Map<Long, ProductSpuEntity> spus = spuMapper.selectByIds(
                         skus.stream().map(ProductSkuEntity::getSpuId).collect(Collectors.toSet()))
                 .stream()
-                .collect(Collectors.toMap(ProductSpuEntity::getId, ProductSpuEntity::getName));
+                .collect(Collectors.toMap(ProductSpuEntity::getId, Function.identity()));
 
         // 规格文本拼一次就够：购物车每行都要展示它，而组装每一行时再查一次
         // 就是把 N+1 从外层挪到了里层
@@ -227,7 +227,10 @@ public class ProductServiceImpl implements ProductService {
                 .map(sku -> SkuSnapshot.builder()
                         .id(sku.getId())
                         .spuId(sku.getSpuId())
-                        .spuName(spuNames.get(sku.getSpuId()))
+                        .categoryId(spus.containsKey(sku.getSpuId())
+                                ? spus.get(sku.getSpuId()).getCategoryId() : null)
+                        .spuName(spus.containsKey(sku.getSpuId())
+                                ? spus.get(sku.getSpuId()).getName() : null)
                         .specText(specTexts.get(sku.getId()))
                         .image(sku.getImage())
                         .price(sku.getPrice())

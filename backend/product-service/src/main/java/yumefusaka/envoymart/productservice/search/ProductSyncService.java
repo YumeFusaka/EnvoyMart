@@ -63,16 +63,28 @@ public class ProductSyncService {
         this.searchRepository = searchRepository;
     }
 
+    /**
+     * 启动时全量同步。
+     * <p>
+     * <b>失败不能拖垮启动。</b>ES 只是派生存储：索引没同步的代价是「搜不到新商品」，
+     * 而商品服务起不来的代价是「整个下单链路不可用」—— 后者严重得多。
+     * 此前这里没有 try/catch，ES 一挂，服务直接起不来。
+     */
     @PostConstruct
     public void syncAll() {
-        List<ProductSpuEntity> spus = spuMapper.selectList(null);
-        if (spus.isEmpty()) {
-            log.info("商品库为空，跳过 ES 全量同步");
-            return;
+        try {
+            List<ProductSpuEntity> spus = spuMapper.selectList(null);
+            if (spus.isEmpty()) {
+                log.info("商品库为空，跳过 ES 全量同步");
+                return;
+            }
+            List<ProductIndex> indices = buildIndices(spus);
+            searchRepository.saveAll(indices);
+            log.info("ES 商品索引同步完成，共 {} 条", indices.size());
+        } catch (Exception e) {
+            // 留 ERROR 而不是静默：索引为空时搜索会一直返回空结果，那很容易被当成业务问题
+            log.error("[ES] 启动全量同步失败，搜索功能将不可用直到下次商品变更触发单条同步", e);
         }
-        List<ProductIndex> indices = buildIndices(spus);
-        searchRepository.saveAll(indices);
-        log.info("ES 商品索引同步完成，共 {} 条", indices.size());
     }
 
     /**

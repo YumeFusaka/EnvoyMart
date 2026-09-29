@@ -98,6 +98,20 @@ public class PaymentController {
         return Result.success(refundService.refund(userId, request));
     }
 
+    /**
+     * 服务间调用的退款入口（售后通过后由订单服务发起）。
+     * <p>
+     * 与用户入口的区别是**没有调用方身份** —— 它表达的是「这笔订单的钱要还回去」，
+     * 不是「某个用户在操作」。因此网关对 {@code /payments/refunds/internal} 一律 404，
+     * 只有服务间直连够得着。
+     */
+    @PostMapping("/refunds/internal")
+    public Result<RefundResponse> refundInternal(@Valid @RequestBody RefundRequest request) {
+        return Result.success(refundService.refundForOrder(
+                request.getOrderId(), request.getAfterSaleId(),
+                request.getAmount(), request.getReason()));
+    }
+
     @GetMapping("/refunds/{orderId}")
     public Result<List<RefundResponse>> listRefunds(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,

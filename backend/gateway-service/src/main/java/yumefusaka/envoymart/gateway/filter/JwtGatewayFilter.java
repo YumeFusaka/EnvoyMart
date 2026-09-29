@@ -67,7 +67,13 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
      * 是公开读的，若只做前缀放行，同前缀下后来新增的内部接口会被静默放行——
      * 这个坑真的踩过。
      */
-    private static final List<String> INTERNAL_ONLY_PREFIXES = List.of("/products/stock/");
+    private static final List<String> INTERNAL_ONLY_PREFIXES = List.of(
+            "/products/stock/",
+            // 服务间退款入口：它没有调用方身份，只表达「这笔订单的钱要还回去」，
+            // 经网关暴露出去等于任何人凭订单号就能触发退款
+            "/payments/refunds/internal",
+            // 售后审核同样是管理侧动作，用户不该够得着
+            "/after-sales/internal/");
 
     /** 路径模式：以 {@code /**} 结尾表示前缀匹配，否则精确匹配。 */
     private record PublicRule(String method, String path) {

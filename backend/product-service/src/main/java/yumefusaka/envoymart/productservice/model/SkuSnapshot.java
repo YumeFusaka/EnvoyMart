@@ -20,6 +20,13 @@ public class SkuSnapshot {
 
     private Long id;
     private Long spuId;
+    /**
+     * SPU 所属类目。
+     * <p>
+     * 调用方（订单）要把它快照进订单行 —— 售后政策按类目判定，而订单行不引用商品表。
+     * 少了这个字段，政策引擎就只能按全类目默认政策走。
+     */
+    private Long categoryId;
     /** SPU 名称，如「维生素 D3 软胶囊」 */
     private String spuName;
     /** 规格文本，如「规格:400IU×90粒;包装:瓶装」 */

@@ -7,18 +7,16 @@ import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.ObjectMapper;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.paymentservice.client.OrderClient;
-import yumefusaka.envoymart.paymentservice.entity.PaymentCallbackLogEntity;
 import yumefusaka.envoymart.paymentservice.entity.PaymentEntity;
-import yumefusaka.envoymart.paymentservice.mapper.PaymentCallbackLogMapper;
 import yumefusaka.envoymart.paymentservice.mapper.PaymentMapper;
 import yumefusaka.envoymart.paymentservice.model.CreatePaymentRequest;
 import yumefusaka.envoymart.paymentservice.model.OrderSnapshot;
 import yumefusaka.envoymart.paymentservice.model.PaymentCallbackRequest;
 import yumefusaka.envoymart.paymentservice.model.PaymentResponse;
+import yumefusaka.envoymart.paymentservice.service.CallbackLogService;
 import yumefusaka.envoymart.paymentservice.service.PaymentService;
 
 import java.time.LocalDateTime;
@@ -45,21 +43,18 @@ public class PaymentServiceImpl implements PaymentService {
     private static final Set<String> TERMINAL_STATUSES = Set.of(PAY_SUCCESS, PAY_FAILED);
 
     private final PaymentMapper paymentMapper;
-    private final PaymentCallbackLogMapper callbackLogMapper;
+    private final CallbackLogService callbackLogService;
     private final RabbitTemplate rabbitTemplate;
     private final OrderClient orderClient;
-    private final ObjectMapper objectMapper;
 
     public PaymentServiceImpl(PaymentMapper paymentMapper,
-                              PaymentCallbackLogMapper callbackLogMapper,
+                              CallbackLogService callbackLogService,
                               RabbitTemplate rabbitTemplate,
-                              OrderClient orderClient,
-                              ObjectMapper objectMapper) {
+                              OrderClient orderClient) {
         this.paymentMapper = paymentMapper;
-        this.callbackLogMapper = callbackLogMapper;
+        this.callbackLogService = callbackLogService;
         this.rabbitTemplate = rabbitTemplate;
         this.orderClient = orderClient;
-        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -216,23 +211,9 @@ public class PaymentServiceImpl implements PaymentService {
      * <b>验签失败的也要记</b>：被伪造的回调是有价值的排查线索，只记录成功日志
      * 等于把线索丢掉。原始报文一并保留 —— 出现「渠道说回调了但订单没变」这类问题时，
      * 唯一能自证的就是它。
-     * <p>
-     * 流水写入失败**不影响主流程**：它是留痕，不是业务本身。
      */
     private void recordCallback(PaymentCallbackRequest request, String signature, boolean verified) {
-        try {
-            PaymentCallbackLogEntity log = new PaymentCallbackLogEntity();
-            log.setOrderNo(request.getOrderId() == null ? null : String.valueOf(request.getOrderId()));
-            log.setTransactionNo(request.getTransactionNo());
-            log.setStatus(request.getStatus());
-            log.setPayload(objectMapper.writeValueAsString(request));
-            log.setSignature(signature);
-            log.setVerified(verified ? 1 : 0);
-            log.setCreatedAt(Times.now());
-            callbackLogMapper.insert(log);
-        } catch (Exception e) {
-            log.warn("[Payment] 回调流水写入失败，不影响主流程", e);
-        }
+        callbackLogService.record(request, signature, verified);
     }
 
     /**

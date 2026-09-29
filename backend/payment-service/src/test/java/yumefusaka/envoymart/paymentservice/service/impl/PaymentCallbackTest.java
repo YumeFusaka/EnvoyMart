@@ -16,8 +16,7 @@ import yumefusaka.envoymart.paymentservice.model.CreatePaymentRequest;
 import yumefusaka.envoymart.paymentservice.model.OrderSnapshot;
 import yumefusaka.envoymart.paymentservice.model.PaymentCallbackRequest;
 
-import tools.jackson.databind.ObjectMapper;
-import yumefusaka.envoymart.paymentservice.mapper.PaymentCallbackLogMapper;
+import yumefusaka.envoymart.paymentservice.service.CallbackLogService;
 
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,10 +43,9 @@ import static org.mockito.Mockito.when;
 class PaymentCallbackTest {
 
     private PaymentMapper paymentMapper;
-    private PaymentCallbackLogMapper callbackLogMapper;
+    private CallbackLogService callbackLogService;
     private RabbitTemplate rabbitTemplate;
     private OrderClient orderClient;
-    private ObjectMapper objectMapper;
     private PaymentServiceImpl service;
 
     /**
@@ -64,12 +62,11 @@ class PaymentCallbackTest {
     @BeforeEach
     void setUp() {
         paymentMapper = mock(PaymentMapper.class);
-        callbackLogMapper = mock(PaymentCallbackLogMapper.class);
+        // 回调流水走独立事务，所以它是一个独立的 bean —— 单测里 mock 掉即可
+        callbackLogService = mock(CallbackLogService.class);
         rabbitTemplate = mock(RabbitTemplate.class);
         orderClient = mock(OrderClient.class);
-        objectMapper = mock(ObjectMapper.class);
-        service = new PaymentServiceImpl(paymentMapper, callbackLogMapper,
-                rabbitTemplate, orderClient, objectMapper);
+        service = new PaymentServiceImpl(paymentMapper, callbackLogService, rabbitTemplate, orderClient);
         // 默认：条件更新命中一行（即“这次回调成功迁移了状态”）
         when(paymentMapper.update(any(), any())).thenReturn(1);
     }

@@ -23,7 +23,7 @@ public interface ProductSkuMapper extends BaseMapper<ProductSkuEntity> {
      * @return 影响行数，0 表示库存不足（或 SKU 不存在），调用方必须据此判定失败
      */
     @Update("update product_sku set stock = stock - #{quantity} "
-            + "where id = #{skuId} and stock >= #{quantity}")
+            + "where id = #{skuId} and stock >= #{quantity} and status = 1")
     int deductStock(@Param("skuId") Long skuId, @Param("quantity") int quantity);
 
     /**
