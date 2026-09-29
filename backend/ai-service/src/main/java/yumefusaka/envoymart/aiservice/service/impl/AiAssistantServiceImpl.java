@@ -18,7 +18,7 @@ import java.util.Objects;
 /**
  * AI 聊天服务实现 —— 委托给自研 Agent 系统。
  * <p>
- * 推理与工具编排由 agent-core 负责，模型接入由 Spring AI 负责；
+ * 推理与工具编排由 agent-core 负责，模型接入由 LangChain4j 负责；
  * 这里只做「领域结果 → 对外 DTO」的适配。
  */
 @Slf4j

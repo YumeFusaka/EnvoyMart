@@ -182,7 +182,7 @@ public class AiAgentConfig {
      * 工具注册表 —— 观测点挂在这一层。
      * <p>
      * 计划节点、ReAct 循环、MCP 三条来路的工具调用最终都汇到 {@code ToolRegistry.execute}，
-     * 埋点放这里才能一次覆盖全部；放在某一个 ToolCallback 实现里会漏掉不经过它的路径。
+     * 埋点放这里才能一次覆盖全部；挂在某一条路的实现上会漏掉其余路径。
      */
     @Bean
     public ToolRegistry toolRegistry(OrderClient orderClient, ProductClient productClient,

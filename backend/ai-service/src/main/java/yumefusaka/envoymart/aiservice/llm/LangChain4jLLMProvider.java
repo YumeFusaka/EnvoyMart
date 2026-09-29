@@ -43,14 +43,15 @@ import java.util.function.Consumer;
 /**
  * LangChain4j 接入层 —— 把 agent-core 的 LLMProvider 契约适配到 LangChain4j 的 ChatModel。
  * <p>
- * <b>与 Spring AI 版本的第一个区别是工具循环归谁跑。</b>Spring AI 2.0 把工具执行循环封在
- * {@code ChatClient} 的 advisor 链里，我们只能把护栏经 toolContext 下发、在 ToolCallback
- * 的调用点拦截；LangChain4j 的 {@code ChatModel.chat()} <b>根本不执行工具</b>，循环由调用方自己写。
- * 于是护栏回到了它本该在的位置——就是下面 {@link #runToolLoop} 里的局部变量。
+ * <b>工具循环是我们自己写的，护栏因此是循环里的局部变量。</b>LangChain4j 的
+ * {@code ChatModel.chat()} 不执行工具：它把 tool_call 原样返回。所以
+ * {@link #chatWithTools} 里那个 while 循环是我们写的，「循环最多转几圈、什么时候撤掉工具」
+ * 也就全归我们判定 —— 这是 {@link yumefusaka.envoymart.agent.loop.LoopGuard} 能同时管住
+ * 这个循环与执行图里 ACT → EVALUATE → REPLAN 那个环的前提。
  * <p>
- * <b>第二个区别是两条路径的分界线更硬。</b>带工具的循环只有 {@link #chatWithTools} 走；
+ * <b>单次与带工具两条路径的分界线是硬的。</b>带工具的循环只有 {@link #chatWithTools} 走；
  * {@link #chat} 是单次调用，规划、意图分类、记忆抽取用它——它们只要一段文本或一个 JSON，
- * 下发工具定义只会让模型误选。
+ * 下发工具定义只会让模型误选，而那条路上的 tool_call 没有任何人消费。
  */
 @Slf4j
 public class LangChain4jLLMProvider implements LLMProvider {
@@ -159,9 +160,9 @@ public class LangChain4jLLMProvider implements LLMProvider {
      * 流式版本的 ReAct。
      * <p>
      * <b>只有最终回答会被推送。</b>工具轮里模型可能吐出的过渡文本不推给用户——
-     * 调用方（{@code AgentGraph.converse}）会把收到的每个 chunk 累积成最终答案，
-     * 推出中间文本会污染那个累积值。这也与迁移前的行为一致：Spring AI 的 advisor
-     * 同样在工具往返期间不下发 chunk，首字延迟只取决于最终回答的首个 token。
+     * 调用方（{@code AgentGraph.answerNode}）会把收到的每个 chunk 累积成最终答案，
+     * 推出中间文本会污染那个累积值，用户看到的就是「我先查一下……找到了……」拼上答案。
+     * 代价是首字延迟只取决于最终回答的首个 token，而不是工具轮的快速吐字。
      */
     @Override
     public void chatStreamWithTools(List<ChatMessage> messages, LLMConfig config,

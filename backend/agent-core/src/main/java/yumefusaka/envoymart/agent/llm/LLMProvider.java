@@ -37,13 +37,12 @@ public interface LLMProvider {
      * 与 {@link #chat} 的区别是「会不会执行工具」：这里是完整的
      * 「模型返回 tool_call → 执行 → 回填结果 → 再调用模型」往返，直到模型不再要求调用工具。
      * <p>
-     * <b>工具上下文随每次工具调用传回 {@code ToolCallback}</b>，用来把 per-request 的
-     * 状态（循环护栏、高危确认、调用者身份）送进工具执行点——所以循环由框架驱动，
-     * 但循环的边界与放行判定仍在编排层手里。
+     * <b>为什么单列一个方法而不复用 {@link #chat}：这条分界线值得显式。</b>底层模型接口
+     * 不执行工具——它把 tool_call 原样返回，不报错、正文为空。谁忘了走这条路，
+     * 症状是「模型答非所问」，而不是一次异常，只能靠"断言工具真的被调用了"来防。
      * <p>
-     * Spring AI 2.0 把工具执行循环从 {@code ChatModel} 上移除了（移到了 {@code ChatClient}
-     * 的 {@code ToolCallingAdvisor}），直接调 {@code ChatModel.call()} 时工具永远不会被执行，
-     * 且不报错、只返回空内容。这个方法是那条分界线的显式表达。
+     * per-request 状态（循环护栏、高危确认、调用者身份）经 {@code toolContext} 传进循环，
+     * 循环体内据此把关：<b>循环由实现层驱动，边界与放行判定归编排层</b>。
      */
     default LLMResponse chatWithTools(List<ChatMessage> messages, LLMConfig config,
                                       java.util.Map<String, Object> toolContext) {

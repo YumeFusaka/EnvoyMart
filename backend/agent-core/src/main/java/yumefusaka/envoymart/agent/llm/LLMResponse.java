@@ -13,7 +13,7 @@ import java.util.List;
 public class LLMResponse {
     private String content;
     private List<ChatMessage.ToolCallRequest> toolCalls;
-    /** 由接入层（如 Spring AI）代执行的工具调用轨迹 */
+    /** 接入层在工具循环里代执行的工具调用轨迹，用于前端展示与可观测 */
     private List<ToolExecution> toolExecutions;
     private int promptTokens;
     private int completionTokens;
