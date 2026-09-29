@@ -68,10 +68,12 @@ public class CartController {
     /**
      * 批量勾选 / 取消（「全选」走它）。
      * <p>
-     * 路径与 {@code /items/{id}/selected} 不冲突：Spring 里字面量优先于模板，
-     * 不会把它当成「id 为 selected 的条目」。
+     * 路径刻意**不放在 {@code /items/} 下面**：那个前缀下有 {@code /items/{id}}，
+     * 而实测 {@code PUT /cart/items/selected} 会被它抢走匹配、然后因为
+     * 「selected 转不成 Long」报 400 —— 报错信息是「参数格式不正确：id」，
+     * 与真实原因（路径歧义）毫无关系，很难往那个方向想。
      */
-    @PutMapping("/items/selected")
+    @PutMapping("/selection")
     public Result<List<CartItemResponse>> setAllSelected(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @Valid @RequestBody SelectCartItemRequest request) {

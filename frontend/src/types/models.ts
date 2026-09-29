@@ -143,6 +143,75 @@ export interface Refund {
   refundedAt: string | null
 }
 
+// ==================== 评价与售后 ====================
+
+export interface Review {
+  id: number
+  spuId: number
+  skuId: number
+  orderId: number
+  /** 匿名评价时服务端就不返回它 */
+  userId: string | null
+  rating: number
+  content: string | null
+  images: string[]
+  anonymous: boolean
+  status: string
+  replyContent: string | null
+  replyAt: string | null
+  usefulCount: number
+  createdAt: string
+}
+
+export interface ReviewStatistics {
+  spuId: number
+  total: number
+  average: number
+  /** 各星级数量，下标 0 对应 1 星 */
+  distribution: number[]
+  withImage: number
+}
+
+/** 售后资格预览。填表之前就能知道能不能退、最多退多少 */
+export interface AfterSalePreview {
+  orderItemId: number
+  type: string
+  eligible: boolean
+  /** 不能受理时的原因，直接展示给用户 */
+  reason: string | null
+  maxRefundAmount: number | null
+  itemSubtotal: number | null
+  /** 依据的政策文档编号，前端据此显示「查看政策原文」 */
+  docRef: string | null
+  requirements: string | null
+}
+
+export interface AfterSale {
+  id: number
+  afterSaleNo: string
+  orderId: number
+  orderNo: string
+  orderItemId: number
+  type: string
+  typeText: string
+  status: string
+  statusText: string
+  reason: string
+  description: string | null
+  images: string[]
+  /** 单位「分」 */
+  refundAmount: number
+  maxRefundable: number | null
+  appliedAt: string
+  auditedAt: string | null
+  finishedAt: string | null
+  auditRemark: string | null
+  docRef: string | null
+  spuName: string | null
+  skuSpecText: string | null
+  skuImage: string | null
+}
+
 export interface Payment {
   id: number
   paymentNo: string

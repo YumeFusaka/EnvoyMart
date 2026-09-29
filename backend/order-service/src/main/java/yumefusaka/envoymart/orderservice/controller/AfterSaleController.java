@@ -86,6 +86,17 @@ public class AfterSaleController {
         return Result.success(afterSaleService.audit(id, approved, remark));
     }
 
+    /**
+     * 重试退款 —— 用于「退款失败后停在退款中」的售后单。
+     * <p>
+     * 退款失败时状态故意不回滚，那些单子会停在退款中等人处理；
+     * 没有这个入口它们就永远停在那里，用户的钱也永远退不回去。
+     */
+    @PostMapping("/internal/{id}/retry-refund")
+    public Result<AfterSaleResponse> retryRefund(@PathVariable("id") Long id) {
+        return Result.success(afterSaleServiceImpl.retryRefund(id));
+    }
+
     /** 确认收到退货并打款。真实流程由商家收货触发 */
     @PostMapping("/internal/{id}/received")
     public Result<AfterSaleResponse> received(@PathVariable("id") Long id) {

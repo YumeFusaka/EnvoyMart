@@ -22,6 +22,6 @@ public interface PaymentClient {
      * 这个接口在支付服务里没有调用方身份（不是用户直接发起的），
      * 表达的是「这笔订单的钱要还回去」。
      */
-    @PostMapping("/payments/refunds/internal")
+    @PostMapping("/payments/internal/refunds")
     Result<RefundSnapshot> refundForOrder(@RequestBody RefundRequest request);
 }

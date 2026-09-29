@@ -5,7 +5,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { cancelOrder, confirmReceipt, formatAddress, getLogistics, getOrder } from '@/api/order'
 import { formatPrice } from '@/api/product'
 import ErrorState from '@/components/ui/ErrorState.vue'
-import type { Logistics, Order } from '@/types/models'
+import AfterSaleDialog from '@/components/order/AfterSaleDialog.vue'
+import ReviewDialog from '@/components/order/ReviewDialog.vue'
+import type { Logistics, Order, OrderItem } from '@/types/models'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,6 +17,26 @@ const logistics = ref<Logistics | null>(null)
 const loading = ref(false)
 const failed = ref(false)
 const receiving = ref(false)
+
+/** 售后与评价都针对**订单行**，所以要记住当前操作的是哪一行 */
+const activeItem = ref<OrderItem | null>(null)
+const afterSaleOpen = ref(false)
+const reviewOpen = ref(false)
+
+/** 已收货之后才能申请售后或评价 */
+const afterSaleEligible = computed(
+  () => order.value?.status === 'RECEIVED' || order.value?.status === 'COMPLETED',
+)
+
+function openAfterSale(item: OrderItem) {
+  activeItem.value = item
+  afterSaleOpen.value = true
+}
+
+function openReview(item: OrderItem) {
+  activeItem.value = item
+  reviewOpen.value = true
+}
 
 const orderId = computed(() => {
   const raw = Number(route.params.id)
@@ -192,6 +214,13 @@ onMounted(load)
             </div>
             <span class="goods__price">{{ formatPrice(item.unitPrice) }} × {{ item.quantity }}</span>
             <span class="goods__sum">{{ formatPrice(item.subtotal) }}</span>
+
+            <!-- 售后与评价的入口挂在**订单行**上，不是整单：真实场景里用户常常
+                 只退其中一件 -->
+            <div v-if="afterSaleEligible" class="goods__actions">
+              <el-button link size="small" @click="openAfterSale(item)">申请售后</el-button>
+              <el-button link size="small" type="primary" @click="openReview(item)">评价</el-button>
+            </div>
           </li>
         </ul>
 
@@ -228,6 +257,14 @@ onMounted(load)
           </el-button>
         </div>
       </footer>
+
+      <AfterSaleDialog
+        v-model="afterSaleOpen"
+        :order-id="order.id"
+        :item="activeItem"
+        @applied="load"
+      />
+      <ReviewDialog v-model="reviewOpen" :order-id="order.id" :item="activeItem" @submitted="load" />
     </template>
   </div>
 </template>
@@ -279,6 +316,14 @@ onMounted(load)
   grid-template-columns: 56px minmax(0, 1fr) 140px 100px;
   gap: var(--ys-space-3);
   align-items: center;
+}
+
+/* 操作按钮另起一行，不挤占商品信息的宽度 */
+.goods__actions {
+  grid-column: 2 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ys-space-2);
 }
 
 .goods__item img {

@@ -102,10 +102,14 @@ public class PaymentController {
      * 服务间调用的退款入口（售后通过后由订单服务发起）。
      * <p>
      * 与用户入口的区别是**没有调用方身份** —— 它表达的是「这笔订单的钱要还回去」，
-     * 不是「某个用户在操作」。因此网关对 {@code /payments/refunds/internal} 一律 404，
-     * 只有服务间直连够得着。
+     * 不是「某个用户在操作」。网关对该前缀一律 404，只有服务间直连够得着。
+     * <p>
+     * <b>路径刻意不放在 {@code /refunds/} 下面</b>：那里有
+     * {@code GET /refunds/{orderId}}，两者段数相同、前缀重叠，实测
+     * {@code POST /refunds/internal} 会被它抢走匹配（{@code orderId} = "internal"），
+     * 报出来的却是「POST 方法不支持」—— 与真实原因（路径歧义）毫无关系。
      */
-    @PostMapping("/refunds/internal")
+    @PostMapping("/internal/refunds")
     public Result<RefundResponse> refundInternal(@Valid @RequestBody RefundRequest request) {
         return Result.success(refundService.refundForOrder(
                 request.getOrderId(), request.getAfterSaleId(),

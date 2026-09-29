@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { formatPrice, getProductDetail } from '@/api/product'
+import ReviewSection from '@/components/review/ReviewSection.vue'
 import { useCartStore } from '@/stores'
 import type { ProductDetail, SkuView } from '@/types/models'
 
@@ -251,6 +252,8 @@ onMounted(load)
           </el-descriptions-item>
         </el-descriptions>
       </section>
+
+      <ReviewSection :spu-id="detail.id" />
 
       <section v-if="detail.detailHtml" class="surface">
         <h2 class="section-title">商品详情</h2>

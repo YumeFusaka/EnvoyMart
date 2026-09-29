@@ -1,8 +1,10 @@
 package yumefusaka.envoymart.orderservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.orderservice.client.ProductClient;

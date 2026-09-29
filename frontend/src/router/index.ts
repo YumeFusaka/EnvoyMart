@@ -65,6 +65,12 @@ const router = createRouter({
           meta: { title: '订单详情' },
         },
         {
+          path: 'after-sales',
+          name: 'after-sales',
+          component: () => import('@/views/AfterSaleListView.vue'),
+          meta: { title: '退款/售后' },
+        },
+        {
           path: 'payment',
           name: 'payment',
           component: () => import('@/views/PaymentView.vue'),

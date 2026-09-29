@@ -37,6 +37,8 @@ export async function setCartItemSelected(id: number, selected: boolean) {
  * 而且中途失败会让剩下的条目静默地没被选中。
  */
 export async function setAllCartItemsSelected(selected: boolean) {
-  const response = await request.put('/cart/items/selected', { selected })
+  // 路径不放在 /cart/items/ 下面：那个前缀下有 /cart/items/{id}，
+  // 字面量会被模板抢走匹配（后端注释里有详细说明）
+  const response = await request.put('/cart/selection', { selected })
   return response.data.data as CartItem[]
 }

@@ -71,7 +71,7 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             "/products/stock/",
             // 服务间退款入口：它没有调用方身份，只表达「这笔订单的钱要还回去」，
             // 经网关暴露出去等于任何人凭订单号就能触发退款
-            "/payments/refunds/internal",
+            "/payments/internal/",
             // 售后审核同样是管理侧动作，用户不该够得着
             "/after-sales/internal/");
 

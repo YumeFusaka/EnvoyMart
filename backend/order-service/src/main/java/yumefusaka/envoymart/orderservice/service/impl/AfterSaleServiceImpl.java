@@ -211,6 +211,26 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         return toResponse(entity, null, null, null);
     }
 
+    /**
+     * 重试退款。用于「退款失败后停在退款中」的售后单。
+     * <p>
+     * <b>必须有这个入口</b>：退款失败时状态故意不回滚（把状态退回去会让「已审核通过」
+     * 这个事实消失），于是那些单子会停在退款中等人处理。没有重试入口的话，
+     * 它们就永远停在那里，而用户的钱也永远退不回去。
+     */
+    @Transactional
+    public AfterSaleResponse retryRefund(Long afterSaleId) {
+        AfterSaleEntity entity = afterSaleId == null ? null : afterSaleMapper.selectById(afterSaleId);
+        if (entity == null) {
+            throw new IllegalArgumentException("售后单不存在");
+        }
+        if (AfterSaleStatus.parse(entity.getStatus()) != AfterSaleStatus.REFUNDING) {
+            throw new IllegalStateException("只有「退款中」的售后单可以重试退款");
+        }
+        refundFromRefunding(entity);
+        return toResponse(entity, null, null, null);
+    }
+
     @Override
     public List<AfterSaleResponse> listByUser(String userId) {
         return afterSaleMapper.selectList(new LambdaQueryWrapper<AfterSaleEntity>()
@@ -237,12 +257,23 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
         transit(entity, current, AfterSaleStatus.REFUNDING, "SYSTEM", null, "发起退款");
 
+        refundFromRefunding(entity);
+    }
+
+    /**
+     * 从「退款中」推进到「已完成」。
+     * <p>
+     * 失败**不抛出去**：抛出去会让整个事务回滚，「已审核通过」这个事实也会消失，
+     * 而用户看到的是一次莫名其妙的失败。留在退款中并留 ERROR —— 那是一个人
+     * 能接手的状态，配合 {@link #retryRefund} 可以重试。
+     */
+    private void refundFromRefunding(AfterSaleEntity entity) {
         try {
             Result<RefundSnapshot> result = paymentClient.refundForOrder(RefundRequest.builder()
                     .orderId(entity.getOrderId())
                     .afterSaleId(entity.getId())
                     .amount(entity.getRefundAmount())
-                    .reason("售后退款：" + entity.getReason())
+                    .reason("售后退款")
                     .build());
             if (result == null || result.getCode() == null || result.getCode() != 200) {
                 throw new IllegalStateException(result == null ? "无响应" : result.getMsg());
@@ -251,9 +282,8 @@ public class AfterSaleServiceImpl implements AfterSaleService {
                     "SYSTEM", null, "退款完成：" + (result.getData() == null ? "" : result.getData().getRefundNo()));
             log.info("售后退款完成: no={}, amount={}", entity.getAfterSaleNo(), entity.getRefundAmount());
         } catch (Exception e) {
-            log.error("[AfterSale] 退款失败，售后单停留在退款中，需要人工介入 no={} orderNo={} amount={}: {}",
+            log.error("[AfterSale] 退款失败，售后单停留在退款中，可调用 retry-refund 重试 no={} orderNo={} amount={}: {}",
                     entity.getAfterSaleNo(), entity.getOrderNo(), entity.getRefundAmount(), e.getMessage());
-            // 不抛出去：抛出去会让整个事务回滚，「已审核通过」也会消失
         }
     }
 

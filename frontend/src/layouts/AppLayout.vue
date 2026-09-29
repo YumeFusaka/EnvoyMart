@@ -2,7 +2,16 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ChatDotRound, Fold, Goods, List, ShoppingCart, SwitchButton, User } from '@element-plus/icons-vue'
+import {
+  ChatDotRound,
+  Fold,
+  Goods,
+  List,
+  RefreshLeft,
+  ShoppingCart,
+  SwitchButton,
+  User,
+} from '@element-plus/icons-vue'
 import { useCartStore, useUserStore } from '@/stores'
 
 const route = useRoute()
@@ -16,6 +25,7 @@ const drawerOpen = ref(false)
 const navItems = [
   { to: '/shop', label: '商城', icon: Goods },
   { to: '/orders', label: '我的订单', icon: List },
+  { to: '/after-sales', label: '退款/售后', icon: RefreshLeft },
   { to: '/assistant', label: '智能助手', icon: ChatDotRound },
 ]
 
