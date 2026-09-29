@@ -70,26 +70,94 @@ export interface CartItem {
   available: boolean
 }
 
+// ==================== 订单域 ====================
+
 export interface OrderItem {
   id: number
-  productId: number
-  productName: string
-  productImage: string
+  spuId: number
+  skuId: number
+  spuName: string
+  /** 形如 "规格:400IU×90粒;包装:瓶装" */
+  skuSpecText: string | null
+  skuImage: string | null
+  /** 单位「分」 */
   unitPrice: number
   quantity: number
   subtotal: number
 }
 
+/** 订单状态。与后端 OrderStatus 枚举一一对应 */
+export type OrderStatus =
+  | 'CREATED'
+  | 'PAID'
+  | 'SHIPPED'
+  | 'RECEIVED'
+  | 'COMPLETED'
+  | 'CANCELLED'
+  | 'CLOSED'
+  | 'REFUNDING'
+  | 'REFUNDED'
+
 export interface Order {
   id: number
   orderNo: string
-  recipientName: string
-  recipientPhone: string
-  address: string
+  status: OrderStatus
+  /** 状态的中文说明。由服务端给出，前端不自己维护一份状态字典 —— 那样迟早会与后端不一致 */
+  statusText: string
+
+  /** 金额单位一律「分」 */
   totalAmount: number
-  status: string
+  freightAmount: number
+  discountAmount: number
+  payAmount: number
+
+  receiverName: string
+  receiverPhone: string
+  receiverProvince: string
+  receiverCity: string
+  receiverDistrict: string
+  receiverDetail: string
+
+  /** 支付截止时间。前端据此显示倒计时 */
+  expireAt: string | null
   createdAt: string
+  paidAt: string | null
+  shippedAt: string | null
+  receivedAt: string | null
+  closedAt: string | null
+
+  remark: string | null
+  cancelReason: string | null
+
   items: OrderItem[]
+}
+
+export interface Refund {
+  id: number
+  refundNo: string
+  orderId: number
+  amount: number
+  status: string
+  reason: string
+  createdAt: string
+  refundedAt: string | null
+}
+
+export interface Payment {
+  id: number
+  paymentNo: string
+  orderId: number
+  orderNo: string
+  /** 单位「分」 */
+  amount: number
+  channel: string
+  payType: string | null
+  /** PENDING / SUCCESS / FAILED / CLOSED */
+  status: string
+  transactionNo: string | null
+  paidAt: string | null
+  expireAt: string | null
+  createdAt: string
 }
 
 export interface LogisticsStep {

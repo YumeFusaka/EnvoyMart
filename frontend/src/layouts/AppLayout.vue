@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ChatDotRound, Fold, Goods, List, SwitchButton, User } from '@element-plus/icons-vue'
-import { useUserStore } from '@/stores'
+import { ChatDotRound, Fold, Goods, List, ShoppingCart, SwitchButton, User } from '@element-plus/icons-vue'
+import { useCartStore, useUserStore } from '@/stores'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const cart = useCartStore()
 
 /** 窄屏下的抽屉菜单。宽屏时导航直接写在顶栏里，这个抽屉不出现 */
 const drawerOpen = ref(false)
@@ -32,6 +33,12 @@ function handleLogout() {
 function closeDrawer() {
   drawerOpen.value = false
 }
+
+onMounted(() => {
+  // 顶栏角标要显示件数，所以进任意页面都拉一次。
+  // 拉失败就只是不显示角标 —— 一次购物车查询失败不该让整个页面打不开
+  cart.load().catch(() => undefined)
+})
 </script>
 
 <template>
@@ -57,6 +64,12 @@ function closeDrawer() {
         </nav>
 
         <div class="app-header__actions">
+          <RouterLink to="/cart" class="app-cart" aria-label="购物车">
+            <el-badge :value="cart.totalQuantity" :hidden="cart.totalQuantity === 0" :max="99">
+              <el-icon :size="18"><ShoppingCart /></el-icon>
+            </el-badge>
+          </RouterLink>
+
           <el-dropdown trigger="click">
             <button class="app-user" type="button" aria-label="账号菜单">
               <el-avatar :size="26" :src="userStore.profile?.avatar ?? undefined">
@@ -195,7 +208,24 @@ function closeDrawer() {
 .app-header__actions {
   display: flex;
   align-items: center;
-  gap: var(--ys-space-2);
+  gap: var(--ys-space-3);
+}
+
+.app-cart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-sm);
+  color: var(--color-text-primary);
+  transition: border-color var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.app-cart:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .app-user {

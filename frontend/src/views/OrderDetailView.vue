@@ -1,161 +1,336 @@
 <script setup lang="ts">
-import { getOrders, getLogistics } from '@/api/order'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { cancelOrder, formatAddress, getLogistics, getOrder } from '@/api/order'
+import { formatPrice } from '@/api/product'
 import type { Logistics, Order } from '@/types/models'
-import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 
+const route = useRoute()
 const router = useRouter()
-const orders = ref<Order[]>([])
-const logisticsMap = ref<Record<number, Logistics | undefined>>({})
-const loadingIds = ref<number[]>([])
-const loading = ref(true)
 
-async function loadOrders() {
+const order = ref<Order | null>(null)
+const logistics = ref<Logistics | null>(null)
+const loading = ref(false)
+
+const orderId = computed(() => Number(route.params.id))
+
+/** 订单时间轴。只展示实际发生过的节点，未发生的不占位 */
+const timeline = computed(() => {
+  const o = order.value
+  if (!o) {
+    return []
+  }
+  const nodes = [
+    { label: '提交订单', time: o.createdAt },
+    { label: '支付成功', time: o.paidAt },
+    { label: '商家发货', time: o.shippedAt },
+    { label: '确认收货', time: o.receivedAt },
+    { label: '订单关闭', time: o.closedAt },
+  ]
+  return nodes.filter((node) => !!node.time)
+})
+
+const payable = computed(
+  () =>
+    order.value?.status === 'CREATED' &&
+    (!order.value.expireAt || new Date(order.value.expireAt) > new Date()),
+)
+
+const cancellable = computed(() => order.value?.status === 'CREATED')
+
+async function load() {
   loading.value = true
   try {
-    orders.value = await getOrders()
+    order.value = await getOrder(orderId.value)
+    // 物流只有已发货之后才有意义；未发货时接口会返回推算出来的演示轨迹，
+    // 那种数据展示出来只会误导
+    if (order.value.shippedAt) {
+      logistics.value = await getLogistics(orderId.value).catch(() => null)
+    } else {
+      logistics.value = null
+    }
   } finally {
     loading.value = false
   }
 }
 
-async function toggleLogistics(orderId: number) {
-  if (logisticsMap.value[orderId]) {
-    logisticsMap.value[orderId] = undefined
+async function handleCancel() {
+  const o = order.value
+  if (!o) {
     return
   }
-  loadingIds.value = [...loadingIds.value, orderId]
   try {
-    logisticsMap.value[orderId] = await getLogistics(orderId)
-  } finally {
-    loadingIds.value = loadingIds.value.filter(id => id !== orderId)
+    await ElMessageBox.confirm('取消后库存会立即回补，确定取消吗？', '取消订单', {
+      type: 'warning',
+      confirmButtonText: '确认取消',
+      cancelButtonText: '再想想',
+    })
+  } catch {
+    return
   }
+  await cancelOrder(o.id)
+  ElMessage.success('订单已取消')
+  await load()
 }
 
-function goToPayment(order: Order) {
-  router.push({ path: '/payment', query: { orderId: order.id, orderNo: order.orderNo, amount: order.totalAmount } })
-}
-
-onMounted(loadOrders)
+watch(orderId, load)
+onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <header class="page-header">
-      <div>
-        <p class="eyebrow">Order Management</p>
-        <h1>我的订单</h1>
-      </div>
-      <div class="header-actions">
-        <el-button plain @click="router.push('/shop')">返回商城</el-button>
-      </div>
-    </header>
+  <div v-loading="loading" class="page">
+    <template v-if="order">
+      <nav class="crumb">
+        <el-button link @click="router.push('/orders')">← 返回订单列表</el-button>
+      </nav>
 
-    <section v-if="loading" class="order-list">
-      <el-skeleton v-for="i in 3" :key="i" :rows="4" animated />
-    </section>
+      <section class="surface head-card">
+        <div>
+          <p class="eyebrow">Order</p>
+          <h1 class="head-card__no">{{ order.orderNo }}</h1>
+        </div>
+        <el-tag size="large" effect="light">{{ order.statusText }}</el-tag>
+      </section>
 
-    <section v-else-if="orders.length" class="order-list">
-      <article v-for="order in orders" :key="order.id" class="order-card">
-        <div class="order-head">
+      <section v-if="timeline.length" class="surface">
+        <h2 class="section-title">订单进度</h2>
+        <el-timeline>
+          <el-timeline-item
+            v-for="node in timeline"
+            :key="node.label"
+            :timestamp="node.time?.replace('T', ' ')"
+            placement="top"
+          >
+            {{ node.label }}
+          </el-timeline-item>
+        </el-timeline>
+      </section>
+
+      <section v-if="logistics?.steps?.length" class="surface">
+        <h2 class="section-title">
+          物流轨迹
+          <span class="section-hint">承运商：{{ logistics.carrier }} · 运单号 {{ logistics.trackingNo }}</span>
+        </h2>
+        <el-timeline>
+          <el-timeline-item
+            v-for="(step, index) in logistics.steps"
+            :key="index"
+            :timestamp="step.time?.replace('T', ' ')"
+            placement="top"
+          >
+            <strong>{{ step.status }}</strong>
+            <p class="trace-detail">{{ step.detail }}</p>
+          </el-timeline-item>
+        </el-timeline>
+      </section>
+
+      <section class="surface">
+        <h2 class="section-title">收货信息</h2>
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="收货人">
+            {{ order.receiverName }} {{ order.receiverPhone }}
+          </el-descriptions-item>
+          <el-descriptions-item label="地址">{{ formatAddress(order) }}</el-descriptions-item>
+          <el-descriptions-item v-if="order.remark" label="备注">{{ order.remark }}</el-descriptions-item>
+          <el-descriptions-item v-if="order.cancelReason" label="关闭原因">
+            {{ order.cancelReason }}
+          </el-descriptions-item>
+        </el-descriptions>
+      </section>
+
+      <section class="surface">
+        <h2 class="section-title">商品清单</h2>
+        <ul class="goods">
+          <li v-for="item in order.items" :key="item.id" class="goods__item">
+            <img v-if="item.skuImage" :src="item.skuImage" :alt="item.spuName" />
+            <div class="goods__info">
+              <button type="button" class="goods__name" @click="router.push(`/products/${item.spuId}`)">
+                {{ item.spuName }}
+              </button>
+              <p v-if="item.skuSpecText" class="goods__spec">{{ item.skuSpecText }}</p>
+            </div>
+            <span class="goods__price">{{ formatPrice(item.unitPrice) }} × {{ item.quantity }}</span>
+            <span class="goods__sum">{{ formatPrice(item.subtotal) }}</span>
+          </li>
+        </ul>
+
+        <dl class="summary">
+          <div><dt>商品金额</dt><dd>{{ formatPrice(order.totalAmount) }}</dd></div>
           <div>
-            <strong>{{ order.orderNo }}</strong>
-            <p>{{ order.createdAt }}</p>
+            <dt>运费</dt>
+            <dd>{{ order.freightAmount === 0 ? '包邮' : formatPrice(order.freightAmount) }}</dd>
           </div>
-          <div class="order-head-right">
-            <el-tag :type="order.status === 'DELIVERING' ? 'success' : 'warning'" round>
-              {{ order.status === 'DELIVERING' ? '配送中' : order.status }}
-            </el-tag>
-            <span class="order-amount">¥{{ order.totalAmount }}</span>
+          <div v-if="order.discountAmount > 0">
+            <dt>优惠</dt><dd>-{{ formatPrice(order.discountAmount) }}</dd>
           </div>
-        </div>
+          <div class="summary__total"><dt>实付</dt><dd>{{ formatPrice(order.payAmount) }}</dd></div>
+        </dl>
+      </section>
 
-        <el-table :data="order.items" stripe style="width: 100%">
-          <el-table-column prop="productName" label="商品" />
-          <el-table-column prop="unitPrice" label="单价" width="100" />
-          <el-table-column prop="quantity" label="数量" width="80" />
-          <el-table-column prop="subtotal" label="小计" width="100" />
-        </el-table>
-
-        <div class="order-actions">
-          <el-button v-if="!logisticsMap[order.id]" :loading="loadingIds.includes(order.id)" link type="primary" @click="toggleLogistics(order.id)">
-            {{ logisticsMap[order.id] ? '收起物流' : '查看物流' }}
+      <footer class="surface bar">
+        <span class="bar__hint">
+          {{
+            cancellable
+              ? '订单尚未支付，可直接取消；取消后库存立即回补'
+              : order.status === 'PAID'
+                ? '订单已支付，申请退款请联系客服'
+                : ''
+          }}
+        </span>
+        <div class="bar__actions">
+          <el-button v-if="cancellable" @click="handleCancel">取消订单</el-button>
+          <el-button v-if="payable" type="primary" @click="router.push(`/payment?orderId=${order.id}`)">
+            去支付
           </el-button>
-          <el-button v-else link type="default" @click="toggleLogistics(order.id)">收起物流</el-button>
-          <el-button v-if="order.status !== 'PAID'" type="primary" @click="goToPayment(order)">去支付</el-button>
         </div>
-
-        <div v-if="logisticsMap[order.id]" class="logistics-box">
-          <h4>{{ logisticsMap[order.id]?.carrier }} · {{ logisticsMap[order.id]?.trackingNo }}</h4>
-          <el-timeline>
-            <el-timeline-item
-              v-for="step in logisticsMap[order.id]?.steps || []"
-              :key="step.time"
-              :timestamp="step.time"
-            >
-              <strong>{{ step.status }}</strong>
-              <p>{{ step.detail }}</p>
-            </el-timeline-item>
-          </el-timeline>
-        </div>
-      </article>
-    </section>
-
-    <el-empty v-else description="暂无订单记录" />
+      </footer>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.order-list {
-  display: grid;
-  gap: 18px;
-}
-
-.order-card {
-  padding: 22px;
-  border-radius: 24px;
-  background: rgba(255, 251, 245, 0.9);
-  border: 1px solid var(--color-border);
-  display: grid;
-  gap: 16px;
-}
-
-.order-head {
+.crumb {
   display: flex;
+}
+
+.head-card {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
+  gap: var(--ys-space-4);
 }
 
-.order-head p {
+.head-card__no {
+  font-size: var(--ys-font-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+.section-title {
+  margin-bottom: var(--ys-space-4);
+  font-size: var(--ys-font-md);
+}
+
+.section-hint {
+  margin-left: var(--ys-space-3);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  font-weight: 400;
+}
+
+.trace-detail {
   color: var(--color-text-secondary);
-  margin: 4px 0 0;
+  font-size: var(--ys-font-sm);
 }
 
-.order-head-right {
-  display: flex;
+.goods {
+  display: grid;
+  gap: var(--ys-space-3);
+  margin: 0 0 var(--ys-space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.goods__item {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 140px 100px;
+  gap: var(--ys-space-3);
   align-items: center;
-  gap: 12px;
 }
 
-.order-amount {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--color-primary-active);
+.goods__item img {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--ys-radius-sm);
+  object-fit: cover;
+  background: var(--color-bg-surface-muted);
 }
 
-.order-actions {
+.goods__name {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.goods__name:hover {
+  color: var(--color-primary);
+}
+
+.goods__spec,
+.goods__price {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+}
+
+.goods__sum {
+  color: var(--color-primary);
+  font-weight: 600;
+  text-align: right;
+}
+
+.summary {
   display: flex;
   justify-content: flex-end;
-  gap: 12px;
+  gap: var(--ys-space-6);
+  margin: 0;
+  padding-top: var(--ys-space-3);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
 }
 
-.logistics-box {
-  padding: 16px;
-  border-radius: 16px;
-  background: rgba(182, 91, 46, 0.06);
+.summary div {
+  display: flex;
+  gap: var(--ys-space-2);
 }
 
-.logistics-box h4 {
-  margin: 0 0 14px;
+.summary dt,
+.summary dd {
+  margin: 0;
+}
+
+.summary__total dd {
+  color: var(--color-primary);
+  font-size: var(--ys-font-md);
+  font-weight: 700;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ys-space-4);
+}
+
+.bar__hint {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
+}
+
+.bar__actions {
+  display: flex;
+  gap: var(--ys-space-2);
+}
+
+@media (max-width: 720px) {
+  .bar,
+  .head-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .summary {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--ys-space-1);
+  }
+
+  .goods__item {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
 }
 </style>
