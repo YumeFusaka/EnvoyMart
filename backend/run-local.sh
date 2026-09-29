@@ -93,6 +93,11 @@ export DB_USERNAME="${DB_USERNAME:-yumefusaka}"
 export DB_PASSWORD="${DB_PASSWORD:-j}"
 export NACOS_ENABLED="${NACOS_ENABLED:-true}"
 
+# 本地演示：打开模拟支付。它扮演"渠道"发回调，走的是与真实渠道完全相同的处理路径
+# （含验签、终态检查、幂等），所以演示过的链路也就是真实链路。
+# 生产环境不要设它 —— 这条路径能把订单标记为已支付。
+export PAYMENT_MOCK_ENABLED="${PAYMENT_MOCK_ENABLED:-true}"
+
 # 启动顺序：网关先起（它会往 Nacos 注册），其余服务随后
 SERVICES=(gateway-service auth-service product-service order-service ai-service payment-service review-service promotion-service knowledge-service)
 # 端口用于停止与健康检查；没有独立库的服务（网关、AI）留空

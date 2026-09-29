@@ -41,3 +41,7 @@ envoymart:
     # 支付回调验签密钥（HMAC-SHA256）。未配置时拒绝所有回调——资金入口宁可拒绝也不能放宽。
     # 渠道侧约定：X-Pay-Signature = hex(HMAC-SHA256(secret, orderId|transactionNo|status))
     callback-secret: ${PAYMENT_CALLBACK_SECRET:}
+    # 模拟支付开关。它扮演"渠道"把回调发回来，走的是与真实渠道完全相同的处理路径。
+    # **默认关闭**：这条路径能把订单标记为已支付，不该在任何环境里默认可用，
+    # 本地演示时由 run-local.sh 显式打开。
+    mock-enabled: ${PAYMENT_MOCK_ENABLED:false}

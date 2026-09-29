@@ -18,6 +18,7 @@ import yumefusaka.envoymart.paymentservice.model.RefundResponse;
 import yumefusaka.envoymart.paymentservice.security.PaymentCallbackVerifier;
 import yumefusaka.envoymart.paymentservice.service.PaymentService;
 import yumefusaka.envoymart.paymentservice.service.RefundService;
+import yumefusaka.envoymart.paymentservice.service.impl.MockPayService;
 
 import java.util.List;
 
@@ -28,13 +29,16 @@ public class PaymentController {
     private final PaymentService paymentService;
     private final RefundService refundService;
     private final PaymentCallbackVerifier callbackVerifier;
+    private final MockPayService mockPayService;
 
     public PaymentController(PaymentService paymentService,
                              RefundService refundService,
-                             PaymentCallbackVerifier callbackVerifier) {
+                             PaymentCallbackVerifier callbackVerifier,
+                             MockPayService mockPayService) {
         this.paymentService = paymentService;
         this.refundService = refundService;
         this.callbackVerifier = callbackVerifier;
+        this.mockPayService = mockPayService;
     }
 
     @PostMapping
@@ -68,6 +72,22 @@ public class PaymentController {
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @PathVariable("orderId") Long orderId) {
         return Result.success(paymentService.getPayment(userId, orderId));
+    }
+
+    /**
+     * 模拟支付成功 —— 演示用。
+     * <p>
+     * 它扮演的是「渠道」：自己按约定算签名，再走与真实回调<b>完全相同</b>的处理路径。
+     * 开关默认关闭（{@code envoymart.payment.mock-enabled}），因为这条路径能把订单
+     * 标记为已支付，不该在任何环境里默认可用。
+     */
+    @PostMapping("/{orderId}/mock-pay")
+    public Result<PaymentResponse> mockPay(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("orderId") Long orderId) {
+        // 先按归属查一次：模拟支付也不该成为「付别人的单」的入口
+        paymentService.getPayment(userId, orderId);
+        return Result.success(mockPayService.pay(orderId));
     }
 
     /** 用户发起的退款（售后场景）。归属由支付单决定，不采信请求体 */
