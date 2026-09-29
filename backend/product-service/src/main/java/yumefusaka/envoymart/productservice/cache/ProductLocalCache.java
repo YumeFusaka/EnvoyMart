@@ -5,7 +5,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import yumefusaka.envoymart.productservice.model.ProductResponse;
+import yumefusaka.envoymart.productservice.model.ProductDetail;
 
 import java.time.Duration;
 
@@ -39,7 +39,7 @@ public class ProductLocalCache {
      * 一旦有人拿到后修改它，改的是缓存里那一份、会影响后续所有请求——
      * 这个约束靠约定维持，DTO 本身没有做成不可变对象。
      */
-    private final Cache<Long, ProductResponse> cache;
+    private final Cache<Long, ProductDetail> cache;
 
     public ProductLocalCache(
             @Value("${envoymart.cache.local.max-size:10000}") long maxSize,
@@ -51,11 +51,11 @@ public class ProductLocalCache {
         log.info("[LocalCache] 一级缓存已启用：最大 {} 条、兜底 TTL {}s", maxSize, ttlSeconds);
     }
 
-    public ProductResponse get(Long id) {
+    public ProductDetail get(Long id) {
         return id == null ? null : cache.getIfPresent(id);
     }
 
-    public void put(Long id, ProductResponse product) {
+    public void put(Long id, ProductDetail product) {
         if (id != null && product != null) {
             cache.put(id, product);
         }

@@ -4,8 +4,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import yumefusaka.envoymart.productservice.cache.ProductBloomFilter;
-import yumefusaka.envoymart.productservice.entity.ProductEntity;
-import yumefusaka.envoymart.productservice.mapper.ProductMapper;
+import yumefusaka.envoymart.productservice.entity.ProductSpuEntity;
+import yumefusaka.envoymart.productservice.mapper.ProductSpuMapper;
 
 import java.util.List;
 
@@ -27,17 +27,18 @@ public class BloomFilterConfig {
      * <b>为什么在启动时而不是懒加载</b>：懒加载意味着第一个请求要等一次全表扫描，
      * 而"第一个请求"往往就是压测或扫描的第一个包。
      * <p>
-     * <b>这里没有增量同步，是有意的取舍</b>：本项目商品只来自种子数据、没有运行期新增入口，
-     * 启动加载就够了。生产上商品会新增，那时必须补一条路径——商品创建成功后调
-     * {@code add(id)}，或按周期调 {@code rebuild()}。<b>漏了同步的后果很严重</b>：
-     * 新商品会被误判为"不存在"。这个风险写在 {@link ProductBloomFilter} 的类注释里，不藏着。
+     * <b>这里没有增量同步，是有意的取舍</b>：当前商品只来自种子数据、没有运行期新增入口，
+     * 启动加载就够了。<b>管理端的商品创建接口一旦落地，必须同时补上这里的同步</b>——
+     * 商品创建成功后调 {@code add(id)}，或按周期调 {@code rebuild()}。
+     * <b>漏了同步的后果很严重</b>：新商品会被误判为"不存在"。
+     * 这个风险写在 {@link ProductBloomFilter} 的类注释里，不藏着。
      */
     @Bean
-    public ProductBloomFilter productBloomFilter(ProductMapper productMapper) {
+    public ProductBloomFilter productBloomFilter(ProductSpuMapper spuMapper) {
         ProductBloomFilter filter = new ProductBloomFilter();
         try {
-            List<Long> ids = productMapper.selectList(null).stream()
-                    .map(ProductEntity::getId)
+            List<Long> ids = spuMapper.selectList(null).stream()
+                    .map(ProductSpuEntity::getId)
                     .toList();
             filter.rebuild(ids);
         } catch (Exception e) {

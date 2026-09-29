@@ -7,7 +7,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.productservice.cache.ProductLocalCache;
 import yumefusaka.envoymart.productservice.config.ProductCacheInvalidationConfig;
-import yumefusaka.envoymart.productservice.model.ProductResponse;
+import yumefusaka.envoymart.productservice.model.ProductDetail;
 import yumefusaka.envoymart.productservice.mq.CacheEvictConfig;
 import yumefusaka.envoymart.productservice.mq.CacheEvictEvent;
 
@@ -82,7 +82,7 @@ public class ProductCacheService {
      * 空值哨兵 —— 与"没缓存"区分开。
      * id 用 -1 而不是 null：序列化后仍是一个可识别的对象。
      */
-    private static final ProductResponse NULL_SENTINEL = ProductResponse.builder().id(-1L).build();
+    private static final ProductDetail NULL_SENTINEL = ProductDetail.builder().id(-1L).build();
 
     private final RedisTemplate<String, Object> redisTemplate;
     /** 删除失败时的补偿通道；没有它就只能靠 TTL 兜底 */
@@ -168,16 +168,16 @@ public class ProductCacheService {
      * @param loader 回源逻辑，商品不存在时返回 {@code null}
      * @return 商品；确认不存在时返回 {@code null}
      */
-    public ProductResponse getOrLoad(Long id, Supplier<ProductResponse> loader) {
+    public ProductDetail getOrLoad(Long id, Supplier<ProductDetail> loader) {
         // 一级缓存：进程内，纳秒级。热点商品的读绝大多数在这里就返回了，
         // **根本不产生网络往返**——这是加这一层的全部意义。
-        ProductResponse local = localCache.get(id);
+        ProductDetail local = localCache.get(id);
         if (local != null) {
             return local;
         }
 
         // 二级缓存：Redis，跨实例共享
-        ProductResponse cached = read(id);
+        ProductDetail cached = read(id);
         if (cached != null) {
             localCache.put(id, cached);   // 回填一级，下次不走网络
             return cached;
@@ -191,7 +191,7 @@ public class ProductCacheService {
         if (!rebuildLockHeld) {
             // 别人正在重建：等它填好再读一次，而不是自己也去打库——
             // 这正是击穿防护的意义所在
-            ProductResponse afterWait = waitForRebuild(id);
+            ProductDetail afterWait = waitForRebuild(id);
             if (afterWait != null || isKnownMissing(id)) {
                 return afterWait;
             }
@@ -200,7 +200,7 @@ public class ProductCacheService {
         }
 
         try {
-            ProductResponse loaded = loader.get();
+            ProductDetail loaded = loader.get();
             write(id, loaded);
             return loaded;
         } finally {
@@ -261,7 +261,7 @@ public class ProductCacheService {
 
     // ==================== 读写 ====================
 
-    private ProductResponse read(Long id) {
+    private ProductDetail read(Long id) {
         if (!cacheUsable()) {
             return null;
         }
@@ -271,7 +271,7 @@ public class ProductCacheService {
             if (cached == null || NULL_SENTINEL.equals(cached)) {
                 return null;
             }
-            return (ProductResponse) cached;
+            return (ProductDetail) cached;
         } catch (Exception e) {
             // 读失败 = 未命中，交给调用方回源。缓存挂了不该让读接口跟着挂
             reportCacheFailure("read", e);
@@ -294,7 +294,7 @@ public class ProductCacheService {
         }
     }
 
-    private void write(Long id, ProductResponse product) {
+    private void write(Long id, ProductDetail product) {
         // 一级缓存**不依赖 Redis**：即使 Redis 正熔断着，本地这一层照样填。
         // 于是 Redis 挂掉期间，热点商品仍然不查库——多级缓存顺带把容灾也补了一截。
         localCache.put(id, product);
@@ -345,7 +345,7 @@ public class ProductCacheService {
         }
     }
 
-    private ProductResponse waitForRebuild(Long id) {
+    private ProductDetail waitForRebuild(Long id) {
         for (int i = 0; i < WAIT_RETRIES; i++) {
             try {
                 Thread.sleep(WAIT_FOR_REBUILD_MILLIS);
@@ -353,7 +353,7 @@ public class ProductCacheService {
                 Thread.currentThread().interrupt();
                 return null;
             }
-            ProductResponse cached = read(id);
+            ProductDetail cached = read(id);
             if (cached != null) {
                 return cached;
             }

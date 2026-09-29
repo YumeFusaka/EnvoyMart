@@ -45,6 +45,9 @@ create table if not exists product_spu (
     -- 轮播图，逗号分隔。图片只用于展示、不参与查询条件，因此不做规范化
     images varchar(2048),
     detail_html text,
+    -- 营销标签（"热销" "新品"），逗号分隔。与「属性」的区别：属性描述事实，
+    -- 标签服务于运营，所以它不挂类目、也没有候选项约束
+    tags varchar(255),
     -- 0 下架 / 1 上架
     status tinyint not null default 0,
     sales int not null default 0,
@@ -98,10 +101,13 @@ create table if not exists product_spec_value (
 -- JSON 存法写起来快，但「找出所有黑色的 SKU」只能全表扫后内存过滤，
 -- 规范化后是一次索引命中
 create table if not exists product_sku_spec (
+    -- 代理主键只是为了让 ORM 能按单字段操作这一行；
+    -- 真正的业务规则是下面那条复合唯一约束（一个 SKU 的一个规格项只能有一个值）
+    id bigint auto_increment primary key,
     sku_id bigint not null,
     spec_id bigint not null,
     spec_value_id bigint not null,
-    primary key (sku_id, spec_id),
+    constraint uk_sku_spec unique (sku_id, spec_id),
     index idx_sku_spec_value (spec_value_id)
 );
 

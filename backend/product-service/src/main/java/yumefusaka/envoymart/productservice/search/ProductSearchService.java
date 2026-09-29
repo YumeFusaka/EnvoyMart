@@ -1,51 +1,125 @@
 package yumefusaka.envoymart.productservice.search;
 
+import co.elastic.clients.elasticsearch._types.FieldValue;
+import co.elastic.clients.elasticsearch._types.SortOptions;
+import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
-import co.elastic.clients.elasticsearch._types.query_dsl.MatchQuery;
-import co.elastic.clients.elasticsearch._types.query_dsl.MultiMatchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.json.JsonData;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.elasticsearch.client.elc.ElasticsearchAggregation;
-import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.client.elc.NativeQueryBuilder;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.stereotype.Service;
-import yumefusaka.envoymart.productservice.model.ProductResponse;
+import org.springframework.util.StringUtils;
+import yumefusaka.envoymart.common.result.PageResult;
+import yumefusaka.envoymart.productservice.model.ProductQuery;
+import yumefusaka.envoymart.productservice.model.ProductSummary;
+import yumefusaka.envoymart.productservice.service.CategoryService;
 
+import java.math.BigDecimal;
 import java.util.List;
-import java.util.stream.Collectors;
 
-/**
- * ES 商品搜索服务：支持关键词匹配与多字段组合查询
- */
 @Slf4j
 @Service
 public class ProductSearchService {
 
-    private final ElasticsearchOperations elasticsearchOperations;
-
-    public ProductSearchService(ElasticsearchOperations elasticsearchOperations) {
-        this.elasticsearchOperations = elasticsearchOperations;
-    }
-
-    /** ES 的 max_result_window 默认就是 10000，from+size 超过它查询直接失败。 */
+    /** ES 的 max_result_window 默认就是 10000，from+size 超过它查询直接失败 */
     private static final int MAX_RESULT_WINDOW = 10_000;
     private static final int MAX_PAGE_SIZE = 100;
+    private static final int STATUS_ON = 1;
+
+    private final ElasticsearchOperations elasticsearchOperations;
+    private final CategoryService categoryService;
+
+    public ProductSearchService(ElasticsearchOperations elasticsearchOperations,
+                                CategoryService categoryService) {
+        this.elasticsearchOperations = elasticsearchOperations;
+        this.categoryService = categoryService;
+    }
 
     /**
-     * 多字段语义搜索：商品名、副标题、描述、分类、品牌
+     * 多字段检索 + 类目 / 品牌 / 价格区间筛选。
      * <p>
      * 分页参数在这里校验，而不是直接交给 {@code PageRequest.of} 和 ES。原先两个参数都是裸的：
-     * {@code page=-1} / {@code size=0} 会被 Spring Data 拒绝并抛出它自己的文案
-     * （"Page index must not be less than zero"），{@code size=10001} 又会撞上 ES 的
-     * max_result_window 报 "all shards failed"。两种情况都以 code=500 的形式回给调用方，
-     * 而且这个接口<b>匿名可达</b>——分不清是参数写错了还是服务端挂了，还顺带把
-     * Spring Data 与 ES 的内部消息读了出去。
+     * {@code page=-1} / {@code size=0} 会被 Spring Data 拒绝并抛出它自己的文案，
+     * {@code size=10001} 又会撞上 ES 的 max_result_window 报 "all shards failed"。
+     * 两种情况都以 code=500 回给调用方，而这个接口<b>匿名可达</b> —— 调用方既分不清
+     * 是自己参数写错了还是服务端挂了，还顺带把 Spring Data 与 ES 的内部消息读了出去。
      */
-    public List<ProductResponse> search(String keyword, String category, int page, int size) {
+    public PageResult<ProductSummary> search(ProductQuery query) {
+        int page = query.safePage();
+        int size = query.safeSize();
+        validatePaging(page, size);
+
+        BoolQuery.Builder bool = new BoolQuery.Builder();
+        // 下架商品一律不出现在搜索结果里。放在 filter 而不是 must：
+        // 它不参与打分，只是硬条件
+        bool.filter(Query.of(q -> q.term(t -> t.field("status").value(STATUS_ON))));
+
+        if (StringUtils.hasText(query.getKeyword())) {
+            String keyword = query.getKeyword().trim();
+            bool.must(Query.of(q -> q.multiMatch(m -> m
+                    .fields("name^3", "subtitle^2", "tags^2",
+                            "categoryName", "brandName", "attributeText", "detailText")
+                    .query(keyword))));
+        }
+
+        if (query.getCategoryId() != null) {
+            List<Long> categoryIds = categoryService.selfAndDescendantIds(query.getCategoryId());
+            if (categoryIds.isEmpty()) {
+                // 类目不存在时返回空，而不是忽略这个筛选条件 ——
+                // 忽略的话用户会看到「全部商品」，以为筛选坏了
+                return PageResult.<ProductSummary>builder()
+                        .records(List.of()).total(0L).page(page).size(size).build();
+            }
+            List<FieldValue> values = categoryIds.stream().map(FieldValue::of).toList();
+            bool.filter(Query.of(q -> q.terms(t -> t.field("categoryId").terms(v -> v.value(values)))));
+        }
+
+        if (query.getBrandId() != null) {
+            bool.filter(Query.of(q -> q.term(t -> t.field("brandId").value(query.getBrandId()))));
+        }
+
+        // 区间**有交集**即算命中：SPU 的价格是一个区间（不同规格不同价），
+        // 只要它与查询区间沾边就该出现。写成「minPrice 落在区间内」会把
+        // 「低价规格在区间内、高价规格超出」的商品整条漏掉
+        if (query.getMinPrice() != null) {
+            bool.filter(Query.of(q -> q.range(r -> r.untyped(u -> u
+                    .field("maxPrice")
+                    .gte(JsonData.of(query.getMinPrice()))))));
+        }
+        if (query.getMaxPrice() != null) {
+            bool.filter(Query.of(q -> q.range(r -> r.untyped(u -> u
+                    .field("minPrice")
+                    .lte(JsonData.of(query.getMaxPrice()))))));
+        }
+
+        NativeQueryBuilder builder = new NativeQueryBuilder()
+                .withQuery(bool.build()._toQuery())
+                .withPageable(PageRequest.of(page, size))
+                .withSort(sortOf(query.getSort()));
+
+        SearchHits<ProductIndex> hits = elasticsearchOperations.search(builder.build(), ProductIndex.class);
+        List<ProductSummary> records = hits.stream()
+                .map(SearchHit::getContent)
+                .map(this::toSummary)
+                .toList();
+
+        log.debug("ES 搜索: keyword={}, categoryId={}, brandId={}, hits={}",
+                query.getKeyword(), query.getCategoryId(), query.getBrandId(), hits.getTotalHits());
+
+        return PageResult.<ProductSummary>builder()
+                .records(records)
+                .total(hits.getTotalHits())
+                .page(page)
+                .size(size)
+                .build();
+    }
+
+    private void validatePaging(int page, int size) {
         if (page < 0) {
             throw new IllegalArgumentException("页码不能为负");
         }
@@ -55,76 +129,38 @@ public class ProductSearchService {
         if ((long) page * size >= MAX_RESULT_WINDOW) {
             throw new IllegalArgumentException("页码超出可检索范围，请缩小范围或改用分类筛选");
         }
-
-        BoolQuery.Builder boolBuilder = new BoolQuery.Builder();
-
-        // 关键词多字段匹配
-        if (keyword != null && !keyword.isBlank()) {
-            Query keywordQuery = new MultiMatchQuery.Builder()
-                    .fields("name^3", "subtitle^2", "description", "category", "brand", "tags", "semanticKeywords")
-                    .query(keyword)
-                    .build()._toQuery();
-            boolBuilder.must(keywordQuery);
-        }
-
-        // 分类过滤
-        if (category != null && !category.isBlank()) {
-            Query categoryQuery = new MatchQuery.Builder()
-                    .field("category")
-                    .query(category)
-                    .build()._toQuery();
-            boolBuilder.filter(categoryQuery);
-        }
-
-        NativeQuery nativeQuery = new NativeQueryBuilder()
-                .withQuery(boolBuilder.build()._toQuery())
-                .withPageable(PageRequest.of(page, size))
-                .build();
-
-        SearchHits<ProductIndex> hits = elasticsearchOperations.search(nativeQuery, ProductIndex.class);
-        List<ProductResponse> results = hits.stream()
-                .map(SearchHit::getContent)
-                .map(this::toResponse)
-                .collect(Collectors.toList());
-
-        log.info("ES 搜索: keyword={}, category={}, hits={}", keyword, category, hits.getTotalHits());
-        return results;
     }
 
-    /**
-     * 根据 ID 列表批量查询（用于推荐结果回查）
-     */
-    public List<ProductResponse> findByIds(List<Long> ids) {
-        BoolQuery.Builder bool = new BoolQuery.Builder();
-        ids.forEach(id -> bool.should(new MatchQuery.Builder().field("id").query(id).build()._toQuery()));
-
-        SearchHits<ProductIndex> hits = elasticsearchOperations.search(
-                new NativeQueryBuilder()
-                        .withQuery(bool.build()._toQuery())
-                        .withPageable(PageRequest.of(0, ids.size()))
-                        .build(),
-                ProductIndex.class);
-
-        return hits.stream()
-                .map(SearchHit::getContent)
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+    /** 排序走白名单，未知值回落到销量降序 —— 排序参数写错不该让整个搜索打不开 */
+    private SortOptions sortOf(String sort) {
+        String field = switch (sort == null ? "" : sort) {
+            case "price_asc" -> "minPrice";
+            case "price_desc" -> "minPrice";
+            case "newest" -> "createdAt";
+            default -> "sales";
+        };
+        SortOrder order = "price_asc".equals(sort) ? SortOrder.Asc : SortOrder.Desc;
+        return SortOptions.of(s -> s.field(f -> f.field(field).order(order)));
     }
 
-    private ProductResponse toResponse(ProductIndex index) {
-        return ProductResponse.builder()
+    private ProductSummary toSummary(ProductIndex index) {
+        return ProductSummary.builder()
                 .id(index.getId())
                 .name(index.getName())
                 .subtitle(index.getSubtitle())
-                .category(index.getCategory())
-                .brand(index.getBrand())
-                .price(index.getPrice())
-                .stock(index.getStock())
-                .monthlySales(index.getMonthlySales())
-                .image(index.getImage())
-                .salesCopy(index.getSalesCopy())
-                .description(index.getDescription())
-                .tags(ProductResponse.splitTags(index.getTags()))
+                .categoryId(index.getCategoryId())
+                .categoryName(index.getCategoryName())
+                .brandId(index.getBrandId())
+                .brandName(index.getBrandName())
+                .mainImage(index.getMainImage())
+                .minPrice(index.getMinPrice())
+                .maxPrice(index.getMaxPrice())
+                .sales(index.getSales())
+                .ratingAvg(index.getRatingAvg() == null
+                        ? null : BigDecimal.valueOf(index.getRatingAvg()))
+                .reviewCount(index.getReviewCount())
+                .totalStock(index.getTotalStock())
+                .tags(ProductSummary.parseTags(index.getTags()))
                 .build();
     }
 }

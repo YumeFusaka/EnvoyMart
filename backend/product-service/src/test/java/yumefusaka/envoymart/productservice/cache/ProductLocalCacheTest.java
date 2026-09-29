@@ -1,7 +1,7 @@
 package yumefusaka.envoymart.productservice.cache;
 
 import org.junit.jupiter.api.Test;
-import yumefusaka.envoymart.productservice.model.ProductResponse;
+import yumefusaka.envoymart.productservice.model.ProductDetail;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -17,8 +17,9 @@ class ProductLocalCacheTest {
         return new ProductLocalCache(maxSize, ttlSeconds);
     }
 
-    private ProductResponse product(long id) {
-        return ProductResponse.builder().id(id).name("p" + id).stock(1).build();
+    private ProductDetail product(long id) {
+        // 库存不在这里了：它挂到 SKU 上，详情只装 SPU 层面的信息
+        return ProductDetail.builder().id(id).name("p" + id).build();
     }
 
     @Test

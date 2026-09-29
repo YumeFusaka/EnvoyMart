@@ -1,20 +1,19 @@
 package yumefusaka.envoymart.productservice.service;
 
-import yumefusaka.envoymart.productservice.model.ProductResponse;
-import yumefusaka.envoymart.productservice.model.StockDeductRequest;
+import yumefusaka.envoymart.common.result.PageResult;
+import yumefusaka.envoymart.productservice.model.ProductDetail;
+import yumefusaka.envoymart.productservice.model.ProductQuery;
+import yumefusaka.envoymart.productservice.model.ProductSummary;
 
 import java.util.List;
 
 public interface ProductService {
 
-    List<ProductResponse> listProducts(String keyword, String category);
+    PageResult<ProductSummary> list(ProductQuery query);
 
-    ProductResponse getProduct(Long id);
+    /** 详情。商品不存在时抛 {@code IllegalArgumentException} */
+    ProductDetail detail(Long spuId);
 
-    List<ProductResponse> recommendProducts(String query, int limit);
-
-    void deductStock(StockDeductRequest request);
-
-    /** 取消订单时回补库存。 */
-    void restoreStock(StockDeductRequest request);
+    /** 按关键词宽松召回、按销量排序，供智能助手的商品推荐工具使用 */
+    List<ProductSummary> recommend(String query, int limit);
 }
