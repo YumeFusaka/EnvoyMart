@@ -208,7 +208,7 @@ class PaymentCallbackTest {
     /** 订单不属于当前用户（或不存在）时，不许建支付单 */
     @Test
     void 订单不存在时拒绝创建支付单() {
-        when(orderClient.getOrder(anyString(), any())).thenReturn(Result.error("订单不存在"));
+        when(orderClient.getOrder(anyString(), any())).thenReturn(Result.error(404, "订单不存在"));
 
         CreatePaymentRequest request = new CreatePaymentRequest();
         request.setOrderId(999999L);

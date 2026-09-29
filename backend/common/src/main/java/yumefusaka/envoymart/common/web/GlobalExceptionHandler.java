@@ -58,10 +58,16 @@ public class GlobalExceptionHandler {
         return Result.error(404, "接口不存在");
     }
 
+    /**
+     * 请求本身不合法（用户名已占用、地址不存在、金额为负）。
+     * <p>
+     * 返回 400 而不是 500：这是<b>客户端问题，重试无用</b>，
+     * 而 500 在监控里是服务端故障的信号——把它用在这里会让告警失去意义。
+     */
     @ExceptionHandler(IllegalArgumentException.class)
     public Result<String> handleBusiness(IllegalArgumentException exception) {
         log.warn("Business exception: {}", exception.getMessage());
-        return Result.error(exception.getMessage());
+        return Result.error(400, exception.getMessage());
     }
 
     /**
@@ -75,7 +81,10 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalStateException.class)
     public Result<String> handleIllegalState(IllegalStateException exception) {
         log.warn("Illegal state: {}", exception.getMessage());
-        return Result.error(exception.getMessage());
+        // 409 而不是 400：请求本身没写错，只是**当前状态不允许**——
+        // 订单已取消时不能再取消、支付终态后不能再改。语义上是冲突，不是参数错误。
+        // 这个区分对调用方是有用的：400 该改参数，409 该刷新后重试或换条路走
+        return Result.error(409, exception.getMessage());
     }
 
     /**
@@ -90,6 +99,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public Result<String> handleUnknown(Exception exception) {
         log.error("Unhandled exception", exception);
-        return Result.error("服务暂时不可用，请稍后再试");
+        return Result.error(500, "服务暂时不可用，请稍后再试");
     }
 }
