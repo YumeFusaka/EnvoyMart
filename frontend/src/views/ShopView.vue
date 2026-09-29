@@ -1,251 +1,321 @@
 <script setup lang="ts">
-import { addCartItem, getCartItems, updateCartItem } from '@/api/cart'
-import { getLogistics, getOrders } from '@/api/order'
-import { getProducts } from '@/api/product'
-import CartDrawer from '@/components/shop/CartDrawer.vue'
-import OrderPanel from '@/components/shop/OrderPanel.vue'
-import ProductCard from '@/components/shop/ProductCard.vue'
-import { checkout } from '@/api/order'
-import { useUserStore } from '@/stores'
-import type { CartItem, Logistics, Order, Product } from '@/types/models'
-import { ElMessage } from 'element-plus'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { getBrands, getCategoryTree, listProducts, searchProducts } from '@/api/product'
+import ShopProductCard from '@/components/shop/ProductCard.vue'
+import type { BrandView, CategoryNode, ProductSummary } from '@/types/models'
 
-const route = useRoute()
 const router = useRouter()
-const userStore = useUserStore()
 
+const categories = ref<CategoryNode[]>([])
+const brands = ref<BrandView[]>([])
+const products = ref<ProductSummary[]>([])
+const total = ref(0)
 const loading = ref(false)
-const checkoutLoading = ref(false)
-const cartVisible = ref(false)
-const products = ref<Product[]>([])
-const cartItems = ref<CartItem[]>([])
-const orders = ref<Order[]>([])
-const logisticsMap = ref<Record<number, Logistics | undefined>>({})
-const logisticsLoadingIds = ref<number[]>([])
 
-const filters = reactive({
-  keyword: String(route.query.keyword || ''),
-  category: ''
+const query = reactive({
+  keyword: '',
+  categoryId: undefined as number | undefined,
+  brandId: undefined as number | undefined,
+  sort: 'sales',
+  page: 0,
+  size: 12,
 })
 
-const categories = computed(() => Array.from(new Set(products.value.map((item) => item.category))))
+const sortOptions = [
+  { value: 'sales', label: '销量优先' },
+  { value: 'price_asc', label: '价格从低到高' },
+  { value: 'price_desc', label: '价格从高到低' },
+  { value: 'newest', label: '最新上架' },
+]
 
-async function loadProducts() {
+async function load() {
   loading.value = true
   try {
-    products.value = await getProducts({
-      keyword: filters.keyword || undefined,
-      category: filters.category || undefined
+    const keyword = query.keyword.trim()
+    // 有关键词走 ES 全文检索，没有就走库内查询。
+    // 分工：全文检索能命中详情与参数里的词（「胶囊」也能搜到），
+    // 库内查询能走索引做结构化筛选，翻页到深页也不会撞 ES 的 max_result_window
+    const fetcher = keyword ? searchProducts : listProducts
+    const result = await fetcher({
+      keyword: keyword || undefined,
+      categoryId: query.categoryId,
+      brandId: query.brandId,
+      sort: query.sort,
+      page: query.page,
+      size: query.size,
     })
+    products.value = result.records
+    total.value = result.total
   } finally {
     loading.value = false
   }
 }
 
-async function loadCart() {
-  cartItems.value = await getCartItems()
+/** 换筛选条件必须回到第一页：留在第 3 页而结果只剩 1 页，用户会看到一片空白 */
+function reload() {
+  query.page = 0
+  load()
 }
 
-async function loadOrders() {
-  orders.value = await getOrders()
+/** 再点一次已选中的项 = 取消筛选 */
+function pickCategory(id?: number) {
+  query.categoryId = query.categoryId === id ? undefined : id
+  reload()
 }
 
-async function initialize() {
-  await Promise.all([loadProducts(), loadCart(), loadOrders()])
+function pickBrand(id?: number) {
+  query.brandId = query.brandId === id ? undefined : id
+  reload()
 }
 
-async function handleAddToCart(product: Product) {
-  await addCartItem({ productId: product.id, quantity: 1 })
-  ElMessage.success(`已将 ${product.name} 加入购物车`)
-  cartVisible.value = true
-  await loadCart()
+/** el-pagination 的页码从 1 开始，后端接口从 0 开始 */
+function onPageChange(page: number) {
+  query.page = page - 1
+  load()
 }
 
-function goToProduct(product: Product) {
-  router.push(`/products/${product.id}`)
+function openDetail(id: number) {
+  router.push(`/products/${id}`)
 }
 
-async function handleUpdateQuantity(payload: { id: number; quantity: number }) {
-  await updateCartItem(payload.id, { quantity: payload.quantity })
-  await loadCart()
-}
-
-async function handleCheckout(payload: { recipientName: string; recipientPhone: string; address: string }) {
-  checkoutLoading.value = true
-  try {
-    const order = await checkout(payload)
-    ElMessage.success(`订单 ${order.orderNo} 创建成功`)
-    cartVisible.value = false
-    await Promise.all([loadCart(), loadOrders()])
-  } finally {
-    checkoutLoading.value = false
-  }
-}
-
-async function handleLoadLogistics(orderId: number) {
-  logisticsLoadingIds.value = [...logisticsLoadingIds.value, orderId]
-  try {
-    logisticsMap.value[orderId] = await getLogistics(orderId)
-  } finally {
-    logisticsLoadingIds.value = logisticsLoadingIds.value.filter((id) => id !== orderId)
-  }
-}
-
-function logout() {
-  userStore.clearSession()
-  router.push('/login')
-}
-
-watch(
-  () => route.query.keyword,
-  async (keyword) => {
-    filters.keyword = String(keyword || '')
-    await loadProducts()
-  }
-)
-
-onMounted(initialize)
+onMounted(async () => {
+  // 类目与品牌互不依赖，并行取；串行会白等一个往返
+  const [tree, brandList] = await Promise.all([getCategoryTree(), getBrands()])
+  categories.value = tree
+  brands.value = brandList
+  await load()
+})
 </script>
 
 <template>
-  <div class="page">
-    <header class="page-header">
-      <div>
-        <p class="eyebrow">Retail Command Desk</p>
-        <h1>EnvoyMart 电商工作台</h1>
-        <p class="subcopy">欢迎回来，{{ userStore.profile?.nickname || userStore.profile?.username }}</p>
-      </div>
-      <div class="header-actions">
-        <el-button plain @click="router.push('/assistant')">进入 AI 助手</el-button>
-        <el-button plain @click="router.push('/orders')">订单</el-button>
-        <el-button type="primary" @click="cartVisible = true">购物车 {{ cartItems.length }}</el-button>
-        <el-button text @click="logout">退出</el-button>
-      </div>
-    </header>
+  <div class="page shop">
+    <aside class="shop__side">
+      <section class="surface">
+        <h2 class="side-title">类目</h2>
+        <ul class="cat-list">
+          <li v-for="top in categories" :key="top.id">
+            <button
+              type="button"
+              class="cat-list__item cat-list__item--top"
+              :class="{ 'is-active': query.categoryId === top.id }"
+              @click="pickCategory(top.id)"
+            >
+              {{ top.name }}
+            </button>
+            <ul v-if="top.children.length" class="cat-list__sub">
+              <li v-for="sub in top.children" :key="sub.id">
+                <button
+                  type="button"
+                  class="cat-list__item"
+                  :class="{ 'is-active': query.categoryId === sub.id }"
+                  @click="pickCategory(sub.id)"
+                >
+                  {{ sub.name }}
+                </button>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </section>
 
-    <section class="hero-strip">
-      <div>
-        <strong>商品、订单、AI 联动工作台</strong>
-        <p>已打通商品浏览、购物车、订单查询与 AI 智能客服问答。</p>
+      <section class="surface">
+        <h2 class="side-title">品牌</h2>
+        <div class="brand-list">
+          <button
+            v-for="brand in brands"
+            :key="brand.id"
+            type="button"
+            class="brand-list__item"
+            :class="{ 'is-active': query.brandId === brand.id }"
+            @click="pickBrand(brand.id)"
+          >
+            {{ brand.name }}
+          </button>
+        </div>
+      </section>
+    </aside>
+
+    <section class="shop__main">
+      <div class="surface shop__toolbar">
+        <el-input
+          v-model="query.keyword"
+          placeholder="搜索商品、成分、参数"
+          clearable
+          size="large"
+          class="shop__search"
+          @keyup.enter="reload"
+          @clear="reload"
+        >
+          <template #append>
+            <el-button @click="reload">搜索</el-button>
+          </template>
+        </el-input>
+
+        <el-select v-model="query.sort" size="large" class="shop__sort" @change="reload">
+          <el-option
+            v-for="opt in sortOptions"
+            :key="opt.value"
+            :label="opt.label"
+            :value="opt.value"
+          />
+        </el-select>
       </div>
-      <el-button type="success" @click="router.push('/assistant')">试试导购提问</el-button>
-    </section>
 
-    <section class="filter-bar">
-      <el-input v-model="filters.keyword" clearable placeholder="搜索商品、品牌、标签" @change="loadProducts" />
-      <el-select v-model="filters.category" clearable placeholder="分类筛选" @change="loadProducts">
-        <el-option v-for="category in categories" :key="category" :label="category" :value="category" />
-      </el-select>
-    </section>
-
-    <section class="content-grid">
-      <div class="product-grid">
-        <ProductCard v-for="product in products" :key="product.id" :product="product" @add="handleAddToCart" @click="goToProduct(product)" />
+      <div v-loading="loading" class="shop__results">
+        <div v-if="products.length" class="shop__grid">
+          <ShopProductCard
+            v-for="item in products"
+            :key="item.id"
+            :product="item"
+            @open="openDetail(item.id)"
+          />
+        </div>
+        <el-empty v-else-if="!loading" description="没有找到符合条件的商品" />
       </div>
 
-      <OrderPanel
-        :orders="orders"
-        :logistics-map="logisticsMap"
-        :loading-ids="logisticsLoadingIds"
-        @logistics="handleLoadLogistics"
+      <el-pagination
+        v-if="total > query.size"
+        class="shop__pager"
+        layout="prev, pager, next, total"
+        background
+        :total="total"
+        :page-size="query.size"
+        :current-page="query.page + 1"
+        @current-change="onPageChange"
       />
     </section>
-
-    <CartDrawer
-      v-model="cartVisible"
-      :items="cartItems"
-      :loading="checkoutLoading"
-      @update-quantity="handleUpdateQuantity"
-      @checkout="handleCheckout"
-    />
   </div>
 </template>
 
 <style scoped>
-.page {
-  padding: 28px;
-  display: grid;
-  gap: 22px;
-}
-
-.page-header,
-.hero-strip,
-.filter-bar {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: center;
-}
-
-.page-header h1 {
-  margin: 4px 0;
-  font-size: clamp(28px, 4vw, 42px);
-}
-
-.eyebrow {
-  margin: 0;
-  color: var(--color-primary);
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  font-weight: 700;
-}
-
-.subcopy {
-  margin: 0;
-  color: var(--color-text-secondary);
-}
-
-.hero-strip {
-  padding: 20px 22px;
-  border-radius: 24px;
-  background: linear-gradient(135deg, rgba(182, 91, 46, 0.13), rgba(31, 122, 107, 0.12));
-  border: 1px solid rgba(84, 55, 23, 0.08);
-}
-
-.hero-strip p {
-  margin: 6px 0 0;
-  color: var(--color-text-secondary);
-}
-
-.filter-bar {
-  padding: 18px;
-  border-radius: 20px;
-  background: rgba(255, 251, 245, 0.9);
-  border: 1px solid rgba(84, 55, 23, 0.08);
-}
-
-.filter-bar > * {
-  flex: 1;
-}
-
-.content-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) 360px;
-  gap: 22px;
+.shop {
+  grid-template-columns: 240px minmax(0, 1fr);
   align-items: start;
 }
 
-.product-grid {
+.shop__side {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 18px;
+  gap: var(--ys-space-4);
+  position: sticky;
+  top: calc(var(--layout-header-height) + var(--ys-space-4));
 }
 
-@media (max-width: 1100px) {
-  .content-grid {
-    grid-template-columns: 1fr;
+.side-title {
+  margin-bottom: var(--ys-space-3);
+  font-size: var(--ys-font-base);
+  font-weight: 600;
+}
+
+.cat-list,
+.cat-list__sub {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cat-list__sub {
+  margin: 2px 0 var(--ys-space-2) var(--ys-space-3);
+}
+
+.cat-list__item,
+.brand-list__item {
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--ys-radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--ys-duration-fast) var(--ys-ease-out),
+    color var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.cat-list__item--top {
+  color: var(--color-text-primary);
+  font-weight: 600;
+  font-size: var(--ys-font-base);
+}
+
+.cat-list__item:hover,
+.brand-list__item:hover {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+.cat-list__item.is-active,
+.brand-list__item.is-active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.brand-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-2);
+}
+
+.brand-list__item {
+  width: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-full);
+}
+
+.shop__main {
+  display: grid;
+  gap: var(--ys-space-4);
+}
+
+.shop__toolbar {
+  display: flex;
+  gap: var(--ys-space-3);
+}
+
+.shop__search {
+  flex: 1;
+}
+
+.shop__sort {
+  width: 160px;
+}
+
+.shop__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--ys-space-4);
+}
+
+.shop__results {
+  min-height: 200px;
+}
+
+.shop__pager {
+  justify-content: center;
+}
+
+@media (max-width: 960px) {
+  .shop {
+    grid-template-columns: minmax(0, 1fr);
   }
-}
 
-@media (max-width: 720px) {
-  .page-header,
-  .hero-strip,
-  .filter-bar {
+  .shop__side {
+    position: static;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .shop__toolbar {
     flex-direction: column;
-    align-items: stretch;
+  }
+
+  .shop__sort {
+    width: 100%;
   }
 }
 </style>

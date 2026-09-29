@@ -33,6 +33,7 @@ declare module 'vue' {
     ElInput: typeof import('element-plus/es')['ElInput']
     ElInputNumber: typeof import('element-plus/es')['ElInputNumber']
     ElOption: typeof import('element-plus/es')['ElOption']
+    ElPagination: typeof import('element-plus/es')['ElPagination']
     ElRadio: typeof import('element-plus/es')['ElRadio']
     ElRadioGroup: typeof import('element-plus/es')['ElRadioGroup']
     ElResult: typeof import('element-plus/es')['ElResult']
@@ -45,8 +46,6 @@ declare module 'vue' {
     ElTimelineItem: typeof import('element-plus/es')['ElTimelineItem']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
-    ShopCartDrawer: typeof import('./src/components/shop/CartDrawer.vue')['default']
-    ShopOrderPanel: typeof import('./src/components/shop/OrderPanel.vue')['default']
     ShopProductCard: typeof import('./src/components/shop/ProductCard.vue')['default']
   }
   export interface GlobalDirectives {
