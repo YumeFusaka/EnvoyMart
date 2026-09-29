@@ -73,7 +73,9 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 经网关暴露出去等于任何人凭订单号就能触发退款
             "/payments/internal/",
             // 售后审核同样是管理侧动作，用户不该够得着
-            "/after-sales/internal/");
+            "/after-sales/internal/",
+            // 优惠券核销：让用户能自己核销等于让他自己改优惠金额
+            "/coupons/internal/");
 
     /** 路径模式：以 {@code /**} 结尾表示前缀匹配，否则精确匹配。 */
     private record PublicRule(String method, String path) {

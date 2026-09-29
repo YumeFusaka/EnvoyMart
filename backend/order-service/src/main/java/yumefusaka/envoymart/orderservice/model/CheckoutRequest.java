@@ -38,4 +38,11 @@ public class CheckoutRequest {
 
     @Size(max = 255, message = "备注最长 255 位")
     private String remark;
+
+    /**
+     * 使用的优惠券（用户券 id），选填。
+     * <p>
+     * 传的是用户券而不是模板：同一张模板被很多人领，各自的有效期与使用状态都不同。
+     */
+    private Long userCouponId;
 }

@@ -13,6 +13,7 @@ import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.orderservice.client.PaymentClient;
 import yumefusaka.envoymart.orderservice.client.ProductClient;
+import yumefusaka.envoymart.orderservice.client.PromotionClient;
 import yumefusaka.envoymart.orderservice.config.SentinelDegradeConfig;
 import yumefusaka.envoymart.orderservice.entity.CartItemEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderDeliveryEntity;
@@ -72,6 +73,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     private final OrderDeliveryTraceMapper deliveryTraceMapper;
     private final ProductClient productClient;
     private final PaymentClient paymentClient;
+    private final PromotionClient promotionClient;
     private final CartCacheService cartCacheService;
     private final OrderEventPublisher eventPublisher;
 
@@ -83,6 +85,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                                   OrderDeliveryTraceMapper deliveryTraceMapper,
                                   ProductClient productClient,
                                   PaymentClient paymentClient,
+                                  PromotionClient promotionClient,
                                   CartCacheService cartCacheService,
                                   OrderEventPublisher eventPublisher) {
         this.cartItemMapper = cartItemMapper;
@@ -93,6 +96,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         this.deliveryTraceMapper = deliveryTraceMapper;
         this.productClient = productClient;
         this.paymentClient = paymentClient;
+        this.promotionClient = promotionClient;
         this.cartCacheService = cartCacheService;
         this.eventPublisher = eventPublisher;
     }
@@ -165,7 +169,6 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             order.setReceiverDetail(request.getReceiverDetail());
             order.setRemark(request.getRemark());
             order.setFreightAmount(FREIGHT_FREE);
-            order.setDiscountAmount(0L);
             order.setTotalAmount(0L);
             order.setPayAmount(0L);
             LocalDateTime now = Times.now();
@@ -219,10 +222,19 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                             .build());
                 }
 
+                // 优惠券在这里核销：金额要先算出来才知道门槛够不够。
+                // 放在扣库存**之后**是有意的 —— 核销需要的「订单金额」此时才确定，
+                // 而它失败时下面的 catch 会连同库存一起补偿
+                long discount = redeemCoupon(userId, request.getUserCouponId(), order.getOrderNo(), total);
+
                 order.setTotalAmount(total);
-                order.setPayAmount(total + order.getFreightAmount() - order.getDiscountAmount());
+                order.setDiscountAmount(discount);
+                order.setPayAmount(total + order.getFreightAmount() - discount);
                 orderMapper.updateById(order);
             } catch (RuntimeException e) {
+                // **先退券再回补库存**：退券是本地状态改回，代价极小；
+                // 而库存在远端，回补失败只能留日志。顺序上先做便宜且可保证的那件
+                unrederemCouponQuietly(userId, request.getUserCouponId());
                 compensateStock(deducted);
                 throw e;
             }
@@ -246,6 +258,42 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         publishOrderCreatedQuietly(order, userId, total, eventItems);
 
         return getOrder(userId, order.getId());
+    }
+
+    /**
+     * 核销优惠券，返回抵扣金额（分）。
+     * <p>
+     * 没传券就直接返回 0，不走网络。<b>核销失败一律抛异常</b>：用户选了券却没用上，
+     * 而订单按原价建出来 —— 那比下单失败糟糕得多，因为用户要等到付款时才发现。
+     */
+    private long redeemCoupon(String userId, Long userCouponId, String orderNo, long orderAmount) {
+        if (userCouponId == null) {
+            return 0L;
+        }
+        Result<Long> result;
+        try {
+            result = promotionClient.redeem(userId, userCouponId, orderNo, orderAmount);
+        } catch (Exception e) {
+            log.warn("[Order] 核销优惠券失败 orderNo={} userCouponId={}: {}", orderNo, userCouponId, e.getMessage());
+            throw new IllegalStateException("优惠券服务暂时不可用，请稍后再试");
+        }
+        if (result == null || result.getCode() == null || result.getCode() != 200) {
+            throw new IllegalStateException(result == null ? "优惠券核销失败" : result.getMsg());
+        }
+        return result.getData() == null ? 0L : result.getData();
+    }
+
+    /** 退券。失败只记日志 —— 它发生在异常路径上，再抛会把原始异常盖掉 */
+    private void unrederemCouponQuietly(String userId, Long userCouponId) {
+        if (userCouponId == null) {
+            return;
+        }
+        try {
+            promotionClient.unredeem(userId, userCouponId);
+        } catch (Exception e) {
+            log.error("[Order] 下单失败但优惠券退还失败，需要人工介入 userId={} userCouponId={}: {}",
+                    userId, userCouponId, e.getMessage());
+        }
     }
 
     private List<CartItemEntity> selectSelected(String userId) {
