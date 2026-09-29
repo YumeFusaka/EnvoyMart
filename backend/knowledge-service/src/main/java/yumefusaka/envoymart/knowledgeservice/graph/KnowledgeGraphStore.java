@@ -10,6 +10,7 @@ import org.neo4j.driver.Session;
 import org.neo4j.driver.TransactionConfig;
 import org.neo4j.driver.Value;
 import org.springframework.beans.factory.DisposableBean;
+import yumefusaka.envoymart.agent.graph.EntityAliases;
 import yumefusaka.envoymart.contract.GraphEdge;
 import yumefusaka.envoymart.contract.GraphNode;
 import yumefusaka.envoymart.contract.Substance;
@@ -275,9 +276,9 @@ public class KnowledgeGraphStore implements DisposableBean {
                     tx.run("""
                             UNWIND $rows AS t
                             MERGE (h:Entity {name: t.head})
-                            SET h.label = t.headLabel, h.kind = t.headKind
+                            SET h.label = t.headLabel, h.kind = t.headKind, h.nameKey = t.headKey
                             MERGE (e:Entity {name: t.tail})
-                            SET e.label = t.tailLabel, e.kind = t.tailKind
+                            SET e.label = t.tailLabel, e.kind = t.tailKind, e.nameKey = t.tailKey
                             CREATE (h)-[:REL {
                                 relation: t.relation, effect: t.effect, docId: t.docId,
                                 chunkId: t.chunkId, quoteStart: t.quoteStart, quoteEnd: t.quoteEnd,
@@ -327,9 +328,11 @@ public class KnowledgeGraphStore implements DisposableBean {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("head", t.headName());
         m.put("headLabel", t.headLabel());
+        m.put("headKey", nameKey(t.headName(), t.headLabel()));
         m.put("headKind", t.headKind().name());
         m.put("tail", t.tailName());
         m.put("tailLabel", t.tailLabel());
+        m.put("tailKey", nameKey(t.tailName(), t.tailLabel()));
         m.put("tailKind", t.tailKind().name());
         m.put("relation", t.relation().name());
         m.put("effect", t.effect());
@@ -339,6 +342,28 @@ public class KnowledgeGraphStore implements DisposableBean {
         m.put("quoteEnd", t.quoteEnd());
         m.put("quote", t.quote());
         return m;
+    }
+
+    /**
+     * 节点上另存一份<b>规范化后的展示名</b>，供读取侧做等值/子串匹配。
+     * <p>
+     * <b>为什么不能在查询里现算</b>：Cypher 表达不了 {@link EntityNames#normalize}——
+     * 它只去空白的一个子集（{@code U+00A0}、{@code U+200B} 这类
+     * {@code Character.isWhitespace} 都不认，见 {@link EntityNames#isBlank}）。
+     * 于是查询侧写的 {@code toLower(n.label)} 与写入侧用的 {@code normalize}
+     * 是<b>两套规则</b>，而症状是静默的：实测「维生素 D3 软胶囊」这个名字
+     * 带空格，写入键是 {@code 维生素d3软胶囊}（无空格），查询拿它去比
+     * {@code toLower(label)}（有空格）——<b>比不中，节点根本不出现在结果集里</b>，
+     * 连下面那段「用规范化后的展示名再比一次」的兜底代码都执行不到。
+     * 界面上的表现是这个商品「没有收录」，而它明明在图里，且带着一条相互作用。
+     * <p>
+     * 把规范化结果<b>存下来</b>，写入与读取才共用同一套规则。这也是唯一能加索引的形式。
+     * 缺省回落到 {@code name}：{@code name} 本身就是规范化过的键，
+     * 而 label 为空时（模型只给了 name）不该在节点上留一个 null 的属性。
+     */
+    private static String nameKey(String name, String label) {
+        String byLabel = TripleValidator.normalizeName(label);
+        return byLabel.isEmpty() ? name : byLabel;
     }
 
     // ==================== 读取 ====================
@@ -378,19 +403,26 @@ public class KnowledgeGraphStore implements DisposableBean {
         }
     }
 
-    /** 实体检索，供搜索框与「图谱里到底有没有这个词」的排查使用 */
+    /**
+     * 实体检索，供搜索框与「图谱里到底有没有这个词」的排查使用。
+     * <p>
+     * 关键词走 {@link TripleValidator#normalizeName}，与节点键、{@code nameKey} 同一套规则。
+     * 这里原本写的是 {@code trim().toLowerCase()}——第三套规则，与前两套的差别同样落在
+     * 那些 Cypher 不认的空白字符上，于是「维生素 D3」搜不到「维生素 D3 软胶囊」。
+     * 排查工具搜不到东西，比不提供排查工具更误导：它会让人得出「图上没有这个实体」。
+     */
     public List<GraphNode> searchEntities(String keyword, int limit) {
         if (!isAvailable()) {
             return List.of();
         }
-        String kw = keyword == null ? "" : keyword.trim().toLowerCase();
+        String kw = TripleValidator.normalizeName(keyword);
         try (Session session = driver.session()) {
             return session.executeRead(tx -> {
                 var result = tx.run("""
                         MATCH (n:Entity)
-                        WHERE $kw = '' OR n.name CONTAINS $kw OR toLower(n.label) CONTAINS $kw
+                        WHERE $kw = '' OR n.name CONTAINS $kw OR n.nameKey CONTAINS $kw
                         RETURN n.name AS name, n.label AS label, n.kind AS kind
-                        ORDER BY size(n.label)
+                        ORDER BY size(n.nameKey)
                         LIMIT $limit
                         """, Map.of("kw", kw, "limit", Math.max(1, Math.min(limit, 100))));
                 List<GraphNode> nodes = new ArrayList<>();
@@ -408,8 +440,8 @@ public class KnowledgeGraphStore implements DisposableBean {
     /**
      * 从一段自由文本里认出图上已有的实体 —— 实体链接。
      * <p>
-     * <b>词典匹配，不是语义匹配</b>：词典就是图上的全部实体（name 与 label 两套写法），
-     * 判据是「规范化后的文本里是否包含规范化后的实体名」。之所以够用，是因为它服务的
+     * <b>词典匹配，不是语义匹配</b>：词典是图上每个实体的全部写法——规范名、它的别名变体、
+     * 以及展示名，判据是「规范化后的文本里是否包含规范化后的实体名」。之所以够用，是因为它服务的
      * 是<b>召回</b>而不是判定——多认出一个实体只会多带一条候选依据进检索池，
      * 由重排器决定要不要；漏认的代价只是这次少一条图谱依据。两者都是软的。
      * （{@code interactions} 那条路径上的解析就完全不同：它每次都要下结论，
@@ -443,12 +475,16 @@ public class KnowledgeGraphStore implements DisposableBean {
                 while (result.hasNext()) {
                     Record r = result.next();
                     String name = r.get("name").asString();
-                    if (matches(haystack, name)) {
-                        candidates.add(new Candidate(name, name));
+                    // 词典是「规范名 + 它的全部变体 + 展示名」。变体那一份是写别名表换来的：
+                    // 节点上现在叫「铁剂」，而用户问的是「富马酸亚铁」——只拿节点上现存的写法
+                    // 当词典，这句话<b>一个实体都链接不到</b>，等于把旧写法留在了用户嘴里
+                    for (String variant : EntityAliases.variantsOf(name)) {
+                        if (matches(haystack, variant)) {
+                            candidates.add(new Candidate(name, variant));
+                        }
                     }
                     String label = r.get("label").asString(null);
-                    if (label != null && !TripleValidator.normalizeName(label).equals(name)
-                            && matches(haystack, label)) {
+                    if (label != null && matches(haystack, label)) {
                         candidates.add(new Candidate(name, TripleValidator.normalizeName(label)));
                     }
                 }
@@ -492,18 +528,27 @@ public class KnowledgeGraphStore implements DisposableBean {
         try (Session session = driver.session()) {
             return session.executeRead(tx -> {
                 // 一次查完两种匹配：键命中（成分/药物/营养素，或直接给了 SPU 编号）
-                // 与展示名命中（用户说了商品名）。两者都只做相等比较——见上面的理由
+                // 与展示名命中（用户说了商品名）。两者都只做相等比较——见上面的理由。
+                //
+                // 比的是 nameKey（写入时算好存下的规范化展示名），不是 toLower(label)：
+                // 后者与写入侧的 normalize 是**两套规则**，差在 Cypher 不认的那些空白字符上。
+                // 「维生素 D3 软胶囊」正是这种名字，它彼时**连结果集都进不来**，
+                // 于是下面那段用规范化名字再比一次的兜底代码根本没机会执行
                 var result = tx.run("""
                         MATCH (n:Entity)
-                        WHERE n.name IN $inputs OR toLower(n.label) IN $inputs
-                        RETURN n.name AS name, n.label AS label
+                        WHERE n.name IN $inputs OR n.nameKey IN $inputs
+                        RETURN n.name AS name, n.nameKey AS nameKey
                         """, Map.of("inputs", inputs));
+                Map<String, String> byKey = new LinkedHashMap<>();
                 List<String> names = new ArrayList<>();
-                List<String> labels = new ArrayList<>();
                 while (result.hasNext()) {
                     Record r = result.next();
-                    names.add(r.get("name").asString());
-                    labels.add(r.get("label").asString(null));
+                    String name = r.get("name").asString();
+                    names.add(name);
+                    String nameKey = r.get("nameKey").asString(null);
+                    if (nameKey != null) {
+                        byKey.putIfAbsent(nameKey, name);
+                    }
                 }
                 Map<String, String> resolved = new LinkedHashMap<>();
                 for (String input : inputs) {
@@ -513,13 +558,9 @@ public class KnowledgeGraphStore implements DisposableBean {
                         resolved.put(input, input);
                         continue;
                     }
-                    for (int i = 0; i < labels.size(); i++) {
-                        // 比较用的是规范化后的展示名，与建键时同一套规则。
-                        // 只比较原始字符串的话，「维生素 D3」这种带空格的标签会漏掉
-                        if (input.equals(TripleValidator.normalizeName(labels.get(i)))) {
-                            resolved.put(input, names.get(i));
-                            break;
-                        }
+                    String hit = byKey.get(input);
+                    if (hit != null) {
+                        resolved.put(input, hit);
                     }
                 }
                 return resolved;

@@ -144,7 +144,10 @@ public class GraphService {
         // 只留键的话，调用方传 SPU7、拿回来是 spu7，就没法把它和自己问的那样东西对上号了
         Map<String, String> rawByKey = new LinkedHashMap<>();
         for (String raw : inputs == null ? List.<String>of() : inputs) {
-            String key = TripleValidator.normalizeName(raw);
+            // 归一到规范名再当键：用户说「富马酸亚铁」而图上的节点叫「铁剂」时它们是同一个东西。
+            // 不归一的话，同一次请求里同时问这两个会被当成两样，而且**两样都解析不到节点**
+            // （图上没有「富马酸亚铁」这个键），结果双双报「没有收录」——两次错误回答
+            String key = TripleValidator.canonicalName(TripleValidator.normalizeName(raw));
             if (!key.isEmpty()) {
                 rawByKey.putIfAbsent(key, raw.strip());
             }

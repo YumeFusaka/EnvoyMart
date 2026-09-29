@@ -96,6 +96,72 @@ class TripleValidatorTest {
         assertThat(result.accepted()).hasSize(1);
     }
 
+    // ==================== 实体消解（别名归并） ====================
+
+    /**
+     * 语料里的真实分歧：{@code KB-0009} 写「富马酸亚铁」、{@code KB-0010} 写「铁剂」。
+     * 两条边各自成立却接不上，于是「孕期复合营养包 + 左旋多巴」这个跨文档查询查不到
+     * ——而这条多跳正是这张图存在的理由。
+     */
+    private static final String IRON_BODY = """
+            孕期复合营养包说明书
+            本品主要成分为富马酸亚铁与叶酸。
+            铁剂与左旋多巴、甲状腺素合用会降低后者吸收，应间隔至少 2 小时。
+            """;
+
+    private static TripleValidator.Result validateIron(Triple... triples) {
+        return TripleValidator.validate(List.of(triples), "KB-0009", IRON_BODY, List.of());
+    }
+
+    @Test
+    void 归并后的端点仍按模型写的原名锚定() {
+        // 本类最容易写反的一处：归并要在形状校验<b>之前</b>算出来（形状要用规范类型），
+        // 而锚定必须用<b>模型写的那个名字</b>。文档里写的是「富马酸亚铁」，
+        // 拿规范名「铁剂」去正文里找，这一条会被判成「端点无出处」整体丢掉——
+        // 恰好丢掉那条跨文档多跳的一半
+        TripleValidator.Result result = validateIron(
+                triple("INGREDIENT", "富马酸亚铁", "INTERACTS_WITH", "DRUG", "左旋多巴",
+                        "铁剂与左旋多巴、甲状腺素合用会降低后者吸收"));
+
+        assertThat(result.count(TripleValidator.RejectReason.UNANCHORED)).isZero();
+        assertThat(result.accepted()).hasSize(1);
+        GroundedTriple accepted = result.accepted().get(0);
+        // 节点键与展示名一并归到规范名：键是「铁剂」而标签留着「富马酸亚铁」的话，
+        // 前端点开这个节点看到的是旧名字，而它底下的边属于「铁剂」——一个节点两副面孔
+        assertThat(accepted.headName()).isEqualTo("铁剂");
+        assertThat(accepted.headLabel()).isEqualTo("铁剂");
+    }
+
+    @Test
+    void 归并出的自环_报自环而不是词表() {
+        // 归并会顺带改类型（两端都成了 INGREDIENT），于是这一条同时是自环和类型不符。
+        // 报词表会把人送去改提示词与枚举，而那里没坏——归因错了比不归因更贵
+        TripleValidator.Result result = validateIron(
+                triple("INGREDIENT", "富马酸亚铁", "INTERACTS_WITH", "DRUG", "铁剂",
+                        "铁剂与左旋多巴、甲状腺素合用会降低后者吸收"));
+
+        assertThat(result.accepted()).isEmpty();
+        assertThat(result.count(TripleValidator.RejectReason.SELF_LOOP)).isEqualTo(1);
+        assertThat(result.count(TripleValidator.RejectReason.VOCABULARY)).isZero();
+    }
+
+    @Test
+    void 表里没有的写法沿用原名原类型() {
+        // 归并只对登记过的写法生效，其余原样放过。若把「表里没有」也当成需要特殊处理的
+        // 情况，等于给整张图强加一个隐含词表，模型抽出的新实体全落不进来——
+        // 而症状是图悄悄变小，不是报错
+        assertThat(TripleValidator.canonicalName("叶酸")).isEqualTo("叶酸");
+        assertThat(TripleValidator.canonicalName("富马酸亚铁")).isEqualTo("铁剂");
+
+        // 叶酸没登记，于是按模型给的 NUTRIENT 走：PROVIDES 的尾端只接受 NUTRIENT，
+        // 若这里被归成别的类型，这一条会被误判成词表不符
+        TripleValidator.Result result = validateIron(
+                triple("INGREDIENT", "富马酸亚铁", "PROVIDES", "NUTRIENT", "叶酸",
+                        "本品主要成分为富马酸亚铁与叶酸"));
+
+        assertThat(result.accepted()).hasSize(1);
+    }
+
     // ==================== 商品键的形状 ====================
 
     @Test

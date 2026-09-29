@@ -1,6 +1,8 @@
 package yumefusaka.envoymart.knowledgeservice.graph;
 
 import lombok.extern.slf4j.Slf4j;
+import yumefusaka.envoymart.agent.graph.EntityAliases;
+import yumefusaka.envoymart.agent.graph.EntityAliases.Canonical;
 import yumefusaka.envoymart.agent.graph.EntityKind;
 import yumefusaka.envoymart.agent.graph.EntityNames;
 import yumefusaka.envoymart.agent.graph.GraphRelation;
@@ -174,25 +176,42 @@ public final class TripleValidator {
         if (headKind == null || tailKind == null || relation == null) {
             return Verdict.reject(RejectReason.VOCABULARY);
         }
-        if (!relation.acceptsHead(headKind) || !relation.acceptsTail(tailKind)) {
-            return Verdict.reject(RejectReason.VOCABULARY);
-        }
 
-        String headName = normalizeName(t.headName());
-        String tailName = normalizeName(t.tailName());
-        if (headName.isEmpty() || tailName.isEmpty() || headName.equals(tailName)) {
-            // 自环对「A 和 B 冲突吗」这类查询没有意义，一律不要
+        // 模型写的名字，先留一份：下面锚定要拿它去正文里找
+        String headWritten = normalizeName(t.headName());
+        String tailWritten = normalizeName(t.tailName());
+
+        // 归一到规范实体。放在锚定<b>之前</b>是因为形状校验要用规范类型
+        //（别名表会把「强心苷类药物」从 DRUG 纠正成 DRUG_CLASS）；
+        // 但锚定本身仍然用模型写的那个名字——见下面 anchors 处的说明
+        Canonical head = canonical(headWritten, headKind);
+        Canonical tail = canonical(tailWritten, tailKind);
+
+        // 自环与空名判定<b>排在关系类型之前</b>。别名归并会顺带改类型，
+        // 于是「富马酸亚铁 -[X]-> 铁剂」这类条目在归并后同时是自环和类型不符——
+        // 两条都成立时报哪一条？报自环。模型的真实毛病是「把同一个东西的两端拼成了一对」，
+        // 类型不符只是归并的副产物；报词表会把人送去改提示词与枚举，而那里没坏
+        if (head.name().isEmpty() || tail.name().isEmpty() || head.name().equals(tail.name())) {
+            // 判据用<b>规范名</b>：别名表可能把原本不同的两端并成同一个
             return Verdict.reject(RejectReason.SELF_LOOP);
         }
-        if (headName.length() > MAX_NAME_CHARS || tailName.length() > MAX_NAME_CHARS
-                || !wellShaped(headKind, headName) || !wellShaped(tailKind, tailName)) {
+
+        if (!relation.acceptsHead(head.kind()) || !relation.acceptsTail(tail.kind())) {
+            return Verdict.reject(RejectReason.VOCABULARY);
+        }
+        if (head.name().length() > MAX_NAME_CHARS || tail.name().length() > MAX_NAME_CHARS
+                || !wellShaped(head.kind(), head.name()) || !wellShaped(tail.kind(), tail.name())) {
             return Verdict.reject(RejectReason.MALFORMED);
         }
 
         // 端点锚定在前、引文锚定在后：端点根本不在文档里，说明这一条是凭空造的，
-        // 那比「引文抄错了」更根本，报出来的原因也更接近真实错因
-        if (!body.anchors(headKind, headName, t.headLabel())
-                || !body.anchors(tailKind, tailName, t.tailLabel())) {
+        // 那比「引文抄错了」更根本，报出来的原因也更接近真实错因。
+        //
+        // 这里必须用模型写的名字，不能用规范名。别名表把「富马酸亚铁」并到了
+        // 「铁剂」，而文档里写的是前者——拿规范名去正文里找，这一条会被判成
+        // 「端点无出处」整体丢掉。<b>并入一个更通用的名字，不该让一条本来有出处的边变成没出处。</b>
+        if (!body.anchors(headKind, headWritten, t.headLabel())
+                || !body.anchors(tailKind, tailWritten, t.tailLabel())) {
             return Verdict.reject(RejectReason.UNANCHORED);
         }
 
@@ -203,9 +222,35 @@ public final class TripleValidator {
             return Verdict.reject(RejectReason.UNGROUNDED);
         }
 
-        return Verdict.accept(new GroundedTriple(headKind, headName, labelOr(t.headLabel(), t.headName()),
-                relation, tailKind, tailName, labelOr(t.tailLabel(), t.tailName()),
+        return Verdict.accept(new GroundedTriple(head.kind(), head.name(),
+                displayLabel(head, headWritten, t.headLabel(), t.headName()),
+                relation, tail.kind(), tail.name(),
+                displayLabel(tail, tailWritten, t.tailLabel(), t.tailName()),
                 truncate(t.effect()), docId, chunkIdAt(chunks, span[0]), span[0], span[1], quote));
+    }
+
+    /**
+     * 解析到规范实体；别名表里没有这个写法就<b>沿用原名原类型</b>。
+     * <p>
+     * 返回一个非空对象而不是可空的 {@link EntityAliases.Canonical}：
+     * 调用方每一条三元组都要用两个端点，让「没命中」也返回一个对象，
+     * 下面就不必写四次判空——而少写一次判空就是一个 NPE，或者更糟：
+     * 一个把 null 当成名字传下去的静默错误。
+     */
+    private static EntityAliases.Canonical canonical(String normalizedName, EntityKind kind) {
+        EntityAliases.Canonical hit = EntityAliases.resolve(normalizedName);
+        return hit != null ? hit : new EntityAliases.Canonical(normalizedName, kind);
+    }
+
+    /**
+     * 归一到规范实体名；表里没有这个写法就原样返回。
+     * <p>
+     * 给<b>查询侧</b>用（{@code GraphService.interactions}）：那边手上只有用户说的一串名字，
+     * 没有类型可给，而表里的条目都自带类型，所以给不给都一样。
+     */
+    public static String canonicalName(String normalizedName) {
+        EntityAliases.Canonical hit = EntityAliases.resolve(normalizedName);
+        return hit == null ? normalizedName : hit.name();
     }
 
     /** 商品键必须是 {@code SPU<数字>}；其余类型不限形状，长度已在上游卡住 */
@@ -220,6 +265,18 @@ public final class TripleValidator {
         }
         String s = quote.strip();
         return s.length() <= QUOTE_LOG_CHARS ? s : s.substring(0, QUOTE_LOG_CHARS) + "…";
+    }
+
+    /**
+     * 端点被别名归并时，展示名跟着归到规范名。
+     * <p>
+     * <b>不跟会怎样</b>：节点键是「铁剂」而标签留着「富马酸亚铁」，前端点开这个节点看到的
+     * 是旧名字，而它底下的边属于「铁剂」——一个节点两副面孔。更麻烦的是标签由
+     * {@code SET n.label = ...} 覆盖写，同一个节点会被不同文档写上不同的标签，
+     * 后写的赢，结果连「显示成哪个」都不确定。归到规范名之后每篇文档写的都一样。
+     */
+    private static String displayLabel(Canonical canonical, String written, String label, String rawName) {
+        return canonical.name().equals(written) ? labelOr(label, rawName) : canonical.name();
     }
 
     /**
