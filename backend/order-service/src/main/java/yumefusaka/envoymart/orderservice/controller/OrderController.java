@@ -44,7 +44,7 @@ public class OrderController {
 
     @PutMapping("/cart/items/{id}")
     public Result<CartItemResponse> updateCart(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                                               @PathVariable Long id,
+                                               @PathVariable("id") Long id,
                                                @Valid @RequestBody UpdateCartItemRequest request) {
         return Result.success(orderDomainService.updateCartItem(userId, id, request));
     }
@@ -62,7 +62,7 @@ public class OrderController {
 
     @GetMapping("/orders/{id}")
     public Result<OrderResponse> detail(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                                        @PathVariable Long id) {
+                                        @PathVariable("id") Long id) {
         return Result.success(orderDomainService.getOrder(userId, id));
     }
 
@@ -74,7 +74,7 @@ public class OrderController {
 
     @GetMapping("/orders/{id}/logistics")
     public Result<LogisticsResponse> logistics(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                                               @PathVariable Long id) {
+                                               @PathVariable("id") Long id) {
         return Result.success(orderDomainService.getLogistics(userId, id));
     }
 }

@@ -29,7 +29,7 @@ public class ReviewController {
     }
 
     @GetMapping("/{productId}")
-    public Result<List<ReviewResponse>> listByProduct(@PathVariable Long productId) {
+    public Result<List<ReviewResponse>> listByProduct(@PathVariable("productId") Long productId) {
         return Result.success(reviewService.listReviews(productId));
     }
 }

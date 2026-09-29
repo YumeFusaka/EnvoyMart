@@ -39,7 +39,7 @@ public class AddressController {
     }
 
     @GetMapping("/{id}")
-    public Result<UserAddressEntity> get(@PathVariable Long id) {
+    public Result<UserAddressEntity> get(@PathVariable("id") Long id) {
         return Result.success(addressService.get(id, BaseContext.getCurrentId()));
     }
 
@@ -49,19 +49,19 @@ public class AddressController {
     }
 
     @PutMapping("/{id}")
-    public Result<UserAddressEntity> update(@PathVariable Long id,
+    public Result<UserAddressEntity> update(@PathVariable("id") Long id,
                                             @Valid @RequestBody AddressRequest request) {
         return Result.success(addressService.update(id, BaseContext.getCurrentId(), request));
     }
 
     @DeleteMapping("/{id}")
-    public Result<Void> delete(@PathVariable Long id) {
+    public Result<Void> delete(@PathVariable("id") Long id) {
         addressService.delete(id, BaseContext.getCurrentId());
         return Result.success(null);
     }
 
     @PutMapping("/{id}/default")
-    public Result<Void> setDefault(@PathVariable Long id) {
+    public Result<Void> setDefault(@PathVariable("id") Long id) {
         addressService.setDefault(id, BaseContext.getCurrentId());
         return Result.success(null);
     }

@@ -43,7 +43,7 @@ public class PaymentController {
     @GetMapping("/{orderId}")
     public Result<PaymentResponse> getPayment(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @PathVariable Long orderId) {
+            @PathVariable("orderId") Long orderId) {
         return Result.success(paymentService.getPayment(userId, orderId));
     }
 }
