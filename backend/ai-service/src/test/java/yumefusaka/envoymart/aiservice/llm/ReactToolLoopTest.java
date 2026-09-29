@@ -7,6 +7,7 @@ import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import yumefusaka.envoymart.agent.llm.ChatMessage;
 import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMResponse;
@@ -169,5 +170,153 @@ class ReactToolLoopTest {
                 .as("第二次工具调用必须被护栏拦下，否则预算形同虚设")
                 .isEqualTo(1);
         assertThat(guard.getStopReason()).contains("工具调用总数");
+    }
+
+    /**
+     * 预算耗尽后**循环本身**必须停下来，不能靠模型自己看拒绝提示收手。
+     * <p>
+     * 这条守的是一个具体的失败模式：护栏只装在「执行工具」这一点上，而循环由「模型往返」
+     * 驱动。被拦下的调用走的是回填一条拒绝消息再转一圈，模型下一圈照样能要工具——
+     * 于是预算耗尽之后，终止完全取决于模型是否配合。桩模型这里**永不收手**，
+     * 正好把这个依赖暴露成一条会挂的断言：修之前它会一直转到测试超时。
+     * <p>
+     * 断言的是「模型被问了几次」而不是「工具被调用了几次」。后者在修复前也是对的
+     * （护栏确实拦住了工具），差别只在模型还在被反复问——而那正是花钱的地方。
+     */
+    @Test
+    @Timeout(10)
+    void 预算耗尽后循环立刻收口而不是继续问模型() {
+        AtomicInteger requests = new AtomicInteger();
+        // 一个不配合的模型：只要给了工具定义就一定要工具，永远不会自己停
+        ChatModel neverStops = new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                requests.incrementAndGet();
+                boolean toolsOffered = !request.toolSpecifications().isEmpty();
+                if (toolsOffered) {
+                    return ChatResponse.builder()
+                            .aiMessage(AiMessage.from("", List.of(ToolExecutionRequest.builder()
+                                    .id("c" + requests.get()).name(TOOL_NAME).arguments("{}").build())))
+                            .build();
+                }
+                return ChatResponse.builder().aiMessage(AiMessage.from("基于已有信息的回答")).build();
+            }
+        };
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(echoTool);
+
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(neverStops, null, registry,
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+        // 只允许 2 次工具调用
+        LoopGuard guard = new LoopGuard(new LoopBudget(2, 2, 2));
+
+        LLMResponse response = provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.LOOP_GUARD, guard));
+
+        assertThat(guard.getStopReason()).contains("工具调用总数");
+        assertThat(requests.get())
+                .as("预算耗尽后必须撤掉工具定义收口，最多再多问一次；一直问下去就是无上限烧钱")
+                .isLessThanOrEqualTo(4);
+        assertThat(response.getContent())
+                .as("收口那一问必须真的拿到回答，不能把一个空内容返回给上层")
+                .isEqualTo("基于已有信息的回答");
+    }
+
+    /**
+     * 调用方没传护栏时，循环也得有上限。
+     * <p>
+     * 循环的终止条件是这一层的责任，不能取决于每个调用点都记得传护栏——
+     * 漏传一次就是一次没有上限的调用循环。桩模型同样永不收手，
+     * 断言的是「它终究停下来了」，而不是停下来时用了几次。
+     */
+    @Test
+    @Timeout(10)
+    void 调用方没传护栏时循环仍有上限() {
+        AtomicInteger requests = new AtomicInteger();
+        ChatModel neverStops = new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                requests.incrementAndGet();
+                if (!request.toolSpecifications().isEmpty()) {
+                    return ChatResponse.builder()
+                            .aiMessage(AiMessage.from("", List.of(ToolExecutionRequest.builder()
+                                    .id("c" + requests.get()).name(TOOL_NAME).arguments("{}").build())))
+                            .build();
+                }
+                return ChatResponse.builder().aiMessage(AiMessage.from("兜底回答")).build();
+            }
+        };
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(echoTool);
+
+        LLMResponse response = new LangChain4jLLMProvider(neverStops, null, registry,
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry())
+                // 刻意不传 LOOP_GUARD
+                .chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(), Map.of());
+
+        assertThat(requests.get())
+                .as("没传护栏也要有默认预算兜住，否则这个循环是无上限的")
+                .isLessThanOrEqualTo(11);
+        assertThat(response.getContent()).isEqualTo("兜底回答");
+    }
+
+    /**
+     * 撤掉工具定义之后模型仍然吐 tool_call —— 循环也不能转下去。
+     * <p>
+     * 这是把「循环一定会停」从<b>模型配合</b>手里收回到<b>代码</b>手里的最后一步。
+     * 前面那条测试守的是合规 API：不给工具就不要工具。这一条守的是不合规的那半 ——
+     * 有些模型会自己编 tool_call，提示注入也正是奔着这个去的。这时护栏只能拦住
+     * <b>执行</b>，拦不住<b>往返</b>：一轮回填一条拒绝消息，下一轮模型再要一次，
+     * 每一次都是真实计费的调用。所以必须有跟模型行为无关的硬上限。
+     * <p>
+     * 超时是断言的一部分：修复前这条不是失败，是<b>挂住</b>。
+     */
+    @Test
+    @Timeout(10)
+    void 撤掉工具定义后模型仍要工具也不会转成死循环() {
+        AtomicInteger requests = new AtomicInteger();
+        AtomicInteger executions = new AtomicInteger();
+        Tool counting = new Tool() {
+            @Override
+            public ToolDefinition getDefinition() {
+                return ToolDefinition.builder().name(TOOL_NAME).description("计数").parameters(Map.of()).build();
+            }
+
+            @Override
+            public ToolResult execute(ToolCall call) {
+                executions.incrementAndGet();
+                return ToolResult.builder().success(true).output("ok").build();
+            }
+        };
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(counting);
+
+        // 不看有没有工具定义，一律吐 tool_call
+        ChatModel alwaysAsks = new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                requests.incrementAndGet();
+                return ChatResponse.builder()
+                        .aiMessage(AiMessage.from("", List.of(ToolExecutionRequest.builder()
+                                .id("c" + requests.get()).name(TOOL_NAME).arguments("{}").build())))
+                        .build();
+            }
+        };
+
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(alwaysAsks, null, registry,
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+        LoopGuard guard = new LoopGuard(new LoopBudget(2, 2, 2));
+
+        provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.LOOP_GUARD, guard));
+
+        assertThat(executions.get())
+                .as("护栏该拦的仍然拦着，硬上限不是绕过护栏的后门")
+                .isEqualTo(2);
+        assertThat(requests.get())
+                .as("往返次数由代码封顶（预算 2 + 余量 2），不随模型行为浮动")
+                .isEqualTo(4);
     }
 }

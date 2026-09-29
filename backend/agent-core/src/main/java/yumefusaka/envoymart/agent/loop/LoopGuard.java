@@ -13,11 +13,20 @@ import java.util.stream.Collectors;
  * 这里的设计要点是<b>统一</b>：
  * <ul>
  *   <li>执行图里的 ACT → EVALUATE → REPLAN 环，由节点直接调用；</li>
- *   <li>ReAct 的工具循环（由框架驱动），通过 Spring AI 的 toolContext
- *       把同一个护栏传进 ToolCallback，在调用点拦截。</li>
+ *   <li>ReAct 的工具循环，经 toolContext 把同一个护栏交给
+ *       {@code LangChain4jLLMProvider}，由它在循环体内判定。</li>
  * </ul>
- * 循环本身交给框架跑，但<b>循环的边界与终止条件归我们</b>——
- * 这样两种循环的"最多花多少"是同一套账。
+ * 两处循环都在我们自己的代码里，<b>循环的边界与终止条件因此都归我们</b>——
+ * 两种循环的"最多花多少"是同一套账。
+ * <p>
+ * <b>{@link #isExhausted()} 是驱动循环那一层的终止判据。</b>它不只是"拒绝某次调用"：
+ * 工具循环在每轮开头读它，耗尽后就不再下发工具定义。只拦行动不拦循环的话，
+ * 被拒的调用只是回填一条消息再转一圈，循环照样烧钱。
+ * <p>
+ * 但驱动层不能只依赖它。撤掉工具定义之后，<b>模型仍有可能吐出一个 tool_call</b>——
+ * 合规的 API 不该这样，可模型是不可信输入，而它一旦这么做，护栏拦得住执行、拦不住往返，
+ * 循环就又开始空转。所以驱动层还要有一条与模型无关的硬上限，
+ * 见 {@link #maxToolCalls()}。
  */
 public class LoopGuard {
 
@@ -73,6 +82,14 @@ public class LoopGuard {
 
     public boolean isExhausted() {
         return stopReason != null;
+    }
+
+    /**
+     * 工具调用预算。驱动循环的那一层用它推出「最多问模型几次」的硬上限 ——
+     * 正常出口是 {@link #isExhausted()}，这条是模型不配合时的兜底。
+     */
+    public int maxToolCalls() {
+        return budget.maxToolCalls();
     }
 
     public int toolCalls() {

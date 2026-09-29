@@ -105,6 +105,17 @@ public class LangChain4jLLMProvider implements LLMProvider {
      * <p>
      * 循环由本方法自己驱动，因此护栏、高危确认、调用者身份都是循环内的局部事实，
      * 不再需要经 toolContext 层层传递到某个回调里再解包。
+     * <p>
+     * <b>护栏耗尽后要撤掉工具定义，而不是继续带着工具问。</b>这个循环原本唯一的出口是
+     * 「模型这一轮没要工具」——被拦下的调用只是回填一条拒绝消息再转一圈，而下一圈
+     * 模型照样能要工具。于是预算耗尽之后的终止，靠的是<b>模型看到拒绝提示后选择停手</b>：
+     * 是模型配合，不是代码保证。一个不配合的模型，或者一次成功的提示注入
+     * （「继续调用工具」），就能让它一直转下去，每圈都是一次真实计费的调用。
+     * <p>
+     * 现在的判据是护栏自己：它一旦耗尽，这一次问话就不带工具定义——模型想再要也没有，
+     * 只能基于已有信息作答。循环的终结点因此回到代码手里。判据放在<b>每轮开头</b>而不是
+     * 工具执行之后，是因为护栏是<b>一次请求一份</b>：图里靠前的节点把预算花光时，
+     * 后面节点的第一次问话就该是不带工具的。
      */
     @Override
     public LLMResponse chatWithTools(List<ChatMessage> messages, LLMConfig config,
@@ -118,14 +129,22 @@ public class LangChain4jLLMProvider implements LLMProvider {
         int promptTokens = 0;
         int completionTokens = 0;
         ChatResponse response;
+        int rounds = 0;
+        int maxRounds = ctx.guard.maxToolCalls() + MAX_ROUND_SLACK;
         while (true) {
-            response = chatModel.chat(buildRequest(working, config, specs));
+            response = chatModel.chat(buildRequest(working, config, toolsFor(ctx, specs)));
+            rounds++;
             TokenUsage usage = response.tokenUsage();
             promptTokens += usageInt(usage, true);
             completionTokens += usageInt(usage, false);
 
             AiMessage aiMessage = response.aiMessage();
             if (!aiMessage.hasToolExecutionRequests()) {
+                break;
+            }
+            if (rounds >= maxRounds) {
+                log.warn("[LLM] 工具循环触到硬性轮次上限 model={} rounds={} {}",
+                        config.getModel(), rounds, ctx.guard.summary());
                 break;
             }
             working.add(aiMessage);
@@ -162,8 +181,10 @@ public class LangChain4jLLMProvider implements LLMProvider {
 
         long startedAt = System.nanoTime();
         int rounds = 0;
+        int maxRounds = ctx.guard.maxToolCalls() + MAX_ROUND_SLACK;
         while (true) {
-            StreamedRound round = streamOneRound(working, config, specs);
+            // 同 chatWithTools：护栏耗尽后不再下发工具定义，这是循环的终止判据
+            StreamedRound round = streamOneRound(working, config, toolsFor(ctx, specs));
             rounds++;
 
             if (!round.aiMessage.hasToolExecutionRequests()) {
@@ -177,10 +198,39 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 return;
             }
 
+            if (rounds >= maxRounds) {
+                log.warn("[LLM] 流式工具循环触到硬性轮次上限 model={} rounds={} {}",
+                        config.getModel(), rounds, ctx.guard.summary());
+                return;
+            }
+
             working.add(round.aiMessage);
             executeToolRequests(round.aiMessage.toolExecutionRequests(), working, ctx, executions);
         }
     }
+
+    /**
+     * 这一轮往返该不该带上工具定义。
+     * <p>
+     * 预算耗尽就撤掉工具，让循环有确定的出口。这是「循环一定会停」的<b>唯一</b>依据，
+     * 所以它不能是某个可选参数：只要有一次问话还带着工具，模型就能再要一次。
+     */
+    private static List<ToolSpecification> toolsFor(LoopContext ctx, List<ToolSpecification> specs) {
+        return ctx.guard.isExhausted() ? List.of() : specs;
+    }
+
+    /**
+     * 硬性轮次上限比工具预算多留的余量。
+     * <p>
+     * 正常的出口是护栏：预算耗尽 → 撤掉工具定义 → 模型无事可要 → 循环结束。
+     * 上限只兜一件事：<b>模型在没有工具定义时仍吐出一个 tool_call</b>。
+     * 合规的 API 不该这样，但模型是不可信输入，而这种情况下护栏拦得住执行、
+     * 拦不住往返 —— 每转一圈就是一次真实计费的调用。
+     * <p>
+     * 留 2 的余量是因为「最后一次问话」和「收口那一问」都不花工具预算：
+     * 预算 N 次工具，正常路径正好是 N 次往返 + 1 次收口。
+     */
+    private static final int MAX_ROUND_SLACK = 2;
 
     /**
      * 执行模型请求的这一批工具，把结果回填进消息列表。
@@ -194,7 +244,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
         for (ToolExecutionRequest request : requests) {
             Map<String, Object> arguments = parseArguments(request.arguments());
 
-            if (ctx.guard != null && !ctx.guard.allowToolCall(request.name(), arguments)) {
+            if (!ctx.guard.allowToolCall(request.name(), arguments)) {
                 log.warn("[Tool] {} blocked by loop guard: {}", request.name(), ctx.guard.getStopReason());
                 toolRegistry.recordBlocked(request.name());
                 working.add(dev.langchain4j.data.message.ToolExecutionResultMessage.from(
@@ -621,8 +671,15 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 // 走 API Key（机器凭证、无用户身份）时这里仍为 null，需要身份的工具会 fail-closed。
                 userId = BaseContext.getCurrentId();
             }
+            LoopGuard guard = (LoopGuard) toolContext.get(ToolContextKeys.LOOP_GUARD);
+            if (guard == null) {
+                // 调用方没传护栏就地补一个。循环的终止条件是这一层自己的责任，
+                // 不能取决于每个调用点都记得传 —— 漏传一次就是一次无上限的烧钱循环。
+                // 传了护栏的调用方不受影响，两边用的是同一份预算。
+                guard = new LoopGuard();
+            }
             return new LoopContext(
-                    (LoopGuard) toolContext.get(ToolContextKeys.LOOP_GUARD),
+                    guard,
                     Boolean.TRUE.equals(toolContext.get(ToolContextKeys.APPROVED)),
                     userId);
         }
