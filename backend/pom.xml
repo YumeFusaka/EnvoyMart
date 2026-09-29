@@ -12,12 +12,14 @@
 
     <modules>
         <module>common</module>
+        <module>agent-core</module>
         <module>auth-service</module>
         <module>product-service</module>
         <module>order-service</module>
         <module>payment-service</module>
         <module>review-service</module>
-        <module>agent-core</module>
+        <module>promotion-service</module>
+        <module>knowledge-service</module>
         <module>ai-service</module>
         <module>gateway-service</module>
     </modules>

@@ -14,6 +14,7 @@ volumes:
   etcd-data:
   minio-data:
   milvus-data:
+  neo4j-data:
 
 services:
   # ========== 注册中心 ==========
@@ -268,5 +269,31 @@ services:
     ports:
       - "8091:8091"   # 事务协调器（客户端连接）
       - "7091:7091"   # 控制台
+    networks:
+      - envoymart-net
+
+  # ========== 图数据库 ==========
+  # 知识图谱的存储。选 Neo4j 而不是在 MySQL 里用邻接表，是因为要查的是
+  # 「保健品 → 成分 → 相互作用 → 药物」这类多跳路径——可变长路径在 Cypher 里是
+  # 一等公民（`-[:CONTAINS|PROVIDES|INTERACTS_WITH*1..4]->`），在 SQL 里要写成
+  # 递归 CTE，而且每加一跳就改一次查询。
+  #
+  # 它自带的 Browser（7474）也是选它的理由之一：图谱可视化面板可以直接复用，
+  # 不必从零写一个图渲染器。
+  neo4j:
+    image: neo4j:5.26-community
+    restart: unless-stopped
+    container_name: envoymart-neo4j
+    ports:
+      - "7474:7474"   # HTTP / Neo4j Browser
+      - "7687:7687"   # Bolt（应用连接）
+    environment:
+      NEO4J_AUTH: neo4j/envoymart123
+      # 堆与页缓存都压到 512m：演示环境同时跑着十来个容器，而图规模只有几百节点，
+      # 按物理内存百分比算的默认值会把内存吃光。
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 512m
+    volumes:
+      - neo4j-data:/data
     networks:
       - envoymart-net
