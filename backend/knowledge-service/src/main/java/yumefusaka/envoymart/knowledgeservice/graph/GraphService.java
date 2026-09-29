@@ -149,15 +149,24 @@ public class GraphService {
                 rawByKey.putIfAbsent(key, raw.strip());
             }
         }
-        List<String> keys = List.copyOf(rawByKey.keySet());
-        if (keys.isEmpty()) {
+        List<String> inputs0 = List.copyOf(rawByKey.keySet());
+        if (inputs0.isEmpty()) {
             return new InteractionReport(graphStore.isAvailable(), graphStore.unavailableReason(), List.of());
         }
         if (!graphStore.isAvailable()) {
             return new InteractionReport(false, graphStore.unavailableReason(), List.of());
         }
 
-        List<Substance> substances = graphStore.expandSubstances(keys);
+        // 用户嘴里说的是商品名，图上商品的键是 SPU 编号——这一步是那座桥。
+        // 放在查询之前而不是查询之后：拿着一个图上不存在的键去展开，回来的必然只有
+        // 「没收录」这一个结论，而那正是本方法最不该给出的错误答案
+        Map<String, String> resolved = graphStore.resolveKeys(inputs0);
+
+        // 解析失败的项不参与查询，但**必须在结果里逐项出列**：用户在界面上看不到
+        // 自己问的那样东西，会以为系统把它漏了，而正确的说法是「图谱里没有收录它」
+        List<String> keys = resolved.values().stream().distinct().toList();
+
+        List<Substance> substances = keys.isEmpty() ? List.of() : graphStore.expandSubstances(keys);
         Map<String, List<Substance>> byRoot = new LinkedHashMap<>();
         Set<String> allNames = new LinkedHashSet<>(keys);
         for (Substance s : substances) {
@@ -167,10 +176,18 @@ public class GraphService {
 
         // 风险边在展开出的全部物质上找一次，再按「这条边的哪一端属于哪个 root」分发回去。
         // 逐 root 各查一次会重复扫同一批边，而一次查询的结果正好能按端点的归属拆开
-        List<GraphEdge> risks = withTitles(graphStore.risksOf(List.copyOf(allNames)));
+        List<GraphEdge> risks = allNames.isEmpty() ? List.of()
+                : withTitles(graphStore.risksOf(List.copyOf(allNames)));
 
-        List<InteractionReport.Item> items = new ArrayList<>(keys.size());
-        for (String key : keys) {
+        List<InteractionReport.Item> items = new ArrayList<>(inputs0.size());
+        for (String input : inputs0) {
+            String raw = rawByKey.get(input);
+            String key = resolved.get(input);
+            if (key == null) {
+                items.add(new InteractionReport.Item(raw, raw, false, List.of(), List.of()));
+                continue;
+            }
+
             List<Substance> mine = byRoot.getOrDefault(key, List.of());
             Set<String> mineNames = new LinkedHashSet<>();
             mine.forEach(s -> mineNames.add(s.name()));
@@ -199,7 +216,8 @@ public class GraphService {
             }
             List<GraphEdge> mineRisks = List.copyOf(unique.values());
 
-            String raw = rawByKey.getOrDefault(key, key);
+            // 回答里的名字用**用户自己的写法**（raw），不用图谱里的键：他问的是
+            // 「鱼油软胶囊」，回一句「spu5 没有风险」既对不上号也看不懂
             String label = mine.isEmpty() ? raw : mine.get(0).rootLabel();
             items.add(new InteractionReport.Item(raw, label, !mine.isEmpty(), mine, mineRisks));
         }

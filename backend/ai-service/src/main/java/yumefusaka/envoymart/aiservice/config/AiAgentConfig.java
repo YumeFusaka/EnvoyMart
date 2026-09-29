@@ -42,6 +42,7 @@ import yumefusaka.envoymart.aiservice.rag.LangChain4jEmbeddingService;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.llm.LangChain4jLLMProvider;
 import yumefusaka.envoymart.aiservice.tool.CancelOrderTool;
+import yumefusaka.envoymart.aiservice.tool.InteractionCheckTool;
 import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
@@ -184,13 +185,15 @@ public class AiAgentConfig {
      */
     @Bean
     public ToolRegistry toolRegistry(OrderClient orderClient, ProductClient productClient,
+                                     KnowledgeClient knowledgeClient,
                                      MeterRegistry meterRegistry) {
         ToolRegistry registry = new ToolRegistry(new MicrometerToolCallListener(meterRegistry));
         registry.registerAll(List.of(
                 new OrderTool(orderClient),
                 new LogisticsTool(orderClient),
                 new ProductTool(productClient),
-                new CancelOrderTool(orderClient)
+                new CancelOrderTool(orderClient),
+                new InteractionCheckTool(knowledgeClient)
         ));
         return registry;
     }

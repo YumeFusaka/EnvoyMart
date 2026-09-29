@@ -398,6 +398,68 @@ public class KnowledgeGraphStore implements DisposableBean {
     }
 
     /**
+     * 把调用方给出的写法解析成图谱的节点键。
+     * <p>
+     * <b>为什么需要这一步</b>：商品节点的键是 SPU 编号（{@code spu5}），而用户和模型
+     * 嘴里说的是「鱼油软胶囊」。不解这一层的话，{@code interactions(鱼油软胶囊)}
+     * 会老老实实返回 {@code found=false}——在界面上就是「图谱里没有收录」，
+     * 读起来离「没查到风险」只差一步。而这正是本类开篇说要避免的那件事：
+     * <b>把「没找到」说成「没问题」</b>。非商品实体不受影响，它们的键本来就是中文名。
+     * <p>
+     * <b>只认精确匹配，不做子串猜测</b>。用户说「鱼油」时，「鱼油软胶囊」与「深海鱼油」
+     * 都是候选，猜错任何一个都会把答案引到另一个东西的成分与风险上——一个错误的
+     * 相互作用结论，比「没有收录」有害得多。子串猜测留给调用方：模型手上有
+     * {@code product_search}，让它拿到准确商品名/编号再问一次，比这里替它赌一把强。
+     *
+     * @param inputs 规范化后的输入（{@code EntityNames.normalize} 的产物）
+     * @return 输入 → 节点键。解析不到的项<b>不在返回值里</b>，调用方据此报「没有收录」
+     */
+    public Map<String, String> resolveKeys(List<String> inputs) {
+        if (!isAvailable() || inputs == null || inputs.isEmpty()) {
+            return Map.of();
+        }
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                // 一次查完两种匹配：键命中（成分/药物/营养素，或直接给了 SPU 编号）
+                // 与展示名命中（用户说了商品名）。两者都只做相等比较——见上面的理由
+                var result = tx.run("""
+                        MATCH (n:Entity)
+                        WHERE n.name IN $inputs OR toLower(n.label) IN $inputs
+                        RETURN n.name AS name, n.label AS label
+                        """, Map.of("inputs", inputs));
+                List<String> names = new ArrayList<>();
+                List<String> labels = new ArrayList<>();
+                while (result.hasNext()) {
+                    Record r = result.next();
+                    names.add(r.get("name").asString());
+                    labels.add(r.get("label").asString(null));
+                }
+                Map<String, String> resolved = new LinkedHashMap<>();
+                for (String input : inputs) {
+                    // 键优先：同一个写法既是某节点的键、又是另一节点的展示名时，
+                    // 键那一侧才是调用方真正指的东西
+                    if (names.contains(input)) {
+                        resolved.put(input, input);
+                        continue;
+                    }
+                    for (int i = 0; i < labels.size(); i++) {
+                        // 比较用的是规范化后的展示名，与建键时同一套规则。
+                        // 只比较原始字符串的话，「维生素 D3」这种带空格的标签会漏掉
+                        if (input.equals(TripleValidator.normalizeName(labels.get(i)))) {
+                            resolved.put(input, names.get(i));
+                            break;
+                        }
+                    }
+                }
+                return resolved;
+            }, txConfig());
+        } catch (RuntimeException e) {
+            markUnavailable("节点键解析 inputs=" + inputs, e);
+            return Map.of();
+        }
+    }
+
+    /**
      * 把用户手上的几样东西展开成「活性物质」集合 ——
      * 商品沿 {@code CONTAINS} / {@code PROVIDES} 走最多三跳。
      * <p>

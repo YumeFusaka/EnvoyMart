@@ -4,9 +4,11 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.contract.GraphIngestPayload;
 import yumefusaka.envoymart.contract.GraphIngestResult;
+import yumefusaka.envoymart.contract.InteractionReport;
 import yumefusaka.envoymart.contract.KnowledgeDocumentPayload;
 
 import java.util.List;
@@ -31,4 +33,20 @@ public interface KnowledgeClient {
     /** 整批重建后清理孤立实体 */
     @PostMapping("/knowledge/internal/graph/orphans")
     Result<Void> dropGraphOrphans();
+
+    /**
+     * 「这几样能不能一起用」——图谱侧的完整判定。
+     * <p>
+     * <b>走的是公开前缀而不是 {@code /internal}</b>，与上面三个方法不同。理由是这条查询
+     * 没有「内部视角」：它返回的就是用户自己在界面上能看到的同一份东西（边上的原文引文
+     * 来自知识库文档，文档本来就是登录后可读的）。再造一个 {@code /internal} 版本只会
+     * 多出一条要登记进网关屏蔽清单的路径，而两条路径的实现必然开始漂移。
+     * <p>
+     * {@code items} 用逗号分隔，商品给 SPU 编号或完整商品名，其余给中文名。
+     * <b>返回体里的 {@code available=false} 必须被当成「这一次没查成」</b>，
+     * 不能念成「没有冲突」——空列表与「无风险」在界面上长得一模一样，
+     * 而在这个场景里它们是相反的两句话。
+     */
+    @GetMapping("/knowledge/graph/interactions")
+    Result<InteractionReport> interactions(@RequestParam("items") String items);
 }

@@ -24,10 +24,10 @@ import java.util.stream.Collectors;
 public enum GraphRelation {
 
     /** 商品 → 成分。「用户买的那个东西到底含什么」的唯一入口 */
-    CONTAINS(EnumSet.of(EntityKind.PRODUCT), EnumSet.of(EntityKind.INGREDIENT)),
+    CONTAINS("含有", EnumSet.of(EntityKind.PRODUCT), EnumSet.of(EntityKind.INGREDIENT)),
 
     /** 成分 → 营养素。胆钙化醇提供维生素 D */
-    PROVIDES(EnumSet.of(EntityKind.INGREDIENT), EnumSet.of(EntityKind.NUTRIENT)),
+    PROVIDES("提供", EnumSet.of(EntityKind.INGREDIENT), EnumSet.of(EntityKind.NUTRIENT)),
 
     /**
      * 营养素/成分 → 药物或药物类别。
@@ -37,19 +37,26 @@ public enum GraphRelation {
      * 单独一条「维生素 D → 高钙血症」边是错的——正常剂量下它不会造成这个结果。
      * 拆节点恰好把「谁和谁一起才有事」这个最关键的信息丢掉。
      */
-    INTERACTS_WITH(EnumSet.of(EntityKind.NUTRIENT, EntityKind.INGREDIENT),
+    INTERACTS_WITH("相互作用", EnumSet.of(EntityKind.NUTRIENT, EntityKind.INGREDIENT),
             EnumSet.of(EntityKind.DRUG, EntityKind.DRUG_CLASS)),
 
     /** 营养素/成分 → 人群。需要先咨询医师的人群 */
-    CAUTION_FOR(EnumSet.of(EntityKind.NUTRIENT, EntityKind.INGREDIENT),
+    CAUTION_FOR("人群禁忌", EnumSet.of(EntityKind.NUTRIENT, EntityKind.INGREDIENT),
             EnumSet.of(EntityKind.POPULATION));
 
+    /** 中文说法。给模型看的工具输出与给用户看的界面都用它，不要漏出枚举名 */
+    private final String label;
     private final Set<EntityKind> heads;
     private final Set<EntityKind> tails;
 
-    GraphRelation(Set<EntityKind> heads, Set<EntityKind> tails) {
+    GraphRelation(String label, Set<EntityKind> heads, Set<EntityKind> tails) {
+        this.label = label;
         this.heads = heads;
         this.tails = tails;
+    }
+
+    public String label() {
+        return label;
     }
 
     public boolean acceptsHead(EntityKind kind) {
