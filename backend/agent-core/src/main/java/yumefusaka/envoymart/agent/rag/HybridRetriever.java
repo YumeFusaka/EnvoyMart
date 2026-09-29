@@ -26,8 +26,15 @@ import java.util.*;
 public class HybridRetriever implements Retriever {
 
     private final VectorStore vectorStore;
-    /** 参与 BM25 的检索单元；文档级入口会把每篇文档包成一个切片。 */
-    private final List<DocumentChunk> localChunks;
+    /**
+     * 参与 BM25 的检索单元；文档级入口会把每篇文档包成一个切片。
+     * <p>
+     * {@code volatile} 且非 final：语料来自知识库，可以在运行时被整份替换
+     * （见 {@link #rebuild}）。读它的是每个检索请求，写它的是一次管理动作，
+     * 不保证可见性的话会有一部分线程继续拿着旧语料打分——表现为「重建了，
+     * 但一部分查询搜到的还是旧内容」，且不可复现。
+     */
+    private volatile List<DocumentChunk> localChunks;
     private final Reranker reranker;
     /** true：按 docId 归一（防抬权）；false：按 chunkId 归一（切片级召回）。 */
     private final boolean groupByDocId;
@@ -64,6 +71,21 @@ public class HybridRetriever implements Retriever {
     public static HybridRetriever overChunks(VectorStore vectorStore, List<DocumentChunk> chunks,
                                              Reranker reranker) {
         return new HybridRetriever(vectorStore, chunks, reranker, false);
+    }
+
+    /**
+     * 整份替换 BM25 侧的语料。
+     * <p>
+     * <b>为什么是「整份替换」而不是增删单篇</b>：知识库改一篇文档时，切分结果会整组变
+     * （片数、边界、编号都跟着变），逐篇对齐要处理这三种变化，而它们本来就没有对应关系。
+     * 十几篇文档重建一次 BM25 索引是毫秒级的事，换来的是一个不可能出现"半新半旧"的状态。
+     * <p>
+     * 索引是<b>派生数据</b>，随时可以从知识库重建——这正是把它做成一个动作而不是
+     * 一份持久状态的理由。
+     */
+    public void rebuild(List<DocumentChunk> chunks) {
+        this.localChunks = List.copyOf(chunks);
+        log.info("[Retriever] BM25 语料已重建，切片 {} 片", this.localChunks.size());
     }
 
     /**

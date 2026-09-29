@@ -48,6 +48,11 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             PublicRule.of("POST", "/auth/register"),
             PublicRule.of("GET", "/products"),
             PublicRule.of("GET", "/products/**"),
+            // 知识库只读：引用要让**任何人**都能自己核对，「登录了才给你看依据」
+            // 与溯源的目的正好相反。这里也没有任何用户数据，全是平台规则与说明书
+            PublicRule.of("GET", "/knowledge/documents"),
+            PublicRule.of("GET", "/knowledge/documents/**"),
+            PublicRule.of("GET", "/knowledge/chunks/**"),
             PublicRule.of("POST", "/payments/callback")
     );
 
@@ -75,7 +80,13 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 售后审核同样是管理侧动作，用户不该够得着
             "/after-sales/internal/",
             // 优惠券核销：让用户能自己核销等于让他自己改优惠金额
-            "/coupons/internal/");
+            "/coupons/internal/",
+            // 知识库内部接口：语料下发与种子重导。上面刚把 /knowledge/** 开了公开读，
+            // 这一条就是那份必须存在的反向排除——不做的话，同前缀下的内部接口会被静默放行
+            "/knowledge/internal/",
+            // AI 服务的运维接口（重建检索索引）。放出去等于任何登录用户都能反复
+            // 清空全站检索索引——一次重建期间所有人的 AI 回答都会落到"没有相关依据"
+            "/ai/internal/");
 
     /** 路径模式：以 {@code /**} 结尾表示前缀匹配，否则精确匹配。 */
     private record PublicRule(String method, String path) {

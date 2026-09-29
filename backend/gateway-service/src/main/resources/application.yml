@@ -52,6 +52,10 @@ spring:
               uri: lb://review-service
               predicates:
                 - Path=/reviews/**
+            - id: knowledge-service
+              uri: lb://knowledge-service
+              predicates:
+                - Path=/knowledge/**
     sentinel:
       transport:
         dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}

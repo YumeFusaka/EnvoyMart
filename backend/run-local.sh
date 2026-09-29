@@ -98,11 +98,17 @@ export NACOS_ENABLED="${NACOS_ENABLED:-true}"
 # 生产环境不要设它 —— 这条路径能把订单标记为已支付。
 export PAYMENT_MOCK_ENABLED="${PAYMENT_MOCK_ENABLED:-true}"
 
-# 启动顺序：网关先起（它会往 Nacos 注册），其余服务随后
-SERVICES=(gateway-service auth-service product-service order-service ai-service payment-service review-service promotion-service knowledge-service)
-# 端口用于停止与健康检查；没有独立库的服务（网关、AI）留空
-PORT_OF=(8080 9001 9002 9003 9004 9005 9006 9007 9008)
-DB_OF=("" envoymart_auth envoymart_product envoymart_order "" envoymart_payment envoymart_review envoymart_promotion envoymart_knowledge)
+# 启动顺序：网关先起（它会往 Nacos 注册），其余服务随后。
+#
+# **knowledge-service 必须排在 ai-service 前面**：AI 服务启动时要从知识库拉全量语料
+# 建检索索引，拉不到就拒绝启动（空语料的 AI 会对着每一句话回「知识库中没有相关依据」，
+# 而健康检查是绿的——那比起不来更危险）。ai-service 侧有重试，所以这个顺序是优化
+# 而不是硬约束；但让它先起能少等一轮重试。
+SERVICES=(gateway-service auth-service product-service order-service knowledge-service ai-service payment-service review-service promotion-service)
+# 与 SERVICES 逐位对齐，改 SERVICES 的顺序必须同步改这里——
+# 错位的后果是某个服务连上别人的库，而且它能正常启动、直到第一次查表才报「表不存在」
+# （库里已经有表时连这个都不会报，直接读到空数据）
+DB_OF=("" envoymart_auth envoymart_product envoymart_order envoymart_knowledge "" envoymart_payment envoymart_review envoymart_promotion)
 
 index_of() {
   local target=$1 i
@@ -110,6 +116,14 @@ index_of() {
     [ "${SERVICES[$i]}" = "$target" ] && { echo "$i"; return 0; }
   done
   return 1
+}
+
+# 端口<b>不在这里维护第二份</b>：它的事实源是每个服务自己的 server.port。
+# 原先这里有个与 SERVICES 逐位对齐的 PORT_OF 数组，插入 knowledge-service 时忘了同步，
+# 于是脚本以为 knowledge-service 在 9004（ai-service 的端口）——停止与健康检查全部指向
+# 别的进程，而服务自己按 yml 绑 9008，一切看起来正常。事实源只有一个，才不会有第二处能写错。
+port_of() {
+  sed -n 's/^  port: *\([0-9]\{1,\}\).*/\1/p' "$1/src/main/resources/application.yml" | head -1
 }
 
 start_one() {
@@ -135,16 +149,18 @@ start_one() {
   fi
 
   mkdir -p "$LOG_DIR"
-  echo "启动 $svc (端口 ${PORT_OF[$idx]}) → $LOG_DIR/$svc.log"
+  echo "启动 $svc (端口 $(port_of "$svc")) → $LOG_DIR/$svc.log"
   env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run "${agent_args[@]}" > "$LOG_DIR/$svc.log" 2>&1 &
 }
 
 stop_all() {
   local i pid
   for i in "${!SERVICES[@]}"; do
-    pid=$(netstat -ano 2>/dev/null | grep LISTENING | grep ":${PORT_OF[$i]} " | awk '{print $NF}' | head -1)
+    local port
+    port=$(port_of "${SERVICES[$i]}")
+    pid=$(netstat -ano 2>/dev/null | grep LISTENING | grep ":$port " | awk '{print $NF}' | head -1)
     if [ -n "${pid:-}" ]; then
-      echo "停止 ${SERVICES[$i]} (端口 ${PORT_OF[$i]}, PID $pid)"
+      echo "停止 ${SERVICES[$i]} (端口 $port, PID $pid)"
       powershell -Command "Stop-Process -Id $pid -Force" 2>/dev/null || kill "$pid" 2>/dev/null
     fi
   done
@@ -154,7 +170,7 @@ wait_healthy() {
   local i port code ready
   for i in "${!SERVICES[@]}"; do
     printf '%-18s' "${SERVICES[$i]}"
-    port=${PORT_OF[$i]}
+    port=$(port_of "${SERVICES[$i]}")
     ready=""
     for _ in $(seq 1 90); do
       # 先看端口在不在监听；再看 actuator。网关没有 actuator 依赖，

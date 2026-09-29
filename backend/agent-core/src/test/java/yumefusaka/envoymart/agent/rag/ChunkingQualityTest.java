@@ -65,9 +65,10 @@ class ChunkingQualityTest {
         assertThat(online.brokenEnding)
                 .as("结构分层按标点收尾，不该有切片切在句子中途")
                 .isZero();
-        assertThat(online.intactCases)
-                .as("语义完整性用例（同一语义单元的关键信息必须同片）")
-                .isGreaterThanOrEqualTo(online.totalCases - 1);
+        assertThat(online.failedCases)
+                .as("这些用例的必需信息被切散在不同切片里，任何一片都答不全（共 %d 条用例）",
+                        online.totalCases)
+                .hasSizeLessThanOrEqualTo(1);
     }
 
     @Test

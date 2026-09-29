@@ -26,9 +26,21 @@
             <artifactId>agent-core</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 语料下发给 ai-service 用的是跨服务契约，不在这里另写一份 DTO：
+             两边字段名靠人记着对齐，Jackjson 对不上时不报错、只给 null -->
+        <dependency>
+            <groupId>yumefusaka.envoymart</groupId>
+            <artifactId>contract</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

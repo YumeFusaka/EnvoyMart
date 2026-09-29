@@ -35,7 +35,7 @@ import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
 import yumefusaka.envoymart.aiservice.flow.AfterSaleFlow;
-import yumefusaka.envoymart.aiservice.knowledge.KnowledgeCorpusLoader;
+import yumefusaka.envoymart.aiservice.knowledge.KnowledgeCorpus;
 import yumefusaka.envoymart.aiservice.rag.LangChain4jEmbeddingService;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.llm.LangChain4jLLMProvider;
@@ -337,10 +337,14 @@ public class AiAgentConfig {
      * 参数 512/40 来自调参，其中 minChars 是关键：它把"第一章 XXX"这类<b>无内容的标题碎片</b>
      * 合并掉。碎片会被向量化并挤占 topK 名额——实测 minChars=0（不合并）时完整召回率
      * 反而从 81.7% 掉到 72.5%。
+     * <p>
+     * <b>参数取值不写在这里，走 {@link StructuralSplitter#standard()}。</b>
+     * knowledge-service 建切片表时用的是同一份定义。两边各写一遍的话，同一篇文档会切出
+     * 两组 chunkId，症状是「检索命中了、但点开引用 404」，而两边日志都正常。
      */
     @Bean
     public TextSplitter textSplitter() {
-        return new StructuralSplitter(512, 40);
+        return StructuralSplitter.standard();
     }
 
     /**
@@ -356,49 +360,27 @@ public class AiAgentConfig {
     @Bean
     public HybridRetriever retriever(@Qualifier("knowledgeVectorStore") VectorStore vectorStore,
                                      Reranker reranker,
-                                     TextSplitter textSplitter) {
-        List<DocumentChunk> chunks = knowledgeDocuments().stream()
+                                     TextSplitter textSplitter,
+                                     KnowledgeCorpus corpus) {
+        List<DocumentChunk> chunks = corpus.documents().stream()
                 .flatMap(doc -> textSplitter.split(doc).stream())
                 .toList();
         return HybridRetriever.overChunks(vectorStore, chunks, reranker);
     }
 
     /**
-     * 领域知识文档 —— 同时供 BM25 关键词检索与向量库索引使用。
+     * 检索引擎的装配。
      * <p>
-     * 语料本体在 {@code resources/knowledge/*.md}，装载与格式校验见
-     * {@link KnowledgeCorpusLoader}。这里只做一件事：<b>每次调用重新读一遍</b>。
-     * <p>
-     * 之所以不是 {@code static final} 缓存一份：语料规模小（十几篇、几万字符），
-     * 重读的成本可以忽略，而缓存会让「改了 md 但服务没重启」这种状态出现——
-     * 演示时最怕的就是屏幕上跑的还是上一版规则。
-     * <p>
-     * <b>语料规模直接影响检索指标的解读</b>：文档数越少、取 top-K 的随机命中率越高。
-     * 早先只有 4 篇，取 top-3 的随机基线就有 0.75，任何检索器都能轻松达标，指标失去区分度。
-     * <p>
-     * 这套语料与 {@code RetrievalFixtures} 的评测语料是<b>两套独立数据</b>，
-     * 规模与主题分布接近，但内容不重合，指标不构成对彼此的复现。
+     * <b>这里只构造，不灌数据。</b>语料来自 knowledge-service，入库是
+     * {@link yumefusaka.envoymart.aiservice.knowledge.KnowledgeIndexer} 的职责——
+     * 「启动建索引」与「管理台点重建索引」必须走同一条路径，否则两条路径会各自演化，
+     * 而它们的差异只在管理动作里暴露：手工重建过的索引与重启后自动重建的索引不是同一份。
      */
-    private List<Document> knowledgeDocuments() {
-        return KnowledgeCorpusLoader.load();
-    }
-
     @Bean
     public SimpleRAGEngine ragEngine(@Qualifier("knowledgeVectorStore") VectorStore vectorStore,
                                      Retriever retriever,
                                      TextSplitter textSplitter) {
-        SimpleRAGEngine engine = new SimpleRAGEngine(vectorStore, retriever, textSplitter);
-
-        // 启动时把领域知识灌入向量库；不调用 ingest 的话 ANN 检索永远返回空。
-        //
-        // 必须先按 docId 清掉旧切片再写入——**入库没有幂等性，而持久化向量库会跨重启累积**：
-        // 实测接上 Milvus 后连续启动，集合里堆到了 38 条而实际只有 15 篇文档，
-        // 重复条目会挤占 topK、让同一篇文档在结果里出现多次。
-        // 内存向量库每次启动都是空的，所以这个缺陷在本地降级路径下永远不会暴露。
-        List<Document> documents = knowledgeDocuments();
-        documents.forEach(doc -> vectorStore.deleteByDocId(doc.getId()));
-        engine.ingestBatch(documents);
-        return engine;
+        return new SimpleRAGEngine(vectorStore, retriever, textSplitter);
     }
 
     // ==================== 执行图 ====================

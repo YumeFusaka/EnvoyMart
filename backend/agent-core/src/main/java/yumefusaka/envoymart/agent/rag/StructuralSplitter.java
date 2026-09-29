@@ -31,12 +31,42 @@ public class StructuralSplitter implements TextSplitter {
     /** 句末标点 —— 下钻到句级时的切点，也是字符兜底时的回退目标 */
     private static final String SENTENCE_ENDS = "。！？；";
 
+    /**
+     * 路径标签的截断点：句末标点之外还算上逗号与顿号。
+     * <p>
+     * 标签要短到能一眼看完，落在 {@code 、} 上比落在半个词中间可读得多。
+     */
+    private static final String LABEL_BREAKS = "。！？；，、：";
+
+    /** 路径标签上限。位置串要拼进每一个切片，长一截就是全体多背一截 */
+    private static final int MAX_LABEL_CHARS = 24;
+
+    /** 生产参数：超过 512 字往下钻一层 */
+    public static final int STANDARD_MAX_CHARS = 512;
+    /** 生产参数：低于 40 字与相邻块合并 */
+    public static final int STANDARD_MIN_CHARS = 40;
+
     /** 超过这个长度就往下钻一层 */
     private final int maxChars;
     /** 低于这个长度就尝试与相邻块合并 */
     private final int minChars;
     /** 是否在切片前拼上文档位置 */
     private final boolean withPath;
+
+    /**
+     * 生产参数下的切分器 —— <b>检索侧与存储侧必须用同一组参数</b>。
+     * <p>
+     * chunkId 是 {@code docId_序号}，序号由切分结果决定。ai-service 拿着它去 Milvus 检索，
+     * knowledge-service 拿着它去 {@code knowledge_chunk} 建库；两边各配一套参数的话，
+     * 同一篇文档会切出两组编号，症状是<b>检索命中了、但点开引用是 404</b>——
+     * 而两边的日志都完全正常，没有任何一处会报错。
+     * <p>
+     * 参数来自调参（见 AiAgentConfig 的说明）：minChars 是关键，它把「第一章 XXX」
+     * 这类无内容的标题碎片合并掉；实测 minChars=0 时完整召回率反而从 81.7% 掉到 72.5%。
+     */
+    public static StructuralSplitter standard() {
+        return new StructuralSplitter(STANDARD_MAX_CHARS, STANDARD_MIN_CHARS);
+    }
 
     public StructuralSplitter(int maxChars, int minChars) {
         this(maxChars, minChars, true);
@@ -90,11 +120,11 @@ public class StructuralSplitter implements TextSplitter {
         for (String line : text.split("\n", -1)) {
             if (CHAPTER_HEADING.matcher(line).matches()) {
                 flush(blocks, buf, chapter, clause);
-                chapter = line.strip();
+                chapter = label(line);
                 clause = null;
             } else if (CLAUSE_HEADING.matcher(line).matches()) {
                 flush(blocks, buf, chapter, clause);
-                clause = line.strip();
+                clause = label(line);
             }
             buf.append(line).append('\n');
         }
@@ -108,6 +138,31 @@ public class StructuralSplitter implements TextSplitter {
             blocks.add(new Block(chapter, clause, text));
         }
         buf.setLength(0);
+    }
+
+    /**
+     * 标题行 → <b>路径标签</b>。到第一个断句标点或 {@value #MAX_LABEL_CHARS} 字为止。
+     * <p>
+     * 本语料的条款编号与正文写在<b>同一行</b>（{@code 3.2 水溶性维生素。维生素 B1 …}），
+     * 整行拿来当标签，位置串就变成一段几百字的正文副本——而位置串要拼进该条下钻出的
+     * <b>每一个</b>切片，十几片各背一遍，全是零信息。实测这份文档的位置串一度长到 700 余字，
+     * 直接把 {@code knowledge_chunk.position} 撑爆。
+     * <p>
+     * 截断<b>不补省略号</b>：位置串末段必须仍是原文对应位置的前缀，
+     * 否则「点引用跳原文」的定位校验（见 StructuralSplitterTraceabilityTest）会对不上。
+     * 标签只是路径上的显示名，块正文一个字不动。
+     */
+    private static String label(String headingLine) {
+        String s = headingLine.strip();
+        if (s.length() <= MAX_LABEL_CHARS) {
+            return s;
+        }
+        for (int i = 0; i < MAX_LABEL_CHARS; i++) {
+            if (LABEL_BREAKS.indexOf(s.charAt(i)) >= 0) {
+                return s.substring(0, i + 1);
+            }
+        }
+        return s.substring(0, MAX_LABEL_CHARS);
     }
 
     // ==================== 逐级下钻 ====================
@@ -277,12 +332,24 @@ public class StructuralSplitter implements TextSplitter {
     }
 
     /**
-     * 去掉块首行里与位置前缀重复的标题行。
+     * 去掉块首行里<b>与位置前缀完全重复</b>的标题行。
      * <p>
      * 位置串已经写了「第三章 用法用量」，而这一章的第一行就是它本身，不去掉的话
      * 切片正文里会再出现一次同样的字。这不只是难看：每个切片白付一次标题的 token，
      * 而切片正是检索结果与 prompt 的粒度——一份几十片的文档就多送出几百字，
      * 换回来的是零信息。
+     * <p>
+     * 判据是<b>首行等于位置标签</b>，不是「首行像不像标题行」。这个区别是载荷的：
+     * 本语料有大量「编号与正文写在同一行」的条款（{@code 3.2 优惠叠加规则：优惠券可与满减活动叠加使用…}），
+     * 而标签只截到 {@value #MAX_LABEL_CHARS} 字（{@code 3.2 优惠叠加规则：}）。
+     * 按「像标题行」删，会把首行后半段——那段文字在位置串里根本没有——
+     * 连同标题一起删掉，正文就这么少了一截，而切分器自己不会有任何察觉。
+     * 只有首行被标签完整代表时，删掉它才是纯去重。
+     * <p>
+     * 副作用是这类长条款的标题行会留在正文里。这是对的：它就是这一条的开头，
+     * 不是重复的元信息。
+     * <p>
+     * 单行块直接返回：首行就是它的全部内容，去掉就什么都不剩了。
      */
     private String withoutHeading(Block block) {
         String text = block.text();
