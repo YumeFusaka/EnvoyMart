@@ -100,7 +100,7 @@ const emit = defineEmits<{
 .order-actions span,
 .logistics-step span,
 .logistics-step small {
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 
 ul {

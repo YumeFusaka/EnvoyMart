@@ -9,12 +9,31 @@ export interface UserProfile {
   username: string
   nickname: string
   roleName: string
-  avatar: string
+  avatar: string | null
+  phone: string | null
+  email: string | null
 }
 
 export interface LoginResponse {
   token: string
   user: UserProfile
+}
+
+/** 收货地址。省市区拆成三列而非一个字符串，按区域统计与运费规则都要用到 */
+export interface UserAddress {
+  id: number
+  userId: string
+  receiverName: string
+  receiverPhone: string
+  province: string
+  city: string
+  district: string
+  detail: string
+  /** 0 否 / 1 是。同一用户至多一条为 1，由后端在同一事务内先清后置保证 */
+  isDefault: number
+  tag: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export interface Product {

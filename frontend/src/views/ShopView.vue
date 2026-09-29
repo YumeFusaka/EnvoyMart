@@ -186,7 +186,7 @@ onMounted(initialize)
 
 .eyebrow {
   margin: 0;
-  color: var(--ys-primary);
+  color: var(--color-primary);
   font-size: 12px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -195,7 +195,7 @@ onMounted(initialize)
 
 .subcopy {
   margin: 0;
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 
 .hero-strip {
@@ -207,7 +207,7 @@ onMounted(initialize)
 
 .hero-strip p {
   margin: 6px 0 0;
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 
 .filter-bar {

@@ -115,7 +115,7 @@ onMounted(loadOrders)
   padding: 22px;
   border-radius: 24px;
   background: rgba(255, 251, 245, 0.9);
-  border: 1px solid var(--ys-border);
+  border: 1px solid var(--color-border);
   display: grid;
   gap: 16px;
 }
@@ -127,7 +127,7 @@ onMounted(loadOrders)
 }
 
 .order-head p {
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
   margin: 4px 0 0;
 }
 
@@ -140,7 +140,7 @@ onMounted(loadOrders)
 .order-amount {
   font-size: 18px;
   font-weight: 700;
-  color: var(--ys-primary-deep);
+  color: var(--color-primary-active);
 }
 
 .order-actions {

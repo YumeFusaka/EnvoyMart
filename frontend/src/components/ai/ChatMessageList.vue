@@ -91,6 +91,6 @@ const emit = defineEmits<{
 }
 
 .supplement-item span {
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 </style>

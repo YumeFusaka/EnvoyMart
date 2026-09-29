@@ -1,0 +1,80 @@
+/**
+ * Element Plus 主题对齐。
+ *
+ * 在此之前页面上同时存在两套色：EP 的默认蓝（#409eff）与设计主色陶土橙，
+ * 表现为「蓝色主按钮」和「橙色 hero 区」在同一屏并列 —— 一眼就能看出是拼起来的。
+ *
+ * 覆盖的是 EP 的 CSS 变量（EP 2.x 的主题值全部走变量），因此不需要 SCSS 编译。
+ * light-3/5/7/8/9 这几档色阶用 color-mix 从主色现算，而不是手写五个十六进制值 ——
+ * 手写的话，将来改主色一定会漏掉其中几档，界面上就会残留几块旧色。
+ */
+
+:root {
+  --el-color-primary: var(--color-primary);
+  --el-color-primary-light-3: color-mix(in srgb, var(--color-primary) 70%, white);
+  --el-color-primary-light-5: color-mix(in srgb, var(--color-primary) 50%, white);
+  --el-color-primary-light-7: color-mix(in srgb, var(--color-primary) 30%, white);
+  --el-color-primary-light-8: color-mix(in srgb, var(--color-primary) 20%, white);
+  --el-color-primary-light-9: color-mix(in srgb, var(--color-primary) 10%, white);
+  --el-color-primary-dark-2: var(--color-primary-active);
+
+  --el-color-success: var(--color-success);
+  --el-color-success-light-9: var(--color-success-subtle);
+  --el-color-warning: var(--color-warning);
+  --el-color-warning-light-9: var(--color-warning-subtle);
+  --el-color-danger: var(--color-danger);
+  --el-color-danger-light-9: var(--color-danger-subtle);
+  --el-color-error: var(--color-danger);
+  --el-color-error-light-9: var(--color-danger-subtle);
+
+  --el-text-color-primary: var(--color-text-primary);
+  --el-text-color-regular: var(--color-text-secondary);
+  --el-text-color-secondary: var(--color-text-secondary);
+  --el-text-color-placeholder: var(--color-text-muted);
+
+  --el-border-color: var(--color-border);
+  --el-border-color-light: var(--color-border);
+  --el-border-color-lighter: var(--color-border);
+  --el-border-color-extra-light: var(--color-border);
+  --el-border-color-hover: var(--color-border-strong);
+
+  --el-fill-color-blank: var(--color-bg-surface);
+  --el-bg-color: var(--color-bg-surface);
+  --el-bg-color-page: var(--color-bg-page);
+  --el-bg-color-overlay: var(--color-bg-surface);
+
+  --el-border-radius-base: var(--control-radius);
+  --el-border-radius-small: var(--ys-radius-sm);
+  --el-border-radius-round: var(--ys-radius-full);
+
+  --el-font-family: var(--ys-font-sans);
+  --el-font-size-base: var(--ys-font-base);
+
+  --el-box-shadow-light: var(--ys-shadow-raised);
+  --el-box-shadow: var(--ys-shadow-dropdown);
+  --el-box-shadow-dark: var(--ys-shadow-modal);
+}
+
+/* EP 的组件内边距与主色按钮的观感，跟设计语言拉齐 */
+.el-button {
+  font-weight: 500;
+  transition: all var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.el-button:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.el-card,
+.el-dialog,
+.el-drawer {
+  border-radius: var(--card-radius);
+}
+
+/* 表格表头不用 EP 默认的灰蓝，改用与页面一致的暖灰，
+   否则一张表就能把页面切成两种色温 */
+.el-table th.el-table__cell {
+  background-color: var(--color-bg-surface-muted);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}

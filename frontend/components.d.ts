@@ -14,13 +14,22 @@ declare module 'vue' {
     AiChatMessageList: typeof import('./src/components/ai/ChatMessageList.vue')['default']
     AiQuickPromptBar: typeof import('./src/components/ai/QuickPromptBar.vue')['default']
     AiRecommendationCards: typeof import('./src/components/ai/RecommendationCards.vue')['default']
+    AuthAuthShell: typeof import('./src/components/auth/AuthShell.vue')['default']
     ElAvatar: typeof import('element-plus/es')['ElAvatar']
     ElButton: typeof import('element-plus/es')['ElButton']
+    ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
+    ElDescriptions: typeof import('element-plus/es')['ElDescriptions']
+    ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
+    ElDialog: typeof import('element-plus/es')['ElDialog']
     ElDivider: typeof import('element-plus/es')['ElDivider']
     ElDrawer: typeof import('element-plus/es')['ElDrawer']
+    ElDropdown: typeof import('element-plus/es')['ElDropdown']
+    ElDropdownItem: typeof import('element-plus/es')['ElDropdownItem']
+    ElDropdownMenu: typeof import('element-plus/es')['ElDropdownMenu']
     ElEmpty: typeof import('element-plus/es')['ElEmpty']
     ElForm: typeof import('element-plus/es')['ElForm']
     ElFormItem: typeof import('element-plus/es')['ElFormItem']
+    ElIcon: typeof import('element-plus/es')['ElIcon']
     ElInput: typeof import('element-plus/es')['ElInput']
     ElInputNumber: typeof import('element-plus/es')['ElInputNumber']
     ElOption: typeof import('element-plus/es')['ElOption']
@@ -39,5 +48,8 @@ declare module 'vue' {
     ShopCartDrawer: typeof import('./src/components/shop/CartDrawer.vue')['default']
     ShopOrderPanel: typeof import('./src/components/shop/OrderPanel.vue')['default']
     ShopProductCard: typeof import('./src/components/shop/ProductCard.vue')['default']
+  }
+  export interface GlobalDirectives {
+    vLoading: typeof import('element-plus/es')['ElLoadingDirective']
   }
 }

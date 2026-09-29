@@ -1,0 +1,11 @@
+/**
+ * 样式入口。
+ *
+ * 顺序有要求，不能调换：
+ *   - tokens 必须最先 —— 后面两个文件都引用它定义的变量；
+ *   - element 必须最后 —— 它覆盖 Element Plus 自己的变量定义，
+ *     排在 EP 样式之前会被 EP 覆盖回去，表现为「改了没效果」。
+ */
+@import './tokens.css';
+@import './base.css';
+@import './element.css';

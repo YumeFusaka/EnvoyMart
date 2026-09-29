@@ -159,7 +159,7 @@ function openProduct(product: Product) {
 
 .eyebrow {
   margin: 0;
-  color: var(--ys-primary);
+  color: var(--color-primary);
   font-size: 12px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -169,7 +169,7 @@ function openProduct(product: Product) {
 .subcopy {
   margin: 0;
   max-width: 740px;
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
   line-height: 1.8;
 }
 
@@ -193,7 +193,7 @@ function openProduct(product: Product) {
 }
 
 .stat-card span {
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 
 .stat-card strong {
@@ -209,7 +209,7 @@ function openProduct(product: Product) {
   border-radius: 26px;
   background: rgba(255, 252, 247, 0.88);
   border: 1px solid rgba(84, 55, 23, 0.08);
-  box-shadow: var(--ys-shadow);
+  box-shadow: var(--ys-shadow-modal);
 }
 
 .composer {
@@ -221,7 +221,7 @@ function openProduct(product: Product) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 
 @media (max-width: 720px) {

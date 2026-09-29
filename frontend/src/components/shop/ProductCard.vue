@@ -63,7 +63,7 @@ function handleAdd(event: MouseEvent) {
 .product-meta {
   display: flex;
   justify-content: space-between;
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
@@ -75,7 +75,7 @@ h3 {
 .subtitle,
 .sales-copy {
   margin: 0;
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
   line-height: 1.7;
 }
 
@@ -90,7 +90,7 @@ h3 {
   padding: 6px 10px;
   border-radius: 999px;
   background: rgba(31, 122, 107, 0.09);
-  color: var(--ys-accent);
+  color: var(--color-accent);
   font-size: 12px;
 }
 
@@ -108,6 +108,6 @@ strong {
 }
 
 small {
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 </style>

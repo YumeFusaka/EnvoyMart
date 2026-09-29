@@ -108,7 +108,7 @@ function submitCheckout() {
 .cart-info span,
 small,
 em {
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 
 .checkout-bar {

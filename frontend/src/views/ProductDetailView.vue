@@ -89,8 +89,8 @@ onMounted(loadProduct)
   padding: 28px;
   border-radius: 28px;
   background: rgba(255, 251, 245, 0.9);
-  border: 1px solid var(--ys-border);
-  box-shadow: var(--ys-shadow);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--ys-shadow-modal);
 }
 
 .product-gallery img {
@@ -114,11 +114,11 @@ onMounted(loadProduct)
 
 .price {
   font-size: 36px;
-  color: var(--ys-primary-deep);
+  color: var(--color-primary-active);
 }
 
 .stock, .sales {
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 
 .tag-list {
@@ -131,7 +131,7 @@ onMounted(loadProduct)
   padding: 4px 12px;
   border-radius: 999px;
   background: rgba(31, 122, 107, 0.09);
-  color: var(--ys-accent);
+  color: var(--color-accent);
   font-size: 12px;
 }
 
@@ -141,7 +141,7 @@ onMounted(loadProduct)
 }
 
 .description {
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
   line-height: 1.8;
 }
 

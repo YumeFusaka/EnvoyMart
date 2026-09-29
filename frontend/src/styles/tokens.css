@@ -1,0 +1,172 @@
+/**
+ * 设计 Token —— 全站样式的唯一来源。
+ *
+ * 分三层，业务代码**只引用语义层**，不直接引用原始层：
+ *   1. 原始层 primitive  具体色值与尺寸刻度，只作底座
+ *   2. 语义层 semantic   表达意图（color-bg-surface），换主题只改这一层
+ *   3. 组件层 component  组件内部专用尺寸，引用语义层
+ *
+ * 为什么分层：要让「换主色」只改一处。直接写 `#b65b2e` 的地方越多，
+ * 将来真正改得起主色的概率越低 —— 改色要先全项目搜一遍十六进制。
+ *
+ * 在此之前 token 定义在 `assets/main.css` 和 `App.vue` 两处且值重复，
+ * 改一个主色要动两个文件；现在只有这一份。
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ==================== 1. 原始层 ==================== */
+
+  /* 主色：陶土橙 */
+  --ys-terracotta-50: #fdf6f1;
+  --ys-terracotta-100: #f9e8dc;
+  --ys-terracotta-200: #f0d0b8;
+  --ys-terracotta-300: #dda078;
+  --ys-terracotta-400: #c87a4a;
+  --ys-terracotta-500: #b65b2e;
+  --ys-terracotta-600: #a04d24;
+  --ys-terracotta-700: #8c3c18;
+
+  /* 强调色：青绿。与主色在色相上相隔足够远，同屏出现时不会互相削弱 */
+  --ys-teal-50: #eef8f5;
+  --ys-teal-100: #d7efe8;
+  --ys-teal-300: #6bb3a5;
+  --ys-teal-500: #1f7a6b;
+  --ys-teal-700: #14564b;
+
+  /* 中性色：暖灰。底色偏暖，与陶土橙同属一个色温 */
+  --ys-warm-0: #ffffff;
+  --ys-warm-50: #faf7f2;
+  --ys-warm-100: #f5f2ea;
+  --ys-warm-200: #ece4d6;
+  --ys-warm-300: #ddd0bc;
+  --ys-warm-400: #b3a08a;
+  --ys-warm-600: #76624b;
+  --ys-warm-800: #4a3a29;
+  --ys-warm-900: #2f2418;
+
+  /* 状态色 */
+  --ys-red-50: #fdf0ee;
+  --ys-red-500: #c0392b;
+  --ys-amber-50: #fdf7ec;
+  --ys-amber-500: #b7791f;
+  --ys-green-50: #eefaf3;
+  --ys-green-500: #2f855a;
+
+  /* 间距刻度：4 的倍数。不用 5 或 7 这类刻度 —— 档位越多，越没人遵守 */
+  --ys-space-1: 4px;
+  --ys-space-2: 8px;
+  --ys-space-3: 12px;
+  --ys-space-4: 16px;
+  --ys-space-5: 20px;
+  --ys-space-6: 24px;
+  --ys-space-8: 32px;
+  --ys-space-10: 40px;
+  --ys-space-12: 48px;
+  --ys-space-16: 64px;
+
+  /* 字号。正文 14px，与 Element Plus 默认一致，避免两套字号混用 */
+  --ys-font-xs: 12px;
+  --ys-font-sm: 13px;
+  --ys-font-base: 14px;
+  --ys-font-md: 16px;
+  --ys-font-lg: 20px;
+  --ys-font-xl: 24px;
+  --ys-font-2xl: 32px;
+  --ys-font-3xl: 40px;
+
+  --ys-font-sans: 'Segoe UI Variable', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --ys-font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+
+  --ys-leading-tight: 1.3;
+  --ys-leading-base: 1.6;
+  --ys-leading-loose: 1.8;
+
+  --ys-radius-sm: 6px;
+  --ys-radius-md: 10px;
+  --ys-radius-lg: 16px;
+  --ys-radius-full: 999px;
+
+  /* 层级与阴影**成对定义**：层级越高投影越明显。
+     业务代码只引用语义层级，不裸写 z-index —— 否则迟早出现 9999 打 9998 的局面 */
+  --ys-z-base: 0;
+  --ys-z-raised: 10;
+  --ys-z-dropdown: 100;
+  --ys-z-overlay: 200;
+  --ys-z-modal: 300;
+  --ys-z-toast: 400;
+
+  --ys-shadow-none: none;
+  --ys-shadow-raised: 0 2px 8px rgba(75, 44, 16, 0.06);
+  --ys-shadow-dropdown: 0 8px 24px rgba(75, 44, 16, 0.1);
+  --ys-shadow-modal: 0 24px 60px rgba(75, 44, 16, 0.16);
+
+  --ys-duration-fast: 120ms;
+  --ys-duration-base: 200ms;
+  --ys-duration-slow: 320ms;
+  --ys-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ==================== 2. 语义层 ==================== */
+
+  /* 背景 */
+  --color-bg-page: var(--ys-warm-100);
+  --color-bg-surface: var(--ys-warm-0);
+  --color-bg-surface-muted: var(--ys-warm-50);
+  --color-bg-sunken: var(--ys-warm-200);
+  --color-bg-inverse: var(--ys-warm-900);
+
+  /* 文字。正文与背景的对比度 ≥ 4.5:1（WCAG 2.2 AA） */
+  --color-text-primary: var(--ys-warm-900);
+  --color-text-secondary: var(--ys-warm-600);
+  --color-text-muted: var(--ys-warm-400);
+  --color-text-inverse: var(--ys-warm-0);
+  --color-text-on-primary: var(--ys-warm-0);
+
+  /* 边框 */
+  --color-border: var(--ys-warm-200);
+  --color-border-strong: var(--ys-warm-300);
+  --color-border-focus: var(--ys-terracotta-500);
+
+  /* 主色 */
+  --color-primary: var(--ys-terracotta-500);
+  --color-primary-hover: var(--ys-terracotta-600);
+  --color-primary-active: var(--ys-terracotta-700);
+  --color-primary-subtle: var(--ys-terracotta-50);
+  --color-primary-border: var(--ys-terracotta-200);
+
+  /* 强调色 */
+  --color-accent: var(--ys-teal-500);
+  --color-accent-hover: var(--ys-teal-700);
+  --color-accent-subtle: var(--ys-teal-50);
+
+  /* 状态 */
+  --color-success: var(--ys-green-500);
+  --color-success-subtle: var(--ys-green-50);
+  --color-warning: var(--ys-amber-500);
+  --color-warning-subtle: var(--ys-amber-50);
+  --color-danger: var(--ys-red-500);
+  --color-danger-subtle: var(--ys-red-50);
+
+  /* 页面底纹。用 token 而不是写死在全局样式里，切主题时才会跟着变 */
+  --color-page-gradient:
+    radial-gradient(circle at top left, rgba(182, 91, 46, 0.16), transparent 28%),
+    radial-gradient(circle at top right, rgba(31, 122, 107, 0.12), transparent 26%),
+    linear-gradient(180deg, #f9f5ee 0%, #f2ecdf 100%);
+
+  /* ==================== 3. 组件层 ==================== */
+
+  --layout-header-height: 60px;
+  --layout-content-max: 1280px;
+
+  --card-padding: var(--ys-space-6);
+  --card-radius: var(--ys-radius-lg);
+  --card-border: 1px solid var(--color-border);
+  --card-shadow: var(--ys-shadow-raised);
+
+  --control-radius: var(--ys-radius-sm);
+  --control-height: 36px;
+  --control-height-sm: 30px;
+
+  --focus-ring: 0 0 0 3px rgba(182, 91, 46, 0.28);
+}

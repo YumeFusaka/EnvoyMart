@@ -121,8 +121,8 @@ async function handlePay() {
   padding: 32px;
   border-radius: 28px;
   background: rgba(255, 251, 245, 0.9);
-  border: 1px solid var(--ys-border);
-  box-shadow: var(--ys-shadow);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--ys-shadow-modal);
 }
 
 .order-summary h3,
@@ -134,18 +134,18 @@ async function handlePay() {
   display: flex;
   justify-content: space-between;
   margin-bottom: 12px;
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
 }
 
 .summary-row.total {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid var(--ys-border);
+  border-top: 1px solid var(--color-border);
 }
 
 .summary-row.total strong {
   font-size: 28px;
-  color: var(--ys-primary-deep);
+  color: var(--color-primary-active);
 }
 
 .payment-methods {
@@ -159,7 +159,7 @@ async function handlePay() {
   padding: 14px 18px;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.7);
-  border: 1px solid var(--ys-border);
+  border: 1px solid var(--color-border);
   width: 100%;
 }
 

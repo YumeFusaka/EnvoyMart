@@ -48,12 +48,12 @@ const emit = defineEmits<{
 
 .recommendation-card p {
   margin: 6px 0;
-  color: var(--ys-muted);
+  color: var(--color-text-secondary);
   font-size: 13px;
 }
 
 .recommendation-card span {
-  color: var(--ys-primary-deep);
+  color: var(--color-primary-active);
   font-weight: 700;
 }
 </style>
