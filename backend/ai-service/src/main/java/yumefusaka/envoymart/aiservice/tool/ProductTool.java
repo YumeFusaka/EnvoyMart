@@ -87,6 +87,10 @@ public class ProductTool implements Tool {
                                 ? "商品目录里没有编号 " + key(Long.parseLong(spu.group(1))) + " 的商品，可能已下架。"
                                 : "没有找到与「" + query + "」相关的商品。")
                         .rawData(List.of())
+                        // 只有关键词查空才算「没查到」：换个词、放宽或收紧条件都可能搜到，
+                        // 执行图据此重规划一轮。按编号查空不算 —— 编号是精确的，
+                        // 目录里没有就是没有，换什么说法都一样，标它只是白花一轮重规划
+                        .noData(!byKey)
                         .build();
             }
 

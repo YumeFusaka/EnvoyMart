@@ -55,10 +55,13 @@ public class LoopGuard {
         if (stopReason != null) {
             return false;
         }
-        if (toolCalls.incrementAndGet() > budget.maxToolCalls()) {
+        // 先判后加：被自己这一关拒掉的那一次不该计入已用预算。
+        // 反过来的话，摘要里会印出「用了 9/8」这种读起来像超支的数字
+        if (toolCalls.get() >= budget.maxToolCalls()) {
             stopReason = "工具调用总数已达上限 " + budget.maxToolCalls();
             return false;
         }
+        toolCalls.incrementAndGet();
         String key = tool + "|" + canonical(arguments);
         int times = actionCounts.merge(key, 1, Integer::sum);
         if (times > budget.maxRepeatedAction()) {
@@ -73,13 +76,15 @@ public class LoopGuard {
         if (stopReason != null) {
             return false;
         }
-        if (planRounds.incrementAndGet() > budget.maxPlanRounds()) {
+        if (planRounds.get() >= budget.maxPlanRounds()) {
             stopReason = "规划轮次已达上限 " + budget.maxPlanRounds();
             return false;
         }
+        planRounds.incrementAndGet();
         return true;
     }
 
+    /** 护栏是否已经判定停止。驱动循环的那一层读它来决定还下不下发工具定义。 */
     public boolean isExhausted() {
         return stopReason != null;
     }

@@ -132,7 +132,6 @@ public class AgentGraph {
                 .steps(finalState.get(KEY_STEPS, List.<GraphStep>of()))
                 .toolExecutions(ctx.executions())
                 .pendingApproval(pending.isEmpty() ? null : pending)
-                .planRounds(finalState.get(KEY_ROUND, 1))
                 .loops(ctx.guard().summary())
                 .build();
     }
@@ -206,11 +205,23 @@ public class AgentGraph {
                 KEY_ROUTE, pending.isEmpty() ? ROUTE_EVALUATE : ROUTE_END);
     }
 
-    /** 评估：纯规则判断，不调模型——只看有没有"非可选步骤失败"。 */
+    /**
+     * 评估：纯规则判断，不调模型——只看这一轮有没有拿到能作答的东西。
+     * <p>
+     * <b>「没查到」与「没做成」一样算没拿到东西。</b>早先只认 {@code !success}，
+     * 而查空了的工具返回的是 {@code success(true)}——于是「搜到 0 个」和「搜到 20 个」
+     * 在执行图眼里完全一样，都是成功，都直接去作答。重规划那个环因此只在工具
+     * 真的报错时才转，而工具报错恰恰是最少见的情况：检索类工具不抛异常，
+     * 它只是查不到。
+     * <p>
+     * 这不会变成无限重试：{@code canReplan} 还要过 {@code LoopGuard} 的规划轮次预算，
+     * 花完就直接作答。换个查询词再试一次是这一层的目的，试到底还是空就得如实说没有。
+     */
     private Map<String, Object> evaluateNode(GraphContext ctx, GraphState state) {
         List<GraphStep> steps = state.get(KEY_STEPS, List.<GraphStep>of());
 
-        boolean blocked = steps.stream().anyMatch(step -> !step.isSuccess() && !step.isOptional());
+        boolean blocked = steps.stream()
+                .anyMatch(step -> !step.isOptional() && (!step.isSuccess() || step.isNoData()));
         // 还有预算就允许再规划一轮，否则直接作答
         boolean canReplan = blocked && ctx.guard().allowPlanRound();
 
@@ -353,21 +364,38 @@ public class AgentGraph {
                 .round(round).index(index).tool(step.getTool())
                 .reason(step.getReason()).optional(step.isOptional())
                 .success(result.isSuccess()).output(output)
+                .noData(result.isSuccess() && result.isNoData())
                 .build();
     }
 
     private List<PlanStep> replan(GraphContext ctx, List<GraphStep> steps) {
+        boolean anyNoData = steps.stream().anyMatch(GraphStep::isNoData);
+
         StringBuilder context = new StringBuilder();
         context.append("用户请求：").append(ctx.message()).append("\n\n已执行过的步骤：\n");
         for (GraphStep step : steps) {
             context.append("- ").append(step.getTool())
-                    .append(" → ").append(step.isSuccess() ? "成功" : "失败")
+                    .append(" → ").append(verdict(step))
                     .append("：").append(abbreviate(step.getOutput())).append("\n");
         }
-        context.append("\n请基于以上信息重新给出可执行计划，只包含尚未完成的部分；无法完成则返回 []。")
-                .append("\n\n已知背景：\n").append(ctx.systemPrompt());
+        context.append("\n请基于以上信息重新给出可执行计划，只包含尚未完成的部分；无法完成则返回 []。");
+        if (anyNoData) {
+            // 不写这一句，模型最常见的反应是原样再查一次 —— 花了轮次换来同样的空结果。
+            // 空结果的含义是「这个问法在这个数据里没有答案」，出路在换问法，不在重试
+            context.append("\n「无结果」表示查询条件没匹配上任何数据：请换用不同的关键词、"
+                    + "更宽或更窄的条件，或换一个工具再试，不要用同样的参数重发。");
+        }
+        context.append("\n\n已知背景：\n").append(ctx.systemPrompt());
 
         return llmProvider.plan(context.toString(), toolRegistry.listDefinitions(), ctx.systemPrompt());
+    }
+
+    /** 步骤的结局，用于重规划上下文。三种，不能压成两种——模型据此决定换不换策略。 */
+    private static String verdict(GraphStep step) {
+        if (!step.isSuccess()) {
+            return "失败";
+        }
+        return step.isNoData() ? "无结果" : "成功";
     }
 
     private String converse(GraphContext ctx) {
@@ -514,6 +542,8 @@ public class AgentGraph {
         private String output;
         private boolean success;
         private boolean optional;
+        /** 跑通了但没查到东西。见 {@code ToolResult#noData} —— 它是「该换策略了」的信号 */
+        private boolean noData;
     }
 
     @Data
@@ -525,8 +555,11 @@ public class AgentGraph {
         private List<ToolExecution> toolExecutions;
         /** 非空表示图被中断，等待用户确认这些高危操作 */
         private List<String> pendingApproval;
-        private int planRounds;
-        /** 本次请求的循环消耗摘要，用于可观测 */
+        /**
+         * 本次请求的循环消耗摘要，用于可观测 —— 工具调用与规划轮次都在这一行里
+         * （{@code LoopGuard#summary()}）。不要在这里再单列一个「轮次」字段：
+         * 那必然与护栏里的计数重复，而重复的两份计数迟早会分叉，读的人不知道该信哪个。
+         */
         private String loops;
     }
 }

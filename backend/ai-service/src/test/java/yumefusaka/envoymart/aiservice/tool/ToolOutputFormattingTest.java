@@ -122,6 +122,25 @@ class ToolOutputFormattingTest {
         assertThat(result.getOutput())
                 .as("空串意味着模型没有任何可依据的事实，只能自己编")
                 .contains("没有找到");
+        assertThat(result.isNoData())
+                .as("关键词查空是「换个说法可能就搜到」，执行图要据此重规划一轮。"
+                        + "标成普通成功的话，「搜到 0 个」和「搜到 20 个」在图眼里一模一样，"
+                        + "replan → act 那个环就永远不会因为「这次没搜到」而转")
+                .isTrue();
+    }
+
+    @Test
+    void 按编号查空算事实不算没查到() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.getProduct(7L)).thenReturn(Result.error(404, "商品不存在"));
+
+        ToolResult result = new ProductTool(client).execute(call("product_search", Map.of("query", "SPU7")));
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.isNoData())
+                .as("编号是精确的：目录里没有就是没有，换个说法也一样。"
+                        + "标成「没查到」只会让执行图白花一轮重规划去查同一个不存在的东西")
+                .isFalse();
     }
 
     // ==================== 订单工具 ====================
