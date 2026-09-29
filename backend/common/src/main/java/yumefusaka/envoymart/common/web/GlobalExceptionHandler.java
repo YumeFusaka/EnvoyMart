@@ -3,6 +3,7 @@ package yumefusaka.envoymart.common.web;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -44,6 +45,21 @@ public class GlobalExceptionHandler {
     public Result<String> handleTypeMismatch(MethodArgumentTypeMismatchException exception) {
         log.warn("Parameter type mismatch: {}={}", exception.getName(), exception.getValue());
         return Result.error(400, "参数格式不正确：" + exception.getName());
+    }
+
+    /**
+     * 必填的查询参数没传（{@code /knowledge/graph/interactions} 少了 {@code items}）。
+     * <p>
+     * 与上面两条是同一族：都是<b>请求写错了</b>，该由调用方改，重试无用。
+     * 原先它落到兜底分支被报成 500——监控上看起来是服务端故障，而真正的问题
+     * 只是客户端少写了一个参数。实测就撞到过：把 {@code items} 误写成 {@code names}，
+     * 拿到的是「服务暂时不可用，请稍后再试」，只能去翻服务端日志才知道少传了参数，
+     * 而日志里那条栈是 {@code MissingServletRequestParameterException}——信息本来就在手里。
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public Result<String> handleMissingParam(MissingServletRequestParameterException exception) {
+        log.warn("Missing request parameter: {}", exception.getParameterName());
+        return Result.error(400, "缺少必需的参数：" + exception.getParameterName());
     }
 
     /**

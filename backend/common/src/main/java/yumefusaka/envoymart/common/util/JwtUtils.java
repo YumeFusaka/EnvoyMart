@@ -14,6 +14,12 @@ import java.util.Map;
 
 public final class JwtUtils {
 
+    /**
+     * 角色 claim 名。签发方（auth-service）与读取方（网关）共用一个常量，
+     * 避免两边字符串写岔后「角色静默丢失」——那会表现为管理员接口一律 403，且没有任何报错。
+     */
+    public static final String CLAIM_ROLE = "role";
+
     /** HS256 要求密钥至少 256 位（32 字节）。 */
     private static final int MIN_SECRET_BYTES = 32;
 

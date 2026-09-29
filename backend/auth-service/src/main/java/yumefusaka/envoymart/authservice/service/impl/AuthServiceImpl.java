@@ -93,7 +93,10 @@ public class AuthServiceImpl implements AuthService {
         return LoginResponse.builder()
                 .token(JwtUtils.createToken(jwtProperties.getSecretKey(), jwtProperties.getTtl(), Map.of(
                         "id", user.getId(),
-                        "username", user.getUsername()
+                        "username", user.getUsername(),
+                        // 角色取自实体（注册时是刚写进库的那一行，登录时是查出来的那一行），
+                        // 绝不取请求参数：客户端能决定的角色等于没有角色
+                        JwtUtils.CLAIM_ROLE, user.getRoleName()
                 )))
                 .user(toProfile(user))
                 .build();

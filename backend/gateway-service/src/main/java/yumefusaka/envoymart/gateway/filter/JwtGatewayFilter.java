@@ -59,34 +59,56 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
     /**
      * 只允许服务间调用、绝不经网关暴露的路径。
      * <p>
-     * 这几个是 order-service 用 Feign <b>直连</b> product-service 的内部接口
-     * （扣减/回补库存），不经过网关。但网关原先只判「是否登录」、不做授权，而 JWT 里
-     * 也没有角色字段（payload 只有 id/username/exp）——任何能登录的用户都能调它们。
+     * 名单里的是各服务 {@code /internal/} 下的接口：order-service 用 Feign <b>直连</b>
+     * product-service 扣库存，ai-service 直连 knowledge-service 写图谱，都是这条通道。
+     * 它们<b>不表达「谁在操作」</b>——没有调用方身份，只有「服务间」这一个属性。
+     * 而网关原先只判「是否登录」、不做授权，于是任何能登录的用户带自己的 Token 调它们都会被放行：
      * 实测普通账号 {@code alice} 可以把任意商品库存扣到 0（等于拒绝销售），
      * 或用 restore 无限灌库存（配合下单链路直接超卖）。
      * <p>
+     * <b>它们不是「管理员接口」</b>，所以不该用角色来放行——一个 ADMIN 用户同样不该直接调
+     * 扣库存。管理台要用的能力得另开一条走 {@code @RequireAdmin} 的用户侧路径
+     * （见 ai-service 的 {@code /ai/admin/knowledge}），而不是把这些服务间接口开个口子。
+     * <p>
      * 对外一律按「资源不存在」处理（404），不暴露这些路径的存在；服务间调用走 Feign
-     * 直连 9002，不受影响。
+     * 直连端口，不受影响。
      * <p>
      * 这一条同时也是「公开前缀必须配一份反向排除」的那份排除：{@code /products/**}
      * 是公开读的，若只做前缀放行，同前缀下后来新增的内部接口会被静默放行——
      * 这个坑真的踩过。
+     * <p>
+     * <b>漏登记是这份清单的默认失败模式</b>，而且已经真的发生过一次：{@code /orders/internal/}
+     * 长期不在清单里，发货接口唯一的防线（「网关已屏蔽」）于是根本不存在。<b>靠人记不可靠</b>，
+     * 所以 {@code InternalEndpointCoverageTest} 会扫描全部控制器源码，
+     * 新增内部接口却忘了登记就直接构建失败。包级可见是为了让那个测试读到它。
+     * <p>
+     * 反过来，<b>清单里也不留已经搬走的路径</b>：原先的 {@code /ai/internal/knowledge}
+     * （重建检索索引）挪到了 {@code /ai/admin/knowledge}，这条就跟着删了。
+     * 留着一条护不住任何东西的记录，会让人以为那条路还在被守着。
      */
-    private static final List<String> INTERNAL_ONLY_PREFIXES = List.of(
+    static final List<String> INTERNAL_ONLY_PREFIXES = List.of(
             "/products/stock/",
+            // 全量商品目录，给 ai-service 建知识图谱做实体链接用。数据本身不敏感，
+            // 但它是「不分页拉全库」的口子——公开出去等于给了每个匿名请求一条
+            // 绕过 /products 分页上限的取数通道
+            "/products/internal/",
+            // 发货。这个方法不读身份、不校验订单归属，设计上唯一的防线就是「只有服务间
+            // 或运维直连够得着」——而网关这份清单里原先没有它，那条防线<b>根本不存在</b>。
+            // 后果是任何登录用户带自己的 Token 调它，就能把任意订单改成已发货并写入履约单
+            // 与物流轨迹。补 /products/internal/ 时漏掉的同类项，现在由
+            // InternalEndpointCoverageTest 兜住：新增内部接口却忘了登记会直接构建失败
+            "/orders/internal/",
             // 服务间退款入口：它没有调用方身份，只表达「这笔订单的钱要还回去」，
             // 经网关暴露出去等于任何人凭订单号就能触发退款
             "/payments/internal/",
-            // 售后审核同样是管理侧动作，用户不该够得着
+            // 售后审核与重试退款。它们不读审核人身份，用户当然更不该够得着——
+            // 放出去等于任何人凭售后单号就能批自己的退款
             "/after-sales/internal/",
             // 优惠券核销：让用户能自己核销等于让他自己改优惠金额
             "/coupons/internal/",
             // 知识库内部接口：语料下发与种子重导。上面刚把 /knowledge/** 开了公开读，
             // 这一条就是那份必须存在的反向排除——不做的话，同前缀下的内部接口会被静默放行
-            "/knowledge/internal/",
-            // AI 服务的运维接口（重建检索索引）。放出去等于任何登录用户都能反复
-            // 清空全站检索索引——一次重建期间所有人的 AI 回答都会落到"没有相关依据"
-            "/ai/internal/");
+            "/knowledge/internal/");
 
     /** 路径模式：以 {@code /**} 结尾表示前缀匹配，否则精确匹配。 */
     private record PublicRule(String method, String path) {
@@ -116,9 +138,26 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             return reject(HttpStatus.NOT_FOUND, "资源不存在");
         }
 
+        // 入站的身份头必须先剥掉，再决定放不放行。
+        //
+        // 此前网关只做注入、不做剥离，等于把「客户端自己塞的身份头」放行进下游：公开路径
+        // （登录、商品目录、支付回调）连注入都没有，伪造的 X-User-Id 会<b>原样透传</b>；
+        // 认证路径则依赖 HttpHeaders.put 的覆盖语义才没被伪造值顶掉——防护挂在「碰巧被覆盖」上，
+        // 而不是挂在「客户端的东西根本到不了下游」上。下游确实还有 InternalCallFilter 兜底
+        // （带了身份头却拿不出服务间令牌的请求拒绝），但那是每个服务都要单独装上的第二道防线，
+        // 不适合作为唯一依赖。剥离之后，下游看到的身份头要么是网关注入的，要么根本不存在。
+        //
+        // X-Internal-Token 一并剥掉：客户端的值不该有机会与网关注入的混在一起。
+        ServerHttpRequest.Builder downstreamRequest = exchange.getRequest().mutate()
+                .headers(headers -> {
+                    headers.remove(IdentityHeaderInterceptor.USER_ID_HEADER);
+                    headers.remove(IdentityHeaderInterceptor.USER_ROLE_HEADER);
+                    headers.remove(InternalAuth.TOKEN_HEADER);
+                });
+
         boolean isPublic = PUBLIC_RULES.stream().anyMatch(rule -> rule.matches(method, path));
         if (isPublic) {
-            return chain.filter(exchange);
+            return chain.filter(exchange.mutate().request(downstreamRequest.build()).build());
         }
         String token = exchange.getRequest().getHeaders().getFirst("Authorization");
         if (!StringUtils.hasText(token)) {
@@ -132,11 +171,17 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 身份头与「这是我加的」的凭证一起注入。下游两个都要看：只有身份头说明不了
             // 它是网关加的，还是调用方自己塞的；而下游服务的端口是直接监听的，直连就能绕过网关。
             // 两者绑在一起，「这个身份声明可信」才有依据。
-            ServerHttpRequest request = exchange.getRequest().mutate()
+            downstreamRequest
                     .header(IdentityHeaderInterceptor.USER_ID_HEADER, String.valueOf(claims.get("id")))
-                    .header(InternalAuth.TOKEN_HEADER, internalToken)
-                    .build();
-            return chain.filter(exchange.mutate().request(request).build());
+                    .header(InternalAuth.TOKEN_HEADER, internalToken);
+            // 角色同样取自签了名的 Token（claim 的写入方是 auth-service，取值来自 sys_user.role_name）。
+            // 角色是这个批次新加的 claim，此前签发的 Token 里没有它——那种 Token 不注入角色头，
+            // 下游解析不出 ADMIN 会按 403 拒绝，是安全的方向；绝不能退化成「没有角色就当普通用户放行」。
+            Object role = claims.get(JwtUtils.CLAIM_ROLE);
+            if (role != null) {
+                downstreamRequest.header(IdentityHeaderInterceptor.USER_ROLE_HEADER, String.valueOf(role));
+            }
+            return chain.filter(exchange.mutate().request(downstreamRequest.build()).build());
         } catch (Exception exception) {
             log.warn("Token parse failed: {}", exception.getMessage());
             return reject(HttpStatus.UNAUTHORIZED, "令牌无效或已过期");
@@ -175,6 +220,16 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
      * 当前还不构成可利用的越权——写接口只接受 POST，而白名单只放了 GET——但这是纵深防御的
      * 缺口：一旦白名单新增任何 GET 的敏感接口，或者前面多一层会归一化路径的反向代理，
      * 它就立刻变成匿名越权。判定用的路径必须和下游看到的路径是同一个。
+     * <p>
+     * <b>段内 {@code ;} 之后的内容要一起截掉</b>，理由同上：Servlet 规范把 {@code ;} 起头的那一段
+     * 当作路径参数（原为 {@code ;jsessionid=}），容器<b>不把它算进路由路径</b>，而网关这一侧
+     * 若原样保留，两边看到的路径就不是同一个。实测过绕过：匿名请求
+     * {@code GET /products/internal;x/catalog} 经网关时 {@code startsWith("/products/internal/")}
+     * 因分号处字符不匹配而落空，请求进了「需登录」分支；下游却把 {@code ;x} 剥掉照常路由到
+     * 内部方法——白名单的每一项都有一个 {@code ;x} 变体，整份排除清单同时失效。
+     * <p>
+     * 截断位置在解码<b>之后</b>，{%3B} 写进来的分号同样会被截掉。方向是安全的：
+     * 万一下游不剥，网关也只会把请求判成内部路径而回 404，不会把内部路径放行。
      */
     private String normalise(String rawPath) {
         if (rawPath == null || rawPath.isEmpty()) {
@@ -187,7 +242,7 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 解不开的百分号序列：原样使用，让它匹配不上白名单（fail-closed）
             return rawPath;
         }
-        // 折叠重复斜杠、消掉 "." 与 ".." 段，得到与下游容器一致的形式
+        // 折叠重复斜杠、消掉 "." 与 ".." 段、截掉路径参数，得到与下游容器一致的形式
         Deque<String> segments = new ArrayDeque<>();
         for (String segment : decoded.split("/")) {
             if (segment.isEmpty() || ".".equals(segment)) {
@@ -197,7 +252,12 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
                 segments.pollLast();
                 continue;
             }
-            segments.addLast(segment);
+            int param = segment.indexOf(';');
+            String name = param < 0 ? segment : segment.substring(0, param);
+            // 截完变空（整段就是个 ;x）时丢掉，别留下双斜杠——下游容器同样会折叠掉
+            if (!name.isEmpty()) {
+                segments.addLast(name);
+            }
         }
         return "/" + String.join("/", segments);
     }

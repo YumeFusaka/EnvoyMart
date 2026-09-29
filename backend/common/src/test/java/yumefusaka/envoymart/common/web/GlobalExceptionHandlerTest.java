@@ -1,0 +1,59 @@
+package yumefusaka.envoymart.common.web;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * 异常出口的业务码约定：<b>客户端写错的请求不能报成服务端故障</b>。
+ * <p>
+ * 这里只钉住一件事：{@code 4xx} 的那几种「请求本身有问题」必须如实回 4xx 业务码，
+ * 而不是落到兜底分支的 500。500 在监控里是「服务端出事了」的信号，
+ * 用它表达「你少传了个参数」会让告警失去意义，调用方也无从判断该不该重试。
+ */
+class GlobalExceptionHandlerTest {
+
+    private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+    @Test
+    void 缺少必填参数回400而不是500() {
+        var result = handler.handleMissingParam(
+                new MissingServletRequestParameterException("items", "String"));
+
+        assertThat(result.getCode())
+                .as("少传参数是客户端问题，重试无用；报 500 会被读成服务端故障")
+                .isEqualTo(400);
+        assertThat(result.getMsg())
+                .as("要把缺的是哪个参数说出来，否则调用方只能去翻服务端日志")
+                .contains("items");
+    }
+
+    @Test
+    void 业务校验失败回400() {
+        var result = handler.handleBusiness(new IllegalArgumentException("收货地址不存在"));
+
+        assertThat(result.getCode()).isEqualTo(400);
+    }
+
+    @Test
+    void 状态冲突回409而不是400() {
+        // 订单已取消时不能再取消：请求本身没写错，是当前状态不允许。
+        // 400 该改参数、409 该刷新后重试，这个区分对调用方是有用的
+        var result = handler.handleIllegalState(new IllegalStateException("订单已取消"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+    }
+
+    @Test
+    void 非预期异常回500且不泄漏原始消息() {
+        var result = handler.handleUnknown(
+                new RuntimeException("Connect to http://127.0.0.1:9200 failed: Connection refused"));
+
+        assertThat(result.getCode()).isEqualTo(500);
+        assertThat(result.getMsg())
+                .as("内网地址与部署细节只能进日志，不能回给调用方")
+                .doesNotContain("127.0.0.1")
+                .doesNotContain("9200");
+    }
+}

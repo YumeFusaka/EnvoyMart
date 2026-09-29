@@ -12,7 +12,9 @@ import yumefusaka.envoymart.agent.rag.HybridRetriever;
 import yumefusaka.envoymart.agent.rag.TextSplitter;
 import yumefusaka.envoymart.agent.rag.VectorStore;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 检索索引的构建与重建 —— <b>知识库是事实源，索引是它的派生物</b>。
@@ -41,6 +43,15 @@ public class KnowledgeIndexer {
      * 关掉之后检索恒为空，AI 的每句话都会落到「知识库中没有相关依据」。
      */
     private final boolean autoIndex;
+
+    /** 后台重建的互斥位。见 {@link #rebuildAsync()}：它挡的是「重复发起」，不是「并发写」 */
+    private final AtomicBoolean running = new AtomicBoolean(false);
+
+    /**
+     * 最近一次重建的状态。{@code volatile} 而不是加锁：读写双方都只做一次引用赋值/读取，
+     * 状态对象本身不可变，不存在需要原子更新的复合状态。
+     */
+    private volatile Status status = new Status(false, null, null, null, null);
 
     public KnowledgeIndexer(KnowledgeCorpus corpus,
                             @Qualifier("knowledgeVectorStore") VectorStore vectorStore,
@@ -74,6 +85,25 @@ public class KnowledgeIndexer {
      * 串行化的代价可以忽略。
      */
     public synchronized Result rebuild() {
+        Instant startedAt = Instant.now();
+        // 状态由这里推进，不由 rebuildAsync 推进：启动时的 indexOnStartup 也走这个方法，
+        // 只在异步包装里记状态的话，启动建的那一次在管理台上会显示成「从没跑过」
+        status = new Status(true, startedAt, null, status.result(), null);
+        try {
+            Result result = doRebuild();
+            status = new Status(false, startedAt, Instant.now(), result, null);
+            return result;
+        } catch (RuntimeException | Error e) {
+            // 失败必须落到状态里：只回 running=false 的话，「跑完了什么都没发生」
+            // 与「跑起来就崩了」在调用方看来完全一样
+            log.error("[Knowledge] 索引重建失败", e);
+            status = new Status(false, startedAt, Instant.now(), status.result(),
+                    e.getClass().getSimpleName() + ": " + e.getMessage());
+            throw e;
+        }
+    }
+
+    private Result doRebuild() {
         List<Document> documents = corpus.reload();
         List<DocumentChunk> chunks = documents.stream()
                 .flatMap(doc -> splitter.split(doc).stream())
@@ -93,12 +123,18 @@ public class KnowledgeIndexer {
         // 图谱是它的增强，增强挂了主链路必须照常可用。
         KnowledgeGraphBuilder.BuildReport graph = buildGraph(documents);
 
-        log.info("[Knowledge] 索引重建完成：文档 {} 篇，切片 {} 片；图谱入库 {} 条",
-                documents.size(), chunks.size(), graph == null ? 0 : graph.accepted());
+        // 图谱那三个数字给的是 stored 而不是 accepted：这一行是**运维读的那一行**，
+        // 写「入库 40 条」就必须真的是图上有 40 条。图谱不可用那一批两者会差一个数量级
+        log.info("[Knowledge] 索引重建完成：文档 {} 篇，切片 {} 片；图谱入库 {} 条，丢弃 {} 条，未入库 {} 篇，跳过 {} 篇",
+                documents.size(), chunks.size(),
+                graph == null ? 0 : graph.stored(), graph == null ? 0 : graph.rejected(),
+                graph == null ? 0 : graph.failed(), graph == null ? 0 : graph.skipped());
         return new Result(documents.size(), chunks.size(),
                 graph == null ? 0 : graph.accepted(),
+                graph == null ? 0 : graph.stored(),
                 graph == null ? 0 : graph.rejected(),
                 graph == null ? 0 : graph.failed(),
+                graph == null ? 0 : graph.skipped(),
                 graph != null && graph.graphAvailable());
     }
 
@@ -112,14 +148,73 @@ public class KnowledgeIndexer {
     }
 
     /**
+     * 后台重建，<b>立即返回</b>——这是管理台调用的那个入口。
+     * <p>
+     * 为什么不直接同步跑完：一次完整重建要调十几次模型抽关系，实测七十几秒，
+     * 而 HTTP 客户端等不了那么久。同步版的表现是<b>接口超时（客户端看到 HTTP 000）
+     * 但重建其实成功完成了</b>——调用方以为失败、系统状态却是新的，这是最难排查的一类不一致。
+     * 所以把「已经开始」和「跑完了没有」拆成两件事：这个接口只回答前者，
+     * 后者由 {@link #status()} 回答。
+     * <p>
+     * 正在跑的时候再调它<b>不排队、不阻塞</b>，直接把当前状态回给调用方：
+     * 重建是「先清空、再写入」的，排队等锁的那个请求会让发起者挂在这里几十秒，
+     * 而它想要的信息（现在在不在跑）立刻就能给。
+     */
+    public Status rebuildAsync() {
+        if (running.compareAndSet(false, true)) {
+            // 先表态再起线程：线程真正跑到 rebuild() 还得等一会儿（要能拿到 synchronized 锁），
+            // 不等这一下的话 POST 的响应会回一个 running=false——刚发起的人被告知「没在跑」
+            status = new Status(true, Instant.now(), null, status.result(), null);
+            Thread.ofVirtual().name("knowledge-reindex").start(() -> {
+                try {
+                    // 状态的推进全在 rebuild() 里；这里只负责「起一次」和「起完放锁」。
+                    // 连 Error 一起兜住：从 run() 漏出去的异常会让这个虚拟线程静默死掉，
+                    // 而 running 永远停在 true——表现是「重建接口从此一直说在跑」，再也起不来
+                    rebuild();
+                } catch (Throwable e) {
+                    log.error("[Knowledge] 后台重建失败", e);
+                } finally {
+                    running.set(false);
+                }
+            });
+        }
+        // 已经在跑的时候不排队也不阻塞，直接把当前状态给调用方：它想知道的
+        // 「现在在不在跑」立刻就有答案，而排队等锁会让请求挂在这里几十秒
+        return status;
+    }
+
+    /** 重建状态。{@code running=true} 时后三个字段都还没有意义 */
+    public Status status() {
+        return status;
+    }
+
+    /**
+     * @param running   是否正在重建。为 true 时检索会落在一个「已清空、还没写满」的索引上，
+     *                  那期间 AI 的回答会偏「没有相关依据」——管理台要把这段显示出来
+     * @param result    上次成功的结果。从没成功过时是 null
+     * @param error     上次失败的原因，成功或还没跑过时是 null。
+     *                  <b>失败必须留痕</b>：只回 running=false 的话，「跑完了什么都没发生」
+     *                  与「跑起来就崩了」在调用方看来是一样的
+     */
+    public record Status(boolean running, Instant startedAt, Instant finishedAt,
+                         Result result, String error) {
+    }
+
+    /**
      * 重建结果 —— 管理台要显示「重建了几篇、几片」，而不只是「成功」。
      * <p>
-     * 图谱的四个数字单独回传而不是合成一个布尔：{@code rejected} 高说明提示词或校验在掐掉
-     * 大量结果，{@code failed} 高说明模型或写入有问题，{@code graphAvailable=false} 说明
-     * 图库根本没连上——三种情况的处置完全不同，一个「图谱构建失败」把它们抹平了就没法排查。
+     * 图谱的几个数字单独回传而不是合成一个布尔：{@code rejected} 高说明提示词或校验在掐掉
+     * 大量结果，{@code failed}/{@code skipped} 高说明模型、写入或目录有问题，
+     * {@code graphAvailable=false} 说明图库根本没连上——几种情况的处置完全不同，
+     * 一个「图谱构建失败」把它们抹平了就没法排查。
+     *
+     * @param graphAccepted 校验通过的条数，**不是**图上真正有的条数
+     * @param graphStored   真正写进图的条数。图谱不可用时它会是 0 而 accepted 有一堆
+     * @param graphSkipped  因整批中止而根本没跑的篇数
      */
     public record Result(int documentCount, int chunkCount,
-                         int graphAccepted, int graphRejected, int graphFailed,
+                         int graphAccepted, int graphStored, int graphRejected,
+                         int graphFailed, int graphSkipped,
                          boolean graphAvailable) {
     }
 }

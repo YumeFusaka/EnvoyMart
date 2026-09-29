@@ -22,6 +22,14 @@ public class IdentityHeaderInterceptor implements HandlerInterceptor {
 
     public static final String USER_ID_HEADER = "X-User-Id";
 
+    /**
+     * 角色头 —— 与 {@link #USER_ID_HEADER} 同一处注入。
+     * <p>
+     * 它只在「服务间令牌正确」的前提下才可信（见 {@code InternalCallFilter}：声称了身份就必须
+     * 拿得出凭证），因此<b>不要单独使用它</b>：没有身份头时它只能被当作伪造。
+     */
+    public static final String USER_ROLE_HEADER = "X-User-Role";
+
     /** 标记本次请求的身份由本拦截器写入，收尾时据此决定是否清理 */
     private static final String OWNED_ATTRIBUTE = IdentityHeaderInterceptor.class.getName() + ".owned";
 

@@ -76,7 +76,14 @@ public class AfterSaleController {
     }
 
     /**
-     * 审核 —— 管理侧动作，网关已屏蔽，只有服务间或运维直连可达。
+     * 审核 —— 管理侧动作，写在 {@code /internal/} 下，网关对 {@code /after-sales/internal/} 一律 404。
+     * <p>
+     * <b>不读身份、不校验审核人</b>：它记不下「谁批的」，「同意/拒绝」这件事本身也没有任何一层在鉴权，
+     * 唯一的门是网关那份排除清单。同类的洞真的出现过一次（{@code /orders/internal/{id}/ship}
+     * 漏登记），现在由 {@code InternalEndpointCoverageTest} 兜住漏登记。
+     * <p>
+     * 后续的管理后台<b>不能复用这个接口</b>：它需要有审核人、需要有权限判定，
+     * 而这条路按设计是服务间通道。管理侧入口要另开一条带 {@code @RequireAdmin} 的接口。
      */
     @PostMapping("/internal/{id}/audit")
     public Result<AfterSaleResponse> audit(
