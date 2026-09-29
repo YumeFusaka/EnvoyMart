@@ -16,7 +16,9 @@ import yumefusaka.envoymart.paymentservice.model.CreatePaymentRequest;
 import yumefusaka.envoymart.paymentservice.model.OrderSnapshot;
 import yumefusaka.envoymart.paymentservice.model.PaymentCallbackRequest;
 
-import java.math.BigDecimal;
+import tools.jackson.databind.ObjectMapper;
+import yumefusaka.envoymart.paymentservice.mapper.PaymentCallbackLogMapper;
+
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -42,8 +44,10 @@ import static org.mockito.Mockito.when;
 class PaymentCallbackTest {
 
     private PaymentMapper paymentMapper;
+    private PaymentCallbackLogMapper callbackLogMapper;
     private RabbitTemplate rabbitTemplate;
     private OrderClient orderClient;
+    private ObjectMapper objectMapper;
     private PaymentServiceImpl service;
 
     /**
@@ -60,9 +64,12 @@ class PaymentCallbackTest {
     @BeforeEach
     void setUp() {
         paymentMapper = mock(PaymentMapper.class);
+        callbackLogMapper = mock(PaymentCallbackLogMapper.class);
         rabbitTemplate = mock(RabbitTemplate.class);
         orderClient = mock(OrderClient.class);
-        service = new PaymentServiceImpl(paymentMapper, rabbitTemplate, orderClient);
+        objectMapper = mock(ObjectMapper.class);
+        service = new PaymentServiceImpl(paymentMapper, callbackLogMapper,
+                rabbitTemplate, orderClient, objectMapper);
         // 默认：条件更新命中一行（即“这次回调成功迁移了状态”）
         when(paymentMapper.update(any(), any())).thenReturn(1);
     }
@@ -73,7 +80,9 @@ class PaymentCallbackTest {
         entity.setOrderId(100L);
         entity.setOrderNo("YS100");
         entity.setUserId("u1001");
-        entity.setAmount(new BigDecimal("299.00"));
+        // 金额一律用「分」：资金路径上的浮点误差不只是显示问题，
+        // 「退款不得超过支付金额」这类判断会因 0.1+0.2 != 0.3 而失效
+        entity.setAmount(29900L);
         entity.setStatus(status);
         entity.setTransactionNo(transactionNo);
         return entity;
@@ -191,8 +200,10 @@ class PaymentCallbackTest {
         OrderSnapshot order = new OrderSnapshot();
         order.setId(100L);
         order.setOrderNo("YS-REAL");
-        order.setTotalAmount(new BigDecimal("198.00"));
-        order.setStatus("DELIVERING");
+        order.setTotalAmount(19800L);
+        // 建支付单取的是 payAmount（实付 = 总额 + 运费 - 优惠），不是商品总额
+        order.setPayAmount(19800L);
+        order.setStatus("CREATED");
         when(orderClient.getOrder(eq("u1001"), eq(100L))).thenReturn(Result.success(order));
         when(paymentMapper.selectOne(any())).thenReturn(null);
 
@@ -201,7 +212,7 @@ class PaymentCallbackTest {
 
         var response = service.createPayment("u1001", request);
 
-        assertThat(response.getAmount()).isEqualByComparingTo("198.00");
+        assertThat(response.getAmount()).isEqualTo(19800L);
         assertThat(response.getOrderNo()).isEqualTo("YS-REAL");
     }
 

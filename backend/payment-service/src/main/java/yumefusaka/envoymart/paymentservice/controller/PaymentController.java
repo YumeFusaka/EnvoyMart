@@ -1,24 +1,39 @@
 package yumefusaka.envoymart.paymentservice.controller;
 
 import jakarta.validation.Valid;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.paymentservice.model.CreatePaymentRequest;
 import yumefusaka.envoymart.paymentservice.model.PaymentCallbackRequest;
 import yumefusaka.envoymart.paymentservice.model.PaymentResponse;
+import yumefusaka.envoymart.paymentservice.model.RefundRequest;
+import yumefusaka.envoymart.paymentservice.model.RefundResponse;
 import yumefusaka.envoymart.paymentservice.security.PaymentCallbackVerifier;
 import yumefusaka.envoymart.paymentservice.service.PaymentService;
+import yumefusaka.envoymart.paymentservice.service.RefundService;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/payments")
 public class PaymentController {
 
     private final PaymentService paymentService;
+    private final RefundService refundService;
     private final PaymentCallbackVerifier callbackVerifier;
 
-    public PaymentController(PaymentService paymentService, PaymentCallbackVerifier callbackVerifier) {
+    public PaymentController(PaymentService paymentService,
+                             RefundService refundService,
+                             PaymentCallbackVerifier callbackVerifier) {
         this.paymentService = paymentService;
+        this.refundService = refundService;
         this.callbackVerifier = callbackVerifier;
     }
 
@@ -31,12 +46,20 @@ public class PaymentController {
 
     /**
      * 支付渠道回调 —— 匿名可达，因此以签名而非平台鉴权为准。
+     * <p>
+     * 验签失败时**也要落一条流水**再抛：伪造回调的尝试是最需要留痕的一类请求，
+     * 而它在校验处就中断了，走不到正常的处理路径。
      */
     @PostMapping("/callback")
     public Result<PaymentResponse> callback(
             @RequestHeader(value = PaymentCallbackVerifier.SIGNATURE_HEADER, required = false) String signature,
             @Valid @RequestBody PaymentCallbackRequest request) {
-        callbackVerifier.verify(request, signature);
+        try {
+            callbackVerifier.verify(request, signature);
+        } catch (RuntimeException e) {
+            paymentService.recordRejectedCallback(request, signature);
+            throw e;
+        }
         return Result.success(paymentService.processCallback(request));
     }
 
@@ -45,5 +68,20 @@ public class PaymentController {
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @PathVariable("orderId") Long orderId) {
         return Result.success(paymentService.getPayment(userId, orderId));
+    }
+
+    /** 用户发起的退款（售后场景）。归属由支付单决定，不采信请求体 */
+    @PostMapping("/refunds")
+    public Result<RefundResponse> refund(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @Valid @RequestBody RefundRequest request) {
+        return Result.success(refundService.refund(userId, request));
+    }
+
+    @GetMapping("/refunds/{orderId}")
+    public Result<List<RefundResponse>> listRefunds(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("orderId") Long orderId) {
+        return Result.success(refundService.listByOrder(userId, orderId));
     }
 }
