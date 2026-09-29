@@ -188,38 +188,23 @@ public class HybridRetriever implements Retriever {
         return scores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .limit(topK)
-                // **把融合分数写回切片**。之前这里只取 chunk、分数直接丢掉 ——
-                // 于是下游再也分不清「勉强召回」与「高度相关」，拒答门无从建立
-                .map(e -> withScore(byKey.get(e.getKey()), e.getValue()))
+                // RRF 分<b>只用来定序，不透传</b>。它的量纲是 1/(60+rank)：第 1 名 1/60、
+                // 第 5 名 1/64，绝对大小不表达「有多相关」，拿它当阈值等于拿名次当置信度。
+                // 下游需要的相关性信号在别处——向量路由 VectorStore 写在 chunk.score 上，
+                // 重排器会再覆盖一次。这里原样带出去。
+                .map(e -> copyOf(byKey.get(e.getKey())))
                 .toList();
     }
 
     /**
-     * 复制一份切片并写入分数。
+     * 复制一份切片。
      * <p>
-     * 不就地改：同一个 chunk 实例可能同时出现在向量路与关键词路的候选里，
-     * 就地写会污染另一路的引用（虽然当前实现是只读的，但那是隐式约定，
-     * 不值得依赖）。
+     * 不就地改、也不直接返回原实例：{@code InMemoryVectorStore} 的 {@code search}
+     * 返回的是<b>存储里的那个对象</b>，下游（重排器、拒答门）一旦往 slice 上写分数，
+     * 写的就是索引本身——下一次查询会读到上一次的分数。
      */
-    private DocumentChunk withScore(DocumentChunk chunk, double score) {
-        if (chunk == null) {
-            return null;
-        }
-        return DocumentChunk.builder()
-                .chunkId(chunk.getChunkId())
-                .docId(chunk.getDocId())
-                .content(chunk.getContent())
-                .chunkIndex(chunk.getChunkIndex())
-                .embedding(chunk.getEmbedding())
-                .indexText(chunk.getIndexText())
-                .title(chunk.getTitle())
-                .source(chunk.getSource())
-                .version(chunk.getVersion())
-                .position(chunk.getPosition())
-                .charOffset(chunk.getCharOffset())
-                .reranked(chunk.getReranked())
-                .score(score)
-                .build();
+    private DocumentChunk copyOf(DocumentChunk chunk) {
+        return chunk == null ? null : chunk.toBuilder().build();
     }
 
     /**

@@ -96,10 +96,18 @@ public class DashScopeReranker implements Reranker {
             for (Map<String, Object> item : results) {
                 int index = ((Number) item.get("index")).intValue();
                 if (index >= 0 && index < candidates.size()) {
-                    reranked.add(candidates.get(index));
+                    // 把重排分写回切片并标记来源。cross-encoder 的分数是这次查询下
+                    // 「这一对 query-doc 有多相关」的直接估计，是拒答门最该用的那把尺子；
+                    // 之前这里只搬对象、分数丢掉，等于把最贵的信号扔了。
+                    reranked.add(candidates.get(index).toBuilder()
+                            .score(relevanceOf(item))
+                            .reranked(Boolean.TRUE)
+                            .build());
                 }
             }
-            log.info("[Rerank] model={} candidates={} kept={}", model, candidates.size(), reranked.size());
+            log.info("[Rerank] model={} candidates={} kept={} topScore={}",
+                    model, candidates.size(), reranked.size(),
+                    reranked.isEmpty() ? "-" : reranked.get(0).getScore());
             successCount.incrementAndGet();
             return reranked.stream().limit(topK).toList();
 
@@ -127,6 +135,18 @@ public class DashScopeReranker implements Reranker {
         degradedCount.incrementAndGet();
         lastDegradeReason = reason;
         return Reranker.NOOP.rerank(query, candidates, topK);
+    }
+
+    /**
+     * 取 gte-rerank 的 relevance_score。
+     * <p>
+     * 字段名按 DashScope 文档是 {@code relevance_score}（早期版本也出现过 {@code score}），
+     * 两个都认。缺失时返回 {@code null} 而不是 0 —— 0 是一个「极度不相关」的断言，
+     * 会被拒答门当成事实采信；null 的意思是「没有这个信号」，两者的后续处理不同。
+     */
+    private Double relevanceOf(Map<String, Object> item) {
+        Object raw = item.containsKey("relevance_score") ? item.get("relevance_score") : item.get("score");
+        return raw instanceof Number number ? number.doubleValue() : null;
     }
 
     private String abbreviate(String text) {

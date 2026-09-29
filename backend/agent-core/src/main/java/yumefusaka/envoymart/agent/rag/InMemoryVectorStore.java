@@ -76,7 +76,7 @@ public class InMemoryVectorStore implements VectorStore {
         candidates.sort((a, b) -> Double.compare(b.score, a.score));
         return candidates.stream()
                 .limit(topK)
-                .map(c -> c.chunk)
+                .map(this::withScore)
                 .collect(Collectors.toList());
     }
 
@@ -84,10 +84,24 @@ public class InMemoryVectorStore implements VectorStore {
     private List<DocumentChunk> bruteForceSearch(float[] queryVector, int topK) {
         return store.values().stream()
                 .filter(c -> c.getEmbedding() != null)
-                .sorted(Comparator.comparingDouble(
-                        c -> -cosineSimilarity(queryVector, c.getEmbedding())))
+                .map(c -> withScore(new ScoredChunk(c, cosineSimilarity(queryVector, c.getEmbedding()))))
+                .sorted(Comparator.comparingDouble(c -> -c.getScore()))
                 .limit(topK)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 把余弦相似度写回切片 —— <b>并且必须复制一份</b>。
+     * <p>
+     * 不复制就是把分数写进索引本身：这份切片是 {@link #store} 里的那个对象，
+     * 下一次检索会读到上一次查询的分数。相似度是「这一次查询下有多相关」，
+     * 不是切片的固有属性。
+     */
+    private DocumentChunk withScore(ScoredChunk scored) {
+        return scored.chunk().toBuilder()
+                .score(scored.score())
+                .reranked(Boolean.FALSE)
+                .build();
     }
 
     /** 构建 IVF 索引：k-means 聚类（限制迭代次数） */

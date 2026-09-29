@@ -85,15 +85,31 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .toList();
     }
 
+    /**
+     * 切片 → 引用片段，<b>原样透传溯源字段</b>。
+     * <p>
+     * 这里曾经只挑了 content，标题填的是 {@code docId}、scope 硬编码 "rag" ——
+     * 于是模型在正文里标注的 {@code [1]} 在前端渲染成「[1] doc_12」，
+     * 用户看不到文档名、看不到出自哪一节，所谓「可追溯」到这一步就断了。
+     * 字段在这里只做搬运，不做取舍：丢掉任何一个都要问一句「用户还核得对吗」。
+     */
     private List<KnowledgeSnippet> convertKnowledge(List<DocumentChunk> chunks) {
         if (chunks == null) {
             return List.of();
         }
         return chunks.stream()
                 .map(c -> KnowledgeSnippet.builder()
-                        .title(c.getDocId())
+                        .chunkId(c.getChunkId())
+                        .docId(c.getDocId())
+                        .title(c.getTitle())
+                        .scope(c.getScope())
+                        .source(c.getSource())
+                        .version(c.getVersion())
+                        .position(c.getPosition())
+                        .charOffset(c.getCharOffset())
+                        .score(c.getScore())
+                        .reranked(c.getReranked())
                         .content(c.getContent())
-                        .scope("rag")
                         .build())
                 .toList();
     }

@@ -17,4 +17,6 @@ public class Document {
     private List<String> tags;
     private String source;       // 来源标识（manual / faq / product_desc …）
     private String scope;        // 领域范围（promotion / logistics / after_sale …）
+    /** 文档版本。引用要能指明「是哪一版」——同一份说明书改版后，旧版引用会变成错误依据 */
+    private String version;
 }

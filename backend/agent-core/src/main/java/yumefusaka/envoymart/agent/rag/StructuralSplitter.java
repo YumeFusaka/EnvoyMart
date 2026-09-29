@@ -229,19 +229,91 @@ public class StructuralSplitter implements TextSplitter {
         return result;
     }
 
+    /**
+     * 转成切片，并<b>把溯源信息一并带上</b>。
+     * <p>
+     * 这一步是「可追溯」的地基：切片离开这里之后，没有任何环节还持有原始文档，
+     * 标题、版本、位置、字符偏移只可能在这里抄一份。少抄一个字段，
+     * 下游的引用就只能显示一个 {@code docId} —— 而 docId 对用户不是依据。
+     * <p>
+     * 字符偏移用<b>首行锚定 + 前向游标</b>求：结构块按文档顺序产出，
+     * 首行在原文里是从当前游标往后第一次出现的位置。合并块的首行是合并前那一块的首行，
+     * 同样成立。找不到（理论上不该发生）时留 null，不猜。
+     * <p>
+     * 偏移指的是<b>块首（含标题行）</b>，不是切片正文的首字——正文里那一行被
+     * {@link #withoutHeading} 去掉了。前端跳原文时高亮的是整块，
+     * 所以定位点要在标题上，用户才看得见「这一节」的边界。
+     */
     private List<DocumentChunk> toChunks(List<Block> blocks, Document doc) {
+        String source = doc.getContent();
         List<DocumentChunk> chunks = new ArrayList<>(blocks.size());
+        int cursor = 0;
         for (int i = 0; i < blocks.size(); i++) {
             Block block = blocks.get(i);
-            String content = withPath ? pathOf(doc, block) + "\n" + block.text() : block.text();
+            String path = pathOf(doc, block);
+            String content = withPath
+                    ? path + "\n" + withoutHeading(block)
+                    : block.text();
+
+            int offset = offsetOf(source, block.text(), cursor);
+            if (offset >= 0) {
+                cursor = offset + Math.max(1, firstLine(block.text()).length());
+            }
+
             chunks.add(DocumentChunk.builder()
                     .chunkId(doc.getId() + "_" + i)
                     .docId(doc.getId())
                     .content(content)
                     .chunkIndex(i)
+                    .title(doc.getTitle())
+                    .source(doc.getSource())
+                    .scope(doc.getScope())
+                    .version(doc.getVersion())
+                    .position(path)
+                    .charOffset(offset < 0 ? null : offset)
                     .build());
         }
         return chunks;
+    }
+
+    /**
+     * 去掉块首行里与位置前缀重复的标题行。
+     * <p>
+     * 位置串已经写了「第三章 用法用量」，而这一章的第一行就是它本身，不去掉的话
+     * 切片正文里会再出现一次同样的字。这不只是难看：每个切片白付一次标题的 token，
+     * 而切片正是检索结果与 prompt 的粒度——一份几十片的文档就多送出几百字，
+     * 换回来的是零信息。
+     */
+    private String withoutHeading(Block block) {
+        String text = block.text();
+        int newline = text.indexOf('\n');
+        if (newline < 0) {
+            return text;
+        }
+        String head = text.substring(0, newline).strip();
+        if (head.equals(block.chapter()) || head.equals(block.clause())) {
+            return text.substring(newline + 1).strip();
+        }
+        return text;
+    }
+
+    /** 块在原文中的起始偏移；从游标往后找首行，找不到再从头找一次。 */
+    private int offsetOf(String text, String blockText, int cursor) {
+        String anchor = firstLine(blockText);
+        if (anchor.isEmpty()) {
+            return -1;
+        }
+        int at = text.indexOf(anchor, Math.min(cursor, text.length()));
+        return at >= 0 ? at : text.indexOf(anchor);
+    }
+
+    private String firstLine(String blockText) {
+        for (String line : blockText.split("\n")) {
+            if (!line.isBlank()) {
+                return line.strip();
+            }
+        }
+        return "";
     }
 
     /** 切片的位置前缀：{@code 《文档标题》 > 章 > 条}，缺哪层就少哪层。 */

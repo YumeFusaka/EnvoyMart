@@ -11,7 +11,7 @@ import lombok.Data;
  * 这件事毫无价值。
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 public class DocumentChunk {
 
     private String chunkId;
@@ -44,6 +44,9 @@ public class DocumentChunk {
     /** 来源标识（manual / faq / policy / spec …）。同样是政策，厂商说明书与平台规则的可信度不同 */
     private String source;
 
+    /** 领域范围（promotion / after_sale / nutrition …），随切片一起下发供前端分类展示 */
+    private String scope;
+
     /** 文档版本。同一份说明书会有多个版本，引用必须指明是哪一版 */
     private String version;
 
@@ -58,15 +61,25 @@ public class DocumentChunk {
     private Integer charOffset;
 
     /**
-     * 检索得分。
+     * 相关性分数，取值 {@code [0,1]}，<b>跨查询可比</b>——拒答门（低于阈值就不答）的输入。
      * <p>
      * <b>只在下游有意义，不参与持久化</b>：它是「这一次查询下这个切片有多相关」，
-     * 而不是切片的固有属性。之前这个分数在 RRF 融合后就丢了 ——
-     * 于是「检索到了什么」和「有多确信」这两件事在下游只剩前者，
-     * 拒答门（低于阈值就不答）根本无从建立。
+     * 而不是切片的固有属性。
+     * <p>
+     * <b>这里刻意不暴露 RRF 融合分。</b>融合分的分值域是 {@code 1/(60+rank)}，
+     * 第 1 名与第 5 名只差 1/60 与 1/64 —— 它是为<b>排序</b>设计的，
+     * 绝对大小不表达「有多相关」，拿它当阈值等于拿名次当置信度。
+     * 排序在融合阶段就已经完成，下游需要的是量纲稳定的相关性信号，
+     * 所以这里透传的是两路里唯一的真相关性分：重排分（{@link #reranked} 为真）
+     * 或向量余弦相似度（为假）。两路都没有给出分数时为 {@code null}。
      */
     private Double score;
 
-    /** 该切片是否被重排过。重排后的分数与召回分数不同量纲，要能区分 */
+    /**
+     * {@link #score} 是否为重排（cross-encoder）分。
+     * <p>
+     * 必须与方法名一起看：重排分与余弦相似度都能归一到 {@code [0,1]} 且跨查询可比，
+     * 但数值分布不同（cross-encoder 打分会更极端）。阈值调参要知道自己调的是哪一把尺子。
+     */
     private Boolean reranked;
 }
