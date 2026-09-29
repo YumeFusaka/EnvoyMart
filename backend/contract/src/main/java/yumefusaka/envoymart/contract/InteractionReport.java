@@ -1,4 +1,4 @@
-package yumefusaka.envoymart.knowledgeservice.graph;
+package yumefusaka.envoymart.contract;
 
 import java.util.List;
 
@@ -11,11 +11,15 @@ import java.util.List;
  * 它只会显示鱼油那一条，用户无法判断另外两样是「安全」还是「系统没查」。
  * <p>
  * 因此每一项都必须带 {@code found}：图谱里根本没有这个东西时，答案必须是
- * 「没有收录，请咨询医师」，而不是「未发现风险」。这两句话在药品营养场景下
- * 是完全相反的结论，而它们的界面表现都是「没有风险条目」。
+ * 「没有收录，请咨询医师」，而不是「未发现风险」。这两句话在药品营养场景下是
+ * 完全相反的结论，而它们的界面表现都是「没有风险条目」。
+ * <p>
+ * <b>跨进程的读法只有一种</b>：{@code available=false} 时 {@code items} 必为空，
+ * 调用方（ai-service 的工具、前端）必须据此说「暂时查不了」，
+ * <b>绝不能</b>把空列表渲染成「没有冲突」——那正是图谱不可用时最容易犯、
+ * 后果最重的错。
  *
- * @param available 图谱是否可用。为 false 时 {@code items} 必为空，
- *                  调用方须据此回答「暂时查不了」而不是「没有冲突」
+ * @param available 图谱是否可用。为 false 时 {@code items} 必为空
  * @param note      不可用时的原因说明，可用时为 null
  */
 public record InteractionReport(boolean available, String note, List<Item> items) {

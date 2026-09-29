@@ -1,4 +1,4 @@
-package yumefusaka.envoymart.knowledgeservice.graph;
+package yumefusaka.envoymart.contract;
 
 import java.util.List;
 

@@ -138,6 +138,9 @@ class ContractJsonRoundTripTest {
         if (depth > MAX_DEPTH) {
             return null;
         }
+        if (type.isRecord()) {
+            return instantiateRecord(type, depth);
+        }
         var ctor = type.getDeclaredConstructor();
         ctor.setAccessible(true);
         Object instance = ctor.newInstance();
@@ -145,7 +148,7 @@ class ContractJsonRoundTripTest {
             if (Modifier.isStatic(f.getModifiers()) || Modifier.isFinal(f.getModifiers())) {
                 continue;
             }
-            Object value = valueFor(f, depth);
+            Object value = valueFor(f.getName(), f.getType(), f.getGenericType(), depth);
             if (value != null) {
                 f.setAccessible(true);
                 f.set(instance, value);
@@ -155,13 +158,41 @@ class ContractJsonRoundTripTest {
     }
 
     /**
+     * record 走<b>规范构造器</b>，不是无参构造器 + 反射写字段。
+     * <p>
+     * 两条路都必须走这条：record 的组件字段是 {@code final}，上面那个循环会跳过它们，
+     * 于是对象能以「所有组件都是 null」的状态构造出来，JSON 往返一路绿灯——
+     * <b>一个字段都没验证，测试却是绿的</b>。这正是本测试最不能出的那种错。
+     * <p>
+     * 走规范构造器还有第二个好处：参数类型与顺序由编译器钉死，
+     * 少一个组件、顺序换了，这里立刻 {@code NoSuchMethodException}。
+     */
+    private static Object instantiateRecord(Class<?> type, int depth) throws Exception {
+        var components = type.getRecordComponents();
+        Class<?>[] paramTypes = new Class<?>[components.length];
+        Object[] args = new Object[components.length];
+        for (int i = 0; i < components.length; i++) {
+            paramTypes[i] = components[i].getType();
+            args[i] = valueFor(components[i].getName(), components[i].getType(),
+                    components[i].getGenericType(), depth);
+        }
+        var ctor = type.getDeclaredConstructor(paramTypes);
+        ctor.setAccessible(true);
+        return ctor.newInstance(args);
+    }
+
+    /**
      * 按字段类型造一个非空值。造不出来的类型返回 {@code null}——
      * 这时那个字段在 JSON 里是 null，测试对它的覆盖就少一层，但不该因此整条失败。
+     * <p>
+     * 形参是「名字 + 类型 + 泛型」而不是 {@code Field}：record 的组件不是
+     * {@code Field}（通过 {@link Field} 拿不到泛型实参时才轮到这里），
+     * 但造值规则必须与类字段完全一致，否则两类载体测的东西就不是一回事了。
      */
-    private static Object valueFor(Field f, int depth) throws Exception {
-        Class<?> t = f.getType();
+    private static Object valueFor(String name, Class<?> t, java.lang.reflect.Type generic, int depth)
+            throws Exception {
         if (t == String.class) {
-            return "值-" + f.getName();
+            return "值-" + name;
         }
         if (t == Long.class || t == long.class) {
             return 1L;
@@ -178,7 +209,7 @@ class ContractJsonRoundTripTest {
         if (List.class.isAssignableFrom(t)) {
             // 列表里放一个元素：空列表会让元素类型完全不参与往返，
             // 而 List<OrderItemResponse> 里的那个类正是最容易漏测的
-            Class<?> element = elementType(f);
+            Class<?> element = elementType(generic);
             Object item = element == null ? null : scalarOrInstance(element, depth + 1);
             List<Object> list = new ArrayList<>();
             if (item != null) {
@@ -190,6 +221,11 @@ class ContractJsonRoundTripTest {
             Object[] constants = t.getEnumConstants();
             return constants.length == 0 ? null : constants[0];
         }
+        // 集合元素为 null（拿不到泛型实参）时仍然返回一个空列表而不是 null：
+        // 字段为 null 时 JSON 里是 null，反序列化不会去碰元素类型，覆盖就白丢了
+        if (java.util.Collection.class.isAssignableFrom(t)) {
+            return new ArrayList<>();
+        }
         if (t.getName().startsWith("java.")) {
             return null;
         }
@@ -200,11 +236,14 @@ class ContractJsonRoundTripTest {
         if (type == String.class) {
             return "元素";
         }
-        if (type == Long.class) {
+        if (type == Long.class || type == long.class) {
             return 1L;
         }
-        if (type == Integer.class) {
+        if (type == Integer.class || type == int.class) {
             return 1;
+        }
+        if (type == Boolean.class || type == boolean.class) {
+            return true;
         }
         if (type.isEnum()) {
             Object[] constants = type.getEnumConstants();
@@ -222,9 +261,8 @@ class ContractJsonRoundTripTest {
      * 优先读泛型签名；拿不到时（原始类型、通配符）退回 {@code null}，
      * 让调用方按「没有元素」处理，而不是抛异常。
      */
-    private static Class<?> elementType(Field f) {
+    private static Class<?> elementType(java.lang.reflect.Type generic) {
         try {
-            var generic = f.getGenericType();
             if (generic instanceof java.lang.reflect.ParameterizedType pt
                     && pt.getActualTypeArguments()[0] instanceof Class<?> c) {
                 return c;

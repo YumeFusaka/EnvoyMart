@@ -5,10 +5,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.common.result.Result;
-import yumefusaka.envoymart.knowledgeservice.graph.GraphEdge;
-import yumefusaka.envoymart.knowledgeservice.graph.GraphNode;
+import yumefusaka.envoymart.contract.GraphEdge;
+import yumefusaka.envoymart.contract.GraphNode;
+import yumefusaka.envoymart.contract.InteractionReport;
 import yumefusaka.envoymart.knowledgeservice.graph.GraphService;
-import yumefusaka.envoymart.knowledgeservice.graph.InteractionReport;
 
 import java.util.Arrays;
 import java.util.List;
