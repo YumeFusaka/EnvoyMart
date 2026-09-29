@@ -38,6 +38,13 @@ public class StructuralSplitter implements TextSplitter {
      */
     private static final String LABEL_BREAKS = "。！？；，、：";
 
+    /**
+     * 截断后<b>保留</b>的断句标点。逗号、顿号、冒号在这里是「话没说完」的记号，
+     * 标签末尾挂一个它们会读成一个未闭合的短语（{@code 6.3 质量问题需提供实物照片或检测报告，}），
+     * 所以只保留句末标点，其余连同标点一起舍掉。
+     */
+    private static final String LABEL_KEEP_ENDS = "。！？；";
+
     /** 路径标签上限。位置串要拼进每一个切片，长一截就是全体多背一截 */
     private static final int MAX_LABEL_CHARS = 24;
 
@@ -158,8 +165,9 @@ public class StructuralSplitter implements TextSplitter {
             return s;
         }
         for (int i = 0; i < MAX_LABEL_CHARS; i++) {
-            if (LABEL_BREAKS.indexOf(s.charAt(i)) >= 0) {
-                return s.substring(0, i + 1);
+            char c = s.charAt(i);
+            if (LABEL_BREAKS.indexOf(c) >= 0) {
+                return LABEL_KEEP_ENDS.indexOf(c) >= 0 ? s.substring(0, i + 1) : s.substring(0, i);
             }
         }
         return s.substring(0, MAX_LABEL_CHARS);
