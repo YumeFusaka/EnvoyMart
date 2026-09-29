@@ -71,6 +71,21 @@ export JAVA_HOME
 export PATH="$JAVA_HOME/bin:$PATH"
 echo "使用 JDK: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1)"
 
+# 先把两个「库」模块装进本地仓库。
+#
+# 为什么必须显式做：下面用 `mvn -pl <svc> spring-boot:run` 启动单个服务，此时 reactor 里
+# **只有那一个模块**，它对 common / agent-core 的依赖是从**本地仓库**解析的，不是从源码目录。
+# 于是改了 common 却不 install，服务跑的还是旧 jar —— 表现为「代码明明改了，行为没变」，
+# 而且全程没有任何报错。这个坑在改造中真的踩到了：改了统一异常处理器，接口返回的错误码纹丝不动。
+#
+# 不能改用 `-am` 把依赖拉进 reactor：spring-boot:run 会在每个被选中的模块上执行，
+# 而 common / agent-core 是库、没有 main class，会直接失败。
+echo "同步库模块到本地仓库（改了 common / agent-core 后必须走这一步）..."
+mvn -q -B install -DskipTests -pl common,agent-core || {
+  echo "库模块安装失败，终止启动" >&2
+  exit 1
+}
+
 export DB_DRIVER="${DB_DRIVER:-com.mysql.cj.jdbc.Driver}"
 export DB_HOST="${DB_HOST:-127.0.0.1}"
 export DB_PORT="${DB_PORT:-3306}"
@@ -79,10 +94,10 @@ export DB_PASSWORD="${DB_PASSWORD:-j}"
 export NACOS_ENABLED="${NACOS_ENABLED:-true}"
 
 # 启动顺序：网关先起（它会往 Nacos 注册），其余服务随后
-SERVICES=(gateway-service auth-service product-service order-service ai-service payment-service review-service)
+SERVICES=(gateway-service auth-service product-service order-service ai-service payment-service review-service promotion-service knowledge-service)
 # 端口用于停止与健康检查；没有独立库的服务（网关、AI）留空
-PORT_OF=(8080 9001 9002 9003 9004 9005 9006)
-DB_OF=("" envoymart_auth envoymart_product envoymart_order "" envoymart_payment envoymart_review)
+PORT_OF=(8080 9001 9002 9003 9004 9005 9006 9007 9008)
+DB_OF=("" envoymart_auth envoymart_product envoymart_order "" envoymart_payment envoymart_review envoymart_promotion envoymart_knowledge)
 
 index_of() {
   local target=$1 i

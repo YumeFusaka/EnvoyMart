@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.authservice.model.LoginRequest;
 import yumefusaka.envoymart.authservice.model.LoginResponse;
+import yumefusaka.envoymart.authservice.model.RegisterRequest;
 import yumefusaka.envoymart.authservice.service.AuthService;
 import yumefusaka.envoymart.common.result.Result;
 
@@ -18,6 +19,11 @@ public class AuthController {
 
     public AuthController(AuthService authService) {
         this.authService = authService;
+    }
+
+    @PostMapping("/register")
+    public Result<LoginResponse> register(@Valid @RequestBody RegisterRequest request) {
+        return Result.success(authService.register(request));
     }
 
     @PostMapping("/login")

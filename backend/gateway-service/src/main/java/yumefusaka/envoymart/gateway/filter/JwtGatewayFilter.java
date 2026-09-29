@@ -45,6 +45,7 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
      */
     private static final List<PublicRule> PUBLIC_RULES = List.of(
             PublicRule.of("POST", "/auth/login"),
+            PublicRule.of("POST", "/auth/register"),
             PublicRule.of("GET", "/products"),
             PublicRule.of("GET", "/products/**"),
             PublicRule.of("POST", "/payments/callback")

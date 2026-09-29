@@ -12,4 +12,6 @@ public class UserProfile {
     private String nickname;
     private String roleName;
     private String avatar;
+    private String phone;
+    private String email;
 }
