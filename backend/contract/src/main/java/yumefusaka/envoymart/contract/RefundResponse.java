@@ -1,7 +1,9 @@
 package yumefusaka.envoymart.contract;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
@@ -11,6 +13,8 @@ import java.time.LocalDateTime;
  * <b>由 payment-service 发出，order-service 消费。</b>
  */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class RefundResponse {
 

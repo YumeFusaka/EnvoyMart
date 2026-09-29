@@ -1,7 +1,9 @@
 package yumefusaka.envoymart.contract;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.List;
 
@@ -13,6 +15,8 @@ import java.util.List;
  * 也就少一次「忘判空 → 工具抛异常 → 模型收到失败结果后开始编」。
  */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class LogisticsResponse {
 

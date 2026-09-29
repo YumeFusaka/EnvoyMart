@@ -1,12 +1,16 @@
 package yumefusaka.envoymart.contract;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.List;
 
 /** 在售 SKU 的可售信息。金额单位「分」 */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class SkuView {
 

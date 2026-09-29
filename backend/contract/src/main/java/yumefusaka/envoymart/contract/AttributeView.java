@@ -1,10 +1,14 @@
 package yumefusaka.envoymart.contract;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /** 商品参数项。属性定义挂在类目上，取值挂在商品上 */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class AttributeView {
 

@@ -1,7 +1,9 @@
 package yumefusaka.envoymart.contract;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.util.Arrays;
@@ -20,6 +22,8 @@ import java.util.List;
  * 还被模型当成事实说给用户。
  */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class ProductSummary {
 

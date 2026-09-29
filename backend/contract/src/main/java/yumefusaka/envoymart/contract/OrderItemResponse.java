@@ -1,10 +1,14 @@
 package yumefusaka.envoymart.contract;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /** 订单行。存的是下单那一刻的快照，商品之后改价改名都不影响这里 */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class OrderItemResponse {
 

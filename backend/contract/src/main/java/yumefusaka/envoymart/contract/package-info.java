@@ -30,5 +30,18 @@
  * 一旦开始往里塞工具方法，它就会变成事实上的「共享业务层」，被所有服务反向依赖而无法演进。
  * 唯一的例外是 {@code jakarta.validation} 注解——请求体的约束规则本身也是契约的一部分，
  * 调用方与被调方应当看到同一份。
+ * <p>
+ * <h2>每个类都必须带 {@code @NoArgsConstructor} 与 {@code @AllArgsConstructor}</h2>
+ * {@code @Builder} 会让 Lombok 生成一个全参构造器，<b>从而消掉隐式的无参构造器</b>，
+ * 于是 Jackson 找不到任何可用的 creator，反序列化直接抛
+ * {@code Type definition error: [simple type, class ...]}。
+ * <p>
+ * 它<b>只在真正跨进程接收时才炸</b>——生产者侧序列化用的是 getter，一切正常；
+ * 单元测试用 {@code builder()} 造对象，也一切正常。所以「本地全过」与「Feign 一调就废」
+ * 能同时成立。本模块为此付过一次代价：{@code ProductSummary} 少了这对注解，
+ * 结果 AI 的商品工具每次调用都反序列化失败，而它 catch 住异常返回了一句
+ * 「没有找到相关商品」——<b>看起来像搜索没命中，实际是这个类型根本没被解析</b>。
+ * 回归测试见 {@code ContractJsonRoundTripTest}，它逐个字段构造再往返一遍，
+ * 嵌套的契约类一起覆盖。
  */
 package yumefusaka.envoymart.contract;

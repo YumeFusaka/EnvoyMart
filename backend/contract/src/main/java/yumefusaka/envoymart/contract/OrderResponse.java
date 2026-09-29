@@ -1,7 +1,9 @@
 package yumefusaka.envoymart.contract;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -16,6 +18,8 @@ import java.util.List;
  * 模型会照说，用户会愣一下。
  */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class OrderResponse {
 

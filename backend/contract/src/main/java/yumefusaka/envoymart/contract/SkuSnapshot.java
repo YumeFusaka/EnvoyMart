@@ -1,7 +1,9 @@
 package yumefusaka.envoymart.contract;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * SKU 快照：按 SKU id 批量取，给购物车与订单组装用。
@@ -17,6 +19,8 @@ import lombok.Data;
  * <b>由 product-service 发出，order-service 消费。</b>
  */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class SkuSnapshot {
 
