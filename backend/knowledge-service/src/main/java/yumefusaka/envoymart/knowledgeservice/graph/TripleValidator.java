@@ -2,6 +2,7 @@ package yumefusaka.envoymart.knowledgeservice.graph;
 
 import lombok.extern.slf4j.Slf4j;
 import yumefusaka.envoymart.agent.graph.EntityKind;
+import yumefusaka.envoymart.agent.graph.EntityNames;
 import yumefusaka.envoymart.agent.graph.GraphRelation;
 import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeChunkEntity;
 
@@ -10,20 +11,23 @@ import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * 抽取结果的第一道闸：词表合规 + <b>引用必须能在原文里找到</b>。
+ * 抽取结果的第一道闸：词表合规 + <b>端点与引用都必须出自原文</b>。
  * <p>
  * 图上的每一条边都会被当成事实回答给用户（「这两个能不能一起吃」），
- * 所以入库的门槛不能是「模型说得像」。这里做的判定只有两条，但都是硬条件：
+ * 所以入库的门槛不能是「模型说得像」。这里做的判定都是硬条件：
  * <ol>
  *   <li>头尾类型与关系都在封闭词表内，且关系允许这对类型；</li>
- *   <li>模型给出的原文引文必须<b>逐字出现在这篇文档的正文里</b>。</li>
+ *   <li>商品键是 {@code SPU<数字>}，名字不像一整句话；</li>
+ *   <li>两端的名字至少有一个写法<b>出现在这篇文档的正文里</b>；</li>
+ *   <li>模型给出的原文引文<b>逐字出现在这篇文档的正文里</b>。</li>
  * </ol>
- * 第二条是关键。它把「模型根据常识补出来的一句话」挡在库外——模型当然知道
- * 华法林不能和鱼油乱吃，但图上不该出现一条<b>没有原文出处的边</b>，
- * 因为演示时点开引用会是空的，而空的引用比没有这条边更糟：它看起来像有依据。
+ * 第三条和第四条合起来才挡得住「凭常识补边」。只有第四条时，模型补出一条
+ * 华法林与阿司匹林的相互作用、再从文档里随便抄一句<b>逐字存在但无关</b>的句子，
+ * 就能带着一份「看起来有依据」的伪溯源入库——而这比没有这条边更糟。
  * <p>
  * 校验失败一律<b>丢弃这一条</b>，不整批失败。一批几十条里混进一两条幻觉是常态，
  * 让整篇文档的图谱因此不建，是把小问题放大成不可用。
@@ -35,6 +39,17 @@ public final class TripleValidator {
     private static final int MIN_QUOTE_CHARS = 6;
     /** 边上的后果说明上限，防止模型把一整段塞进属性 */
     private static final int MAX_EFFECT_CHARS = 200;
+    /** 实体名长度上限。真实实体名都短，超长的多半是模型把一整句塞进了 name */
+    private static final int MAX_NAME_CHARS = 60;
+    /**
+     * 商品节点键的形状，见 {@code KnowledgeGraphBuilder.key()}。
+     * <p>
+     * <b>服务端必须自己校验这个形状</b>，不能只靠客户端对齐：内部写入接口是
+     * 直连端口就能调的，不校验的话谁都能往图上灌任意商品名字符串，
+     * 而那些节点永远连不上商品目录，查询时表现为「这个商品没有已知相互作用」
+     * ——一个不报错的错误答案。规范化后是小写，所以这里也用小写
+     */
+    private static final Pattern SPU_KEY = Pattern.compile("spu\\d+");
     /** 丢弃日志里引文的展示长度。判断错因不需要看完整段 */
     private static final int QUOTE_LOG_CHARS = 60;
 
@@ -55,6 +70,10 @@ public final class TripleValidator {
         VOCABULARY("词表"),
         /** 头尾同名或名字为空。自环对「A 和 B 冲突吗」这类查询没有意义 */
         SELF_LOOP("自环"),
+        /** 商品键不是 SPU 形式，或名字长得不像实体名。原因在客户端没做实体链接，或模型跑飞 */
+        MALFORMED("畸形"),
+        /** 端点根本没在这篇文档里出现。原因在模型拿常识补边、引文随便抄了一句 */
+        UNANCHORED("端点无出处"),
         /** 引文在原文里找不到。原因在模型改写引文或凭常识编边 */
         UNGROUNDED("无出处");
 
@@ -104,7 +123,9 @@ public final class TripleValidator {
         if (candidates == null || candidates.isEmpty()) {
             return new Result(List.of(), Map.of());
         }
-        String body = docContent == null ? "" : docContent;
+        // 正文压缩一次，整批共用。原先每条引文都重建一遍压缩串与偏移表，
+        // 一篇文档几十条就是几十次全量扫描——而那份结果每次都完全一样
+        Compact body = Compact.of(docContent == null ? "" : docContent);
 
         List<GroundedTriple> accepted = new ArrayList<>();
         Map<RejectReason, Integer> reasons = new EnumMap<>(RejectReason.class);
@@ -142,7 +163,7 @@ public final class TripleValidator {
      * 返回值带原因而不是「判丢返回 null、调用方再猜一次」：猜的那一版必须重算一遍判定，
      * 而重算的结果与主路径只要有一处不一致，日志就会指向错误的方向。
      */
-    private static Verdict validateOne(Triple t, String docId, String body,
+    private static Verdict validateOne(Triple t, String docId, Compact body,
                                        List<KnowledgeChunkEntity> chunks) {
         if (t == null) {
             return Verdict.reject(RejectReason.VOCABULARY);
@@ -163,10 +184,21 @@ public final class TripleValidator {
             // 自环对「A 和 B 冲突吗」这类查询没有意义，一律不要
             return Verdict.reject(RejectReason.SELF_LOOP);
         }
+        if (headName.length() > MAX_NAME_CHARS || tailName.length() > MAX_NAME_CHARS
+                || !wellShaped(headKind, headName) || !wellShaped(tailKind, tailName)) {
+            return Verdict.reject(RejectReason.MALFORMED);
+        }
+
+        // 端点锚定在前、引文锚定在后：端点根本不在文档里，说明这一条是凭空造的，
+        // 那比「引文抄错了」更根本，报出来的原因也更接近真实错因
+        if (!body.anchors(headKind, headName, t.headLabel())
+                || !body.anchors(tailKind, tailName, t.tailLabel())) {
+            return Verdict.reject(RejectReason.UNANCHORED);
+        }
 
         // 引文锚定。找不到原文就不入库——这是本类存在的主要理由
         String quote = t.quote() == null ? "" : t.quote().strip();
-        int[] span = quote.isEmpty() ? null : locate(body, quote);
+        int[] span = quote.isEmpty() ? null : body.locate(quote);
         if (span == null) {
             return Verdict.reject(RejectReason.UNGROUNDED);
         }
@@ -174,6 +206,11 @@ public final class TripleValidator {
         return Verdict.accept(new GroundedTriple(headKind, headName, labelOr(t.headLabel(), t.headName()),
                 relation, tailKind, tailName, labelOr(t.tailLabel(), t.tailName()),
                 truncate(t.effect()), docId, chunkIdAt(chunks, span[0]), span[0], span[1], quote));
+    }
+
+    /** 商品键必须是 {@code SPU<数字>}；其余类型不限形状，长度已在上游卡住 */
+    private static boolean wellShaped(EntityKind kind, String name) {
+        return kind != EntityKind.PRODUCT || SPU_KEY.matcher(name).matches();
     }
 
     /** 引文只用来判断「错在哪一类」，日志里截短即可，不必占满一行 */
@@ -198,27 +235,13 @@ public final class TripleValidator {
     }
 
     /**
-     * 实体名的规范化。<b>图谱的节点键就是它</b>，所以「维生素 D」「维生素D」「维生素d」
-     * 必须落到同一个节点上——否则「鱼油 → EPA → 抗血小板 → 华法林」这条路径会因为
-     * 中间一环多了一个空格而断开，而图上看起来只是「有两组相似的节点」，
-     * 排查起来毫无线索。
+     * 实体名的规范化。<b>图谱的节点键就是它</b>。
      * <p>
-     * 只做空白与大小写，<b>不做同义词归一</b>：把「维生素D3」并到「维生素D」是医学上
-     * 错误的一步（D3 是 D 的一种形式，不是同义词），这种判断属于人工维护的别名表，
-     * 不该由这里猜。
+     * 实现搬到了 {@link EntityNames}：ai-service 建商品键时用的是同一个函数，
+     * 而两处各写一遍的后果是「改了一边忘了另一边」，图上同一个实体分裂成两个节点。
      */
     static String normalizeName(String name) {
-        if (name == null) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder(name.length());
-        for (int i = 0; i < name.length(); i++) {
-            char c = name.charAt(i);
-            if (!Character.isWhitespace(c)) {
-                sb.append(Character.toLowerCase(c));
-            }
-        }
-        return sb.toString();
+        return EntityNames.normalize(name);
     }
 
     private static String truncate(String effect) {
@@ -233,42 +256,69 @@ public final class TripleValidator {
     }
 
     /**
-     * 在正文中定位引文，返回 {@code [起始, 结束)} 的 UTF-16 偏移；找不到返回 {@code null}。
+     * 去掉空白后的正文，外加「压缩串第 i 个字符在原串里的偏移」。
      * <p>
      * <b>忽略空白</b>匹配：模型抄原文时经常在中英文之间多一个空格或吞掉一个换行，
-     * 逐字匹配会把这类引文判成幻觉——而它其实一字不差。做法是把正文与引文各压缩掉
-     * 空白并记下每个压缩字符对应的原偏移，命中后再映射回来，高亮位置因此仍是精确的。
+     * 逐字匹配会把这类引文判成幻觉——而它其实一字不差。把正文压缩掉空白并记下
+     * 每个压缩字符对应的原偏移，命中后再映射回来，高亮位置因此仍是精确的。
+     * <p>
+     * {@code lower} 是同一串的小写副本，只给「端点是否出自本文」的包含判断用。
+     * 让 {@code locate} 用原串而不是小写串：大小写要用来定位原文偏移，
+     * 换掉的话命中位置会整体对不上。
      */
-    private static int[] locate(String body, String quote) {
-        if (body.isEmpty()) {
-            return null;
-        }
-        int[] map = new int[body.length()];
-        StringBuilder compact = new StringBuilder(body.length());
-        for (int i = 0; i < body.length(); i++) {
-            char c = body.charAt(i);
-            if (!Character.isWhitespace(c)) {
-                map[compact.length()] = i;
-                compact.append(c);
+    private record Compact(String text, String lower, int[] map) {
+
+        static Compact of(String body) {
+            StringBuilder sb = new StringBuilder(body.length());
+            StringBuilder lo = new StringBuilder(body.length());
+            int[] map = new int[body.length()];
+            for (int i = 0; i < body.length(); i++) {
+                char c = body.charAt(i);
+                if (!EntityNames.isBlank(c)) {
+                    map[sb.length()] = i;
+                    sb.append(c);
+                    lo.append(Character.toLowerCase(c));
+                }
             }
+            return new Compact(sb.toString(), lo.toString(), map);
         }
 
-        StringBuilder needle = new StringBuilder(quote.length());
-        for (int i = 0; i < quote.length(); i++) {
-            char c = quote.charAt(i);
-            if (!Character.isWhitespace(c)) {
-                needle.append(c);
+        /** 定位引文，返回 {@code [起始, 结束)} 的 UTF-16 偏移；找不到返回 {@code null} */
+        int[] locate(String quote) {
+            String needle = EntityNames.stripBlanks(quote);
+            if (needle.length() < MIN_QUOTE_CHARS) {
+                return null;
             }
-        }
-        if (needle.length() < MIN_QUOTE_CHARS) {
-            return null;
+            int at = text.indexOf(needle);
+            return at < 0 ? null : new int[]{map[at], map[at + needle.length() - 1] + 1};
         }
 
-        int at = compact.indexOf(needle.toString());
-        if (at < 0) {
-            return null;
+        /**
+         * 端点是否出自这篇文档。
+         * <p>
+         * <b>只校验引文是不够的</b>：模型完全可以凭常识补出一条
+         * 「华法林 -INTERACTS_WITH-> 阿司匹林」，再从文档里抄一句逐字存在、
+         * 但与这条关系无关的句子当引文——于是这条边带着一份<b>看起来有依据</b>的
+         * 伪溯源入库，比没有这条边更糟。要求两端至少有一个写法出现在正文里，
+         * 挡掉的正是「两个端点都是凭空造的」这一类。
+         * <p>
+         * 商品端直接放行：文档里写的是「本品」，而节点键是 SPU 编号，
+         * 正文里当然找不到。它与目录的对齐在 ai-service 做（那边才拿得到目录），
+         * 这里只认键的形状（见 {@link #wellShaped}）。
+         */
+        boolean anchors(EntityKind kind, String name, String label) {
+            if (kind == EntityKind.PRODUCT) {
+                return true;
+            }
+            if (lower.contains(name)) {
+                return true;
+            }
+            // label 常常是空的（模型只给 name），而**空串被任何字符串包含**——
+            // 少写这个 isEmpty 判断的话这一整条校验恒为 true，形同不存在。
+            // 这不是假设：第一版就是这样，测试里「两个端点都是编的」那条照样入库
+            String byLabel = EntityNames.normalize(label);
+            return !byLabel.isEmpty() && lower.contains(byLabel);
         }
-        return new int[]{map[at], map[at + needle.length() - 1] + 1};
     }
 
     /**

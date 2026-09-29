@@ -32,9 +32,15 @@ envoymart:
     uri: ${NEO4J_URI:bolt://127.0.0.1:7687}
     username: ${NEO4J_USERNAME:neo4j}
     password: ${NEO4J_PASSWORD:envoymart123}
-    # 建连与每次查询的上限。图查询是**查询路径上的**，一次挂起的查询会拖住整个检索
+    # 建连与每次查询的上限。图查询是**查询路径上的**，一次挂起的查询会拖住整个检索，
+    # 所以读的预算压得很短——读失败只会让这一次回答少一条依据，代价可控
     connect-timeout-ms: 3000
     query-timeout-ms: 5000
+    # 写事务单独一个预算，**必须比读宽松**。重建索引时一个事务要写完整篇文档的三元组，
+    # 而写被中途掐断的代价是整篇文档的证据全丢（先是删旧边，删完就超时=图上什么都没有）。
+    # 这个值曾被读的 5 秒顺带管着，实测就撞上了：KB-0005 超时，检索侧一切正常，
+    # 只有问到相互作用才表现为「不知道」
+    write-timeout-ms: ${NEO4J_WRITE_TIMEOUT_MS:60000}
 
 management:
   endpoints:

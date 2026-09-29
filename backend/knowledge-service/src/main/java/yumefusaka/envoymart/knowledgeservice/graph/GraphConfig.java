@@ -20,10 +20,16 @@ public class GraphConfig {
      * 但服务端还在恢复存储，握手会被拖到几秒以上——3 秒会把这种「马上就好」
      * 判成「连不上」，而 {@code isAvailable()} 的判据就是这个探活。
      * <p>
-     * <b>查询 15s 而不是 5s</b>：几跳内的局部匹配本身是毫秒级，
-     * 但<b>首次查询</b>还要付连接建立与语句编译的钱，冷启动时会被 5 秒掐断——
-     * 而这一次失败会被 {@code replaceDocument} 记成写入失败，白丢一篇文档的抽取结果。
-     * 两个默认值都是在本地实测踩到之后调的，不是预估。
+     * <b>读 5s、写 60s，两者分开</b>：读在<b>用户请求路径</b>上，一次挂起的查询会拖住
+     * 整个检索，所以宁可短；写是<b>后台批量任务</b>（重建索引逐篇写图），被中途掐断
+     * 等于白跑一趟，所以宁可长。这里曾经只有一个 `query-timeout-ms` 服务两种场景，
+     * 结果实测撞上：一篇 11 条三元组的文档在一个事务里要发二十多条语句，
+     * 超时之后整篇证据一条都没进图。
+     * <p>
+     * 注意<b>这里的默认值不一定是生效值</b>——{@code application.yml} 里的
+     * {@code envoymart.graph.*} 会覆盖它，而本地那三个值（3s/5s）才是实际在跑的。
+     * 改这里之前先看 yml：原先代码里写着「查询 15s」的修正，被 yml 的 5000 盖掉，
+     * 一直没生效过。
      */
     @Bean
     public KnowledgeGraphStore knowledgeGraphStore(
@@ -32,7 +38,9 @@ public class GraphConfig {
             @Value("${envoymart.graph.username:neo4j}") String username,
             @Value("${envoymart.graph.password:}") String password,
             @Value("${envoymart.graph.connect-timeout-ms:10000}") int connectTimeoutMs,
-            @Value("${envoymart.graph.query-timeout-ms:15000}") int queryTimeoutMs) {
-        return new KnowledgeGraphStore(enabled, uri, username, password, connectTimeoutMs, queryTimeoutMs);
+            @Value("${envoymart.graph.query-timeout-ms:5000}") int queryTimeoutMs,
+            @Value("${envoymart.graph.write-timeout-ms:60000}") int writeTimeoutMs) {
+        return new KnowledgeGraphStore(enabled, uri, username, password,
+                connectTimeoutMs, queryTimeoutMs, writeTimeoutMs);
     }
 }

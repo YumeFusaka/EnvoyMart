@@ -50,15 +50,17 @@ public class KnowledgeGraphStore implements DisposableBean {
 
     private final Driver driver;
     private final Duration queryTimeout;
+    private final Duration writeTimeout;
     private final boolean enabled;
 
     private volatile boolean available;
     private volatile String unavailableReason;
 
     public KnowledgeGraphStore(boolean enabled, String uri, String username, String password,
-                               int connectTimeoutMs, int queryTimeoutMs) {
+                               int connectTimeoutMs, int queryTimeoutMs, int writeTimeoutMs) {
         this.enabled = enabled;
         this.queryTimeout = Duration.ofMillis(queryTimeoutMs);
+        this.writeTimeout = Duration.ofMillis(writeTimeoutMs);
         Driver created = null;
         if (enabled) {
             try {
@@ -118,13 +120,18 @@ public class KnowledgeGraphStore implements DisposableBean {
             driver.verifyConnectivity();
             if (!available) {
                 log.info("[Graph] 知识图谱已连接");
+                // 走到这个分支说明此前有过一段不可用期。约束是**构造期**建的那一次，
+                // 若那时 Neo4j 还没起来，{@code ensureSchema} 当时只留了一条 warn，
+                // 之后再也不会执行——于是整个进程生命周期里 MERGE 都退化成全标签扫描，
+                // 并发下还会产出重名节点。恢复连接时补一次，成本一条 DDL
+                ensureSchema();
             }
             available = true;
             unavailableReason = null;
         } catch (RuntimeException e) {
             available = false;
-            unavailableReason = e.getMessage();
-            log.error("[Graph] Neo4j 连不上，图谱检索与图谱接口将返回不可用：{}", e.getMessage());
+            unavailableReason = rootCause(e);
+            log.error("[Graph] Neo4j 连不上，图谱检索与图谱接口将返回不可用：{}", unavailableReason);
         }
     }
 
@@ -135,17 +142,61 @@ public class KnowledgeGraphStore implements DisposableBean {
         return available;
     }
 
-    /** 不可用原因，供接口回传给前端。可用时返回 null */
+    /**
+     * 把「这次读失败了」如实反映到可用性标志上。
+     * <p>
+     * <b>不这么做的话这个标志就是个谎</b>：它只在 {@link #ping()} 里改成 false，
+     * 而 ping 只在 false 时才重跑——启动时探活一旦成功，这个 true 就再也不会被推翻。
+     * 于是 Neo4j 中途挂掉之后，四个读方法各自 catch 住异常返回空列表，
+     * 而接口照样按「图谱可用」渲染，用户看到的是「没有查到风险」——
+     * 故障被读成了一个<b>相反的结论</b>，这正是本类开篇说要避免的那件事。
+     * <p>
+     * 翻转之后下一次 {@link #isAvailable()} 会自动重探并自愈，代价是一次
+     * {@code verifyConnectivity}，所以宁可多翻几次也不要粘住。
+     */
+    private void markUnavailable(String what, RuntimeException e) {
+        available = false;
+        unavailableReason = rootCause(e);
+        log.warn("[Graph] {} 失败，图谱标记为不可用：{}", what, unavailableReason);
+    }
+
+    /**
+     * 不可用原因，供接口回传给前端。可用时返回 null。
+     * <p>
+     * 只回一句通用文案：原始消息里有 {@code 127.0.0.1:7687} 这类内网拓扑，
+     * 而 {@code /knowledge/graph/stats} 是登录用户就能调的公开接口，
+     * 与 {@code GlobalExceptionHandler} 里写下的「不向调用方泄漏内网拓扑」直接冲突。
+     * 详情进日志——需要看它的人在服务端，不在浏览器里
+     */
     public String unavailableReason() {
-        return isAvailable() ? null : unavailableReason;
+        return isAvailable() ? null : "知识图谱暂不可用";
     }
 
     public boolean isEnabled() {
         return enabled;
     }
 
+    /** 读事务：短超时，几毫秒到几秒。理由见 {@link #writeConfig()} */
     private TransactionConfig txConfig() {
         return TransactionConfig.builder().withTimeout(queryTimeout).build();
+    }
+
+    /**
+     * 写事务：长超时，与读<b>分开</b>。
+     * <p>
+     * 两者共用一个 5 秒预算，实际上真的出过事：{@link #replaceDocument} 原先在一个事务里
+     * 对每条三元组各发两条语句（MERGE 头、MERGE 尾、CREATE 边），11 条的文档就是二十多条
+     * 语句全挤在同一个预算里。实测重建索引时 KB-0005 撞上超时，Neo4j 报
+     * "The transaction has not completed within the timeout specified at its start"，
+     * <b>整篇文档的证据一条都没进图</b>——而调用方只看到「未入库 1 篇」，
+     * 索引侧一切正常，检索照常命中，只有问到相互作用时才表现为「不知道」。
+     * <p>
+     * 这两件事本来就该用不同的预算：读在<b>用户请求路径</b>上，超时越短越好，
+     * 宁可快速回一句「图谱暂时不可用」也不能拖住整个检索；写是<b>后台批量任务</b>，
+     * 被中途掐断等于白跑一趟，宁可多等。一个常量服务不了两种相反的要求。
+     */
+    private TransactionConfig writeConfig() {
+        return TransactionConfig.builder().withTimeout(writeTimeout).build();
     }
 
     // ==================== 写入 ====================
@@ -164,35 +215,68 @@ public class KnowledgeGraphStore implements DisposableBean {
         if (!isAvailable()) {
             return;
         }
-        try (Session session = driver.session()) {
-            session.executeWrite(tx -> {
-                tx.run("MATCH (:Entity)-[r:REL {docId: $docId}]->(:Entity) DELETE r", Map.of("docId", docId));
-                for (GroundedTriple t : triples) {
-                    tx.run("""
-                            MERGE (h:Entity {name: $head})
-                            SET h.label = $headLabel, h.kind = $headKind
-                            MERGE (t:Entity {name: $tail})
-                            SET t.label = $tailLabel, t.kind = $tailKind
-                            CREATE (h)-[:REL {
-                                relation: $relation, effect: $effect, docId: $docId,
-                                chunkId: $chunkId, quoteStart: $quoteStart, quoteEnd: $quoteEnd,
-                                quote: $quote
-                            }]->(t)
-                            """, params(t));
-                }
-                return null;
-            }, txConfig());
-        } catch (RuntimeException e) {
-            // 写失败不能让它静默过去：文档索引标记成功、图上却什么都没写，
-            // 表现是「检索正常但一问相互作用就答不知道」，而日志里一片安静。
+        try {
+            executeReplace(docId, triples);
+        } catch (RuntimeException first) {
+            // 用一个**新事务**重试一次。Neo4j 的超时错误自己就写着这句
+            // （"Retry your operation in a new transaction"）：被终止的是那个事务，
+            // 不是这次写入。本方法是「先删后写」所以天然幂等，重来一遍没有副作用；
+            // 而重建索引是后台任务，多花几百毫秒换一篇文档的证据，划算。
             //
-            // 原因链写进消息本身：调用方（GraphService → 控制器 → 全局异常处理器）
-            // 一路只保留 message，cause 在日志里根本不出现。第一版只写了
-            // 「图谱写入失败 docId=KB-0006」，排查时只知道失败、不知道失败在哪一步，
-            // 只能靠手工在 cypher-shell 里重放 Cypher——而重放是能通过的。
-            throw new IllegalStateException("图谱写入失败 docId=" + docId + "：" + rootCause(e), e);
+            // 这一层是兜底：主因（一个事务里塞二十多条语句）已由 UNWIND 消掉，
+            // 但它挡不住网络抖动和服务端 GC 这类偶发。
+            log.warn("[Graph] 文档 {} 第 1 次写入失败，重试一次：{}", docId, rootCause(first));
+            try {
+                executeReplace(docId, triples);
+            } catch (RuntimeException second) {
+                // 写失败不能让它静默过去：文档索引标记成功、图上却什么都没写，
+                // 表现是「检索正常但一问相互作用就答不知道」，而日志里一片安静。
+                //
+                // 原因链写进消息本身：调用方（GraphService → 控制器 → 全局异常处理器）
+                // 一路只保留 message，cause 在日志里根本不出现。第一版只写了
+                // 「图谱写入失败 docId=KB-0006」，排查时只知道失败、不知道失败在哪一步，
+                // 只能靠手工在 cypher-shell 里重放 Cypher——而重放是能通过的。
+                throw new IllegalStateException("图谱写入失败 docId=" + docId + "：" + rootCause(second),
+                        second);
+            }
         }
         log.info("[Graph] 文档 {} 图谱重建：写入 {} 条关系", docId, triples.size());
+    }
+
+    /**
+     * 一个事务内完成「删旧边 + 写新边」。
+     * <p>
+     * 新的边用<b>一条 {@code UNWIND}</b> 写入，不是每条三元组发一轮语句。
+     * 原先 11 条三元组的文档要发二十多条语句（每条 4 条：MERGE 头、MERGE 尾、CREATE 边，
+     * 再加一次 DELETE），全部串行跑在同一个事务预算里，往返次数直接乘上文档规模——
+     * 这正是超时被撞爆的实际原因。UNWIND 把「每条一次往返」压成「整篇一次往返」，
+     * 语句数从 O(三元组) 降到 2，也顺带让整批写入在一个原子单位里完成。
+     * <p>
+     * 每一行仍然单独 MERGE 两端节点：同一篇文档里两个三元组共用一端是常态
+     * （都指向同一个成分），MERGE 在事务内能看见前一行刚建的节点，不会重复建。
+     */
+    private void executeReplace(String docId, List<GroundedTriple> triples) {
+        try (Session session = driver.session()) {
+            session.executeWrite(tx -> {
+                tx.run("MATCH (:Entity)-[r:REL {docId: $docId}]->(:Entity) DELETE r",
+                        Map.of("docId", docId)).consume();
+                if (!triples.isEmpty()) {
+                    tx.run("""
+                            UNWIND $rows AS t
+                            MERGE (h:Entity {name: t.head})
+                            SET h.label = t.headLabel, h.kind = t.headKind
+                            MERGE (e:Entity {name: t.tail})
+                            SET e.label = t.tailLabel, e.kind = t.tailKind
+                            CREATE (h)-[:REL {
+                                relation: t.relation, effect: t.effect, docId: t.docId,
+                                chunkId: t.chunkId, quoteStart: t.quoteStart, quoteEnd: t.quoteEnd,
+                                quote: t.quote
+                            }]->(e)
+                            """, Map.of("rows", triples.stream().map(this::params).toList())).consume();
+                }
+                return null;
+            }, writeConfig());
+        }
     }
 
     /**
@@ -278,7 +362,7 @@ public class KnowledgeGraphStore implements DisposableBean {
                 return edges;
             }, txConfig());
         } catch (RuntimeException e) {
-            log.warn("[Graph] 邻域查询失败 name={}：{}", name, e.getMessage());
+            markUnavailable("邻域查询 name=" + name, e);
             return List.of();
         }
     }
@@ -305,7 +389,7 @@ public class KnowledgeGraphStore implements DisposableBean {
                 return nodes;
             }, txConfig());
         } catch (RuntimeException e) {
-            log.warn("[Graph] 实体检索失败 kw={}：{}", keyword, e.getMessage());
+            markUnavailable("实体检索 kw=" + keyword, e);
             return List.of();
         }
     }
@@ -348,7 +432,7 @@ public class KnowledgeGraphStore implements DisposableBean {
                 return out;
             }, txConfig());
         } catch (RuntimeException e) {
-            log.warn("[Graph] 物质展开失败 names={}：{}", names, e.getMessage());
+            markUnavailable("物质展开 names=" + names, e);
             return List.of();
         }
     }
@@ -379,7 +463,7 @@ public class KnowledgeGraphStore implements DisposableBean {
                 return edges;
             }, txConfig());
         } catch (RuntimeException e) {
-            log.warn("[Graph] 风险关系查询失败 names={}：{}", names, e.getMessage());
+            markUnavailable("风险关系查询 names=" + names, e);
             return List.of();
         }
     }
@@ -388,7 +472,7 @@ public class KnowledgeGraphStore implements DisposableBean {
         if (!isAvailable()) {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("available", false);
-            out.put("reason", unavailableReason);
+            out.put("reason", unavailableReason());
             return out;
         }
         try (Session session = driver.session()) {
@@ -409,10 +493,10 @@ public class KnowledgeGraphStore implements DisposableBean {
                 return out;
             }, txConfig());
         } catch (RuntimeException e) {
-            log.warn("[Graph] 统计失败：{}", rootCause(e));
+            markUnavailable("统计查询", e);
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("available", false);
-            out.put("reason", rootCause(e));
+            out.put("reason", unavailableReason());
             return out;
         }
     }

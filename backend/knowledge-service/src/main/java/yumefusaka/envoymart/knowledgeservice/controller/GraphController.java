@@ -83,8 +83,8 @@ public class GraphController {
 
     private <T> Result<T> requireGraph() {
         if (!graphService.store().isAvailable()) {
-            return Result.error(503, "知识图谱暂时不可用：" + graphService.store().unavailableReason()
-                    + "。这不代表没有查到风险，请稍后重试或改看知识库文档");
+            return Result.error(503, "知识图谱暂时不可用，这不代表没有查到风险，"
+                    + "请稍后重试或改看知识库文档");
         }
         return null;
     }

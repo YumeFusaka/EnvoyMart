@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import yumefusaka.envoymart.agent.graph.EntityKind;
+import yumefusaka.envoymart.agent.graph.EntityNames;
 import yumefusaka.envoymart.agent.graph.GraphRelation;
 import yumefusaka.envoymart.agent.llm.ChatMessage;
 import yumefusaka.envoymart.agent.llm.LLMConfig;
@@ -63,6 +64,15 @@ public class KnowledgeGraphBuilder {
      * 输出被截在第 2048 个 Token 上，全篇归零。
      */
     private static final int EXTRACT_MAX_TOKENS = 4096;
+    /**
+     * 连续失败到这个数就中止整批。
+     * <p>
+     * 单篇失败是常态（一篇文档抽不出来，或者模型抖一下），不拖垮整批。
+     * 但连续失败说明模型侧或图谱侧整体不可用，这时再挨个试下去只会把同一条错误
+     * 重复十几行、每次还都要等满一次超时（模型 60 秒、驱动重试 30 秒），
+     * 而每一篇的结论都一样，没有新信息。
+     */
+    private static final int MAX_CONSECUTIVE_FAILURES = 3;
 
     private final LLMProvider llmProvider;
     private final LLMConfig defaultConfig;
@@ -77,15 +87,21 @@ public class KnowledgeGraphBuilder {
         this.productClient = productClient;
     }
 
-    /** 整批构建的结果，供调用方在日志与接口里说清「建了多少」 */
     /**
-     * @param failed 既含「抽取失败」也含「写入失败」——两者都不该计入入库数，
-     *               但日志里各自有一条 WARN 说明是哪一种。
-     *               <b>不要把它读成「抽取失败」</b>：实测踩过一次，写入侧读超时被记成
-     *               「抽取失败 1 篇」，于是跑去查模型，而模型那次抽得好好的、
-     *               边也真的写进了图里（超时发生在客户端，服务端照写不误）
+     * 整批构建的结果，供调用方在日志与接口里说清「建了多少」。
+     *
+     * @param accepted 校验通过的条数。**不是落到图上的条数**，用它当「已建好」会读错
+     * @param stored   真正写进图的条数。图谱不可用时 accepted 有一堆而 stored 是 0
+     * @param failed   既含「抽取失败」也含「写入失败」——两者都不该计入入库数，
+     *                 但日志里各自有一条 WARN 说明是哪一种。
+     *                 <b>不要把它读成「抽取失败」</b>：实测踩过一次，写入侧读超时被记成
+     *                 「抽取失败 1 篇」，于是跑去查模型，而模型那次抽得好好的、
+     *                 边也真的写进了图里（超时发生在客户端，服务端照写不误）
+     * @param skipped  因整批中止而<b>根本没跑</b>的文档数。它和 failed 分开，
+     *                 因为「试了没成」和「没试」的处置完全不同
      */
-    public record BuildReport(int documents, int accepted, int rejected, int failed, boolean graphAvailable) {
+    public record BuildReport(int documents, int accepted, int stored, int rejected,
+                              int failed, int skipped, boolean graphAvailable) {
     }
 
     /**
@@ -95,31 +111,63 @@ public class KnowledgeGraphBuilder {
      * 重复拉十几遍；而目录在一次重建期间不会变（它变了就该重跑重建）。
      */
     public BuildReport build(List<Document> documents) {
+        int total = documents.size();
         List<ProductSummary> catalog = fetchCatalog();
+        if (catalog == null) {
+            // 目录拿不到就**整批不跑**，不是「这次少抽一类边」。
+            // 写入语义是整体替换：商品三元组在半路被丢光之后，那篇文档原有的商品边
+            // 会被这次写入删掉，而报告上失败数是 0——看着一切正常，图上少了一整类边。
+            // 不跑的话上一版图谱原样留着，代价只是这一批的更新没生效
+            log.error("[Graph] 商品目录不可用，本批 {} 篇全部跳过：图谱保持上一版，不写入", total);
+            return new BuildReport(total, 0, 0, 0, 0, total, true);
+        }
 
         int accepted = 0;
+        int stored = 0;
         int rejected = 0;
         int failed = 0;
+        int skipped = 0;
+        int consecutiveFailures = 0;
         boolean available = true;
-        for (Document doc : documents) {
+        for (int i = 0; i < total; i++) {
+            Document doc = documents.get(i);
             List<GraphTriplePayload> triples = extract(doc, catalog);
             if (triples == null) {
-                // 抽取失败：**不发请求**。写入语义是整体替换，空列表会把这篇文档的旧边清掉
+                // 抽取失败：**不发请求**。写入语义是整体替换，空列表会把这篇文档的旧边清掉。
+                // 单篇失败不拖垮整批，但连续失败说明模型侧整体不可用，这时再挨个试下去
+                // 只是把同一条错误重复十几行、并且每次都要等满一次模型超时
                 failed++;
+                if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                    skipped += total - i - 1;
+                    log.warn("[Graph] 连续 {} 篇抽取失败，本批中止，其余 {} 篇跳过",
+                            consecutiveFailures, total - i - 1);
+                    break;
+                }
                 continue;
             }
             GraphIngestResult result = ingest(doc, triples);
             if (result == null) {
                 failed++;
+                // 同一条熔断也覆盖写入侧：Neo4j 可 ping 但写入全失败时，每篇都要等满
+                // 驱动的重试窗口（默认 30 秒），十几篇挨个等下去就是十几分钟
+                if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                    skipped += total - i - 1;
+                    log.warn("[Graph] 连续 {} 篇写入失败，本批中止，其余 {} 篇跳过",
+                            consecutiveFailures, total - i - 1);
+                    break;
+                }
                 continue;
             }
+            consecutiveFailures = 0;
             accepted += result.getAccepted();
+            stored += result.getStored();
             rejected += result.getRejected();
             if (!result.isAvailable()) {
                 // 图谱不可用时**立刻停整批**，而不是继续把剩下十几篇挨个试一遍——
-                // 那只是把同一条错误重复十几行，还得为每篇白白付一次模型调用。
+                // 那只是把同一条错误重复十几行，还得为每篇白白付一次模型调用
                 available = false;
-                log.warn("[Graph] 图谱存储不可用，本批在第 {} 篇中止，其余文档跳过", accepted + failed);
+                skipped += total - i - 1;
+                log.warn("[Graph] 图谱存储不可用，本批在第 {} 篇中止，其余 {} 篇跳过", i + 1, total - i - 1);
                 break;
             }
         }
@@ -127,9 +175,11 @@ public class KnowledgeGraphBuilder {
         if (available) {
             runQuietly("孤立实体清理", () -> knowledgeClient.dropGraphOrphans());
         }
-        log.info("[Graph] 图谱构建完成：文档 {} 篇，入库 {} 条，丢弃 {} 条，未入库 {} 篇",
-                documents.size(), accepted, rejected, failed);
-        return new BuildReport(documents.size(), accepted, rejected, failed, available);
+        // 报告里给的是 stored 而不是 accepted：演示时读到「入库 40 条」必须真的是
+        // 图上有 40 条。图谱不可用那一批两者会差出一整个数量级
+        log.info("[Graph] 图谱构建完成：文档 {} 篇，入库 {} 条，丢弃 {} 条，未入库 {} 篇，跳过 {} 篇",
+                total, stored, rejected, failed, skipped);
+        return new BuildReport(total, accepted, stored, rejected, failed, skipped, available);
     }
 
     /**
@@ -161,6 +211,10 @@ public class KnowledgeGraphBuilder {
                                     + "\n文档标题：" + doc.getTitle()
                                     + "\n\n正文：\n" + truncate(content)).build()), config);
             List<GraphTriplePayload> parsed = parse(response.getContent());
+            if (parsed == null) {
+                // 解析失败 = 这一篇没抽成，**不能写入**（见 parse 的 javadoc）
+                return null;
+            }
             List<GraphTriplePayload> linked = linkProducts(parsed, catalog);
             log.info("[Graph] 文档 {} 抽取 {} 条，商品链接后 {} 条",
                     doc.getId(), parsed.size(), linked.size());
@@ -263,19 +317,14 @@ public class KnowledgeGraphBuilder {
         return "SPU" + spuId;
     }
 
-    /** 与 knowledge-service 的实体名规范化保持一致：去空白、转小写 */
+    /**
+     * 与 knowledge-service 的实体名规范化保持一致。
+     * <p>
+     * 委托给 {@link EntityNames} 而不是在这里再写一遍：这两处算的是同一个<b>节点键</b>，
+     * 各写一遍就意味着「改了一边忘了另一边」，而症状是同名实体在图上分裂成两个节点。
+     */
     private static String normalize(String s) {
-        if (s == null) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (!Character.isWhitespace(c)) {
-                sb.append(Character.toLowerCase(c));
-            }
-        }
-        return sb.toString();
+        return EntityNames.normalize(s);
     }
 
     // ==================== 提示词 ====================
@@ -360,24 +409,38 @@ public class KnowledgeGraphBuilder {
      * 容忍 markdown 代码块与前后废话：模型很爱回 {@code ```json ... ```}，
      * 而这段围栏会让反序列化直接失败——一次能把整篇文档的关系全丢掉的失败，
      * 起因只是多了三个反引号。所以先截出最外层的花括号再解析。
+     * <p>
+     * <b>解析不出来返回 {@code null}，不是空列表</b>——这一条是本方法唯一难懂的地方，
+     * 也是踩过的坑。返回值往上传给 {@link #extract}，再往上决定要不要发写入请求；
+     * 而写入语义是「整体替换」。第一版把解析失败也返回 {@code List.of()}，
+     * 于是模型输出被 {@code max_tokens} 截断一次，这篇文档图上已经建好的边
+     * 就在一次重建里<b>全部消失</b>，而报告上失败数是 0、日志只说「抽取 0 条」。
+     * 窗口期内用户问「这两个能不能一起吃」得到的是「未收录」——安全场景里的假阴性。
+     * <p>
+     * 包级可见是为了让测试能直接钉住这条边界：截断的 JSON 必须返回 {@code null}，
+     * {@code {"triples":[]}} 才能返回空列表。
      */
-    private List<GraphTriplePayload> parse(String raw) {
+    static List<GraphTriplePayload> parse(String raw) {
         if (raw == null || raw.isBlank()) {
-            return List.of();
+            log.warn("[Graph] 抽取结果为空");
+            return null;
         }
         int start = raw.indexOf('{');
         int end = raw.lastIndexOf('}');
         if (start < 0 || end <= start) {
             log.warn("[Graph] 抽取结果里找不到 JSON 对象：{}", abbreviate(raw));
-            return List.of();
+            return null;
         }
         try {
             Map<String, List<GraphTriplePayload>> parsed = MAPPER.readValue(
                     raw.substring(start, end + 1), new TypeReference<>() {
                     });
             List<GraphTriplePayload> triples = parsed.get("triples");
-            if (triples == null || triples.isEmpty()) {
-                return List.of();
+            if (triples == null) {
+                // 解析成功但没有 triples 这个键，说明模型换了输出格式，与「这篇文档
+                // 确实没有可抽的关系」不是一回事——后者模型会回 {"triples":[]}
+                log.warn("[Graph] 抽取结果里没有 triples 字段：{}", abbreviate(raw));
+                return null;
             }
             return triples.stream()
                     .filter(t -> t != null && t.getRelation() != null)
@@ -385,7 +448,7 @@ public class KnowledgeGraphBuilder {
                     .toList();
         } catch (Exception e) {
             log.warn("[Graph] 抽取结果无法解析：{} | {}", e.getMessage(), abbreviate(raw));
-            return List.of();
+            return null;
         }
     }
 
@@ -395,19 +458,26 @@ public class KnowledgeGraphBuilder {
 
     // ==================== 辅助 ====================
 
+    /**
+     * 拉商品目录。<b>失败返回 {@code null}</b>，与「目录确实没有商品」区分开。
+     * <p>
+     * 这个区分是必须的：拿到空目录时 {@link #linkProducts} 会把所有 PRODUCT 三元组丢光，
+     * 然后那份「少了商品边」的列表照发不误，而服务端是整体替换——
+     * 结果是<b>把这篇文档原有的商品边删掉</b>，报告上失败数还是 0。
+     * 失败（null）则让调用方整批不跑，上一版图谱原样留着。
+     */
     private List<ProductSummary> fetchCatalog() {
         try {
             Result<List<ProductSummary>> result = productClient.catalog();
             if (result == null || result.getCode() == null || result.getCode() != 200 || result.getData() == null) {
-                log.warn("[Graph] 商品目录拉取失败：{}，本次不抽取商品相关关系",
-                        result == null ? "无响应" : result.getMsg());
-                return List.of();
+                log.warn("[Graph] 商品目录拉取失败：{}", result == null ? "无响应" : result.getMsg());
+                return null;
             }
             log.info("[Graph] 商品目录 {} 条，用于实体链接", result.getData().size());
             return result.getData();
         } catch (RuntimeException e) {
-            log.warn("[Graph] 商品目录拉取异常：{}，本次不抽取商品相关关系", e.getMessage());
-            return List.of();
+            log.warn("[Graph] 商品目录拉取异常：{}", e.getMessage());
+            return null;
         }
     }
 

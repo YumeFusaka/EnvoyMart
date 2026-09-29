@@ -30,6 +30,15 @@ import java.util.Set;
 @Service
 public class GraphService {
 
+    /**
+     * 单篇文档接受的关系条数上限。
+     * <p>
+     * 比抽取侧的 40 条宽，因为这一层要防的不是模型跑飞而是<b>调用方放大</b>：
+     * 每条候选都要拿引文在正文里做一次全量扫描。宽出来的余量留给「抽取侧调大了上限、
+     * 忘记同步这里」这种情况——那时这一层只该是兜底，不该成为常态下的瓶颈
+     */
+    private static final int MAX_TRIPLES_PER_DOC = 200;
+
     private final KnowledgeDocumentMapper documentMapper;
     private final KnowledgeChunkMapper chunkMapper;
     private final KnowledgeGraphStore graphStore;
@@ -57,6 +66,13 @@ public class GraphService {
 
         List<Triple> candidates = payload.getTriples() == null ? List.of()
                 : payload.getTriples().stream().map(GraphService::toCandidate).toList();
+        // 条数上限放在服务端而不是只放在抽取侧：抽取侧那个 40 条的上限保护的是模型跑飞，
+        // 而这条内部接口是直连端口就能调的。每条候选都要拿引文在正文里做一次全量扫描，
+        // 不设上限就是一个 CPU 放大口——文档正文越长，放大倍数越大
+        if (candidates.size() > MAX_TRIPLES_PER_DOC) {
+            throw new IllegalArgumentException("图谱写入失败：单篇文档的关系数 " + candidates.size()
+                    + " 超过上限 " + MAX_TRIPLES_PER_DOC);
+        }
 
         // 切片用来把引文偏移映射到具体是哪一片。取出来的是**当前**的切片——
         // 文档重切过之后旧偏移就不成立了，所以这一步必须在写入时做，不能缓存
@@ -182,6 +198,13 @@ public class GraphService {
             String raw = rawByKey.getOrDefault(key, key);
             String label = mine.isEmpty() ? raw : mine.get(0).rootLabel();
             items.add(new InteractionReport.Item(raw, label, !mine.isEmpty(), mine, mineRisks));
+        }
+
+        // 读的过程中图谱可能挂了：几个查询方法会各自吞掉异常并把可用性翻成 false。
+        // 这里必须**再读一次**而不是直接写 true——否则报告会说「已检查、未发现风险」，
+        // 而实际上一次都没查成，正好是这份报告最不能出的错
+        if (!graphStore.isAvailable()) {
+            return new InteractionReport(false, graphStore.unavailableReason(), List.of());
         }
         return new InteractionReport(true, null, items);
     }
