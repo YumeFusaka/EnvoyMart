@@ -24,6 +24,22 @@ export async function searchEntities(keyword: string, limit = 20) {
  * 空列表与「无风险」在界面上长得一模一样，而在这个场景里它们是相反的两句话。
  * 后端为此专门没有走「不可用就报错」那条路，就是为了让这里能如实区分。
  */
+/** 图谱规模。`available: false` 时只有 `reason`，别把它渲染成「0 个实体」 */
+export interface GraphStats {
+  available: boolean
+  entities?: number
+  relations?: number
+  /** 关系枚举名 → 条数 */
+  byRelation?: Record<string, number>
+  reason?: string
+}
+
+/** 图谱规模与各类关系条数，用于确认「图到底建起来没有」 */
+export async function graphStats() {
+  const response = await request.get('/knowledge/graph/stats')
+  return response.data.data as GraphStats
+}
+
 export async function checkInteractions(items: string[]) {
   const response = await request.get('/knowledge/graph/interactions', {
     params: { items: items.join(',') },

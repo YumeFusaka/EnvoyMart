@@ -253,6 +253,28 @@ onMounted(load)
         </el-descriptions>
       </section>
 
+      <!--
+        图谱入口。放在商品参数之后、评价之前 —— 它是「这个商品本身是什么」的一部分，
+        而不是社区内容。措辞刻意留了后路：图谱里没有收录本商品时页面会如实说明，
+        所以这里不能承诺「一定能查到什么」，否则点进去看到的是一句否定回答
+      -->
+      <section class="surface knowledge-entry">
+        <div>
+          <h2 class="section-title">成分与相互作用</h2>
+          <p class="knowledge-entry__desc">
+            这件商品含什么成分、提供哪些营养素、与常见药物是否有相互作用，都已整理进关系图谱。
+            图上每条连线都能点回说明书原文，可以自己核对。
+          </p>
+        </div>
+        <RouterLink
+          class="knowledge-entry__link"
+          :to="{ path: '/knowledge/graph', query: { root: `SPU${detail.id}` } }"
+        >
+          查看关系图谱
+          <span aria-hidden="true">→</span>
+        </RouterLink>
+      </section>
+
       <ReviewSection :spu-id="detail.id" />
 
       <section v-if="detail.detailHtml" class="surface">
@@ -275,6 +297,46 @@ onMounted(load)
 .crumb__path {
   color: var(--color-text-secondary);
   font-size: var(--ys-font-sm);
+}
+
+.knowledge-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ys-space-4);
+}
+
+.knowledge-entry__desc {
+  max-width: 62ch;
+  margin-top: var(--ys-space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
+  line-height: var(--ys-leading-base);
+}
+
+.knowledge-entry__link {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ys-space-2);
+  padding: var(--ys-space-2) var(--ys-space-4);
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--ys-radius-full);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-size: var(--ys-font-sm);
+  font-weight: 500;
+  transition: border-color var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.knowledge-entry__link:hover {
+  border-color: var(--color-primary);
+}
+
+.knowledge-entry__link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .detail__top {

@@ -47,6 +47,7 @@ declare module 'vue' {
     ElTag: typeof import('element-plus/es')['ElTag']
     ElTimeline: typeof import('element-plus/es')['ElTimeline']
     ElTimelineItem: typeof import('element-plus/es')['ElTimelineItem']
+    KnowledgeGraphCanvas: typeof import('./src/components/knowledge/GraphCanvas.vue')['default']
     OrderAfterSaleDialog: typeof import('./src/components/order/AfterSaleDialog.vue')['default']
     OrderReviewDialog: typeof import('./src/components/order/ReviewDialog.vue')['default']
     ReviewReviewSection: typeof import('./src/components/review/ReviewSection.vue')['default']

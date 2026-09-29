@@ -49,6 +49,18 @@ onMounted(load)
         智能助手回答里的每一条依据都出自这里。全库公开可读，不需要账号即可核对 ——
         「登录了才给你看依据」与溯源的目的正好相反。
       </p>
+
+      <!--
+        图谱与文档是同一个知识库的两种读法：文档按「一篇」看，图谱按「一条关系」看。
+        所以入口在这里而不是塞进主导航 —— 它是知识库内部的一种视图，不是一个新板块
+      -->
+      <RouterLink to="/knowledge/graph" class="kb-graph-entry">
+        <span class="kb-graph-entry__title">成分与相互作用图谱</span>
+        <span class="kb-graph-entry__desc">
+          换个读法：按「成分 → 营养素 → 药物」看这些文档之间的关系，每条线都点得回原文。
+        </span>
+        <span class="kb-graph-entry__arrow" aria-hidden="true">→</span>
+      </RouterLink>
     </header>
 
     <section class="kb-filters" aria-label="筛选">
@@ -113,6 +125,57 @@ onMounted(load)
   padding: var(--ys-space-8);
   display: grid;
   gap: var(--ys-space-6);
+}
+
+/* 图谱入口。做成一整条可点的横条而不是一个按钮：
+   它要说明「图谱是什么」，光写「查看图谱」四个字没人点得明白 */
+.kb-graph-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--ys-space-1) var(--ys-space-4);
+  margin-top: var(--ys-space-5);
+  padding: var(--ys-space-4) var(--ys-space-5);
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--ys-radius-md);
+  background: linear-gradient(90deg, var(--color-primary-subtle), var(--color-bg-surface) 72%);
+  color: var(--color-text-primary);
+  transition:
+    border-color var(--ys-duration-fast) var(--ys-ease-out),
+    transform var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.kb-graph-entry:hover {
+  border-color: var(--color-primary);
+}
+
+.kb-graph-entry:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.kb-graph-entry__title {
+  font-size: var(--ys-font-md);
+  font-weight: 600;
+}
+
+.kb-graph-entry__desc {
+  grid-column: 1;
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
+  line-height: var(--ys-leading-base);
+}
+
+.kb-graph-entry__arrow {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  color: var(--color-primary);
+  font-size: var(--ys-font-lg);
+  transition: transform var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.kb-graph-entry:hover .kb-graph-entry__arrow {
+  transform: translateX(4px);
 }
 
 .kb-header h1 {

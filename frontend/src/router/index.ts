@@ -103,6 +103,18 @@ const router = createRouter({
           meta: { public: true, title: '知识库' },
         },
         {
+          // 图谱同样公开。两点理由，都不是「顺手」：
+          // 一是它每条边都带知识库原文引文，公开它与公开那些文档是同一件事；
+          // 二是 AI 回答里引用一条图谱依据时，点进去要能看见那句话的来路，
+          // 而「登录了才给你看依据」与溯源的目的正好相反
+          path: 'knowledge/graph',
+          name: 'knowledge-graph',
+          component: () => import('@/views/KnowledgeGraphView.vue'),
+          meta: { public: true, title: '关系图谱' },
+        },
+        {
+          // 静态段排在动态段前面只是好读，不是必需：vue-router 按具体度打分，
+          // `knowledge/graph` 本来就会赢过 `knowledge/:docNo`，不会被当成一个文档编号
           path: 'knowledge/:docNo',
           name: 'knowledge-doc',
           component: () => import('@/views/KnowledgeDocView.vue'),
