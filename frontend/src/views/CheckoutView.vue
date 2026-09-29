@@ -6,6 +6,7 @@ import { listAddresses } from '@/api/address'
 import { checkout } from '@/api/order'
 import { formatPrice } from '@/api/product'
 import { useCartStore } from '@/stores'
+import ErrorState from '@/components/ui/ErrorState.vue'
 import type { UserAddress } from '@/types/models'
 
 const router = useRouter()
@@ -15,6 +16,9 @@ const addresses = ref<UserAddress[]>([])
 const selectedAddressId = ref<number | null>(null)
 const remark = ref('')
 const submitting = ref(false)
+/** 地址加载完成之前不渲染空态 —— 否则有地址的用户会看到一帧「还没有收货地址」 */
+const addressLoading = ref(true)
+const addressFailed = ref(false)
 
 const selectedAddress = computed(
   () => addresses.value.find((item) => item.id === selectedAddressId.value) ?? null,
@@ -53,18 +57,37 @@ async function submit() {
   }
 }
 
+async function loadAddresses() {
+  addressLoading.value = true
+  addressFailed.value = false
+  try {
+    addresses.value = await listAddresses()
+    const fallback = addresses.value.find((item) => item.isDefault === 1) ?? addresses.value[0]
+    selectedAddressId.value = fallback?.id ?? null
+  } catch {
+    addressFailed.value = true
+  } finally {
+    addressLoading.value = false
+  }
+}
+
 onMounted(async () => {
   if (cart.items.length === 0) {
-    await cart.load()
+    try {
+      await cart.load()
+    } catch {
+      // 购物车拉不到时不让用户停在一个「选不了商品」的结算页上
+      ElMessage.error('购物车加载失败，请重试')
+      router.replace('/cart')
+      return
+    }
   }
   if (cart.selectedItems.length === 0) {
     ElMessage.warning('请先在购物车勾选要结算的商品')
     router.replace('/cart')
     return
   }
-  addresses.value = await listAddresses()
-  const fallback = addresses.value.find((item) => item.isDefault === 1) ?? addresses.value[0]
-  selectedAddressId.value = fallback?.id ?? null
+  await loadAddresses()
 })
 </script>
 
@@ -83,7 +106,16 @@ onMounted(async () => {
         <el-button link type="primary" @click="router.push('/profile')">管理地址</el-button>
       </div>
 
-      <el-empty v-if="addresses.length === 0" description="还没有收货地址">
+      <el-skeleton v-if="addressLoading" :rows="3" animated />
+
+      <!-- 加载失败与「确实没有」必须分开：前者要能重试，后者才是引导去添加 -->
+      <ErrorState
+        v-else-if="addressFailed"
+        message="收货地址加载失败"
+        :on-retry="loadAddresses"
+      />
+
+      <el-empty v-else-if="addresses.length === 0" description="还没有收货地址">
         <el-button type="primary" @click="router.push('/profile')">去添加</el-button>
       </el-empty>
 

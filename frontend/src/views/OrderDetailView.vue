@@ -2,8 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { cancelOrder, formatAddress, getLogistics, getOrder } from '@/api/order'
+import { cancelOrder, confirmReceipt, formatAddress, getLogistics, getOrder } from '@/api/order'
 import { formatPrice } from '@/api/product'
+import ErrorState from '@/components/ui/ErrorState.vue'
 import type { Logistics, Order } from '@/types/models'
 
 const route = useRoute()
@@ -12,8 +13,14 @@ const router = useRouter()
 const order = ref<Order | null>(null)
 const logistics = ref<Logistics | null>(null)
 const loading = ref(false)
+const failed = ref(false)
+const receiving = ref(false)
 
-const orderId = computed(() => Number(route.params.id))
+const orderId = computed(() => {
+  const raw = Number(route.params.id)
+  // 手改地址栏或旧书签会传进非数字，那样会去请求 /orders/NaN
+  return Number.isFinite(raw) && raw > 0 ? raw : Number.NaN
+})
 
 /** 订单时间轴。只展示实际发生过的节点，未发生的不占位 */
 const timeline = computed(() => {
@@ -40,18 +47,49 @@ const payable = computed(
 const cancellable = computed(() => order.value?.status === 'CREATED')
 
 async function load() {
+  if (Number.isNaN(orderId.value)) {
+    ElMessage.error('订单不存在')
+    router.replace('/orders')
+    return
+  }
   loading.value = true
+  failed.value = false
   try {
     order.value = await getOrder(orderId.value)
-    // 物流只有已发货之后才有意义；未发货时接口会返回推算出来的演示轨迹，
-    // 那种数据展示出来只会误导
+    // 物流只有已发货之后才有意义；未发货时后端返回空轨迹
     if (order.value.shippedAt) {
       logistics.value = await getLogistics(orderId.value).catch(() => null)
     } else {
       logistics.value = null
     }
+  } catch {
+    failed.value = true
   } finally {
     loading.value = false
+  }
+}
+
+/** 确认收货。它是售后与评价的前置条件，所以在详情页给一个明确入口 */
+async function handleReceive() {
+  if (!order.value) {
+    return
+  }
+  try {
+    await ElMessageBox.confirm('确认已经收到货吗？确认后可以申请售后与评价。', '确认收货', {
+      type: 'info',
+      confirmButtonText: '确认收货',
+      cancelButtonText: '还没收到',
+    })
+  } catch {
+    return
+  }
+  receiving.value = true
+  try {
+    await confirmReceipt(order.value.id)
+    ElMessage.success('已确认收货')
+    await load()
+  } finally {
+    receiving.value = false
   }
 }
 
@@ -80,7 +118,9 @@ onMounted(load)
 
 <template>
   <div v-loading="loading" class="page">
-    <template v-if="order">
+    <ErrorState v-if="failed" message="订单加载失败" :on-retry="load" />
+
+    <template v-else-if="order">
       <nav class="crumb">
         <el-button link @click="router.push('/orders')">← 返回订单列表</el-button>
       </nav>
@@ -180,6 +220,9 @@ onMounted(load)
         </span>
         <div class="bar__actions">
           <el-button v-if="cancellable" @click="handleCancel">取消订单</el-button>
+          <el-button v-if="order.status === 'SHIPPED'" type="primary" :loading="receiving" @click="handleReceive">
+            确认收货
+          </el-button>
           <el-button v-if="payable" type="primary" @click="router.push(`/payment?orderId=${order.id}`)">
             去支付
           </el-button>

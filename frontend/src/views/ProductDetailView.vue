@@ -3,8 +3,13 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { formatPrice, getProductDetail } from '@/api/product'
-import { addCartItem } from '@/api/cart'
+import { useCartStore } from '@/stores'
 import type { ProductDetail, SkuView } from '@/types/models'
+
+// 加购必须走 store，不能直接调 API：顶栏角标读的是 store 里的状态，
+// 绕过它加购会让角标纹丝不动 —— 用户看到「已加入购物车」却没有任何数量反馈，
+// 会怀疑是不是没加上
+const cart = useCartStore()
 
 const route = useRoute()
 const router = useRouter()
@@ -128,7 +133,7 @@ async function handleAddToCart() {
   }
   adding.value = true
   try {
-    await addCartItem({ skuId: sku.id, quantity: quantity.value })
+    await cart.add(sku.id, quantity.value)
     ElMessage.success('已加入购物车')
   } finally {
     adding.value = false

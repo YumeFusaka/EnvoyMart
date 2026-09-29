@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { formatPrice } from '@/api/product'
 import { getOrder } from '@/api/order'
 import { createPayment, mockPay, PAY_CHANNELS } from '@/api/payment'
+import ErrorState from '@/components/ui/ErrorState.vue'
 import type { Order } from '@/types/models'
 
 const route = useRoute()
@@ -15,25 +16,35 @@ const channel = ref<string>('MOCK')
 const paying = ref(false)
 const countdown = ref('')
 
+/**
+ * 当前时间。
+ * <p>
+ * `expired` 必须依赖一个**响应式**的时间源：直接写 `Date.now()` 的话它只依赖
+ * `order`，订单加载完就再也不重算 —— 倒计时文字已经显示「已超时」，
+ * 支付按钮却仍然可点，点下去才被后端拒绝。
+ */
+const now = ref(Date.now())
+
 const orderId = computed(() => Number(route.query.orderId))
 
 const expired = computed(() => {
   if (!order.value?.expireAt) {
     return false
   }
-  return new Date(order.value.expireAt).getTime() <= Date.now()
+  return new Date(order.value.expireAt).getTime() <= now.value
 })
 
 let timer: ReturnType<typeof setInterval> | undefined
 
 /** 倒计时。支付截止时间来自订单，前端只负责显示 */
 function tick() {
+  now.value = Date.now()
   const expireAt = order.value?.expireAt
   if (!expireAt) {
     countdown.value = ''
     return
   }
-  const left = new Date(expireAt).getTime() - Date.now()
+  const left = new Date(expireAt).getTime() - now.value
   if (left <= 0) {
     countdown.value = '已超时'
     return
@@ -41,6 +52,26 @@ function tick() {
   const minutes = Math.floor(left / 60000)
   const seconds = Math.floor((left % 60000) / 1000)
   countdown.value = `${minutes} 分 ${String(seconds).padStart(2, '0')} 秒`
+}
+
+/**
+ * 等订单真的变成已支付再跳转。
+ * <p>
+ * 支付成功的 MQ 事件由 order-service 异步消费，`mockPay` 返回时订单状态还没变。
+ * 直接跳过去会看到详情页仍显示「待付款」并提供「去支付」，更糟的是「取消订单」
+ * 也还亮着 —— 而在那个窗口里取消，后端会收到「已取消订单的支付成功事件」，
+ * 那正是它刻意防的路径。
+ */
+async function waitForPaid(id: number) {
+  for (let i = 0; i < 20; i++) {
+    const latest = await getOrder(id).catch(() => null)
+    if (latest && latest.status !== 'CREATED') {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300))
+  }
+  // 等不到也放行：支付本身已经成功，跳过去看到「待付款」只是慢了一拍，
+  // 而卡在这里会让用户以为支付失败
 }
 
 async function pay() {
@@ -56,6 +87,7 @@ async function pay() {
     // 建支付单（已存在会复用），再让后端扮演渠道发一次回调
     await createPayment({ orderId: order.value.id, channel: channel.value })
     await mockPay(order.value.id)
+    await waitForPaid(order.value.id)
     ElMessage.success('支付成功')
     router.push(`/orders/${order.value.id}`)
   } finally {
@@ -63,14 +95,25 @@ async function pay() {
   }
 }
 
+const loadFailed = ref(false)
+
+async function load() {
+  loadFailed.value = false
+  try {
+    order.value = await getOrder(orderId.value)
+    tick()
+  } catch {
+    loadFailed.value = true
+  }
+}
+
 onMounted(async () => {
-  if (!orderId.value) {
+  if (!orderId.value || Number.isNaN(orderId.value)) {
     ElMessage.error('缺少订单信息')
     router.replace('/orders')
     return
   }
-  order.value = await getOrder(orderId.value)
-  tick()
+  await load()
   timer = setInterval(tick, 1000)
 })
 
@@ -95,7 +138,9 @@ onUnmounted(() => {
       </p>
     </header>
 
-    <template v-if="order">
+    <ErrorState v-if="loadFailed" message="订单信息加载失败" :on-retry="load" />
+
+    <template v-else-if="order">
       <section class="surface">
         <h2 class="section-title">订单信息</h2>
         <el-descriptions :column="2" border>

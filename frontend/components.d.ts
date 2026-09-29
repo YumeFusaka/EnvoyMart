@@ -47,6 +47,7 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     ShopProductCard: typeof import('./src/components/shop/ProductCard.vue')['default']
+    UiErrorState: typeof import('./src/components/ui/ErrorState.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

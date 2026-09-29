@@ -132,6 +132,17 @@ public class CartServiceImpl implements CartService {
         return toResponse(entity, requireSku(entity.getSkuId()));
     }
 
+    @Override
+    @Transactional
+    public List<CartItemResponse> setAllSelected(String userId, boolean selected) {
+        cartItemMapper.update(null, new LambdaUpdateWrapper<CartItemEntity>()
+                .eq(CartItemEntity::getUserId, userId)
+                .set(CartItemEntity::getSelected, selected ? SELECTED : UNSELECTED)
+                .set(CartItemEntity::getUpdatedAt, Times.now()));
+        cartCacheService.evictCartCache(userId);
+        return list(userId);
+    }
+
     /**
      * 一次批量取 SKU 快照。
      * <p>

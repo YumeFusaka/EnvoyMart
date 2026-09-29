@@ -65,6 +65,19 @@ public class CartController {
         return Result.success(null);
     }
 
+    /**
+     * 批量勾选 / 取消（「全选」走它）。
+     * <p>
+     * 路径与 {@code /items/{id}/selected} 不冲突：Spring 里字面量优先于模板，
+     * 不会把它当成「id 为 selected 的条目」。
+     */
+    @PutMapping("/items/selected")
+    public Result<List<CartItemResponse>> setAllSelected(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @Valid @RequestBody SelectCartItemRequest request) {
+        return Result.success(cartService.setAllSelected(userId, request.getSelected()));
+    }
+
     @PutMapping("/items/{id}/selected")
     public Result<CartItemResponse> setSelected(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,

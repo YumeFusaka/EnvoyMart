@@ -29,3 +29,14 @@ export async function setCartItemSelected(id: number, selected: boolean) {
   const response = await request.put(`/cart/items/${id}/selected`, { selected })
   return response.data.data as CartItem
 }
+
+/**
+ * 批量勾选/取消（「全选」走它）。
+ * <p>
+ * 逐条调 setCartItemSelected 是 N 次写 + N 次刷新，10 件商品就是 20 个请求；
+ * 而且中途失败会让剩下的条目静默地没被选中。
+ */
+export async function setAllCartItemsSelected(selected: boolean) {
+  const response = await request.put('/cart/items/selected', { selected })
+  return response.data.data as CartItem[]
+}

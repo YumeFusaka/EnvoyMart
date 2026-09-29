@@ -4,6 +4,7 @@ import {
   addCartItem,
   getCartItems,
   removeCartItem,
+  setAllCartItemsSelected,
   setCartItemSelected,
   updateCartItem,
 } from '@/api/cart'
@@ -35,8 +36,6 @@ export const useCartStore = defineStore('cart', () => {
     selectedItems.value.reduce((sum, item) => sum + item.subtotal, 0),
   )
 
-  const hasUnavailable = computed(() => items.value.some((item) => !item.available))
-
   async function load() {
     loading.value = true
     try {
@@ -46,26 +45,41 @@ export const useCartStore = defineStore('cart', () => {
     }
   }
 
+  /**
+   * 只替换一条，不整页刷新。
+   * <p>
+   * 每次操作都全量 {@link load} 会把整个列表闪一次 loading，并且把用户
+   * 正在操作的其他条目也重置回服务端的值 —— 连点两下数量时表现为「跳回去」。
+   */
+  function patchOne(updated: CartItem) {
+    const index = items.value.findIndex((item) => item.id === updated.id)
+    if (index >= 0) {
+      items.value[index] = updated
+    }
+  }
+
   async function add(skuId: number, quantity: number) {
     await addCartItem({ skuId, quantity })
-    // 重新拉一次而不是把返回值塞进本地数组：加购可能触发「同 SKU 累加」，
-    // 而累加后的小计、库存可用性都要以服务端为准
+    // 加购可能触发「同 SKU 累加」，也可能新增条目 —— 这一处仍然全量拉
     await load()
   }
 
   async function updateQuantity(id: number, quantity: number) {
-    await updateCartItem(id, { quantity })
-    await load()
+    patchOne(await updateCartItem(id, { quantity }))
   }
 
   async function remove(id: number) {
     await removeCartItem(id)
-    await load()
+    items.value = items.value.filter((item) => item.id !== id)
   }
 
   async function toggleSelected(id: number, selected: boolean) {
-    await setCartItemSelected(id, selected)
-    await load()
+    patchOne(await setCartItemSelected(id, selected))
+  }
+
+  /** 全选/全不选走一个请求 */
+  async function toggleAll(selected: boolean) {
+    items.value = await setAllCartItemsSelected(selected)
   }
 
   function clear() {
@@ -78,12 +92,12 @@ export const useCartStore = defineStore('cart', () => {
     totalQuantity,
     selectedItems,
     selectedAmount,
-    hasUnavailable,
     load,
     add,
     updateQuantity,
     remove,
     toggleSelected,
+    toggleAll,
     clear,
   }
 })

@@ -1,16 +1,26 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { cancelOrder, listOrders } from '@/api/order'
 import { formatPrice } from '@/api/product'
+import ErrorState from '@/components/ui/ErrorState.vue'
 import type { Order, OrderStatus } from '@/types/models'
 
 const router = useRouter()
 
 const orders = ref<Order[]>([])
 const loading = ref(false)
+const failed = ref(false)
 const activeStatus = ref<OrderStatus | 'ALL'>('ALL')
+
+/**
+ * 当前时间。`payable()` 依赖它，否则订单超时那一刻界面上没有任何变化触发重渲染，
+ * 「去支付」会一直亮着 —— 点进去才会在收银台看到「已超时」。
+ */
+const now = ref(Date.now())
+
+let timer: ReturnType<typeof setInterval> | undefined
 
 /**
  * 状态分组。用「分组」而不是枚举出全部 9 个状态当筛选项：
@@ -42,7 +52,9 @@ function countOf(tab: (typeof STATUS_TABS)[number]): number {
 
 /** 未支付且未超时 —— 只有这种订单还能付款 */
 function payable(order: Order): boolean {
-  return order.status === 'CREATED' && (!order.expireAt || new Date(order.expireAt) > new Date())
+  return (
+    order.status === 'CREATED' && (!order.expireAt || new Date(order.expireAt).getTime() > now.value)
+  )
 }
 
 /** 未支付即可取消。已支付的要走退款流程，后端会如实拒绝 */
@@ -52,8 +64,11 @@ function cancellable(order: Order): boolean {
 
 async function load() {
   loading.value = true
+  failed.value = false
   try {
     orders.value = await listOrders()
+  } catch {
+    failed.value = true
   } finally {
     loading.value = false
   }
@@ -74,7 +89,20 @@ async function handleCancel(order: Order) {
   await load()
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  // 每分钟推进一次「当前时间」，让超时订单的「去支付」自己消失。
+  // 不轮询订单本身：关单是服务端的事，界面只需要把已超时的按钮收起来
+  timer = setInterval(() => {
+    now.value = Date.now()
+  }, 60_000)
+})
+
+onUnmounted(() => {
+  if (timer) {
+    clearInterval(timer)
+  }
+})
 </script>
 
 <template>
@@ -101,7 +129,9 @@ onMounted(load)
     </nav>
 
     <div v-loading="loading" class="orders">
-      <el-empty v-if="!loading && filtered.length === 0" description="没有相关订单">
+      <ErrorState v-if="failed" message="订单加载失败" :on-retry="load" />
+
+      <el-empty v-else-if="!loading && filtered.length === 0" description="没有相关订单">
         <el-button type="primary" @click="router.push('/shop')">去逛逛</el-button>
       </el-empty>
 

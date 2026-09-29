@@ -26,4 +26,13 @@ public interface CartService {
     void remove(String userId, Long id);
 
     CartItemResponse setSelected(String userId, Long id, boolean selected);
+
+    /**
+     * 批量勾选 / 取消。
+     * <p>
+     * 存在是为了让「全选」成为一个请求。逐条调 {@link #setSelected} 是
+     * N 次写 + N 次全量刷新，10 件商品就是 20 个请求、20 次 loading 闪烁，
+     * 而且中途失败会让剩下的条目静默地没被选中。
+     */
+    List<CartItemResponse> setAllSelected(String userId, boolean selected);
 }

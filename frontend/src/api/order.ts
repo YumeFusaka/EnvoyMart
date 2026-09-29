@@ -40,6 +40,16 @@ export async function cancelOrder(id: number) {
   return response.data.data as Order
 }
 
+/**
+ * 确认收货。
+ * <p>
+ * 它是售后与评价的**前置条件**：订单不到「已收货」，政策引擎与评价校验都不会放行。
+ */
+export async function confirmReceipt(id: number) {
+  const response = await request.post(`/orders/${id}/receive`)
+  return response.data.data as Order
+}
+
 export async function getLogistics(id: number) {
   const response = await request.get(`/orders/${id}/logistics`)
   return response.data.data as Logistics
