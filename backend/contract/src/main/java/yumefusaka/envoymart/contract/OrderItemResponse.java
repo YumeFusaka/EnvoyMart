@@ -1,4 +1,4 @@
-package yumefusaka.envoymart.orderservice.model;
+package yumefusaka.envoymart.contract;
 
 import lombok.Builder;
 import lombok.Data;
@@ -12,9 +12,11 @@ public class OrderItemResponse {
     private Long spuId;
     private Long skuId;
     private String spuName;
+
     /** 形如 "规格:400IU×90粒;包装:瓶装" */
     private String skuSpecText;
     private String skuImage;
+
     /** 单位「分」 */
     private Long unitPrice;
     private Integer quantity;

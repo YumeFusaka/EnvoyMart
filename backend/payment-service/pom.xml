@@ -19,6 +19,12 @@
             <artifactId>common</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 服务间 DTO 的唯一定义处。本地不再各自复刻一份，杜绝靠 JSON 字段名对齐 -->
+        <dependency>
+            <groupId>yumefusaka.envoymart</groupId>
+            <artifactId>contract</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

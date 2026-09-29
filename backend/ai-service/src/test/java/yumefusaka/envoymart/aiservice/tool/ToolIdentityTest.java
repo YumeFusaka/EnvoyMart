@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 import yumefusaka.envoymart.aiservice.client.OrderClient;
-import yumefusaka.envoymart.aiservice.model.OrderResponse;
+import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.common.result.Result;
 
 import java.math.BigDecimal;
@@ -38,9 +38,11 @@ class ToolIdentityTest {
         AtomicReference<String> seenUserId = new AtomicReference<>();
         when(client.getOrder(anyString(), anyLong())).thenAnswer(invocation -> {
             seenUserId.set(invocation.getArgument(0));
-            OrderResponse order = new OrderResponse();
-            order.setStatus("DELIVERING");
-            order.setTotalAmount(new BigDecimal("299.00"));
+            OrderResponse order = OrderResponse.builder()
+                    .status("DELIVERING")
+                    .statusText("配送中")
+                    .payAmount(29900L)
+                    .build();
             return Result.success(order);
         });
 

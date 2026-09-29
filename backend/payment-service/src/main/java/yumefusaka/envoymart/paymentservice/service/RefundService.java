@@ -1,9 +1,9 @@
 package yumefusaka.envoymart.paymentservice.service;
 
-import yumefusaka.envoymart.paymentservice.model.RefundRequest;
+import yumefusaka.envoymart.contract.RefundRequest;
 
 import java.util.List;
-import yumefusaka.envoymart.paymentservice.model.RefundResponse;
+import yumefusaka.envoymart.contract.RefundResponse;
 
 public interface RefundService {
 

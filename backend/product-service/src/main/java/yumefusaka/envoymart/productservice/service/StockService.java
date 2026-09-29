@@ -1,6 +1,6 @@
 package yumefusaka.envoymart.productservice.service;
 
-import yumefusaka.envoymart.productservice.model.StockChangeRequest;
+import yumefusaka.envoymart.contract.StockChangeRequest;
 
 /**
  * 库存变动。

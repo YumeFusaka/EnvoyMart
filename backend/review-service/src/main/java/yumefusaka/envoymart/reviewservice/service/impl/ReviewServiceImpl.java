@@ -14,7 +14,8 @@ import yumefusaka.envoymart.reviewservice.entity.ReviewImageEntity;
 import yumefusaka.envoymart.reviewservice.mapper.ReviewImageMapper;
 import yumefusaka.envoymart.reviewservice.mapper.ReviewMapper;
 import yumefusaka.envoymart.reviewservice.model.CreateReviewRequest;
-import yumefusaka.envoymart.reviewservice.model.OrderSnapshot;
+import yumefusaka.envoymart.contract.OrderItemResponse;
+import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.reviewservice.model.ReviewResponse;
 import yumefusaka.envoymart.reviewservice.model.ReviewStatistics;
 import yumefusaka.envoymart.reviewservice.service.ReviewService;
@@ -52,7 +53,7 @@ public class ReviewServiceImpl implements ReviewService {
         // 评价必须来自一次真实且已完成的购买。此前这里完全不校验：
         // orderId 只标了 @NotNull，填什么都不管 —— 实测填一个不存在的订单号、
         // 填别人的订单号、给从没买过的商品打分，三种情况全部被接受
-        OrderSnapshot.Item item = requirePurchased(userId, request.getOrderId(), request.getOrderItemId());
+        OrderItemResponse item = requirePurchased(userId, request.getOrderId(), request.getOrderItemId());
 
         List<String> images = normalizeImages(request.getImages());
 
@@ -175,8 +176,8 @@ public class ReviewServiceImpl implements ReviewService {
      * 注意判的是<b>业务码</b>而不是 HTTP 状态码：order-service 的异常被统一包成
      * HTTP 200 + {@code code=500}，而 Feign 只按状态码判断成败、不会抛异常。
      */
-    private OrderSnapshot.Item requirePurchased(String userId, Long orderId, Long orderItemId) {
-        Result<OrderSnapshot> result;
+    private OrderItemResponse requirePurchased(String userId, Long orderId, Long orderItemId) {
+        Result<OrderResponse> result;
         try {
             result = orderClient.getOrder(userId, orderId);
         } catch (Exception e) {
@@ -188,7 +189,7 @@ public class ReviewServiceImpl implements ReviewService {
             throw new IllegalArgumentException("订单不存在");
         }
 
-        OrderSnapshot order = result.getData();
+        OrderResponse order = result.getData();
         if (!REVIEWABLE_ORDER_STATUS.contains(order.getStatus())) {
             throw new IllegalStateException("订单尚未完成，收货后才能评价");
         }

@@ -19,14 +19,14 @@ import yumefusaka.envoymart.productservice.mapper.ProductSpecMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSpecValueMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSpuMapper;
 import yumefusaka.envoymart.productservice.mapper.SpuAttributeValueMapper;
-import yumefusaka.envoymart.productservice.model.AttributeView;
-import yumefusaka.envoymart.productservice.model.ProductDetail;
+import yumefusaka.envoymart.contract.AttributeView;
+import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.productservice.model.ProductQuery;
-import yumefusaka.envoymart.productservice.model.ProductSummary;
+import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.productservice.model.SkuSpecView;
-import yumefusaka.envoymart.productservice.model.SkuSnapshot;
-import yumefusaka.envoymart.productservice.model.SkuView;
-import yumefusaka.envoymart.productservice.model.SpecGroup;
+import yumefusaka.envoymart.contract.SkuSnapshot;
+import yumefusaka.envoymart.contract.SkuView;
+import yumefusaka.envoymart.contract.SpecGroup;
 import yumefusaka.envoymart.productservice.service.CategoryService;
 import yumefusaka.envoymart.productservice.service.ProductService;
 
@@ -35,6 +35,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service

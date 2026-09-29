@@ -5,7 +5,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import yumefusaka.envoymart.productservice.model.ProductDetail;
+import yumefusaka.envoymart.contract.ProductDetail;
 
 import java.time.Duration;
 

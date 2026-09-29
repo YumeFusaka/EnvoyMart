@@ -16,7 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.productservice.model.ProductQuery;
-import yumefusaka.envoymart.productservice.model.ProductSummary;
+import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.productservice.service.CategoryService;
 
 import java.math.BigDecimal;

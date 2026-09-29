@@ -28,15 +28,15 @@ import yumefusaka.envoymart.orderservice.mapper.OrderItemMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderStatusLogMapper;
 import yumefusaka.envoymart.orderservice.model.CheckoutRequest;
-import yumefusaka.envoymart.orderservice.model.LogisticsResponse;
-import yumefusaka.envoymart.orderservice.model.LogisticsStepResponse;
-import yumefusaka.envoymart.orderservice.model.OrderItemResponse;
-import yumefusaka.envoymart.orderservice.model.OrderResponse;
+import yumefusaka.envoymart.contract.LogisticsResponse;
+import yumefusaka.envoymart.contract.LogisticsStepResponse;
+import yumefusaka.envoymart.contract.OrderItemResponse;
+import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.orderservice.model.OrderStatus;
-import yumefusaka.envoymart.orderservice.model.RefundRequest;
-import yumefusaka.envoymart.orderservice.model.RefundSnapshot;
-import yumefusaka.envoymart.orderservice.model.SkuSnapshot;
-import yumefusaka.envoymart.orderservice.model.StockChangeRequest;
+import yumefusaka.envoymart.contract.RefundRequest;
+import yumefusaka.envoymart.contract.RefundResponse;
+import yumefusaka.envoymart.contract.SkuSnapshot;
+import yumefusaka.envoymart.contract.StockChangeRequest;
 import yumefusaka.envoymart.orderservice.mq.OrderCreatedEvent;
 import yumefusaka.envoymart.orderservice.mq.OrderEventPublisher;
 import yumefusaka.envoymart.orderservice.mq.OrderItemEvent;
@@ -679,7 +679,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
      */
     private void refundPaidButClosedOrder(OrderEntity order, OrderStatus current) {
         try {
-            Result<RefundSnapshot> result = paymentClient.refundForOrder(RefundRequest.builder()
+            Result<RefundResponse> result = paymentClient.refundForOrder(RefundRequest.builder()
                     .orderId(order.getId())
                     // 金额留空 = 全额退。订单已关闭，没有任何部分退的理由
                     .reason("订单已" + statusText(current) + "，支付结果迟到，自动全额退款")

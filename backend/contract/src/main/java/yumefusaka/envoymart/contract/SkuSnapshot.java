@@ -1,4 +1,4 @@
-package yumefusaka.envoymart.productservice.model;
+package yumefusaka.envoymart.contract;
 
 import lombok.Builder;
 import lombok.Data;
@@ -13,13 +13,15 @@ import lombok.Data;
  * <p>
  * 商品名与规格文本一并带回：调用方（购物车、订单）要展示它们，
  * 让它自己再查一次等于把 N+1 挪个地方。
+ * <p>
+ * <b>由 product-service 发出，order-service 消费。</b>
  */
 @Data
 @Builder
 public class SkuSnapshot {
 
     private Long id;
-    private Long spuId;
+
     /**
      * SPU 所属类目。
      * <p>
@@ -27,14 +29,22 @@ public class SkuSnapshot {
      * 少了这个字段，政策引擎就只能按全类目默认政策走。
      */
     private Long categoryId;
+
+    private Long spuId;
+
     /** SPU 名称，如「维生素 D3 软胶囊」 */
     private String spuName;
+
     /** 规格文本，如「规格:400IU×90粒;包装:瓶装」 */
     private String specText;
+
     private String image;
-    /** 单位「分」 */
+
+    /** 单价，单位「分」 */
     private Long price;
-    private Integer stock;
+
     /** 1 在售 / 0 下架。购物车据此把失效商品标出来，而不是直接删掉 */
     private Integer status;
+
+    private Integer stock;
 }

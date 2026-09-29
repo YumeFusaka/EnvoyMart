@@ -9,8 +9,8 @@ import yumefusaka.envoymart.paymentservice.entity.PaymentEntity;
 import yumefusaka.envoymart.paymentservice.entity.RefundEntity;
 import yumefusaka.envoymart.paymentservice.mapper.PaymentMapper;
 import yumefusaka.envoymart.paymentservice.mapper.RefundMapper;
-import yumefusaka.envoymart.paymentservice.model.RefundRequest;
-import yumefusaka.envoymart.paymentservice.model.RefundResponse;
+import yumefusaka.envoymart.contract.RefundRequest;
+import yumefusaka.envoymart.contract.RefundResponse;
 import yumefusaka.envoymart.paymentservice.service.RefundService;
 
 import java.time.format.DateTimeFormatter;

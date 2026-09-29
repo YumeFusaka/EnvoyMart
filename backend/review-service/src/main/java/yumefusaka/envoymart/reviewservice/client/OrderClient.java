@@ -6,7 +6,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
-import yumefusaka.envoymart.reviewservice.model.OrderSnapshot;
+import yumefusaka.envoymart.contract.OrderItemResponse;
+import yumefusaka.envoymart.contract.OrderResponse;
 
 /**
  * 订单回查 —— 用来确认「这条评价确实来自一次真实购买」。
@@ -19,6 +20,6 @@ import yumefusaka.envoymart.reviewservice.model.OrderSnapshot;
 public interface OrderClient {
 
     @GetMapping("/orders/{id}")
-    Result<OrderSnapshot> getOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+    Result<OrderResponse> getOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                    @PathVariable("id") Long id);
 }

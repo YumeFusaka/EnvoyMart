@@ -6,8 +6,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import yumefusaka.envoymart.common.result.Result;
-import yumefusaka.envoymart.orderservice.model.SkuSnapshot;
-import yumefusaka.envoymart.orderservice.model.StockChangeRequest;
+import yumefusaka.envoymart.contract.SkuSnapshot;
+import yumefusaka.envoymart.contract.StockChangeRequest;
 
 import java.util.List;
 

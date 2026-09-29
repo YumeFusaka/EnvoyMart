@@ -1,8 +1,8 @@
 package yumefusaka.envoymart.orderservice.service;
 
 import yumefusaka.envoymart.orderservice.model.CheckoutRequest;
-import yumefusaka.envoymart.orderservice.model.LogisticsResponse;
-import yumefusaka.envoymart.orderservice.model.OrderResponse;
+import yumefusaka.envoymart.contract.LogisticsResponse;
+import yumefusaka.envoymart.contract.OrderResponse;
 
 import java.util.List;
 

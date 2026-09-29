@@ -8,7 +8,7 @@ import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
-import yumefusaka.envoymart.aiservice.model.OrderResponse;
+import yumefusaka.envoymart.contract.OrderResponse;
 
 import java.math.BigDecimal;
 import java.util.Map;
@@ -36,11 +36,12 @@ class AfterSaleFlowTest {
 
             @Override
             public ToolResult execute(ToolCall call) {
-                OrderResponse order = new OrderResponse();
-                order.setId(1L);
-                order.setOrderNo("YS20260909");
-                order.setStatus(status);
-                order.setTotalAmount(new BigDecimal("99.00"));
+                OrderResponse order = OrderResponse.builder()
+                        .id(1L)
+                        .orderNo("YS20260909")
+                        .status(status)
+                        .payAmount(9900L)
+                        .build();
                 return ToolResult.builder().success(true).output("订单状态: " + status).rawData(order).build();
             }
         });

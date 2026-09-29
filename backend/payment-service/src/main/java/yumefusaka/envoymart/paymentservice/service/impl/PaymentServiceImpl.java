@@ -13,7 +13,7 @@ import yumefusaka.envoymart.paymentservice.client.OrderClient;
 import yumefusaka.envoymart.paymentservice.entity.PaymentEntity;
 import yumefusaka.envoymart.paymentservice.mapper.PaymentMapper;
 import yumefusaka.envoymart.paymentservice.model.CreatePaymentRequest;
-import yumefusaka.envoymart.paymentservice.model.OrderSnapshot;
+import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.paymentservice.model.PaymentCallbackRequest;
 import yumefusaka.envoymart.paymentservice.model.PaymentResponse;
 import yumefusaka.envoymart.paymentservice.service.CallbackLogService;
@@ -61,7 +61,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public PaymentResponse createPayment(String userId, CreatePaymentRequest request) {
         // 金额、订单号、存在性全部以订单服务为准，不采信请求体
-        OrderSnapshot order = requireOrder(userId, request.getOrderId());
+        OrderResponse order = requireOrder(userId, request.getOrderId());
 
         // 幂等：一个订单只应有一张支付单。
         // 重复创建时写入侧毫无阻碍，读取侧的 selectOne 却会因为多行直接抛
@@ -222,8 +222,8 @@ public class PaymentServiceImpl implements PaymentService {
      * 注意判的是<b>业务码</b>而不是 HTTP 状态码：order-service 的异常会被统一包成
      * HTTP 200 + {@code code=500}，而 Feign 只按状态码判断成败、不会抛异常。
      */
-    private OrderSnapshot requireOrder(String userId, Long orderId) {
-        Result<OrderSnapshot> result;
+    private OrderResponse requireOrder(String userId, Long orderId) {
+        Result<OrderResponse> result;
         try {
             result = orderClient.getOrder(userId, orderId);
         } catch (Exception e) {
@@ -242,7 +242,7 @@ public class PaymentServiceImpl implements PaymentService {
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
     }
 
-    private PaymentResponse toResponse(PaymentEntity entity, OrderSnapshot order) {
+    private PaymentResponse toResponse(PaymentEntity entity, OrderResponse order) {
         return PaymentResponse.builder()
                 .id(entity.getId())
                 .paymentNo(entity.getPaymentNo())

@@ -1,10 +1,10 @@
 package yumefusaka.envoymart.productservice.service;
 
 import yumefusaka.envoymart.common.result.PageResult;
-import yumefusaka.envoymart.productservice.model.ProductDetail;
+import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.productservice.model.ProductQuery;
-import yumefusaka.envoymart.productservice.model.ProductSummary;
-import yumefusaka.envoymart.productservice.model.SkuSnapshot;
+import yumefusaka.envoymart.contract.ProductSummary;
+import yumefusaka.envoymart.contract.SkuSnapshot;
 
 import java.util.List;
 

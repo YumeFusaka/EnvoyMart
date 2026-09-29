@@ -12,6 +12,8 @@
 
     <modules>
         <module>common</module>
+        <!-- 服务间契约：跨服务 DTO 的单一定义。无行为逻辑，被所有需要跨进程调用的服务依赖 -->
+        <module>contract</module>
         <module>agent-core</module>
         <module>auth-service</module>
         <module>product-service</module>

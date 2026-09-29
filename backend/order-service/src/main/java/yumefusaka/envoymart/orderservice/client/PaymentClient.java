@@ -4,8 +4,8 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import yumefusaka.envoymart.common.result.Result;
-import yumefusaka.envoymart.orderservice.model.RefundRequest;
-import yumefusaka.envoymart.orderservice.model.RefundSnapshot;
+import yumefusaka.envoymart.contract.RefundRequest;
+import yumefusaka.envoymart.contract.RefundResponse;
 
 /**
  * 支付服务客户端 —— 只为退款而存在。
@@ -23,5 +23,5 @@ public interface PaymentClient {
      * 表达的是「这笔订单的钱要还回去」。
      */
     @PostMapping("/payments/internal/refunds")
-    Result<RefundSnapshot> refundForOrder(@RequestBody RefundRequest request);
+    Result<RefundResponse> refundForOrder(@RequestBody RefundRequest request);
 }

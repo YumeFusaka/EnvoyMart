@@ -1,4 +1,4 @@
-package yumefusaka.envoymart.productservice.model;
+package yumefusaka.envoymart.contract;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -10,6 +10,8 @@ import java.util.List;
 
 /**
  * 商品详情：SPU 主体 + 规格组 + SKU 列表 + 参数。
+ * <p>
+ * <b>由 product-service 发出，AI 服务的商品详情工具消费。</b>
  * <p>
  * 无参构造与全参构造是给 {@code BeanUtils.copyProperties} 用的：
  * 读缓存后要用实时库存复制一份再返回，不能就地改缓存里的那个实例。
@@ -39,8 +41,10 @@ public class ProductDetail {
 
     /** 规格组（颜色 / 容量）：前端据此渲染选择器 */
     private List<SpecGroup> specs;
+
     /** 全部在售 SKU：前端用 specValueIds 把「选中的规格组合」映射到具体 SKU */
     private List<SkuView> skus;
+
     /** 参数区（与规格不同，它只描述「是什么」，不影响买哪一个） */
     private List<AttributeView> attributes;
 }

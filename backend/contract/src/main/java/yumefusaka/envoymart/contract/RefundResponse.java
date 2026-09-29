@@ -1,11 +1,15 @@
-package yumefusaka.envoymart.paymentservice.model;
+package yumefusaka.envoymart.contract;
 
 import lombok.Builder;
 import lombok.Data;
 
 import java.time.LocalDateTime;
 
-/** 退款单。金额单位「分」 */
+/**
+ * 退款单。金额单位「分」。
+ * <p>
+ * <b>由 payment-service 发出，order-service 消费。</b>
+ */
 @Data
 @Builder
 public class RefundResponse {
@@ -15,7 +19,10 @@ public class RefundResponse {
     private Long orderId;
     private Long afterSaleId;
     private Long amount;
+
+    /** SUCCESS / PENDING / FAILED */
     private String status;
+
     private String reason;
     private String channelRefundNo;
     private LocalDateTime createdAt;

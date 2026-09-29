@@ -22,8 +22,8 @@ import yumefusaka.envoymart.orderservice.model.AfterSaleStatus;
 import yumefusaka.envoymart.orderservice.model.AfterSaleType;
 import yumefusaka.envoymart.orderservice.model.ApplyAfterSaleRequest;
 import yumefusaka.envoymart.orderservice.model.PolicyDecision;
-import yumefusaka.envoymart.orderservice.model.RefundRequest;
-import yumefusaka.envoymart.orderservice.model.RefundSnapshot;
+import yumefusaka.envoymart.contract.RefundRequest;
+import yumefusaka.envoymart.contract.RefundResponse;
 import yumefusaka.envoymart.orderservice.service.AfterSalePolicyEngine;
 import yumefusaka.envoymart.orderservice.service.AfterSaleService;
 
@@ -269,7 +269,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
      */
     private void refundFromRefunding(AfterSaleEntity entity) {
         try {
-            Result<RefundSnapshot> result = paymentClient.refundForOrder(RefundRequest.builder()
+            Result<RefundResponse> result = paymentClient.refundForOrder(RefundRequest.builder()
                     .orderId(entity.getOrderId())
                     .afterSaleId(entity.getId())
                     .amount(entity.getRefundAmount())

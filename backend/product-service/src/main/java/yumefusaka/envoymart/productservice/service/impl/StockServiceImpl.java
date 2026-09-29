@@ -11,7 +11,7 @@ import yumefusaka.envoymart.productservice.entity.ProductSkuEntity;
 import yumefusaka.envoymart.productservice.entity.StockLogEntity;
 import yumefusaka.envoymart.productservice.mapper.ProductSkuMapper;
 import yumefusaka.envoymart.productservice.mapper.StockLogMapper;
-import yumefusaka.envoymart.productservice.model.StockChangeRequest;
+import yumefusaka.envoymart.contract.StockChangeRequest;
 import yumefusaka.envoymart.productservice.search.ProductSyncService;
 import yumefusaka.envoymart.productservice.service.StockService;
 

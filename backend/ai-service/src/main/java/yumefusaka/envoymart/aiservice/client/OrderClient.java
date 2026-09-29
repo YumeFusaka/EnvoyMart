@@ -5,8 +5,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
-import yumefusaka.envoymart.aiservice.model.LogisticsResponse;
-import yumefusaka.envoymart.aiservice.model.OrderResponse;
+import yumefusaka.envoymart.contract.LogisticsResponse;
+import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 

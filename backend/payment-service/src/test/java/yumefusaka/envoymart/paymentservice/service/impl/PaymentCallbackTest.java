@@ -13,7 +13,7 @@ import yumefusaka.envoymart.paymentservice.client.OrderClient;
 import yumefusaka.envoymart.paymentservice.entity.PaymentEntity;
 import yumefusaka.envoymart.paymentservice.mapper.PaymentMapper;
 import yumefusaka.envoymart.paymentservice.model.CreatePaymentRequest;
-import yumefusaka.envoymart.paymentservice.model.OrderSnapshot;
+import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.paymentservice.model.PaymentCallbackRequest;
 
 import yumefusaka.envoymart.paymentservice.service.CallbackLogService;
@@ -194,13 +194,14 @@ class PaymentCallbackTest {
      */
     @Test
     void 创建支付单的金额与订单号取自订单服务() {
-        OrderSnapshot order = new OrderSnapshot();
-        order.setId(100L);
-        order.setOrderNo("YS-REAL");
-        order.setTotalAmount(19800L);
-        // 建支付单取的是 payAmount（实付 = 总额 + 运费 - 优惠），不是商品总额
-        order.setPayAmount(19800L);
-        order.setStatus("CREATED");
+        OrderResponse order = OrderResponse.builder()
+                .id(100L)
+                .orderNo("YS-REAL")
+                .totalAmount(19800L)
+                // 建支付单取的是 payAmount（实付 = 总额 + 运费 - 优惠），不是商品总额
+                .payAmount(19800L)
+                .status("CREATED")
+                .build();
         when(orderClient.getOrder(eq("u1001"), eq(100L))).thenReturn(Result.success(order));
         when(paymentMapper.selectOne(any())).thenReturn(null);
 

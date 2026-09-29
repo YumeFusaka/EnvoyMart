@@ -6,7 +6,8 @@ import yumefusaka.envoymart.agent.flow.FlowContext;
 import yumefusaka.envoymart.agent.flow.FlowResult;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolResult;
-import yumefusaka.envoymart.aiservice.model.OrderResponse;
+import yumefusaka.envoymart.aiservice.tool.Money;
+import yumefusaka.envoymart.contract.OrderResponse;
 
 import java.util.Map;
 import java.util.Set;
@@ -89,6 +90,9 @@ public class AfterSaleFlow implements DeterministicFlow {
     /** 按订单状态给出确定性结论，不交给模型判断。 */
     private FlowResult evaluate(OrderResponse order) {
         String status = order.getStatus() == null ? "" : order.getStatus();
+        // 展示用中文状态：给用户看的文本里出现 PAID / DELIVERING 这种枚举名，用户得自己翻译
+        String statusLabel = order.getStatusText() == null || order.getStatusText().isBlank()
+                ? status : order.getStatusText();
 
         if (STATUS_CANCELLED.equals(status)) {
             return FlowResult.builder()
@@ -102,7 +106,11 @@ public class AfterSaleFlow implements DeterministicFlow {
         return FlowResult.builder()
                 .success(true)
                 .data(order)
-                .output("订单 " + order.getOrderNo() + "（" + status + "，金额 " + order.getTotalAmount() + " 元）"
+                // 金额取实付（payAmount）而不是商品总额：口径与用户实际付的钱一致，
+                // 也避免「总额 + 运费 - 优惠」被说成已经付掉的数目。
+                // Money.yuan 在这里是必需的——库里存的是「分」，直接拼出来会是 100 倍
+                .output("订单 " + order.getOrderNo() + "（" + statusLabel + "，实付 "
+                        + Money.yuan(order.getPayAmount()) + "）"
                         + "可以申请退货。步骤如下：\n"
                         + "1. 在订单详情页点击「申请退货」，选择退货原因；\n"
                         + "2. 保持商品与包装完整，定制类和贴身个护商品不支持；\n"

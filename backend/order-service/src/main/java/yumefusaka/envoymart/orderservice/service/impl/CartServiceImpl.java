@@ -12,7 +12,7 @@ import yumefusaka.envoymart.orderservice.entity.CartItemEntity;
 import yumefusaka.envoymart.orderservice.mapper.CartItemMapper;
 import yumefusaka.envoymart.orderservice.model.AddCartItemRequest;
 import yumefusaka.envoymart.orderservice.model.CartItemResponse;
-import yumefusaka.envoymart.orderservice.model.SkuSnapshot;
+import yumefusaka.envoymart.contract.SkuSnapshot;
 import yumefusaka.envoymart.orderservice.model.UpdateCartItemRequest;
 import yumefusaka.envoymart.orderservice.service.CartService;
 

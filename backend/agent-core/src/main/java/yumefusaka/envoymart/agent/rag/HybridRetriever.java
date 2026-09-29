@@ -188,8 +188,38 @@ public class HybridRetriever implements Retriever {
         return scores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .limit(topK)
-                .map(e -> byKey.get(e.getKey()))
+                // **把融合分数写回切片**。之前这里只取 chunk、分数直接丢掉 ——
+                // 于是下游再也分不清「勉强召回」与「高度相关」，拒答门无从建立
+                .map(e -> withScore(byKey.get(e.getKey()), e.getValue()))
                 .toList();
+    }
+
+    /**
+     * 复制一份切片并写入分数。
+     * <p>
+     * 不就地改：同一个 chunk 实例可能同时出现在向量路与关键词路的候选里，
+     * 就地写会污染另一路的引用（虽然当前实现是只读的，但那是隐式约定，
+     * 不值得依赖）。
+     */
+    private DocumentChunk withScore(DocumentChunk chunk, double score) {
+        if (chunk == null) {
+            return null;
+        }
+        return DocumentChunk.builder()
+                .chunkId(chunk.getChunkId())
+                .docId(chunk.getDocId())
+                .content(chunk.getContent())
+                .chunkIndex(chunk.getChunkIndex())
+                .embedding(chunk.getEmbedding())
+                .indexText(chunk.getIndexText())
+                .title(chunk.getTitle())
+                .source(chunk.getSource())
+                .version(chunk.getVersion())
+                .position(chunk.getPosition())
+                .charOffset(chunk.getCharOffset())
+                .reranked(chunk.getReranked())
+                .score(score)
+                .build();
     }
 
     /**

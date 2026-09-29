@@ -1,7 +1,7 @@
 package yumefusaka.envoymart.productservice.cache;
 
 import org.junit.jupiter.api.Test;
-import yumefusaka.envoymart.productservice.model.ProductDetail;
+import yumefusaka.envoymart.contract.ProductDetail;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

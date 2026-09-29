@@ -6,7 +6,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
-import yumefusaka.envoymart.paymentservice.model.OrderSnapshot;
+import yumefusaka.envoymart.contract.OrderResponse;
 
 /**
  * 订单查询 —— 支付单的存在性、归属与金额一律由它裁决。
@@ -24,6 +24,6 @@ import yumefusaka.envoymart.paymentservice.model.OrderSnapshot;
 public interface OrderClient {
 
     @GetMapping("/orders/{id}")
-    Result<OrderSnapshot> getOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+    Result<OrderResponse> getOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                    @PathVariable("id") Long id);
 }

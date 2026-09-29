@@ -8,7 +8,7 @@ import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.aiservice.model.ChatRequest;
 import yumefusaka.envoymart.aiservice.model.ChatResponse;
 import yumefusaka.envoymart.aiservice.model.KnowledgeSnippet;
-import yumefusaka.envoymart.aiservice.model.ProductResponse;
+import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.aiservice.model.ToolCallResponse;
 import yumefusaka.envoymart.aiservice.service.AiAssistantService;
 
@@ -72,15 +72,15 @@ public class AiAssistantServiceImpl implements AiAssistantService {
     }
 
     /** 从工具执行结果里抽取商品卡片数据（商品搜索工具的 rawData）。 */
-    private List<ProductResponse> extractProducts(List<ToolExecution> executions) {
+    private List<ProductSummary> extractProducts(List<ToolExecution> executions) {
         return executions.stream()
                 .filter(ToolExecution::isSuccess)
                 .map(ToolExecution::getRawData)
                 .filter(Objects::nonNull)
                 .filter(List.class::isInstance)
                 .flatMap(data -> ((List<?>) data).stream())
-                .filter(ProductResponse.class::isInstance)
-                .map(ProductResponse.class::cast)
+                .filter(ProductSummary.class::isInstance)
+                .map(ProductSummary.class::cast)
                 .distinct()
                 .toList();
     }

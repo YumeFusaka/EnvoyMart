@@ -7,7 +7,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.productservice.cache.ProductLocalCache;
 import yumefusaka.envoymart.productservice.config.ProductCacheInvalidationConfig;
-import yumefusaka.envoymart.productservice.model.ProductDetail;
+import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.productservice.mq.CacheEvictConfig;
 import yumefusaka.envoymart.productservice.mq.CacheEvictEvent;
 

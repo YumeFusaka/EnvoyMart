@@ -1,4 +1,4 @@
-package yumefusaka.envoymart.productservice.model;
+package yumefusaka.envoymart.contract;
 
 import lombok.Builder;
 import lombok.Data;
