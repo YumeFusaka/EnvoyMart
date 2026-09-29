@@ -13,6 +13,7 @@
 # 用法:
 #   ./run-local.sh                   启动全部
 #   ./run-local.sh stop              停止全部
+#   ./run-local.sh stop ai-service   只停止指定的一个或多个
 #   ./run-local.sh auth-service      只启动指定的一个或多个
 #
 set -uo pipefail
@@ -153,15 +154,24 @@ start_one() {
   env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run "${agent_args[@]}" > "$LOG_DIR/$svc.log" 2>&1 &
 }
 
-stop_all() {
-  local i pid
-  for i in "${!SERVICES[@]}"; do
-    local port
-    port=$(port_of "${SERVICES[$i]}")
+# 停服务。不传名字就停全部，传了就只停传的那些。
+# <p>
+# 早先这个函数无条件遍历全部服务、把参数丢掉——`stop knowledge-service` 会静默地
+# 停掉八个服务。想只重启一个服务的人，得到的是一整套服务消失。
+stop_services() {
+  local svc port pid
+  local targets=("$@")
+  [ ${#targets[@]} -eq 0 ] && targets=("${SERVICES[@]}")
+
+  for svc in "${targets[@]}"; do
+    index_of "$svc" >/dev/null || { echo "未知服务: $svc" >&2; continue; }
+    port=$(port_of "$svc")
     pid=$(netstat -ano 2>/dev/null | grep LISTENING | grep ":$port " | awk '{print $NF}' | head -1)
     if [ -n "${pid:-}" ]; then
-      echo "停止 ${SERVICES[$i]} (端口 $port, PID $pid)"
+      echo "停止 $svc (端口 $port, PID $pid)"
       powershell -Command "Stop-Process -Id $pid -Force" 2>/dev/null || kill "$pid" 2>/dev/null
+    else
+      echo "跳过 $svc (端口 $port 上没有监听进程)"
     fi
   done
 }
@@ -188,7 +198,7 @@ wait_healthy() {
 }
 
 case "${1:-all}" in
-  stop) stop_all ;;
+  stop) shift; stop_services "$@" ;;
   all)  for svc in "${SERVICES[@]}"; do start_one "$svc"; done; wait_healthy ;;
   *)    for svc in "$@"; do start_one "$svc"; done ;;
 esac
