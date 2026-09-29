@@ -60,6 +60,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
                 .recommendedProducts(extractProducts(executions))
                 .pendingActions(agentResp.getPendingActions())
+                .evidenceLevel(agentResp.getEvidenceLevel())
                 .build();
     }
 

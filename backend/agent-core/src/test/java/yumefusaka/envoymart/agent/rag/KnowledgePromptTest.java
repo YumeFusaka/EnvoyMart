@@ -17,6 +17,16 @@ class KnowledgePromptTest {
 
     private static final EvidenceGate.Thresholds T = EvidenceGate.Thresholds.defaults();
 
+    /**
+     * 判定与渲染是两件事，但每条用例都只关心渲染结果。
+     * <p>
+     * 这里替用例把判定算出来——真实调用方（{@code Agent}）也是这么用的：
+     * 算一次，prompt 与响应体共用。签名的门道由 {@link EvidenceGateTest} 覆盖。
+     */
+    private static KnowledgePrompt.Section render(List<DocumentChunk> chunks) {
+        return KnowledgePrompt.render(chunks, EvidenceGate.evaluate(chunks, T));
+    }
+
     private DocumentChunk chunk(String id, String position, Double score) {
         return DocumentChunk.builder()
                 .chunkId(id + "_0").docId(id)
@@ -31,8 +41,8 @@ class KnowledgePromptTest {
 
     @Test
     void 证据充分时带编号位置来源版本并强制标注引用() {
-        var section = KnowledgePrompt.render(
-                List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章 > 3.2", 0.78)), T);
+        var section = render(
+                List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章 > 3.2", 0.78)));
 
         assertThat(section.decision().isSufficient()).isTrue();
         assertThat(section.text())
@@ -47,9 +57,9 @@ class KnowledgePromptTest {
 
     @Test
     void 多条证据各自编号且顺序与输入一致() {
-        var section = KnowledgePrompt.render(List.of(
+        var section = render(List.of(
                 chunk("d1", "《甲》 > 第一章", 0.80),
-                chunk("d2", "《乙》 > 第二章", 0.70)), T);
+                chunk("d2", "《乙》 > 第二章", 0.70)));
 
         assertThat(section.text())
                 .contains("[1] 《甲》 > 第一章")
@@ -64,7 +74,7 @@ class KnowledgePromptTest {
      */
     @Test
     void 没有召回时给出拒答指令且不混入任何条目() {
-        var section = KnowledgePrompt.render(List.of(), T);
+        var section = render(List.of());
 
         assertThat(section.decision().level()).isEqualTo(EvidenceGate.Level.NONE);
         assertThat(section.text())
@@ -75,8 +85,8 @@ class KnowledgePromptTest {
 
     @Test
     void 证据不足时明确禁止作为结论依据但仍保留线索() {
-        var section = KnowledgePrompt.render(
-                List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.12)), T);
+        var section = render(
+                List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.12)));
 
         assertThat(section.decision().level()).isEqualTo(EvidenceGate.Level.WEAK);
         assertThat(section.text())
@@ -99,8 +109,8 @@ class KnowledgePromptTest {
      */
     @Test
     void 证据不足时不下发阈值判决只下发条目事实() {
-        var section = KnowledgePrompt.render(
-                List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.12)), T);
+        var section = render(
+                List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.12)));
 
         assertThat(section.text())
                 .doesNotContain("低于可信阈值")
@@ -118,7 +128,7 @@ class KnowledgePromptTest {
     @Test
     void 位置缺失时退到文档标题而不是内部标识() {
         DocumentChunk noPosition = chunk("d1", null, 0.80);
-        var section = KnowledgePrompt.render(List.of(noPosition), T);
+        var section = render(List.of(noPosition));
 
         assertThat(section.text())
                 .contains("《维生素 D3 软胶囊说明书》")

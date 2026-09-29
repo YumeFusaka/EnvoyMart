@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import CitationList from '@/components/ai/CitationList.vue'
 import MessageContent from '@/components/ai/MessageContent.vue'
+import PendingApprovalCard from '@/components/ai/PendingApprovalCard.vue'
 import RecommendationCards from '@/components/ai/RecommendationCards.vue'
 import type { ChatMessage, ProductSummary } from '@/types/models'
+import { toolLabel } from '@/utils/tools'
 import { nextTick, ref } from 'vue'
 
 defineProps<{
@@ -11,19 +13,9 @@ defineProps<{
 
 const emit = defineEmits<{
   openProduct: [product: ProductSummary]
+  approve: []
+  dismiss: []
 }>()
-
-/**
- * 工具名的中文说法。只在这一个组件里用得上，所以不单独抽文件。
- * 未知工具名原样显示 —— 服务端加了新工具而前端还没跟上时，看到 `coupon_query`
- * 也比看到空白强。
- */
-const TOOL_LABELS: Record<string, string> = {
-  product_search: '商品检索',
-  order_query: '订单查询',
-  logistics_query: '物流查询',
-  order_cancel: '订单取消',
-}
 
 /** 当前被点亮的引用角标。`[n]` 点下去要能一眼看到它对应的是哪张卡片 */
 const activeCite = ref<{ messageId: string; index: number } | null>(null)
@@ -42,15 +34,15 @@ async function handleCite(messageId: string, index: number) {
 function isActive(messageId: string, index: number) {
   return activeCite.value?.messageId === messageId && activeCite.value.index === index
 }
-
-function toolLabel(tool: string) {
-  return TOOL_LABELS[tool] ?? tool
-}
 </script>
 
 <template>
   <div class="message-list">
-    <article v-for="message in messages" :key="message.id" :class="['message-card', message.role]">
+    <article
+      v-for="(message, position) in messages"
+      :key="message.id"
+      :class="['message-card', message.role]"
+    >
       <header>
         <strong>{{ message.role === 'assistant' ? 'Yume AI' : '你' }}</strong>
       </header>
@@ -59,6 +51,14 @@ function toolLabel(tool: string) {
         :content="message.content"
         :citation-count="message.knowledge?.length ?? 0"
         @cite="(index) => handleCite(message.id, index)"
+      />
+
+      <PendingApprovalCard
+        v-if="message.pendingActions?.length"
+        :actions="message.pendingActions"
+        :active="position === messages.length - 1"
+        @approve="emit('approve')"
+        @dismiss="emit('dismiss')"
       />
 
       <!--
@@ -78,6 +78,7 @@ function toolLabel(tool: string) {
         v-if="message.knowledge?.length"
         :items="message.knowledge"
         :list-id="message.id"
+        :evidence-level="message.evidenceLevel"
         :active-index="activeCite?.messageId === message.id ? activeCite.index : null"
       />
 

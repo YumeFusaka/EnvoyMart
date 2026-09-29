@@ -55,9 +55,25 @@ const assistantCount = computed(
   () => messages.value.filter((item) => item.role === 'assistant').length,
 )
 
-async function sendMessage(message = input.value) {
+/**
+ * 用户手打确认词时必须真的置位 `approved`。
+ * <p>
+ * 服务端的确认提示就写着「回复「确认执行」」，而 `approved` 是请求体里一个独立的布尔位——
+ * 前端不翻译这句话，它就会带着 `approved=false` 重新规划，**再次撞上同一个闸口**，
+ * 用户看到的是一模一样的提示，永远取消不掉订单。
+ * <p>
+ * 判据收得很紧：必须是「最新一条助手消息正挂着待确认」**且**「整句就是一个确认词」。
+ * 不做成全局关键词——那样用户在别的语境里回一句「好的」，就可能批准一次高危操作。
+ */
+const CONFIRM_PATTERN = /^(确认|确认执行|确定|是|好的|好|yes|ok)[。！!，,]*$/i
+
+async function sendMessage(message = input.value, approved = false) {
   const content = message.trim()
   if (!content) return
+
+  const latest = messages.value[messages.value.length - 1]
+  const confirming =
+    !approved && Boolean(latest?.pendingActions?.length) && CONFIRM_PATTERN.test(content)
 
   messages.value.push({
     id: `user-${Date.now()}`,
@@ -77,7 +93,7 @@ async function sendMessage(message = input.value) {
 
   try {
     await chatStream(
-      { sessionId, message: content },
+      { sessionId, message: content, approved: approved || confirming },
       {
         onDelta: (text) => {
           assistantMessage.content += text
@@ -87,6 +103,9 @@ async function sendMessage(message = input.value) {
           assistantMessage.knowledge = response.knowledge
           assistantMessage.toolCalls = response.toolCalls
           assistantMessage.recommendedProducts = response.recommendedProducts
+          // 非空即本轮被中断：回复是确认提示，没有任何工具真正执行过
+          assistantMessage.pendingActions = response.pendingActions ?? undefined
+          assistantMessage.evidenceLevel = response.evidenceLevel ?? undefined
         },
         onError: (msg) => {
           assistantMessage.content = msg
@@ -109,6 +128,30 @@ async function sendMessage(message = input.value) {
  */
 function openProduct(product: ProductSummary) {
   router.push({ name: 'product-detail', params: { id: product.id } })
+}
+
+/** 先收起卡片再重发：新消息一入列，这张卡就不是「最新一条」，会立刻变成过期的灰态 */
+function handleApprove() {
+  const latest = messages.value[messages.value.length - 1]
+  if (latest) {
+    latest.pendingActions = undefined
+  }
+  void sendMessage('确认执行', true)
+}
+
+/**
+ * 取消只是本地收起卡片，<b>不发任何请求</b>——服务端那次计划已经丢弃，没有副作用要撤销，
+ * 也没有「拒绝」这个接口可调。
+ * <p>
+ * 但要把这条回复的正文改掉：它还写着「确认无误请点击确认执行」，
+ * 而按钮已经没了。留着那句话，用户会以为是自己看漏了一个按钮。
+ */
+function handleDismiss() {
+  const latest = messages.value[messages.value.length - 1]
+  if (latest) {
+    latest.pendingActions = undefined
+    latest.content = '已取消，本次没有执行任何操作。'
+  }
 }
 </script>
 
@@ -146,7 +189,12 @@ function openProduct(product: ProductSummary) {
     <section class="assistant-panel">
       <QuickPromptBar :prompts="prompts" @select="sendMessage" />
 
-      <ChatMessageList :messages="messages" @open-product="openProduct" />
+      <ChatMessageList
+        :messages="messages"
+        @open-product="openProduct"
+        @approve="handleApprove"
+        @dismiss="handleDismiss"
+      />
 
       <div class="composer">
         <el-input

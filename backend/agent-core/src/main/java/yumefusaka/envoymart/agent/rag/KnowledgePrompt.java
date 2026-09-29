@@ -28,8 +28,12 @@ public final class KnowledgePrompt {
     public record Section(String text, EvidenceGate.Decision decision) {
     }
 
-    public static Section render(List<DocumentChunk> chunks, EvidenceGate.Thresholds thresholds) {
-        EvidenceGate.Decision decision = EvidenceGate.evaluate(chunks, thresholds);
+    /**
+     * @param decision 证据门判定。<b>由调用方算好传进来，这里不重算</b>——
+     *                 {@code Agent} 要把同一个判定下发给前端，若两处各算一次，
+     *                 prompt 的依据状态与界面上的说法就有了各自演化的余地。
+     */
+    public static Section render(List<DocumentChunk> chunks, EvidenceGate.Decision decision) {
         return new Section(switch (decision.level()) {
             case SUFFICIENT -> sufficient(chunks);
             case WEAK -> weak(chunks);

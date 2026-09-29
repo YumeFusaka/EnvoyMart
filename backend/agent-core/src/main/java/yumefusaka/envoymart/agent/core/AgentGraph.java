@@ -29,6 +29,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * Agent 执行图 —— 用 LangGraph4j 的 {@link StateGraph} 显式编排。
@@ -276,7 +277,7 @@ public class AgentGraph {
                 List<String> risky = ready.stream()
                         .map(plan::get)
                         .filter(this::requiresConfirmation)
-                        .map(PlanStep::getTool)
+                        .map(AgentGraph::describe)
                         .distinct()
                         .toList();
                 if (!risky.isEmpty()) {
@@ -491,6 +492,33 @@ public class AgentGraph {
                 .orElse(false);
     }
 
+    /**
+     * 高危步骤的可读描述 —— <b>工具名加上真实入参</b>，形如 {@code order_cancel(orderId=12)}。
+     * <p>
+     * 这是用户在确认前唯一能看到的东西，所以它必须是<b>待执行操作本身</b>，
+     * 而不是模型对它的转述。{@link PlanStep#getReason()} 里有一句模型写的中文目标说明，
+     * 拿它当确认文案读起来更顺——但模型完全可以把自己要做的危险操作描述得很温和，
+     * 用户按转述点了确认，等于让模型给自己批了这次授权。
+     * <p>
+     * <b>带上参数而不是只给工具名</b>：只有 {@code order_cancel} 三个字时，
+     * 用户根本不知道自己确认的是哪一单，这个「确认」就是走个形式。
+     * 「取消订单」与「取消订单 12」在授权上的区别，正是这个功能存在的理由。
+     * <p>
+     * 参数按 key 排序，保证同一份计划在任何一次运行里拼出同一串文本——否则
+     * 日志对比与测试断言都得先做一次集合比较。
+     */
+    static String describe(PlanStep step) {
+        Map<String, Object> arguments = step.getArguments();
+        if (arguments == null || arguments.isEmpty()) {
+            return step.getTool();
+        }
+        String args = arguments.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> e.getKey() + "=" + e.getValue())
+                .collect(Collectors.joining(", "));
+        return step.getTool() + "(" + args + ")";
+    }
+
     private String abbreviate(String text) {
         if (text == null) {
             return "";
@@ -553,7 +581,12 @@ public class AgentGraph {
         private List<PlanStep> plan;
         private List<GraphStep> steps;
         private List<ToolExecution> toolExecutions;
-        /** 非空表示图被中断，等待用户确认这些高危操作 */
+        /**
+         * 非空表示图被中断，等待用户确认这些高危操作。
+         * <p>
+         * 每项是 {@link #describe} 拼出的可读描述（{@code order_cancel(orderId=12)}），
+         * <b>不是工具名</b>——调用方原样展示给用户，不要在别处再拼一次。
+         */
         private List<String> pendingApproval;
         /**
          * 本次请求的循环消耗摘要，用于可观测 —— 工具调用与规划轮次都在这一行里

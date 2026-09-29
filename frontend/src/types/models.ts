@@ -455,9 +455,26 @@ export interface ChatResponse {
   toolCalls: ToolCall[]
   /** 与商品列表页同一个类型 —— 之前这里写的是另一套字段，卡片全是空的 */
   recommendedProducts: ProductSummary[]
-  /** 等待用户确认的高危工具 */
+  /**
+   * 等待用户确认的高危操作，形如 `order_cancel(orderId=12)`。
+   * <p>
+   * **非空表示本轮对话被中断**：`reply` 是确认提示而不是回答，也没有工具真正执行过。
+   * 前端据此渲染确认卡片；用户确认后带 `approved: true` 重发同一意图，才会真正执行。
+   */
   pendingActions: string[] | null
+  /**
+   * 本轮证据门的判定，决定 `knowledge` 该被说成什么。
+   *
+   * - `SUFFICIENT`：相关度达标，可以称「依据」
+   * - `WEAK`：检索到了但相关度不足，只能说「参考」，不能当结论依据
+   * - `NONE`：什么都没召回，`knowledge` 为空
+   *
+   * 判定规则（重排分与余弦相似度两把尺子、图谱依据豁免）在后端，前端不重算。
+   */
+  evidenceLevel: EvidenceLevel | null
 }
+
+export type EvidenceLevel = 'SUFFICIENT' | 'WEAK' | 'NONE'
 
 export interface ChatMessage {
   id: string
@@ -466,6 +483,10 @@ export interface ChatMessage {
   knowledge?: KnowledgeSnippet[]
   toolCalls?: ToolCall[]
   recommendedProducts?: ProductSummary[]
+  /** 待确认的高危操作。确认或取消后清空，卡片随之消失 */
+  pendingActions?: string[]
+  /** 证据门判定，随 `knowledge` 一起透传给引用区，决定标题措辞 */
+  evidenceLevel?: EvidenceLevel
 }
 
 // ==================== 商品域 ====================

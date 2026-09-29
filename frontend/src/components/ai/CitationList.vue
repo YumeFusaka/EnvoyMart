@@ -1,14 +1,30 @@
 <script setup lang="ts">
-import type { KnowledgeSnippet } from '@/types/models'
+import type { EvidenceLevel, KnowledgeSnippet } from '@/types/models'
 import { relevanceText, sourceLabel } from '@/utils/knowledge'
+import { computed } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   items: KnowledgeSnippet[]
   /** 正文里刚刚点过的角标序号，用来把它对应的卡片标出来 */
   activeIndex?: number | null
   /** 消息 id。只用来生成卡片 id —— 点正文角标时要能滚到对应的卡片上 */
   listId: string
+  /** 证据门判定。`WEAK` 时这一块不能叫「依据」 */
+  evidenceLevel?: EvidenceLevel | null
 }>()
+
+/**
+ * 这一块该不该自称「依据」，由后端的证据门说了算。
+ *
+ * 原先标题写死「依据 N 条」，而 system prompt 对同一批切片下的结论是
+ * 「不得作为结论依据」——对模型说别信、对用户说这是依据，同一份数据两种定性。
+ * 相关度 0.16 的切片被摆在「依据」标题下，比不显示更糟：它看起来像已经核对过。
+ *
+ * `SUFFICIENT` 与 `null` 都按依据渲染：老响应或未走的检索路径没有判定，
+ * 沿用原文案，不因为缺一个字段就把正常引用降级成「参考」。
+ */
+const weak = computed(() => props.evidenceLevel === 'WEAK')
+const title = computed(() => (weak.value ? '参考' : '依据'))
 
 /**
  * 卡片整块就是去原文的链接 —— 不再单放一个「查看原文」按钮。
@@ -25,8 +41,13 @@ function toChunk(item: KnowledgeSnippet) {
 </script>
 
 <template>
-  <section class="citations" aria-label="回答依据">
-    <h4 class="citations__title"><span aria-hidden="true">§</span> 依据 {{ items.length }} 条</h4>
+  <section class="citations" :class="{ 'citations--weak': weak }" :aria-label="`${title}资料`">
+    <h4 class="citations__title">
+      <span aria-hidden="true">§</span> {{ title }} {{ items.length }} 条
+    </h4>
+    <p v-if="weak" class="citations__note">
+      检索到这些内容，但相关度不足，<strong>不能作为回答依据</strong>，仅供你自行判断。
+    </p>
 
     <ol class="citations__list">
       <li
@@ -70,6 +91,23 @@ function toChunk(item: KnowledgeSnippet) {
   margin: 0 0 var(--ys-space-3);
   color: var(--color-text-secondary);
   font-size: var(--ys-font-sm);
+  font-weight: 600;
+}
+
+/* 相关度不足时整块降一档：不再是「已核对过的依据」，只是一些可能相关的材料 */
+.citations--weak .citations__title {
+  color: var(--color-warning);
+}
+
+.citations__note {
+  margin: calc(var(--ys-space-2) * -1) 0 var(--ys-space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+}
+
+.citations__note strong {
+  color: var(--color-warning);
   font-weight: 600;
 }
 

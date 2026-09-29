@@ -6,6 +6,14 @@ export interface ChatPayload {
   sessionId: string
   message: string
   contextOrderId?: number
+  /**
+   * 用户已确认高危操作。
+   * <p>
+   * 置位后服务端会跳过执行图里的拦截，**放行本轮计划中所有高危步骤**——
+   * 而计划是服务端重新推导的，所以这个位只能在用户明确确认的那一刻置位，
+   * 不能因为「上一条消息提到过确认」就默认带上。
+   */
+  approved?: boolean
 }
 
 export async function chat(payload: ChatPayload) {

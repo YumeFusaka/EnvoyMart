@@ -380,7 +380,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
         }
 
         String toolList = availableTools.stream()
-                .map(d -> "- " + d.getName() + ": " + d.getDescription())
+                .map(LangChain4jLLMProvider::describeTool)
                 .reduce("", (a, b) -> a + b + "\n");
 
         String background = (context == null || context.isBlank())
@@ -397,6 +397,8 @@ public class LangChain4jLLMProvider implements LLMProvider {
                                 dependsOn 填「本步骤依赖的步骤序号」（从 0 开始）：
                                 只有需要用到前面某一步的结果时才填，互不依赖的步骤留空数组，
                                 这样它们会被并发执行。例如先查订单再取消，取消那步就要依赖查询步。
+                                arguments 的键必须逐字照抄工具说明里列出的参数名，不要改写大小写、
+                                不要把驼峰改成下划线——工具按声明名取参数，写错的键取不到值。
                                 只输出 JSON，不要任何解释。
 
                                 可用工具：
@@ -418,6 +420,33 @@ public class LangChain4jLLMProvider implements LLMProvider {
             log.warn("[LangChain4jLLMProvider] plan failed, fallback to rule-based: {}", e.getMessage());
             return List.of();
         }
+    }
+
+    /**
+     * 规划提示词里的单个工具说明。
+     * <p>
+     * <b>必须列出参数名，这是修一个实测缺陷。</b>早先这里只拼了工具名与用途描述，
+     * 模型从头到尾看不到参数叫什么，只能从中文描述里猜——<b>实测 6/6 把 {@code orderId}
+     * 猜成了 {@code order_id}</b>。这不是模型抽风，是提示词没给足信息：它没得选，只能猜。
+     * <p>
+     * 猜错的后果落在执行期：工具按声明名取参数取到 {@code null}，报出来是一句
+     * {@code NullPointerException}——一个不指向任何真实原因的报错。
+     * <p>
+     * 只有计划路径会犯这个错。ReAct 那条路的工具调用由框架从声明的 schema 生成，
+     * 键名不会错——<b>同一个工具，两条路径一个对一个错</b>，所以这个缺陷长期只在这边显形。
+     */
+    private static String describeTool(ToolDefinition definition) {
+        StringBuilder sb = new StringBuilder("- ").append(definition.getName())
+                .append(": ").append(definition.getDescription());
+        Map<String, ToolDefinition.ParameterSpec> parameters = definition.getParameters();
+        if (parameters == null || parameters.isEmpty()) {
+            return sb.toString();
+        }
+        sb.append("\n  参数：");
+        parameters.forEach((name, spec) -> sb.append("\n    ").append(name)
+                .append("（").append(spec.getType()).append(spec.isRequired() ? "，必填" : "，选填")
+                .append("）").append(spec.getDescription() == null ? "" : spec.getDescription()));
+        return sb.toString();
     }
 
     @SuppressWarnings("unchecked")
