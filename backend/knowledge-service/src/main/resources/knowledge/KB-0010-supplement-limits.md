@@ -1,7 +1,7 @@
 ---
 id: KB-0010
 title: 膳食补充剂摄入上限与常见药物相互作用
-source: guide
+source: guideline
 scope: nutrition
 version: v2026.02
 tags: 摄入上限,过量,药物相互作用,禁忌,安全
