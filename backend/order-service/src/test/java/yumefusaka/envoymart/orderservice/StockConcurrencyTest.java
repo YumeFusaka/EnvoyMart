@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </pre>
  * 可选环境变量：{@code ORDER_SERVICE_URL}（默认 127.0.0.1:9003）、
  * {@code PRODUCT_SERVICE_URL}（默认 127.0.0.1:9002）、
- * {@code STOCK_TEST_PRODUCT_ID}（默认 1）。
+ * {@code STOCK_TEST_SKU_ID}（默认 1）。
  */
 @EnabledIfEnvironmentVariable(named = "RUN_STOCK_CONCURRENCY_TEST", matches = "true")
 class StockConcurrencyTest {
@@ -55,7 +55,7 @@ class StockConcurrencyTest {
     private static final String ORDER_URL = env("ORDER_SERVICE_URL", "http://127.0.0.1:9003");
     private static final String PRODUCT_URL = env("PRODUCT_SERVICE_URL", "http://127.0.0.1:9002");
     private static final String INTERNAL_TOKEN = System.getenv("INTERNAL_TOKEN");
-    private static final long PRODUCT_ID = Long.parseLong(env("STOCK_TEST_PRODUCT_ID", "1"));
+    private static final long SKU_ID = Long.parseLong(env("STOCK_TEST_SKU_ID", "1"));
 
     /** 并发用户数 —— 明显大于目标库存，才制造得出"抢" */
     private static final int CONCURRENCY = 30;
@@ -75,7 +75,7 @@ class StockConcurrencyTest {
     @Test
     void 三十个用户并发抢十件库存_只应有十单成功且库存归零() throws Exception {
         int before = readStock();
-        System.out.printf("[并发压测] 商品 %d 当前库存=%d，目标库存=%d%n", PRODUCT_ID, before, TARGET_STOCK);
+        System.out.printf("[并发压测] 商品 %d 当前库存=%d，目标库存=%d%n", SKU_ID, before, TARGET_STOCK);
         adjustStockTo(TARGET_STOCK);
         assertThat(readStock()).as("库存调整失败，后续断言无意义").isEqualTo(TARGET_STOCK);
 
@@ -84,7 +84,7 @@ class StockConcurrencyTest {
         for (int i = 0; i < CONCURRENCY; i++) {
             String userId = "stock-test-" + i;
             users.add(userId);
-            ensureCartHasExactlyOne(userId, PRODUCT_ID);
+            ensureCartHasExactlyOne(userId, SKU_ID);
         }
 
         // 同步屏障：所有线程就位后同时发起，避免"谁先启动谁先抢"退化成串行
@@ -135,18 +135,20 @@ class StockConcurrencyTest {
         int current = readStock();
         while (current > target) {
             call(PRODUCT_URL + "/products/stock/deduct",
-                    "{\"productId\":" + PRODUCT_ID + ",\"quantity\":1}", null);
+                    "{\"skuId\":" + SKU_ID + ",\"quantity\":1}", null);
             current--;
         }
         while (current < target) {
             call(PRODUCT_URL + "/products/stock/restore",
-                    "{\"productId\":" + PRODUCT_ID + ",\"quantity\":1}", null);
+                    "{\"skuId\":" + SKU_ID + ",\"quantity\":1}", null);
             current++;
         }
     }
 
     private static int readStock() throws Exception {
-        String body = call(PRODUCT_URL + "/products/" + PRODUCT_ID, null, null);
+        // 库存挂在 SKU 上，所以走「按 SKU 批量取快照」的接口而不是商品详情 ——
+        // 详情返回的是一个 SPU 下的全部 SKU，还得在里面找出是哪一条
+        String body = call(PRODUCT_URL + "/products/skus?ids=" + SKU_ID, null, null);
         Matcher m = Pattern.compile("\"stock\"\\s*:\\s*(\\d+)").matcher(body);
         assertThat(m.find()).as("响应里找不到 stock 字段：" + body).isTrue();
         return Integer.parseInt(m.group(1));
@@ -169,9 +171,9 @@ class StockConcurrencyTest {
      * 修法：先加购（保证条目存在），再读回条目 id，用 {@code PUT} <b>覆盖</b>成 1。
      * 覆盖而非累加，跨轮次就幂等了。
      */
-    private static void ensureCartHasExactlyOne(String userId, long productId) throws Exception {
+    private static void ensureCartHasExactlyOne(String userId, long skuId) throws Exception {
         call(ORDER_URL + "/cart/items",
-                "{\"productId\":" + productId + ",\"quantity\":1}", userId);
+                "{\"skuId\":" + skuId + ",\"quantity\":1}", userId);
 
         String cart = call(ORDER_URL + "/cart", null, userId);
         // data 数组里取第一个条目对象，再从里面拿 id —— 直接匹配全局第一个 "id" 会拿到包装层的字段
@@ -192,8 +194,9 @@ class StockConcurrencyTest {
      * 当成下单成功，这个测试就永远测不出超卖。
      */
     private static boolean checkout(String userId) throws Exception {
-        String body = "{\"recipientName\":\"压测\",\"recipientPhone\":\"13800000000\","
-                + "\"address\":\"压测地址\"}";
+        String body = "{\"receiverName\":\"压测\",\"receiverPhone\":\"13800000000\","
+                + "\"receiverProvince\":\"上海市\",\"receiverCity\":\"上海市\","
+                + "\"receiverDistrict\":\"浦东新区\",\"receiverDetail\":\"压测地址\"}";
         return call(ORDER_URL + "/orders/checkout", body, userId) != null;
     }
 

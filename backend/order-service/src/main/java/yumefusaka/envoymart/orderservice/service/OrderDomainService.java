@@ -1,21 +1,18 @@
 package yumefusaka.envoymart.orderservice.service;
 
-import yumefusaka.envoymart.orderservice.model.AddCartItemRequest;
-import yumefusaka.envoymart.orderservice.model.CartItemResponse;
 import yumefusaka.envoymart.orderservice.model.CheckoutRequest;
 import yumefusaka.envoymart.orderservice.model.LogisticsResponse;
 import yumefusaka.envoymart.orderservice.model.OrderResponse;
-import yumefusaka.envoymart.orderservice.model.UpdateCartItemRequest;
 
 import java.util.List;
 
+/**
+ * 订单域。
+ * <p>
+ * 购物车不在这里 —— 它已拆到 {@link CartService}。两者是两个聚合：
+ * 购物车可以长期存在、随时改动；订单一旦创建就进入只进不退的状态流转。
+ */
 public interface OrderDomainService {
-
-    CartItemResponse addCartItem(String userId, AddCartItemRequest request);
-
-    List<CartItemResponse> listCartItems(String userId);
-
-    CartItemResponse updateCartItem(String userId, Long id, UpdateCartItemRequest request);
 
     OrderResponse checkout(String userId, CheckoutRequest request);
 
@@ -25,7 +22,7 @@ public interface OrderDomainService {
 
     LogisticsResponse getLogistics(String userId, Long orderId);
 
-    /** 取消订单（高危操作，仅供已确认的调用方使用）。 */
+    /** 取消订单（高危操作，仅供已确认的调用方使用） */
     OrderResponse cancelOrder(String userId, Long orderId);
 
     /**

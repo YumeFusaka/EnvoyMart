@@ -5,18 +5,16 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.math.BigDecimal;
-
-/**
- * 订单商品明细事件
- */
+/** 订单商品明细事件。粒度是 SKU，与订单行一致 */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class OrderItemEvent {
-    private Long productId;
-    private String productName;
+
+    private Long skuId;
+    private String skuName;
     private Integer quantity;
-    private BigDecimal price;
+    /** 单位「分」 */
+    private Long price;
 }
