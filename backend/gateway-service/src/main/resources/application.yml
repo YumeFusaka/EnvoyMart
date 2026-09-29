@@ -24,6 +24,14 @@ spring:
               uri: lb://product-service
               predicates:
                 - Path=/products/**
+            # 类目树与品牌：导航用的基础数据，和 /products 一样是公开读的。
+            # 原先这两个前缀没有任何路由——前端每次进商城都在这里拿 404，
+            # 分类导航与品牌筛选长期是空的。它不报错、不影响下单，只在网络面板里一闪而过，
+            # 所以活了很久没人发现。现在由 RouteCoverageTest 兜住：控制器写了却没配路由会直接构建失败
+            - id: product-service-catalog
+              uri: lb://product-service
+              predicates:
+                - Path=/categories/**,/brands/**
             - id: order-service-cart
               uri: lb://order-service
               predicates:

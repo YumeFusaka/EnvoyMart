@@ -52,6 +52,20 @@ public final class ControllerSources {
     }
 
     /**
+     * 网关路由配置的源码文本。
+     * <p>
+     * 读文本而不是拿 {@code Environment} 反序列化：测试要校验的正是「这份 YAML 里到底写了哪些
+     * 前缀」，解析成对象再回头看就绕了一圈，而且 profile 合并后的结果会掩盖「哪个 profile 写的」。
+     */
+    public static String gatewayRoutes() {
+        Path routes = backendRoot().resolve("gateway-service/src/main/resources/application.yml");
+        if (!Files.isRegularFile(routes)) {
+            throw new IllegalStateException("网关配置文件不在预期位置：" + routes);
+        }
+        return read(routes);
+    }
+
+    /**
      * 从 surefire 的工作目录往上找到 backend 根。
      * <p>
      * surefire 的工作目录是模块目录（{@code backend/gateway-service}），所以父目录就是根。

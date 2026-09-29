@@ -48,6 +48,10 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             PublicRule.of("POST", "/auth/register"),
             PublicRule.of("GET", "/products"),
             PublicRule.of("GET", "/products/**"),
+            // 类目树与品牌：商品目录的一部分，游客不登录也要能看见分类导航和品牌筛选，
+            // 否则商品页公开读、导航却要登录，是自相矛盾的
+            PublicRule.of("GET", "/categories/**"),
+            PublicRule.of("GET", "/brands/**"),
             // 知识库只读：引用要让**任何人**都能自己核对，「登录了才给你看依据」
             // 与溯源的目的正好相反。这里也没有任何用户数据，全是平台规则与说明书
             PublicRule.of("GET", "/knowledge/documents"),
