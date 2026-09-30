@@ -30,10 +30,6 @@ async function handleCite(messageId: string, index: number) {
     behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
   })
 }
-
-function isActive(messageId: string, index: number) {
-  return activeCite.value?.messageId === messageId && activeCite.value.index === index
-}
 </script>
 
 <template>

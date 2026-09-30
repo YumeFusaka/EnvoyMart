@@ -28,6 +28,7 @@ logs/
 # Node
 node_modules/
 dist/
+.eslintcache
 
 # Env
 .env

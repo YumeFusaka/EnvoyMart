@@ -14,16 +14,12 @@ export default defineConfigWithVueTs(
     name: 'app/files-to-lint',
     files: ['**/*.{vue,ts,mts,tsx}'],
     rules: {
-    'prettier/prettier': [
-        'warn',
-        {
-          singleQuote: true, // 单引号
-          semi: false, // 无分号
-          printWidth: 80, // 每行宽度至多80字符
-          trailingComma: 'none', // 不加对象|数组最后逗号
-          endOfLine: 'auto' // 换行符号不限制（win mac 不一致）
-        }
-      ],
+      // 这里原本挂着一条 `prettier/prettier`（抄自 create-vue 教程模板，还带着一份
+      // printWidth: 80 的旧参数）。它有两个问题：`eslint-plugin-prettier` 从来没装过，
+      // 于是整份配置**加载直接失败**、下面这几条 vue 规则一条都没生效；而且它和末尾的
+      // `skipFormatting` 正好相反 —— 那份是 eslint-config-prettier，干的就是关掉格式化规则。
+      // 格式化交给 Prettier 自己（`pnpm format` + `.prettierrc.json`，那里 printWidth 是 100），
+      // ESLint 只管 lint，两边各一个真源
       'vue/multi-word-component-names': [
         'warn',
         {
