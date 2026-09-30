@@ -82,6 +82,12 @@ echo "使用 JDK: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1)"
 #
 # 不能改用 `-am` 把依赖拉进 reactor：spring-boot:run 会在每个被选中的模块上执行，
 # 而 common / agent-core 是库、没有 main class，会直接失败。
+#
+# 反向的坑（2026-10-01 踩到）：install 会**重写**本地仓库里的 jar，而正在运行的服务
+# 此前已打开过它。Windows 下 JVM 缓存的 jar 目录被原地覆盖后，**尚未加载**的类会报
+# NoClassDefFoundError（已加载的不受影响）——症状是「服务重启后好好的，过一会儿某个
+# 接口突然 500」。所以：只要重新 install 了库模块，就要把依赖它的服务一并重启，
+# 不要留着旧进程继续跑。
 echo "同步库模块到本地仓库（改了 contract / common / agent-core 后必须走这一步）..."
 mvn -q -B install -DskipTests -pl contract,common,agent-core || {
   echo "库模块安装失败，终止启动" >&2

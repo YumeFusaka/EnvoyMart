@@ -48,6 +48,17 @@ public class McpServerConfig {
     private static final String TRANSPORT_USER_ID = "userId";
 
     /**
+     * 高危工具的确认参数名。
+     * <p>
+     * <b>为什么确认要做成协议参数</b>：内部对话链路的确认信号来自「用户点了批准按钮」，
+     * 由服务端自己产生；MCP 的调用方是外部 Agent，我们看不到它那一侧有没有问过用户。
+     * 与其假装知道，不如把确认变成签名里的显式契约——调用方先拿到用户的明确同意，
+     * 才能把这个参数置为 true；不传或传 false 会被 {@code ToolRegistry.execute}
+     * 的第二道防线拒绝，与对话侧同一条规则。
+     */
+    static final String CONFIRMED_ARG = "confirmed";
+
+    /**
      * Streamable HTTP 传输。
      * <p>
      * 它本身就是一个 {@code HttpServlet}，由下面的 {@link ServletRegistrationBean} 注册到容器，
@@ -112,8 +123,12 @@ public class McpServerConfig {
     }
 
     private McpServerFeatures.SyncToolSpecification toMcpTool(ToolRegistry registry, ToolDefinition definition) {
+        String description = definition.getDescription();
+        if (definition.isRequiresConfirmation()) {
+            description = description + "（高危操作：仅在已获得用户明确确认后调用，" + CONFIRMED_ARG + " 传 true）";
+        }
         McpSchema.Tool tool = McpSchema.Tool.builder(definition.getName())
-                .description(definition.getDescription())
+                .description(description)
                 .inputSchema(toJsonSchema(definition))
                 .build();
         return McpServerFeatures.SyncToolSpecification.builder()
@@ -125,9 +140,11 @@ public class McpServerConfig {
     /**
      * 一次 MCP 工具调用的落点。
      * <p>
-     * 与 Agent 内部那条路径的关键区别是<b>没有护栏也没有用户确认</b>：MCP 的调用方是外部
-     * Agent，不存在"我们这边的循环预算"，也没有"用户已确认"这个状态。高危及需确认的工具
-     * 由 {@code ToolRegistry.execute} 自己的第二道防线拦下（未确认即拒绝）。
+     * 与 Agent 内部那条路径的关键区别是<b>没有循环护栏</b>：MCP 的调用方是外部
+     * Agent，不存在"我们这边的循环预算"。用户确认则以协议参数表达：高危工具的签名里
+     * 多一个 {@value #CONFIRMED_ARG} 布尔参数（见 {@link #toJsonSchema}），
+     * 不传或传 false 会被 {@code ToolRegistry.execute} 的第二道防线拦下——
+     * 与对话侧「等待用户批准」是同一条规则，只是确认信号从哪里来不同。
      */
     private BiFunction<McpSyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult>
     callHandler(ToolRegistry registry, ToolDefinition definition) {
@@ -139,17 +156,25 @@ public class McpServerConfig {
             // 身份只认认证结果。MCP 客户端的入参是任意 JSON，arguments 里的同名项无条件剔除——
             // 工具定义已经不声明 userId，留着就是一条伪造身份的旁路。
             arguments.remove(ToolContextKeys.USER_ID);
+            // 确认信号与身份同理：是协议层入参，取走后删除，业务工具看不到它
+            boolean confirmed = parseConfirmed(arguments.remove(CONFIRMED_ARG));
             // 身份来自 McpAuthFilter 校验 JWT 的结果，经 transportContext 送进来。
             // 走 API Key（机器凭证、无用户身份）时为 null，需要身份的工具会 fail-closed。
             Object fromTransport = exchange.transportContext().get(TRANSPORT_USER_ID);
             String userId = fromTransport == null ? null : String.valueOf(fromTransport);
 
             ToolResult result = registry.execute(new ToolCall(
-                    UUID.randomUUID().toString(), definition.getName(), arguments, false, userId));
+                    UUID.randomUUID().toString(), definition.getName(), arguments, confirmed, userId));
 
             String output = result.isSuccess()
                     ? String.valueOf(result.getOutput())
                     : "工具执行失败: " + result.getErrorMessage();
+            if (definition.isRequiresConfirmation()) {
+                // 高危动作的审计行——与对话侧「这笔退款是谁批的」同一诉求，
+                // 走 MCP 的调用也要能回答同一问题。debug 级不够：默认配置下没人看得见。
+                log.info("[MCP] 高危工具 {} confirmed={} userId={} success={}",
+                        definition.getName(), confirmed, userId, result.isSuccess());
+            }
             log.debug("[MCP] {} success={} userId={}", definition.getName(), result.isSuccess(), userId);
 
             return McpSchema.CallToolResult.builder()
@@ -172,11 +197,27 @@ public class McpServerConfig {
                 required.add(name);
             }
         });
+        if (definition.isRequiresConfirmation()) {
+            // 只给高危工具加。非高危工具出现这个参数会诱导调用方以为传 true 有什么效果
+            Map<String, Object> confirmed = new LinkedHashMap<>();
+            confirmed.put("type", "boolean");
+            confirmed.put("description", "危险操作：仅在已获得用户对本次调用的明确确认后传 true，否则省略");
+            properties.put(CONFIRMED_ARG, confirmed);
+            required.add(CONFIRMED_ARG);
+        }
 
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
         schema.put("properties", properties);
         schema.put("required", required);
         return schema;
+    }
+
+    /**
+     * 宽松解析确认信号：JSON boolean true 或字符串 "true"（部分 MCP 客户端把 boolean 序列化成字符串）。
+     * 其余一切取值（含缺失）都是未确认。
+     */
+    static boolean parseConfirmed(Object raw) {
+        return Boolean.TRUE.equals(raw) || "true".equalsIgnoreCase(String.valueOf(raw));
     }
 }
