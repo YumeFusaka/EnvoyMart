@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -62,6 +63,15 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             PublicRule.of("GET", "/knowledge/graph/**"),
             PublicRule.of("POST", "/payments/callback")
     );
+
+    /**
+     * 路径里的完整 {@code admin} 段 —— 命中即不可能是公开资源。
+     * <p>
+     * 按「段」匹配而不是 {@code contains("admin")}：后者会把
+     * {@code /knowledge/documents/admin-guide} 这类**文档编号里带 admin 的公开资源**一起禁掉。
+     * 用 {@code /admin/} 或结尾 {@code /admin} 才是段级判定。
+     */
+    private static final Pattern ADMIN_SEGMENT = Pattern.compile("/admin(?:/|$)");
 
     /**
      * 只允许服务间调用、绝不经网关暴露的路径。
@@ -162,7 +172,20 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
                     headers.remove(InternalAuth.TOKEN_HEADER);
                 });
 
-        boolean isPublic = PUBLIC_RULES.stream().anyMatch(rule -> rule.matches(method, path));
+        // 管理接口不是公开资源，一律先要求登录——**这条规则比白名单本身优先级高**。
+        //
+        // 起因：白名单里有 `GET /products/**`、`GET /categories/**`，而管理接口就挂在这些前缀下
+        // （`/products/admin/spus`、`/categories/admin`）。前缀放行意味着它们会被判成公开，
+        // 请求会**不带任何身份**地进到服务里——只剩 `AdminGuardInterceptor` 一道防线。
+        // 那道防线确实拦得住（无 X-User-Id 即 401），但这是"只剩最后一道"，
+        // 而不是"本来就进不来"。写白名单的人加一条 `GET /products/**` 时不会想到
+        // 它同时把管理接口也放开了；只要有人**不读源码**就发现不了。
+        //
+        // 用「路径段里有 admin」这个通用判据，而不是给每个管理前缀补一条排除：
+        // 后者要为 product / order / after-sale / review / auth / tickets 各写一遍，
+        // 而且新增一个服务就多一处会漏。判据一次写对，之后所有 `/xxx/admin/...` 自动生效。
+        boolean isAdminPath = ADMIN_SEGMENT.matcher(path).find();
+        boolean isPublic = !isAdminPath && PUBLIC_RULES.stream().anyMatch(rule -> rule.matches(method, path));
         if (isPublic) {
             return chain.filter(exchange.mutate().request(downstreamRequest.build()).build());
         }

@@ -213,4 +213,57 @@ class JwtGatewayFilterTest {
 
         assertThat(forwarded.get()).as("公开路径应当照常转发").isNotNull();
     }
+
+    /**
+     * 管理接口不能靠公开前缀顺带放行。
+     * <p>
+     * 白名单里有 {@code GET /products/**} 与 {@code GET /categories/**}，而管理接口就挂在这两个
+     * 前缀下面。前缀放行意味着一个**不带任何身份**的匿名请求会被判成公开、一路进到服务里，
+     * 只剩 {@code AdminGuardInterceptor} 一道防线。这里钉死的是「本来就进不来」，
+     * 而不是「进来了但被拦住了」——两道防线不该塌成一道。
+     */
+    @Test
+    void 管理路径不应被公开前缀放行() {
+        for (String path : new String[]{
+                "/products/admin/spus",
+                "/products/admin",
+                "/categories/admin",
+                "/brands/admin",
+                "/orders/admin",
+                "/after-sales/admin",
+                "/reviews/admin",
+                "/auth/admin/users"}) {
+            MockServerWebExchange exchange = MockServerWebExchange.from(
+                    MockServerHttpRequest.get(path).build());
+
+            Throwable thrown = null;
+            try {
+                filter.filter(exchange, chain).block();
+            } catch (Throwable error) {
+                thrown = error;
+            }
+            assertThat(thrown).as("管理路径 %s 应当要求登录", path)
+                    .isInstanceOf(ResponseStatusException.class);
+            assertThat(((ResponseStatusException) thrown).getStatusCode().value())
+                    .isEqualTo(HttpStatus.UNAUTHORIZED.value());
+        }
+        assertThat(forwarded.get()).as("被拒绝的请求不应转发到下游").isNull();
+    }
+
+    /**
+     * 判据必须是「路径段等于 admin」，不能是「路径里含 admin」。
+     * <p>
+     * 知识库文档编号是自由命名的公开资源（{@code /knowledge/documents/**} 在白名单里），
+     * 出现一个叫 {@code admin-guide} 的文档完全正常。用 {@code contains("admin")} 会让这类
+     * 公开资源变成要登录——一个为了让管理接口更安全而引入的回归。
+     */
+    @Test
+    void 路径中含admin字样的公开资源不应被误伤() {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/knowledge/documents/admin-guide").build());
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(forwarded.get()).as("文档编号里带 admin 的公开资源应当照常放行").isNotNull();
+    }
 }
