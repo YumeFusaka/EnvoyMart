@@ -71,6 +71,11 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 只给登录用户看没有意义，报告里也没有任何用户数据。
             // 只放行「读报告」这一个端点：同前缀下的重跑接口在 /admin 段下，由 ADMIN_SEGMENT 强制登录
             PublicRule.of("GET", "/knowledge/eval/report"),
+            // 回答质量报告：与检索评测同一条理由——幻觉率 / 引用准确率是对外的质量声明，
+            // 让任何人打开就能看到判定链的重放结果与来源标注（夹具采集时间、模型），
+            // 是这组数字可信的全部理由；报告里没有一条用户数据。
+            // 真跑要花模型配额，在 /ai/admin/ 段下，由 ADMIN_SEGMENT 强制登录
+            PublicRule.of("GET", "/ai/eval/grounding/report"),
             PublicRule.of("POST", "/payments/callback")
     );
 

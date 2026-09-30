@@ -232,13 +232,25 @@ cd backend
 
 ### 2. 启动
 
+**演示环境一键启动**（中间件 + 九个服务 + 前端，起完打印演示入口，可重复执行）：
+
+```bash
+cd backend
+./run-local.sh demo
+```
+
+它会先真连一次中间件确认就绪（不是只看端口在不在听——Docker Desktop 卡死时端口照样
+LISTENING），再拉起服务与前端。中间件跑在 Docker 里，起之前先确认 Docker Desktop 在运行。
+
+分开来用：
+
 ```bash
 docker compose up -d          # 基础设施（可选，缺失时服务自动降级）
 
 cd backend
 mvn clean install -DskipTests
-./run-local.sh                # 启动全部服务并等待就绪
-./run-local.sh stop           # 停止全部
+./run-local.sh                # 只启动后端全部服务并等待就绪
+./run-local.sh stop           # 停止全部（含前端；中间件容器保持运行）
 ./run-local.sh auth-service   # 只启动某一个
 ```
 

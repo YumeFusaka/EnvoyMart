@@ -72,6 +72,15 @@ onMounted(load)
           </span>
           <span class="kb-entry__arrow" aria-hidden="true">→</span>
         </RouterLink>
+
+        <RouterLink to="/knowledge/eval/answer" class="kb-entry">
+          <span class="kb-entry__title">回答质量评测</span>
+          <span class="kb-entry__desc">
+            检索的另一半：24 条标注问题上的幻觉率、引用准确率、拒答准确率与多跳命中率，
+            逐条可核对；管理员可触发真实重跑对照。
+          </span>
+          <span class="kb-entry__arrow" aria-hidden="true">→</span>
+        </RouterLink>
       </div>
     </header>
 

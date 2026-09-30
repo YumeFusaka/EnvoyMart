@@ -129,6 +129,15 @@ const router = createRouter({
           meta: { public: true, title: '检索评测' },
         },
         {
+          // 回答质量评测：与检索评测是两个量（找得对不对 vs 答得站不站得住），
+          // 所以是两页而不是一页两段。公开可读的理由相同 —— 质量数字是声明，
+          // 谁都能核对才成立；触发真跑要管理员（花模型配额），在 /ai/admin 段下
+          path: 'knowledge/eval/answer',
+          name: 'knowledge-eval-answer',
+          component: () => import('@/views/AnswerQualityView.vue'),
+          meta: { public: true, title: '回答质量评测' },
+        },
+        {
           // 静态段排在动态段前面只是好读，不是必需：vue-router 按具体度打分，
           // `knowledge/graph` 本来就会赢过 `knowledge/:docNo`，不会被当成一个文档编号
           path: 'knowledge/:docNo',

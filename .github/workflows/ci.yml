@@ -38,6 +38,26 @@ jobs:
       - name: 构建并运行测试
         run: mvn -B clean test
 
+      # 四项回答质量指标（幻觉率 / 引用准确率 / 拒答准确率 / 多跳命中率）与检索指标
+      # 写在测试的 stdout 里，surefire 把它们收进 XML 报告而不回显到控制台。
+      # 这一步把数字挂到 CI 运行页的 Summary 上——门禁变红时，先想知道的就是
+      # "哪一项掉到多少"，而不是去下载报告翻。`if: always()`：测试失败时最需要它。
+      - name: 质量指标写入 Job Summary
+        if: always()
+        run: |
+          {
+            echo "## 回答质量与检索质量指标"
+            echo ""
+            echo '```'
+            grep -ho '\[回答质量\][^<]*' */target/surefire-reports/*.xml 2>/dev/null \
+              || echo '(未找到 [回答质量] 输出行 —— 测试可能没跑到，或夹具缺失)'
+            grep -ho '\[检索评测-全量\][^<]*' */target/surefire-reports/*.xml 2>/dev/null || true
+            grep -ho '\[随机基线\][^<]*' */target/surefire-reports/*.xml 2>/dev/null || true
+            echo '```'
+            echo ""
+            echo "门槛见 GroundingQualityTest / RetrievalQualityTest，均为「实测值下留一格」的回归防线，不是质量结论。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   frontend:
     name: 前端类型检查与构建
     runs-on: ubuntu-latest

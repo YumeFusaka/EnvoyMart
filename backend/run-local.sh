@@ -12,7 +12,8 @@
 #
 # 用法:
 #   ./run-local.sh                   启动全部
-#   ./run-local.sh stop              停止全部
+#   ./run-local.sh demo              演示环境一键启动：中间件 + 全部服务 + 前端 + 演示入口
+#   ./run-local.sh stop              停止全部（含前端；中间件容器保持运行）
 #   ./run-local.sh stop ai-service   只停止指定的一个或多个
 #   ./run-local.sh auth-service      只启动指定的一个或多个
 #
@@ -166,25 +167,30 @@ start_one() {
   env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run "${agent_args[@]}" > "$LOG_DIR/$svc.log" 2>&1 &
 }
 
+# 按端口杀监听进程（服务与前端共用这一条路径）。
+kill_port() { # 名称 端口
+  local pid
+  pid=$(netstat -ano 2>/dev/null | grep LISTENING | grep ":$2 " | awk '{print $NF}' | head -1)
+  if [ -n "${pid:-}" ]; then
+    echo "停止 $1 (端口 $2, PID $pid)"
+    powershell -Command "Stop-Process -Id $pid -Force" 2>/dev/null || kill "$pid" 2>/dev/null
+  else
+    echo "跳过 $1 (端口 $2 上没有监听进程)"
+  fi
+}
+
 # 停服务。不传名字就停全部，传了就只停传的那些。
 # <p>
 # 早先这个函数无条件遍历全部服务、把参数丢掉——`stop knowledge-service` 会静默地
 # 停掉八个服务。想只重启一个服务的人，得到的是一整套服务消失。
 stop_services() {
-  local svc port pid
+  local svc
   local targets=("$@")
   [ ${#targets[@]} -eq 0 ] && targets=("${SERVICES[@]}")
 
   for svc in "${targets[@]}"; do
     index_of "$svc" >/dev/null || { echo "未知服务: $svc" >&2; continue; }
-    port=$(port_of "$svc")
-    pid=$(netstat -ano 2>/dev/null | grep LISTENING | grep ":$port " | awk '{print $NF}' | head -1)
-    if [ -n "${pid:-}" ]; then
-      echo "停止 $svc (端口 $port, PID $pid)"
-      powershell -Command "Stop-Process -Id $pid -Force" 2>/dev/null || kill "$pid" 2>/dev/null
-    else
-      echo "跳过 $svc (端口 $port 上没有监听进程)"
-    fi
+    kill_port "$svc" "$(port_of "$svc")"
   done
 }
 
@@ -209,8 +215,143 @@ wait_healthy() {
   done
 }
 
+# ———————————————————— 演示环境一键启动 ————————————————————
+#
+# 面向「二面要现场演示」：一条命令把中间件、九个服务、前端全部拉起到就绪，
+# 最后打印演示入口。幂等——已经在跑的部分全部跳过，重复执行不会起两份。
+
+port_listening() {
+  netstat -ano 2>/dev/null | grep LISTENING | grep -q ":$1 "
+}
+
+# 真连一次再下结论。踩过的坑：Docker Desktop 卡死时中间件端口仍显示 LISTENING，
+# 连上去却永远没有握手响应——只看 netstat 会把死掉的环境判成「就绪」，
+# 然后九个服务排着队超时，报出来的错和真正的问题隔着十万八千里。
+tcp_open() {
+  node -e "const s=require('net').connect($1,'127.0.0.1');const t=setTimeout(()=>process.exit(1),2000);s.on('connect',()=>{clearTimeout(t);process.exit(0)});s.on('error',()=>process.exit(1))" 2>/dev/null
+}
+
+http_ok() {
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$1")" = "200" ]
+}
+
+wait_ready() { # 名称 超时秒 检查命令...
+  local name=$1 timeout=$2
+  shift 2
+  printf '%-14s' "$name"
+  local i
+  for i in $(seq 1 "$timeout"); do
+    if "$@" >/dev/null 2>&1; then
+      echo "就绪"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "未就绪"
+  return 1
+}
+
+preflight() {
+  if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+    echo "Docker 引擎不可用——中间件全部跑在容器里，先确认 Docker Desktop 在运行（卡死的话重启它）" >&2
+    return 1
+  fi
+  command -v node >/dev/null 2>&1 || { echo "缺 node（中间件探测与前端都要用）" >&2; return 1; }
+  command -v pnpm >/dev/null 2>&1 || { echo "缺 pnpm（前端要 pnpm dev）" >&2; return 1; }
+  [ -f ../docker-compose.yml ] || { echo "找不到 ../docker-compose.yml" >&2; return 1; }
+  return 0
+}
+
+middleware_up() {
+  echo "启动中间件（docker compose up -d，已在跑的容器不受影响）..."
+  # compose 的退出码只报「哪些容器没起来」，不是「环境不可用」——这台机器上
+  # 3306 被宿主原生 MySQL 占着（项目用的就是它），compose 里的 mysql 容器
+  # 永远绑定不了 3306，up 必然非零退出。所以就绪与否一律以下面的真握手为准。
+  docker compose -f ../docker-compose.yml up -d \
+    || echo "（docker compose 报了错，继续——中间件就绪与否看下面的真握手检查）"
+
+  local failed=0
+  wait_ready nacos 90 http_ok http://127.0.0.1:8848/nacos/v1/console/health/readiness || failed=1
+  wait_ready mysql 60 tcp_open 3306 || failed=1
+  wait_ready redis 60 tcp_open 6379 || failed=1
+  wait_ready rabbitmq 60 tcp_open 5672 || failed=1
+  wait_ready elasticsearch 90 http_ok http://127.0.0.1:9200/ || failed=1
+  wait_ready milvus 90 http_ok http://127.0.0.1:9091/healthz || failed=1
+  wait_ready neo4j 60 tcp_open 7687 || failed=1
+  wait_ready seata 60 tcp_open 8091 || failed=1
+  if [ "$failed" -ne 0 ]; then
+    echo "有中间件没就绪。服务连不上 Nacos/MySQL 会起不来或静默降级，先解决上面未就绪的：" >&2
+    echo "  docker ps · docker compose -f docker-compose.yml logs <容器名> · 卡死就重启 Docker Desktop" >&2
+    return 1
+  fi
+  return 0
+}
+
+frontend_up() {
+  if port_listening 5173; then
+    echo "跳过前端（5173 已在监听）"
+    return 0
+  fi
+  if [ ! -d ../frontend/node_modules ]; then
+    echo "前端依赖未安装：先执行 cd frontend && pnpm install" >&2
+    return 1
+  fi
+  mkdir -p "$LOG_DIR"
+  echo "启动前端 (端口 5173) → $LOG_DIR/frontend.log"
+  nohup pnpm -C ../frontend dev > "$LOG_DIR/frontend.log" 2>&1 &
+  if wait_ready frontend 60 http_ok http://127.0.0.1:5173/; then
+    return 0
+  fi
+  echo "前端没起来，看 $LOG_DIR/frontend.log" >&2
+  return 1
+}
+
+print_entries() {
+  cat <<'EOF'
+
+==================== 演示环境就绪 ====================
+前端首页            http://localhost:5173/#/shop
+AI 助手（Agent）    http://localhost:5173/#/assistant
+知识库              http://localhost:5173/#/knowledge
+成分与相互作用图谱  http://localhost:5173/#/knowledge/graph
+检索质量评测        http://localhost:5173/#/knowledge/eval
+回答质量评测        http://localhost:5173/#/knowledge/eval/answer
+管理台              http://localhost:5173/#/admin
+API 网关            http://localhost:8080
+链路追踪（可选）    http://localhost:8088
+账号                admin / 123456（管理员）· alice / 123456（普通用户）
+=====================================================
+EOF
+}
+
+demo_up() {
+  preflight || { echo "预检未过，演示环境没启动" >&2; exit 1; }
+  middleware_up || exit 1
+
+  local svc port
+  for svc in "${SERVICES[@]}"; do
+    port=$(port_of "$svc")
+    if port_listening "$port"; then
+      echo "跳过 $svc（端口 $port 已在监听）"
+    else
+      start_one "$svc"
+    fi
+  done
+  wait_healthy
+
+  frontend_up || exit 1
+  print_entries
+}
+
 case "${1:-all}" in
-  stop) shift; stop_services "$@" ;;
+  stop) shift
+    if [ $# -eq 0 ]; then
+      kill_port frontend 5173
+    fi
+    stop_services "$@"
+    echo "（中间件容器保持运行；要一并停用 docker compose -f docker-compose.yml stop）"
+    ;;
+  demo) demo_up ;;
   all)  for svc in "${SERVICES[@]}"; do start_one "$svc"; done; wait_healthy ;;
   *)    for svc in "$@"; do start_one "$svc"; done ;;
 esac
