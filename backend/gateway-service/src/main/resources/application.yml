@@ -43,6 +43,12 @@ spring:
               uri: lb://product-service
               predicates:
                 - Path=/categories/**,/brands/**
+            # 收藏夹：落在商品服务（商品卡片要从这里取），但不与 /products 共用一个限流桶 ——
+            # 那是公开读、这是登录用户的写+私有读，混在一起时一个人狂点收藏会挤掉别人的商品浏览
+            - id: product-service-favorites
+              uri: lb://product-service
+              predicates:
+                - Path=/favorites/**
             - id: order-service-cart
               uri: lb://order-service
               predicates:

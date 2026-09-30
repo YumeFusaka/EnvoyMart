@@ -61,6 +61,9 @@ public class GatewaySentinelConfig {
         rules.add(route("review-service", 50));
         rules.add(route("product-service", 100));
         rules.add(route("product-service-catalog", 100));
+        // 收藏夹是登录用户的写+私有读，单表读写、代价低，但不与公开商品读共用配额：
+        // 一个用户狂点收藏不该让别人的商品列表变慢
+        rules.add(route("product-service-favorites", 50));
 
         GatewayRuleManager.loadRules(rules);
         log.info("[Sentinel] 网关限流规则已加载 {} 条: {}", rules.size(),

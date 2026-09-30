@@ -1,11 +1,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { getBrands, getCategoryTree, listProducts, searchProducts } from '@/api/product'
 import ShopProductCard from '@/components/shop/ProductCard.vue'
 import type { BrandView, CategoryNode, ProductSummary } from '@/types/models'
-
-const router = useRouter()
 
 const categories = ref<CategoryNode[]>([])
 const brands = ref<BrandView[]>([])
@@ -73,10 +70,6 @@ function pickBrand(id?: number) {
 function onPageChange(page: number) {
   query.page = page - 1
   load()
-}
-
-function openDetail(id: number) {
-  router.push(`/products/${id}`)
 }
 
 onMounted(async () => {
@@ -164,12 +157,7 @@ onMounted(async () => {
 
       <div v-loading="loading" class="shop__results">
         <div v-if="products.length" class="shop__grid">
-          <ShopProductCard
-            v-for="item in products"
-            :key="item.id"
-            :product="item"
-            @open="openDetail(item.id)"
-          />
+          <ShopProductCard v-for="item in products" :key="item.id" :product="item" />
         </div>
         <el-empty v-else-if="!loading" description="没有找到符合条件的商品" />
       </div>

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { formatPrice, getProductDetail } from '@/api/product'
 import ReviewSection from '@/components/review/ReviewSection.vue'
+import FavoriteButton from '@/components/shop/FavoriteButton.vue'
 import { useCartStore } from '@/stores'
 import type { ProductDetail, SkuView } from '@/types/models'
 
@@ -228,6 +229,8 @@ onMounted(load)
             >
               加入购物车
             </el-button>
+
+            <FavoriteButton :spu-id="detail.id" :label="detail.name" show-text />
           </div>
 
           <p class="detail__meta">

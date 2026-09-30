@@ -66,6 +66,12 @@ const router = createRouter({
           meta: { title: '我的订单' },
         },
         {
+          path: 'favorites',
+          name: 'favorites',
+          component: () => import('@/views/FavoriteListView.vue'),
+          meta: { title: '我的收藏' },
+        },
+        {
           path: 'orders/:id',
           name: 'order-detail',
           component: () => import('@/views/OrderDetailView.vue'),

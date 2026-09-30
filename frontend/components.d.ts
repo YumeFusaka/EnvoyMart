@@ -62,6 +62,7 @@ declare module 'vue' {
     ReviewReviewSection: typeof import('./src/components/review/ReviewSection.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    ShopFavoriteButton: typeof import('./src/components/shop/FavoriteButton.vue')['default']
     ShopProductCard: typeof import('./src/components/shop/ProductCard.vue')['default']
     UiErrorState: typeof import('./src/components/ui/ErrorState.vue')['default']
   }

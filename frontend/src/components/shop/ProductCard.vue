@@ -1,44 +1,62 @@
 <script setup lang="ts">
 import { formatPriceRange } from '@/api/product'
+import FavoriteButton from '@/components/shop/FavoriteButton.vue'
 import type { ProductSummary } from '@/types/models'
 
-defineProps<{ product: ProductSummary }>()
+/** 心形按钮的状态变化透传出去，收藏夹页据此移除条目。卡片本身不关心这件事 */
+const emit = defineEmits<{ (e: 'favorite-change', favorited: boolean): void }>()
+
+withDefaults(
+  defineProps<{
+    product: ProductSummary
+    /**
+     * 商品已下架（收藏夹里会用到）。
+     * <p>
+     * 下架商品**照样渲染**，只是标出来、不给链接：详情接口对下架商品返回「不存在」，
+     * 留一个点进去就报错的链接，比不给链接更糟。也从列表里抹掉更糟——用户会以为收藏丢了。
+     */
+    unavailable?: boolean
+  }>(),
+  { unavailable: false },
+)
 
 /**
- * 卡片整体是一个点击目标，跳详情。
+ * 点击区由标题链接的 `::after` 撑满整张卡（"stretched link"），而不是给卡片挂 click 事件。
  * <p>
- * 列表页**不放「加入购物车」**：价格与库存都挂在 SKU 上，从列表加购等于
- * 替用户随便挑一个规格。真实电商也是「进详情、选规格、再加购」。
+ * 这样整卡可点、键盘可聚焦、浏览器能预览链接地址，都不需要手写 `role`/`tabindex`/回车监听；
+ * 心形按钮只要抬到覆盖层之上，就天然不会连带触发跳转——原先那种「按钮上补一个
+ * stopPropagation」的写法，漏一次就会同时收藏并跳走。
  * <p>
- * 这也顺手消掉了原先那个缺陷：卡片上那个加购按钮的 `@emit('add')` 绕过了
- * 专门做 stopPropagation 的处理函数，点一次会**同时加购并跳走**。
+ * 列表页**不放「加入购物车」**：价格与库存都挂在 SKU 上，从列表加购等于替用户随便挑一个规格。
  */
-const emit = defineEmits<{ (e: 'open'): void }>()
 </script>
 
 <template>
-  <article
-    class="product-card"
-    role="link"
-    tabindex="0"
-    :aria-label="`查看 ${product.name}`"
-    @click="emit('open')"
-    @keyup.enter="emit('open')"
-  >
+  <article class="product-card" :class="{ 'is-unavailable': unavailable }">
     <div class="product-card__media">
-      <img
-        v-if="product.mainImage"
-        :src="product.mainImage"
-        :alt="product.name"
-        loading="lazy"
-      />
+      <img v-if="product.mainImage" :src="product.mainImage" :alt="product.name" loading="lazy" />
       <div v-else class="product-card__placeholder" aria-hidden="true">暂无图片</div>
-      <span v-if="product.totalStock === 0" class="product-card__badge">缺货</span>
+
+      <span v-if="unavailable" class="product-card__badge product-card__badge--off">已下架</span>
+      <span v-else-if="product.totalStock === 0" class="product-card__badge">缺货</span>
+
+      <FavoriteButton
+        class="product-card__fav"
+        :spu-id="product.id"
+        :label="product.name"
+        small
+        @change="emit('favorite-change', $event)"
+      />
     </div>
 
     <div class="product-card__body">
       <p v-if="product.brandName" class="product-card__brand">{{ product.brandName }}</p>
-      <h3 class="product-card__name">{{ product.name }}</h3>
+      <h3 class="product-card__name">
+        <RouterLink v-if="!unavailable" class="product-card__link" :to="`/products/${product.id}`">
+          {{ product.name }}
+        </RouterLink>
+        <template v-else>{{ product.name }}</template>
+      </h3>
       <p v-if="product.subtitle" class="product-card__subtitle">{{ product.subtitle }}</p>
 
       <ul v-if="product.tags.length" class="product-card__tags">
@@ -57,13 +75,13 @@ const emit = defineEmits<{ (e: 'open'): void }>()
 
 <style scoped>
 .product-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--card-radius);
-  cursor: pointer;
   transition:
     transform var(--ys-duration-base) var(--ys-ease-out),
     box-shadow var(--ys-duration-base) var(--ys-ease-out),
@@ -76,6 +94,13 @@ const emit = defineEmits<{ (e: 'open'): void }>()
   box-shadow: var(--ys-shadow-dropdown);
 }
 
+/* 下架商品不跟着「浮起来」：它没有可去的页面，浮起+阴影是在暗示可点 */
+.product-card.is-unavailable:hover {
+  transform: none;
+  border-color: var(--color-border);
+  box-shadow: var(--ys-shadow-none);
+}
+
 .product-card__media {
   position: relative;
   aspect-ratio: 1 / 1;
@@ -86,6 +111,13 @@ const emit = defineEmits<{ (e: 'open'): void }>()
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.product-card.is-unavailable .product-card__media img {
+  /* 下架商品褪色，与角标一起把「不能买」这件事说两遍。
+     不用 opacity 0.4 那种程度：商品图仍是识别它是什么的主要线索 */
+  filter: grayscale(0.7);
+  opacity: 0.75;
 }
 
 .product-card__placeholder {
@@ -105,6 +137,18 @@ const emit = defineEmits<{ (e: 'open'): void }>()
   background: var(--color-text-secondary);
   color: var(--color-text-inverse);
   font-size: var(--ys-font-xs);
+}
+
+.product-card__badge--off {
+  background: var(--color-text-muted);
+}
+
+.product-card__fav {
+  position: absolute;
+  top: var(--ys-space-2);
+  right: var(--ys-space-2);
+  /* 抬到 stretched link 的覆盖层之上，否则点心形会顺带跳详情 */
+  z-index: var(--ys-z-raised);
 }
 
 .product-card__body {
@@ -131,6 +175,24 @@ const emit = defineEmits<{ (e: 'open'): void }>()
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.product-card__link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.product-card__link:focus-visible {
+  outline: none;
+  border-radius: var(--ys-radius-sm);
+  box-shadow: var(--focus-ring);
+}
+
+/* 撑满整卡的可点区。放在链接上而不是卡片的 click 上：语义、键盘、右键菜单全部免费 */
+.product-card__link::after {
+  content: '';
+  position: absolute;
+  inset: 0;
 }
 
 .product-card__subtitle {
@@ -162,9 +224,12 @@ const emit = defineEmits<{ (e: 'open'): void }>()
 
 .product-card__foot {
   display: flex;
+  /* 价格区间长（"¥268.00 ~ ¥498.00"）时让它自己占一行，而不是把「已售」挤到价格中间去。
+     nowrap + wrap 的组合：放得下就并排，放不下就换行，不需要知道卡片有多宽 */
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--ys-space-2);
+  gap: 2px var(--ys-space-2);
   margin-top: auto;
   padding-top: var(--ys-space-2);
 }
@@ -173,10 +238,14 @@ const emit = defineEmits<{ (e: 'open'): void }>()
   color: var(--color-primary);
   font-size: var(--ys-font-md);
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .product-card__sales {
+  /* 换行后独占一行时靠右，与并排时的位置一致 */
+  margin-inline-start: auto;
   color: var(--color-text-muted);
   font-size: var(--ys-font-xs);
+  white-space: nowrap;
 }
 </style>

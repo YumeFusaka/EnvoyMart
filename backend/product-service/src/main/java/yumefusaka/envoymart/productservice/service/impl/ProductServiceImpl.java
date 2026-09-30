@@ -255,6 +255,14 @@ public class ProductServiceImpl implements ProductService {
                 .toList();
     }
 
+    @Override
+    public List<ProductSummary> summaries(List<Long> spuIds) {
+        if (spuIds == null || spuIds.isEmpty()) {
+            return List.of();
+        }
+        return assemble(spuMapper.selectByIds(spuIds.stream().distinct().toList()));
+    }
+
     // ==================== 查询条件 ====================
 
     private LambdaQueryWrapper<ProductSpuEntity> buildWrapper(ProductQuery query) {

@@ -12,6 +12,7 @@ import {
   RefreshLeft,
   Setting,
   ShoppingCart,
+  Star,
   SwitchButton,
   User,
 } from '@element-plus/icons-vue'
@@ -28,6 +29,7 @@ const drawerOpen = ref(false)
 const navItems = [
   { to: '/shop', label: '商城', icon: Goods },
   { to: '/orders', label: '我的订单', icon: List },
+  { to: '/favorites', label: '我的收藏', icon: Star },
   { to: '/after-sales', label: '退款/售后', icon: RefreshLeft },
   { to: '/coupons', label: '领券中心', icon: Discount },
   { to: '/assistant', label: '智能助手', icon: ChatDotRound },
@@ -115,7 +117,9 @@ onMounted(() => {
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click="router.push('/profile')">个人中心</el-dropdown-item>
-                <el-dropdown-item v-if="isAdmin" @click="router.push('/admin')">管理台</el-dropdown-item>
+                <el-dropdown-item v-if="isAdmin" @click="router.push('/admin')"
+                  >管理台</el-dropdown-item
+                >
                 <el-dropdown-item divided @click="handleLogout">
                   <el-icon><SwitchButton /></el-icon>
                   退出登录
@@ -335,7 +339,9 @@ onMounted(() => {
   align-items: stretch;
 }
 
-@media (max-width: 860px) {
+/* 1080 而不是 960：导航有七个入口，窄一点就挤成两行或溢出。
+   挤不下时收进抽屉比硬塞着强 */
+@media (max-width: 1080px) {
   .app-nav {
     display: none;
   }

@@ -171,3 +171,26 @@ create table if not exists stock_log (
     index idx_stock_log_sku (sku_id, created_at),
     index idx_stock_log_biz (biz_type, biz_id)
 );
+
+-- ==================== 收藏 ====================
+
+-- 用户收藏的商品。
+--
+-- 为什么放在商品库而不是用户库：收藏夹页要展示商品卡片（图、价、评分、是否在售），
+-- 而这些字段全在商品域。放进用户库的话，列表页的每一次刷新都要跨服务取数，
+-- 一处拿不到就退化成「收藏了一条查不到的东西」。用户 id 在这里只是一个字符串标记，
+-- 与订单库、售后库保存 user_id 的方式一致——每个库各存自己需要的那个 id。
+--
+-- 不做物理删除：用户取消收藏即删行（收藏是可再生的用户偏好，不是凭证，
+-- 留一份历史没有对账价值，只会让「再次收藏」撞上唯一约束）。
+create table if not exists user_favorite (
+    id bigint auto_increment primary key,
+    user_id varchar(32) not null,
+    spu_id bigint not null,
+    created_at datetime not null,
+    -- 同一用户同一商品只能有一条。重复收藏由这条约束裁决，不靠「先查再插」——
+    -- 后者在连点两次时两条都查不到、两条都插进去
+    constraint uk_favorite_user_spu unique (user_id, spu_id),
+    -- 收藏夹按「最近收藏在前」翻页
+    index idx_favorite_user_time (user_id, created_at)
+);

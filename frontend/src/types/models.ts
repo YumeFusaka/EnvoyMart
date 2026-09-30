@@ -716,6 +716,24 @@ export interface ProductSummary {
   tags: string[]
 }
 
+/**
+ * 收藏夹里的一条。
+ *
+ * 比商品卡多两个字段，都不是装饰：
+ * - `favoritedAt` —— 收藏夹按时间倒序，没有它就解释不了这个顺序；
+ * - `available` —— **下架不等于没收藏过**。下架商品在列表与详情里都查不到，
+ *   如果收藏夹也把它藏起来，用户会以为「我的收藏丢了」。所以下架商品照样显示，
+ *   只是标出来、点不进去。
+ */
+export interface FavoriteItem {
+  spuId: number
+  favoritedAt: string
+  /** 是否仍在售 */
+  available: boolean
+  /** 商品卡片数据。商品被物理删除时为 null，此时只剩这条收藏记录 */
+  product: ProductSummary | null
+}
+
 /** 规格项及其全部可选值（"容量"：[90粒, 180粒]） */
 export interface SpecGroup {
   specId: number

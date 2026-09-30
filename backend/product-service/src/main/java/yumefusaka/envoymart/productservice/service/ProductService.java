@@ -34,4 +34,16 @@ public interface ProductService {
      * 补空对象会让调用方以为拿到了数据。
      */
     List<SkuSnapshot> skus(List<Long> skuIds);
+
+    /**
+     * 按 SPU id 批量取列表项，供收藏夹这类「手上只有一批 id、要展示成商品卡片」的场景。
+     * <p>
+     * 与 {@link #list} 的区别只有一个：**不按 status 过滤**。收藏夹要在商品下架后
+     * 依然显示它——下架不等于这条收藏没发生过，直接把它从列表里抹掉，用户会以为
+     * 「我的收藏丢了」。是否可购买由调用方按 {@code status} 判断并如实标注。
+     * <p>
+     * 返回顺序与入参无关（按 id 查出来是什么顺序就是什么顺序），调用方自己按
+     * 收藏时间排。找不到的 id 直接缺席。
+     */
+    List<ProductSummary> summaries(List<Long> spuIds);
 }
