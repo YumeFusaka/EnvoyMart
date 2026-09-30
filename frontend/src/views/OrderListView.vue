@@ -15,8 +15,8 @@ const failed = ref(false)
 const activeStatus = ref<OrderStatus | 'ALL'>('ALL')
 
 /**
- * 当前时间。`payable()` 依赖它，否则订单超时那一刻界面上没有任何变化触发重渲染，
- * 「去支付」会一直亮着 —— 点进去才会在收银台看到「已超时」。
+ * 当前时间。`payable()` 与倒计时都依赖它：订单超时那一刻界面上要有变化，
+ * 「去支付」不能一直亮着。每秒推进一次只为倒计时的秒级跳动，纯本地时间，不轮询服务端。
  */
 const now = ref(Date.now())
 
@@ -32,7 +32,7 @@ const STATUS_TABS: { value: OrderStatus | 'ALL'; label: string; match: OrderStat
   { value: 'PAID', label: '待发货', match: ['PAID'] },
   { value: 'SHIPPED', label: '待收货', match: ['SHIPPED'] },
   { value: 'RECEIVED', label: '已完成', match: ['RECEIVED', 'COMPLETED'] },
-  { value: 'CANCELLED', label: '已取消', match: ['CANCELLED', 'CLOSED', 'REFUNDING', 'REFUNDED'] },
+  { value: 'CANCELLED', label: '退款/取消', match: ['CANCELLED', 'CLOSED', 'REFUNDING', 'REFUNDED'] },
 ]
 
 const filtered = computed(() => {
@@ -57,9 +57,35 @@ function payable(order: Order): boolean {
   )
 }
 
-/** 未支付即可取消。已支付的要走退款流程，后端会如实拒绝 */
+/** 待付款与待发货都可取消：已支付的取消会同步发起全额退款 */
 function cancellable(order: Order): boolean {
-  return order.status === 'CREATED'
+  return order.status === 'CREATED' || order.status === 'PAID'
+}
+
+/**
+ * 退款中 = 上次退款没走完（失败或响应丢了）。后端对 REFUNDING 的取消就是重试入口，
+ * 且退款请求带幂等键，重试不会退第二笔；界面必须把它露出来，否则用户只能干等。
+ */
+function refundRetryable(order: Order): boolean {
+  return order.status === 'REFUNDING'
+}
+
+/** 待付款订单的支付剩余时间，形如 `12:34`；无期限或已超时返回空串 */
+function countdown(order: Order): string {
+  if (!order.expireAt) {
+    return ''
+  }
+  const ms = new Date(order.expireAt).getTime() - now.value
+  if (ms <= 0) {
+    return ''
+  }
+  const seconds = Math.floor(ms / 1000)
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+/** 剩余不足 5 分钟标红：给用户一个「该付了」的视觉信号 */
+function expiringSoon(order: Order): boolean {
+  return !!order.expireAt && new Date(order.expireAt).getTime() - now.value < 5 * 60_000
 }
 
 async function load() {
@@ -74,28 +100,59 @@ async function load() {
   }
 }
 
+/** 取消/退款重试的文案：三种入口（未支付、已支付、退款重试）说三种话 */
+function cancelCopy(order: Order) {
+  if (order.status === 'REFUNDING') {
+    return {
+      title: '重试退款',
+      confirm: `订单 ${order.orderNo} 的退款还未完成，将重新发起全额退款。确定重试吗？`,
+      confirmButton: '重试退款',
+    }
+  }
+  if (order.status === 'PAID') {
+    return {
+      title: '取消并退款',
+      confirm: `订单 ${order.orderNo} 已支付，取消后将发起全额退款，款项原路退回。确定取消吗？`,
+      confirmButton: '取消并退款',
+    }
+  }
+  return {
+    title: '取消订单',
+    confirm: `确定取消订单 ${order.orderNo} 吗？`,
+    confirmButton: '确认取消',
+  }
+}
+
 async function handleCancel(order: Order) {
+  const retry = order.status === 'REFUNDING'
+  const paid = order.status === 'PAID'
+  const copy = cancelCopy(order)
   try {
-    await ElMessageBox.confirm(`确定取消订单 ${order.orderNo} 吗？`, '取消订单', {
+    await ElMessageBox.confirm(copy.confirm, copy.title, {
       type: 'warning',
-      confirmButtonText: '确认取消',
+      confirmButtonText: copy.confirmButton,
       cancelButtonText: '再想想',
     })
   } catch {
     return
   }
-  await cancelOrder(order.id)
-  ElMessage.success('订单已取消，库存已回补')
+  const updated = await cancelOrder(order.id)
+  if (retry) {
+    // 重试的结果以订单最终状态为准：可能这次成功了，也可能仍停在处理中
+    ElMessage.success(updated.status === 'REFUNDED' ? '退款已完成，款项原路退回' : '退款受理中，请稍后查看')
+  } else {
+    ElMessage.success(paid ? '订单已取消，退款将原路退回' : '订单已取消，库存已回补')
+  }
   await load()
 }
 
 onMounted(() => {
   load()
-  // 每分钟推进一次「当前时间」，让超时订单的「去支付」自己消失。
-  // 不轮询订单本身：关单是服务端的事，界面只需要把已超时的按钮收起来
+  // 每秒推进「当前时间」：待付款倒计时需要秒级跳动，超时后「去支付」随之自动消失。
+  // 不轮询订单本身：关单是服务端的事，界面只负责把过期的操作收起来
   timer = setInterval(() => {
     now.value = Date.now()
-  }, 60_000)
+  }, 1_000)
 })
 
 onUnmounted(() => {
@@ -140,6 +197,13 @@ onUnmounted(() => {
           <div class="order__meta">
             <span class="order__no">{{ order.orderNo }}</span>
             <span class="order__time">{{ order.createdAt?.replace('T', ' ') }}</span>
+            <span
+              v-if="payable(order) && countdown(order)"
+              class="order__countdown"
+              :class="{ 'is-urgent': expiringSoon(order) }"
+            >
+              支付剩余 {{ countdown(order) }}
+            </span>
           </div>
           <el-tag :type="payable(order) ? 'warning' : 'info'" effect="light">
             {{ order.statusText }}
@@ -169,7 +233,10 @@ onUnmounted(() => {
           <div class="order__actions">
             <el-button link @click="router.push(`/orders/${order.id}`)">订单详情</el-button>
             <el-button v-if="cancellable(order)" link type="danger" @click="handleCancel(order)">
-              取消订单
+              {{ order.status === 'PAID' ? '取消并退款' : '取消订单' }}
+            </el-button>
+            <el-button v-if="refundRetryable(order)" link type="danger" @click="handleCancel(order)">
+              重试退款
             </el-button>
             <el-button v-if="payable(order)" type="primary" @click="router.push(`/payment?orderId=${order.id}`)">
               去支付
@@ -254,6 +321,17 @@ onUnmounted(() => {
 .order__time {
   color: var(--color-text-muted);
   font-size: var(--ys-font-xs);
+}
+
+.order__countdown {
+  color: var(--color-warning);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.order__countdown.is-urgent {
+  color: var(--color-danger);
+  font-weight: 600;
 }
 
 .order__items {

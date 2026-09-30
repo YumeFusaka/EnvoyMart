@@ -1,5 +1,5 @@
 import request from '@/utils/axios'
-import type { AfterSale, AfterSalePreview } from '@/types/models'
+import type { AfterSale, AfterSaleDetail, AfterSalePreview } from '@/types/models'
 
 export const AFTER_SALE_TYPES = [
   { value: 'REFUND_ONLY', label: '仅退款', hint: '不寄回商品，适合未收到货或协商一致' },
@@ -37,13 +37,20 @@ export async function listAfterSales() {
   return response.data.data as AfterSale[]
 }
 
+/** 详情含完整流转流水：单子到哪一步了、谁操作的，一次拿全 */
 export async function getAfterSale(id: number) {
   const response = await request.get(`/after-sales/${id}`)
-  return response.data.data as AfterSale
+  return response.data.data as AfterSaleDetail
 }
 
 export async function cancelAfterSale(id: number) {
   const response = await request.post(`/after-sales/${id}/cancel`)
+  return response.data.data as AfterSale
+}
+
+/** 审核通过后，用户把退货包裹寄回时登记物流 */
+export async function shipBackAfterSale(id: number, payload: { carrier: string; trackingNo: string }) {
+  const response = await request.post(`/after-sales/${id}/ship-back`, payload)
   return response.data.data as AfterSale
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { AFTER_SALE_REASONS, AFTER_SALE_TYPES, applyAfterSale, previewAfterSale } from '@/api/afterSale'
 import { formatPrice } from '@/api/product'
@@ -15,7 +15,15 @@ const type = ref<string>('REFUND_ONLY')
 const reason = ref<string>('')
 const description = ref('')
 const qualityIssue = ref(false)
-const images = ref<string[]>([])
+// 输入框的原始文本与提交用的数组分开：textarea 只能绑字符串，
+// 直接绑 string[] 会把输入变成字符串传出去，后端解析 List<String> 直接失败
+const imagesText = ref('')
+const images = computed(() =>
+  imagesText.value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean),
+)
 const submitting = ref(false)
 
 const preview = ref<AfterSalePreview | null>(null)
@@ -74,7 +82,7 @@ watch(
       reason.value = ''
       description.value = ''
       qualityIssue.value = false
-      images.value = []
+      imagesText.value = ''
       type.value = 'REFUND_ONLY'
       runPreview()
     }
@@ -154,11 +162,15 @@ watch(type, runPreview)
 
       <el-form-item label="图片地址（选填，一行一个）">
         <el-input
-          v-model="images"
+          v-model="imagesText"
           type="textarea"
           :rows="2"
           placeholder="演示环境暂未接入文件上传，可直接粘贴图片 URL"
         />
+        <!-- 图片无法当场校验 URL 是否有效，至少让用户看到「提交的到底是什么」 -->
+        <div v-if="images.length" class="thumbs">
+          <img v-for="url in images" :key="url" :src="url" :alt="`凭证 ${url}`" class="thumbs__item" />
+        </div>
       </el-form-item>
     </el-form>
 
@@ -231,5 +243,20 @@ watch(type, runPreview)
 
 .full {
   width: 100%;
+}
+
+.thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-2);
+  margin-top: var(--ys-space-2);
+}
+
+.thumbs__item {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--ys-radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  object-fit: cover;
 }
 </style>

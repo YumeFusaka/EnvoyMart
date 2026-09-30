@@ -55,7 +55,8 @@ const timeline = computed(() => {
     { label: '支付成功', time: o.paidAt },
     { label: '商家发货', time: o.shippedAt },
     { label: '确认收货', time: o.receivedAt },
-    { label: '订单关闭', time: o.closedAt },
+    // closedAt 有两个来源：超时/主动取消关闭，或退款完成；对退款订单说「关闭」是误导
+    { label: o.status === 'REFUNDED' ? '退款完成' : '订单关闭', time: o.closedAt },
   ]
   return nodes.filter((node) => !!node.time)
 })
@@ -66,7 +67,32 @@ const payable = computed(
     (!order.value.expireAt || new Date(order.value.expireAt) > new Date()),
 )
 
-const cancellable = computed(() => order.value?.status === 'CREATED')
+/** 底部操作条提示：告诉用户「现在能做什么、为什么」 */
+const barHint = computed(() => {
+  const status = order.value?.status
+  if (status === 'CREATED') {
+    return '订单尚未支付，可直接取消；取消后库存立即回补'
+  }
+  if (status === 'PAID') {
+    return '订单已支付，可取消并全额退款；已发货的订单请走售后'
+  }
+  if (status === 'REFUNDING') {
+    return '退款处理中，如长时间未完成可点击「重试退款」'
+  }
+  if (status === 'SHIPPED') {
+    return '已发货，确认收货后可申请售后与评价'
+  }
+  return ''
+})
+
+/**
+ * 可取消：待付款与待发货（已支付的取消会同步全额退款）。
+ * 退款中也可点：后端对 REFUNDING 的取消就是退款重试入口，幂等键保证不会退第二次。
+ */
+const cancellable = computed(() => {
+  const status = order.value?.status
+  return status === 'CREATED' || status === 'PAID' || status === 'REFUNDING'
+})
 
 async function load() {
   if (Number.isNaN(orderId.value)) {
@@ -120,17 +146,29 @@ async function handleCancel() {
   if (!o) {
     return
   }
+  const retry = o.status === 'REFUNDING'
+  const paid = o.status === 'PAID'
+  const confirmText = retry
+    ? '订单退款还未完成，将重新发起全额退款。确定重试吗？'
+    : paid
+      ? '订单已支付，取消后将发起全额退款，款项原路退回。确定取消吗？'
+      : '取消后库存会立即回补，确定取消吗？'
+  const title = retry ? '重试退款' : paid ? '取消并退款' : '取消订单'
   try {
-    await ElMessageBox.confirm('取消后库存会立即回补，确定取消吗？', '取消订单', {
+    await ElMessageBox.confirm(confirmText, title, {
       type: 'warning',
-      confirmButtonText: '确认取消',
+      confirmButtonText: title,
       cancelButtonText: '再想想',
     })
   } catch {
     return
   }
-  await cancelOrder(o.id)
-  ElMessage.success('订单已取消')
+  const updated = await cancelOrder(o.id)
+  if (retry) {
+    ElMessage.success(updated.status === 'REFUNDED' ? '退款已完成，款项原路退回' : '退款受理中，请稍后查看')
+  } else {
+    ElMessage.success(paid ? '订单已取消，退款将原路退回' : '订单已取消')
+  }
   await load()
 }
 
@@ -238,17 +276,11 @@ onMounted(load)
       </section>
 
       <footer class="surface bar">
-        <span class="bar__hint">
-          {{
-            cancellable
-              ? '订单尚未支付，可直接取消；取消后库存立即回补'
-              : order.status === 'PAID'
-                ? '订单已支付，申请退款请联系客服'
-                : ''
-          }}
-        </span>
+        <span class="bar__hint">{{ barHint }}</span>
         <div class="bar__actions">
-          <el-button v-if="cancellable" @click="handleCancel">取消订单</el-button>
+          <el-button v-if="cancellable" @click="handleCancel">
+            {{ order.status === 'REFUNDING' ? '重试退款' : order.status === 'PAID' ? '取消并退款' : '取消订单' }}
+          </el-button>
           <el-button v-if="order.status === 'SHIPPED'" type="primary" :loading="receiving" @click="handleReceive">
             确认收货
           </el-button>

@@ -476,10 +476,11 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             return cancelPaidOrder(order, userId);
         }
         if (current.isTerminal()) {
-            throw new IllegalStateException("订单已" + current.text() + "，无需重复操作");
+            // text() 自带「已」（已取消/已关闭/已退款），前面不能再拼一个「已」
+            throw new IllegalStateException("订单" + current.text() + "，无需重复操作");
         }
         // SHIPPED / RECEIVED / COMPLETED：货已在路上或已签收，取消入口关闭
-        throw new IllegalStateException("订单已" + current.text() + "，请通过售后申请退款");
+        throw new IllegalStateException("订单" + current.text() + "，请通过售后申请退款");
     }
 
     /** 未支付订单取消：不涉及资金，关闭并回补库存、退还优惠券 */
@@ -880,12 +881,12 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     // 而不是撞在额度校验上抛异常、最终进死信
                     .bizNo("CANCEL:" + order.getOrderNo())
                     // 金额留空 = 全额退。订单已关闭，没有任何部分退的理由
-                    .reason("订单已" + current.text() + "，支付结果迟到，自动全额退款")
+                    .reason("订单" + current.text() + "，支付结果迟到，自动全额退款")
                     .build());
             if (result == null || result.getCode() == null || result.getCode() != 200) {
                 throw new IllegalStateException(result == null ? "无响应" : result.getMsg());
             }
-            log.warn("[Order] 订单已{}却收到支付，已自动全额退款 orderNo={} refundNo={}",
+            log.warn("[Order] 订单{}却收到支付，已自动全额退款 orderNo={} refundNo={}",
                     current.text(), order.getOrderNo(),
                     result.getData() == null ? "" : result.getData().getRefundNo());
         } catch (Exception e) {

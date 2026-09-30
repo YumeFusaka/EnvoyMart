@@ -191,10 +191,32 @@ export interface AfterSale {
   auditedAt: string | null
   finishedAt: string | null
   auditRemark: string | null
+  /** 退货物流：用户寄回时填写 */
+  returnCarrier: string | null
+  returnTrackingNo: string | null
+  returnedAt: string | null
   docRef: string | null
   spuName: string | null
   skuSpecText: string | null
   skuImage: string | null
+}
+
+/** 一条售后流转流水。「我的退货到哪一步了」的完整答案 */
+export interface AfterSaleLog {
+  fromStatus: string | null
+  toStatus: string
+  /** USER / SYSTEM / ADMIN */
+  operatorType: string
+  /** 用户侧接口会抹掉操作人 id，这里恒为 null；管理端才有值 */
+  operatorId: string | null
+  remark: string | null
+  createdAt: string
+}
+
+/** 售后详情：单子本体 + 完整流水 */
+export interface AfterSaleDetail {
+  afterSale: AfterSale
+  logs: AfterSaleLog[]
 }
 
 // ==================== 营销 ====================
