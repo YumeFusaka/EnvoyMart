@@ -10,6 +10,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import yumefusaka.envoymart.common.result.PageResult;
+import yumefusaka.envoymart.common.result.Result;
+import yumefusaka.envoymart.contract.RefundResponse;
 import yumefusaka.envoymart.orderservice.client.PaymentClient;
 import yumefusaka.envoymart.orderservice.entity.AfterSaleEntity;
 import yumefusaka.envoymart.orderservice.entity.AfterSaleLogEntity;
@@ -57,6 +59,7 @@ class AfterSaleServiceImplTest {
 
     private AfterSaleMapper afterSaleMapper;
     private AfterSaleLogMapper afterSaleLogMapper;
+    private PaymentClient paymentClient;
     private AfterSaleServiceImpl service;
 
     /**
@@ -77,9 +80,10 @@ class AfterSaleServiceImplTest {
     void setUp() {
         afterSaleMapper = mock(AfterSaleMapper.class);
         afterSaleLogMapper = mock(AfterSaleLogMapper.class);
+        paymentClient = mock(PaymentClient.class);
         service = new AfterSaleServiceImpl(afterSaleMapper, afterSaleLogMapper,
                 mock(OrderMapper.class), mock(OrderItemMapper.class),
-                mock(AfterSalePolicyEngine.class), mock(PaymentClient.class));
+                mock(AfterSalePolicyEngine.class), paymentClient);
     }
 
     // ==================== 审核 ====================
@@ -239,6 +243,30 @@ class AfterSaleServiceImplTest {
                 .as("工作台上只写「退货退款 待审核」，处理的人不知道是谁提的——"
                         + "而这决定了要不要先打个电话问问")
                 .isEqualTo("u1001");
+    }
+
+    // ==================== 重试退款 ====================
+
+    @Test
+    void 重试退款时状态推不动要抛出去而不是记一笔日志() {
+        when(afterSaleMapper.selectById(7L)).thenReturn(afterSale(7L, AfterSaleStatus.REFUNDING));
+        when(paymentClient.refundForOrder(any())).thenReturn(Result.success(RefundResponse.builder()
+                .refundNo("RF20260930001").amount(9900L).status("SUCCESS").build()));
+        // 另一个并发请求先把它推到了「已完成」，条件更新影响 0 行
+        when(afterSaleMapper.update(any(), any())).thenReturn(0);
+
+        // 钱这时候已经退出去了。把并发冲突吞成一句 ERROR 日志，运营看到的是
+        // 「退款失败」的响应，于是再点一次重试 —— 而真正该做的是刷新看状态
+        assertThatThrownBy(() -> service.retryRefund(7L, OPERATOR))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("状态刚刚发生变化");
+    }
+
+    @Test
+    void 列表筛选的非法状态要报错而不是返回空结果() {
+        assertThatThrownBy(() -> wrapperOf(query(null, "NOPE", null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("状态");
     }
 
     // ==================== 夹具 ====================

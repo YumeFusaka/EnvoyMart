@@ -230,7 +230,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
 
     @Override
     public PageResult<AfterSaleResponse> adminPage(AdminAfterSaleQuery query) {
-        Page<AfterSaleEntity> page = new Page<>(query.safePage(), query.safeSize());
+        Page<AfterSaleEntity> page = new Page<>(query.mpCurrent(), query.safeSize());
         Page<AfterSaleEntity> result = afterSaleMapper.selectPage(page, adminWrapper(query));
 
         // 商品快照**一次查完这一页的**：toResponse 里那句 selectById 是给单条详情用的，
@@ -244,7 +244,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         return PageResult.<AfterSaleResponse>builder()
                 .records(records)
                 .total(result.getTotal())
-                .page(query.safePage())
+                .page(query.zeroBasedPage())
                 .size(query.safeSize())
                 .build();
     }
@@ -282,7 +282,11 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         }
         List<String> statuses = query.statusList();
         if (!statuses.isEmpty()) {
-            wrapper.in(AfterSaleEntity::getStatus, statuses);
+            // 逐个走 parse：取值非法时抛 IllegalArgumentException → 400，与同在这里的
+            // type 校验、以及订单列表的 status 校验同一条理由 —— 静默忽略会让页面
+            // 一本正经地展示「全部售后」，而看的人以为筛过了
+            wrapper.in(AfterSaleEntity::getStatus,
+                    statuses.stream().map(status -> AfterSaleStatus.parse(status).name()).toList());
         }
         if (query.getType() != null && !query.getType().isBlank()) {
             String type = query.getType().trim();
@@ -372,11 +376,16 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     /**
      * 从「退款中」推进到「已完成」。
      * <p>
-     * 失败**不抛出去**：抛出去会让整个事务回滚，「已审核通过」这个事实也会消失，
-     * 而用户看到的是一次莫名其妙的失败。留在退款中并留 ERROR —— 那是一个人
-     * 能接手的状态，配合 {@link #retryRefund} 可以重试。
+     * <b>只把「支付调用」这一段兜住</b>：它失败时留在退款中并留 ERROR —— 那是一个人
+     * 能接手的状态，配合 {@link #retryRefund} 可以重试；抛出去反而会让整个事务回滚，
+     * 「已审核通过」这个事实也跟着消失。
+     * <p>
+     * {@code transit} 的失败则必须传出去。钱这时候已经退出去了，状态推不动是并发冲突
+     * （另一个请求先把它推到了已完成），把它一起吞掉会返回一个「退款失败」的响应，
+     * 而实际上退成功了 —— 那是最容易让人重复操作的一类假象。
      */
     private void refundFromRefunding(AfterSaleEntity entity) {
+        String refundNo;
         try {
             Result<RefundResponse> result = paymentClient.refundForOrder(RefundRequest.builder()
                     .orderId(entity.getOrderId())
@@ -387,13 +396,16 @@ public class AfterSaleServiceImpl implements AfterSaleService {
             if (result == null || result.getCode() == null || result.getCode() != 200) {
                 throw new IllegalStateException(result == null ? "无响应" : result.getMsg());
             }
-            transit(entity, AfterSaleStatus.REFUNDING, AfterSaleStatus.FINISHED,
-                    "SYSTEM", null, "退款完成：" + (result.getData() == null ? "" : result.getData().getRefundNo()));
-            log.info("售后退款完成: no={}, amount={}", entity.getAfterSaleNo(), entity.getRefundAmount());
+            refundNo = result.getData() == null ? "" : result.getData().getRefundNo();
         } catch (Exception e) {
             log.error("[AfterSale] 退款失败，售后单停留在退款中，可调用 retry-refund 重试 no={} orderNo={} amount={}: {}",
                     entity.getAfterSaleNo(), entity.getOrderNo(), entity.getRefundAmount(), e.getMessage());
+            return;
         }
+        transit(entity, AfterSaleStatus.REFUNDING, AfterSaleStatus.FINISHED,
+                "SYSTEM", null, "退款完成：" + refundNo);
+        log.info("售后退款完成: no={}, amount={}, refundNo={}",
+                entity.getAfterSaleNo(), entity.getRefundAmount(), refundNo);
     }
 
     private void transit(AfterSaleEntity entity, AfterSaleStatus from, AfterSaleStatus to,

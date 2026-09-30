@@ -46,7 +46,10 @@ create table if not exists refund (
     created_at datetime not null,
     refunded_at datetime,
     index idx_refund_order (order_id),
-    index idx_refund_after_sale (after_sale_id)
+    -- 一个售后单只对应一笔退款：重试要重发同一笔，不能变成第二笔。
+    -- 应用层已经在支付单行锁内查重，这里是数据库那一层的最终防线
+    -- （MySQL 的唯一索引允许多个 null，所以超时未发货的主动退款不受影响）
+    unique key uk_refund_after_sale (after_sale_id)
 );
 
 -- 回调流水。**验签失败的记录也要落库**——被伪造的回调是有价值的排查线索，

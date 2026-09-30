@@ -129,12 +129,12 @@ public class ProductAdminServiceImpl implements ProductAdminService {
 
     @Override
     public PageResult<AdminSpuSummary> list(AdminSpuQuery query) {
-        Page<ProductSpuEntity> page = new Page<>(query.safePage(), query.safeSize());
+        Page<ProductSpuEntity> page = new Page<>(query.mpCurrent(), query.safeSize());
         Page<ProductSpuEntity> result = spuMapper.selectPage(page, buildWrapper(query));
         return PageResult.<AdminSpuSummary>builder()
                 .records(assembleSummaries(result.getRecords()))
                 .total(result.getTotal())
-                .page(query.safePage())
+                .page(query.zeroBasedPage())
                 .size(query.safeSize())
                 .build();
     }

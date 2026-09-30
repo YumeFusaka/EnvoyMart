@@ -81,6 +81,27 @@ public class RefundServiceImpl implements RefundService {
             throw new IllegalStateException("只有支付成功的订单可以退款，当前支付状态：" + payment.getStatus());
         }
 
+        // 幂等：同一张支付单上，同一个售后单只退一次。
+        // 售后侧的重试是运营手点的动作，而「上次其实退成功了、只是响应在路上丢了」正是重试
+        // 最常见的触发场景；没有这道检查，第二次会再插一条退款单、再退一笔钱，
+        // 而两边的日志都写着「退款完成」，对账时才会发现。
+        // 条件里必须带 payment_id：这个方法还有一条用户侧入口（/payments/refund），
+        // 只按 afterSaleId 查，调用方就能拿别人的售后单号换出别人的退款记录。
+        // 并发安全由调用方的支付单行锁保证：两个请求在这里被串行化，
+        // 后到的那个一定看得见先到的插入。
+        if (afterSaleId != null) {
+            RefundEntity done = refundMapper.selectOne(new LambdaQueryWrapper<RefundEntity>()
+                    .eq(RefundEntity::getPaymentId, payment.getId())
+                    .eq(RefundEntity::getAfterSaleId, afterSaleId)
+                    .eq(RefundEntity::getStatus, REFUND_SUCCESS)
+                    .last("limit 1"));
+            if (done != null) {
+                log.info("[Refund] 该售后单已退过款，按幂等返回原结果 afterSaleId={} refundNo={}",
+                        afterSaleId, done.getRefundNo());
+                return toResponse(done);
+            }
+        }
+
         Long refundedSum = refundMapper.sumRefundedAmount(payment.getId());
         long alreadyRefunded = refundedSum == null ? 0L : refundedSum;
         long refundable = payment.getAmount() - alreadyRefunded;

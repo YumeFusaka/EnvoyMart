@@ -79,12 +79,12 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public PageResult<ProductSummary> list(ProductQuery query) {
-        Page<ProductSpuEntity> page = new Page<>(query.safePage(), query.safeSize());
+        Page<ProductSpuEntity> page = new Page<>(query.mpCurrent(), query.safeSize());
         Page<ProductSpuEntity> result = spuMapper.selectPage(page, buildWrapper(query));
         return PageResult.<ProductSummary>builder()
                 .records(assemble(result.getRecords()))
                 .total(result.getTotal())
-                .page(query.safePage())
+                .page(query.zeroBasedPage())
                 .size(query.safeSize())
                 .build();
     }

@@ -61,7 +61,7 @@ public class OrderAdminServiceImpl implements OrderAdminService {
 
     @Override
     public PageResult<AdminOrderSummary> list(AdminOrderQuery query) {
-        Page<OrderEntity> page = new Page<>(query.safePage(), query.safeSize());
+        Page<OrderEntity> page = new Page<>(query.mpCurrent(), query.safeSize());
         Page<OrderEntity> result = orderMapper.selectPage(page, buildWrapper(query));
 
         List<OrderEntity> orders = result.getRecords();
@@ -80,7 +80,7 @@ public class OrderAdminServiceImpl implements OrderAdminService {
         return PageResult.<AdminOrderSummary>builder()
                 .records(records)
                 .total(result.getTotal())
-                .page(query.safePage())
+                .page(query.zeroBasedPage())
                 .size(query.safeSize())
                 .build();
     }

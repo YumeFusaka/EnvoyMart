@@ -50,7 +50,8 @@ public class ProductSearchService {
      * 是自己参数写错了还是服务端挂了，还顺带把 Spring Data 与 ES 的内部消息读了出去。
      */
     public PageResult<ProductSummary> search(ProductQuery query) {
-        int page = query.safePage();
+        // 这里要的是对外那个 0 基页码：ES 的 PageRequest.of 与它同基准
+        int page = query.zeroBasedPage();
         int size = query.safeSize();
         validatePaging(page, size);
 
