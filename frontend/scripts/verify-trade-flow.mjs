@@ -116,9 +116,27 @@ async function checkout(userCouponId) {
   })
 }
 
-async function payOrder(orderId) {
+/**
+ * 支付并等待订单投影为 PAID，返回最终态。
+ *
+ * mock-pay 返回只代表**支付侧**成功，「订单转已支付」是 MQ 事件驱动的异步投影——
+ * 付完立即断言是读竞态：消费线程还没提交，下一秒的查询看到的仍是待支付。
+ * 本机负载高时必输（2026-10-01 复现：marked PAID 与下游请求相隔 3ms 仍读到旧态）。
+ * 架构上这就是最终一致，验收脚本必须按最终一致等待，而不是把系统改成同步。
+ */
+async function payOrder(orderId, timeoutMs = 10000) {
   await call(GW, '/payments', { method: 'POST', token: T, body: { orderId, channel: 'MOCK', payType: 'MOCK' } })
-  return call(GW, `/payments/${orderId}/mock-pay`, { method: 'POST', token: T })
+  await call(GW, `/payments/${orderId}/mock-pay`, { method: 'POST', token: T })
+  const deadline = Date.now() + timeoutMs
+  let status
+  do {
+    status = (await getOrder(orderId))?.status
+    if (status === 'PAID') {
+      return status
+    }
+    await new Promise((r) => setTimeout(r, 250))
+  } while (Date.now() < deadline)
+  return status
 }
 
 async function shipOrder(orderId) {
@@ -154,7 +172,11 @@ async function buyReceived(skuId = 16, quantity = 1) {
     console.log(`  FATAL: 下单失败 ${JSON.stringify(o)}`)
     process.exit(1)
   }
-  await payOrder(oid)
+  const paid = await payOrder(oid)
+  if (paid !== 'PAID') {
+    console.log(`  FATAL: 支付后 10s 内订单未转 PAID（当前 ${paid}），后续链路不可继续`)
+    process.exit(1)
+  }
   await shipOrder(oid)
   await call(GW, `/orders/${oid}/receive`, { method: 'POST', token: T })
   return oid
@@ -177,8 +199,8 @@ const stock1Before = Number(sql(`select stock from envoymart_product.product_sku
 await addItem(5, 2)
 const O1 = (await checkout()).data
 ck('下单成功', O1?.id > 0, JSON.stringify(O1))
-await payOrder(O1.id)
-ck('支付成功', (await getOrder(O1.id)).status === 'PAID')
+const paidStatus = await payOrder(O1.id)
+ck('支付成功', paidStatus === 'PAID', `实际 ${paidStatus}`)
 
 const r1 = await call(GW, `/orders/${O1.id}/cancel`, { method: 'POST', token: T })
 ck('取消即退款：订单转 REFUNDED', r1.data?.status === 'REFUNDED', JSON.stringify(r1))
