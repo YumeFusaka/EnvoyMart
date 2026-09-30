@@ -3,6 +3,7 @@ package yumefusaka.envoymart.common.web;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -61,6 +62,23 @@ public class GlobalExceptionHandler {
     public Result<String> handleMissingParam(MissingServletRequestParameterException exception) {
         log.warn("Missing request parameter: {}", exception.getParameterName());
         return Result.error(400, "缺少必需的参数：" + exception.getParameterName());
+    }
+
+    /**
+     * 缺少必需的请求头，目前只有身份头 {@code X-User-Id}。
+     * <p>
+     * 与缺参数同族，是那个处理器的兄弟：{@code MissingRequestHeaderException} 不在
+     * {@code MissingServletRequestParameterException} 的继承链上，只补了后者就会
+     * 让「少一个参数」是 400、「少一个头」是 500 —— 而两者的成因完全一样。
+     * <p>
+     * 这个头由网关注入，正常流量不会缺。真缺的时候通常是<b>绕过了网关</b>
+     * （服务间直连、或本地调试直接打端口），那时候回「服务暂时不可用」+ 一条 ERROR 栈，
+     * 是最没用的答案：问题在调用方，日志却被服务端故障占满。
+     */
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public Result<String> handleMissingHeader(MissingRequestHeaderException exception) {
+        log.warn("Missing request header: {}", exception.getHeaderName());
+        return Result.error(400, "缺少必需的请求头：" + exception.getHeaderName());
     }
 
     /**

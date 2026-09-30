@@ -2,6 +2,7 @@ package yumefusaka.envoymart.common.web;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 
 import java.util.List;
@@ -48,6 +49,21 @@ class GlobalExceptionHandlerTest {
         assertThat(result.getMsg())
                 .as("要说清是哪个方法不被接受")
                 .contains("POST");
+    }
+
+    /**
+     * 缺少请求头是缺参数的兄弟，但 {@code MissingRequestHeaderException} 不在
+     * {@code MissingServletRequestParameterException} 的继承链上 —— 只补了后者，
+     * 「少一个参数」是 400、「少一个头」是 500，而成因完全一样。
+     */
+    @Test
+    void 缺少必填请求头回400而不是500() {
+        var result = handler.handleMissingHeader(new MissingRequestHeaderException("X-User-Id", null));
+
+        assertThat(result.getCode())
+                .as("身份头由网关注入，缺它通常意味着绕过了网关 —— 那是调用方的问题")
+                .isEqualTo(400);
+        assertThat(result.getMsg()).contains("X-User-Id");
     }
 
     @Test
