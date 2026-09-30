@@ -20,6 +20,7 @@ import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
 import yumefusaka.envoymart.agent.tool.ToolCall;
+import yumefusaka.envoymart.agent.tool.ToolCallDescription;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
@@ -29,7 +30,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
 
 /**
  * Agent 执行图 —— 用 LangGraph4j 的 {@link StateGraph} 显式编排。
@@ -244,6 +244,14 @@ public class AgentGraph {
     private Map<String, Object> answerNode(GraphContext ctx, GraphState state) {
         List<GraphStep> steps = state.get(KEY_STEPS, List.<GraphStep>of());
         String answer = steps.isEmpty() ? converse(ctx) : synthesize(ctx, steps);
+        // ReAct 路径的高危拦截：工具循环在执行前拦下了未确认的高危操作，
+        // 把描述写进了 sink。与计划路径同样从这里中断——走到 END 之后，
+        // 调用方看到 pendingApproval 非空，把回答换成确认提示并渲染确认卡片，
+        // 等用户确认后作为新请求重入。少了这一支，被拦的取消订单会变成
+        // 一句「工具执行失败」：把「等你批准」说成了「出错了」，而且永远批不了
+        if (!ctx.pendingApproval().isEmpty()) {
+            return updates(KEY_ANSWER, answer, KEY_PENDING, List.copyOf(ctx.pendingApproval()));
+        }
         return updates(KEY_ANSWER, answer);
     }
 
@@ -507,6 +515,10 @@ public class AgentGraph {
         Map<String, Object> loopContext = new HashMap<>();
         loopContext.put(ToolContextKeys.LOOP_GUARD, ctx.guard());
         loopContext.put(ToolContextKeys.APPROVED, ctx.approved());
+        // 方向相反的一个键：循环把拦下的高危操作写进来，answerNode 读它决定中断
+        // （见 ToolContextKeys#PENDING_APPROVAL——ReAct 无法像计划路径那样提前拦，
+        // 拦截只能发生在循环内部，这是拦住的结果回到图里的唯一通道）
+        loopContext.put(ToolContextKeys.PENDING_APPROVAL, ctx.pendingApproval());
         if (ctx.userId() != null) {
             loopContext.put(ToolContextKeys.USER_ID, ctx.userId());
         }
@@ -570,30 +582,11 @@ public class AgentGraph {
     }
 
     /**
-     * 高危步骤的可读描述 —— <b>工具名加上真实入参</b>，形如 {@code order_cancel(orderId=12)}。
-     * <p>
-     * 这是用户在确认前唯一能看到的东西，所以它必须是<b>待执行操作本身</b>，
-     * 而不是模型对它的转述。{@link PlanStep#getReason()} 里有一句模型写的中文目标说明，
-     * 拿它当确认文案读起来更顺——但模型完全可以把自己要做的危险操作描述得很温和，
-     * 用户按转述点了确认，等于让模型给自己批了这次授权。
-     * <p>
-     * <b>带上参数而不是只给工具名</b>：只有 {@code order_cancel} 三个字时，
-     * 用户根本不知道自己确认的是哪一单，这个「确认」就是走个形式。
-     * 「取消订单」与「取消订单 12」在授权上的区别，正是这个功能存在的理由。
-     * <p>
-     * 参数按 key 排序，保证同一份计划在任何一次运行里拼出同一串文本——否则
-     * 日志对比与测试断言都得先做一次集合比较。
+     * 高危步骤的可读描述。格式与排序约定见 {@link ToolCallDescription}——
+     * 计划路径与 ReAct 路径拼的是同一份契约，前端按固定格式解析它。
      */
     static String describe(PlanStep step) {
-        Map<String, Object> arguments = step.getArguments();
-        if (arguments == null || arguments.isEmpty()) {
-            return step.getTool();
-        }
-        String args = arguments.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .map(e -> e.getKey() + "=" + e.getValue())
-                .collect(Collectors.joining(", "));
-        return step.getTool() + "(" + args + ")";
+        return ToolCallDescription.of(step.getTool(), step.getArguments());
     }
 
     private static String abbreviate(String text) {
@@ -619,12 +612,12 @@ public class AgentGraph {
      */
     private record GraphContext(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                 boolean approved, LoopGuard guard, Consumer<String> onChunk,
-                                List<ToolExecution> executions) {
+                                List<ToolExecution> executions, List<String> pendingApproval) {
 
         static GraphContext of(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                boolean approved, LoopGuard guard, Consumer<String> onChunk) {
             return new GraphContext(userId, message, systemPrompt, conversation, approved, guard, onChunk,
-                    Collections.synchronizedList(new ArrayList<>()));
+                    Collections.synchronizedList(new ArrayList<>()), new ArrayList<>());
         }
     }
 

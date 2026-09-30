@@ -26,6 +26,7 @@ import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
 import yumefusaka.envoymart.agent.tool.ToolCall;
+import yumefusaka.envoymart.agent.tool.ToolCallDescription;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
@@ -151,7 +152,11 @@ public class LangChain4jLLMProvider implements LLMProvider {
                     break;
                 }
                 working.add(aiMessage);
-                executeToolRequests(aiMessage.toolExecutionRequests(), working, ctx, executions);
+                // 撞上未确认的高危操作：立即收口。此时还没拿到最终回答（这一轮整轮都在
+                // 要工具），返回的 content 为空，由上层把回答换成确认提示
+                if (executeToolRequests(aiMessage.toolExecutionRequests(), working, ctx, executions)) {
+                    break;
+                }
             }
         } catch (RuntimeException e) {
             recordAbortedRound(config.getModel(), false, startedAt, rounds, promptTokens, completionTokens, executions);
@@ -226,7 +231,17 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 }
 
                 working.add(round.aiMessage);
-                executeToolRequests(round.aiMessage.toolExecutionRequests(), working, ctx, executions);
+                if (executeToolRequests(round.aiMessage.toolExecutionRequests(), working, ctx, executions)) {
+                    // 高危中断出口。这一轮整轮都在要工具、一个字都没推过，所以不推任何 chunk；
+                    // 用量照记 —— 这里的每一圈都是真实计费的调用，漏记就是又一次静默漏账
+                    long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
+                    log.info("[LLM] stream+tools 高危中断 model={} latencyMs={} rounds={} "
+                                    + "promptTokens={} completionTokens={} toolExecutions={}",
+                            config.getModel(), latencyMs, rounds,
+                            promptTokens, completionTokens, executions.size());
+                    recordLlmMetrics(config.getModel(), true, latencyMs, promptTokens, completionTokens);
+                    return List.copyOf(executions);
+                }
             }
         } catch (RuntimeException e) {
             recordAbortedRound(config.getModel(), true, startedAt, rounds, promptTokens, completionTokens, executions);
@@ -260,12 +275,15 @@ public class LangChain4jLLMProvider implements LLMProvider {
     /**
      * 执行模型请求的这一批工具，把结果回填进消息列表。
      * <p>
-     * 两件事由我们把关：<b>护栏</b>（超预算或重复调用时拒绝执行，把原因交回给模型）
-     * 与<b>身份</b>（只认认证结果，绝不从模型给的参数里取）。
+     * 三件事由我们把关：<b>护栏</b>（超预算或重复调用时拒绝执行，把原因交回给模型）、
+     * <b>身份</b>（只认认证结果，绝不从模型给的参数里取），以及<b>高危确认</b>
+     * （未确认的高危操作拦在执行之前，与计划路径同一个位置）。
+     *
+     * @return true 表示这一批里撞上了未确认的高危操作，调用方的循环必须<b>立即中断</b>
      */
-    private void executeToolRequests(List<ToolExecutionRequest> requests,
-                                     List<dev.langchain4j.data.message.ChatMessage> working,
-                                     LoopContext ctx, List<ToolExecution> sink) {
+    private boolean executeToolRequests(List<ToolExecutionRequest> requests,
+                                        List<dev.langchain4j.data.message.ChatMessage> working,
+                                        LoopContext ctx, List<ToolExecution> sink) {
         for (ToolExecutionRequest request : requests) {
             Map<String, Object> arguments = parseArguments(request.arguments());
 
@@ -275,6 +293,21 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 working.add(dev.langchain4j.data.message.ToolExecutionResultMessage.from(
                         request, ctx.guard.getStopReason() + "。请基于已有信息作答，不要再调用工具。"));
                 continue;
+            }
+
+            // 高危拦截：与计划路径同一位置——调用之前。计划路径能提前看到整份计划、
+            // 在批次执行前拦；ReAct 无从预知模型要调什么，只能在它调出来之后、执行之前拦。
+            //
+            // 拦下即中断整条循环，不做两件事：
+            //  ① 不执行这一批剩余的工具——它们可能依赖被拦操作的结果；
+            //  ② 不把拒绝回填给模型让它绕路——被拦的是「用户还没批准」，不是「模型想错了」，
+            //     转一圈它只会换个说法再要一次，每一圈都是一次真实计费的调用。
+            // 描述写进 sink 交给调用方：ReAct 路径的高危确认出口靠它渲染确认卡片
+            if (!ctx.approved && requiresConfirmation(request.name())) {
+                ctx.pendingApproval.add(ToolCallDescription.of(request.name(), arguments));
+                log.info("[LLM] 高危操作待用户确认，ReAct 循环中断 tool={} approved=false",
+                        request.name());
+                return true;
             }
 
             // 身份只认认证结果。arguments 里的同名项无条件剔除——
@@ -303,6 +336,13 @@ public class LangChain4jLLMProvider implements LLMProvider {
             log.debug("[Tool] {} success={} output={}", request.name(), result.isSuccess(), output);
             working.add(dev.langchain4j.data.message.ToolExecutionResultMessage.from(request, output));
         }
+        return false;
+    }
+
+    private boolean requiresConfirmation(String toolName) {
+        return toolRegistry.get(toolName)
+                .map(tool -> tool.getDefinition().isRequiresConfirmation())
+                .orElse(false);
     }
 
     // ==================== 单次流式（不驱动工具循环） ====================
@@ -734,20 +774,25 @@ public class LangChain4jLLMProvider implements LLMProvider {
     }
 
     /**
-     * 一次请求的循环上下文 —— 护栏、高危确认、调用者身份。
+     * 一次请求的循环上下文 —— 护栏、高危确认、调用者身份，以及方向相反的一路：
+     * 拦下的高危操作。
      * <p>
-     * 迁到 LangChain4j 后这三样不再需要穿框架：循环就是我们自己写的，
+     * 迁到 LangChain4j 后前三样不再需要穿框架：循环就是我们自己写的，
      * 它们只是循环里的局部变量。这个类只是把解包做一次。
+     * {@code pendingApproval} 是出口——循环往里写，调用方（AgentGraph）读它决定中断。
      */
     private static final class LoopContext {
         private final LoopGuard guard;
         private final boolean approved;
         private final String userId;
+        /** 拦下的高危操作描述，见 {@link ToolContextKeys#PENDING_APPROVAL} */
+        private final List<String> pendingApproval;
 
-        private LoopContext(LoopGuard guard, boolean approved, String userId) {
+        private LoopContext(LoopGuard guard, boolean approved, String userId, List<String> pendingApproval) {
             this.guard = guard;
             this.approved = approved;
             this.userId = userId;
+            this.pendingApproval = pendingApproval;
         }
 
         private static LoopContext from(Map<String, Object> toolContext) {
@@ -764,10 +809,18 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 // 传了护栏的调用方不受影响，两边用的是同一份预算。
                 guard = new LoopGuard();
             }
+            // 出口列表调用方不传就补一个本地的：拦截照常发生、描述照常记录，
+            // 只是没有调用方读得到 —— 与护栏的兜底同一个道理，责任在这一层
+            Object providedSink = toolContext.get(ToolContextKeys.PENDING_APPROVAL);
+            @SuppressWarnings("unchecked")
+            List<String> pendingApproval = providedSink instanceof List<?> provided
+                    ? (List<String>) provided
+                    : new ArrayList<>();
             return new LoopContext(
                     guard,
                     Boolean.TRUE.equals(toolContext.get(ToolContextKeys.APPROVED)),
-                    userId);
+                    userId,
+                    pendingApproval);
         }
     }
 }

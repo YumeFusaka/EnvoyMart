@@ -9,6 +9,7 @@ import yumefusaka.envoymart.agent.llm.LLMResponse;
 import yumefusaka.envoymart.agent.llm.PlanStep;
 import yumefusaka.envoymart.agent.loop.LoopBudget;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
+import yumefusaka.envoymart.agent.loop.ToolContextKeys;
 import yumefusaka.envoymart.agent.tool.Tool;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
@@ -147,5 +148,53 @@ class AgentGraphApprovalTest {
         assertThat(AgentGraph.describe(PlanStep.builder()
                 .tool("order_cancel").arguments(Map.of()).build()))
                 .isEqualTo("order_cancel");
+    }
+
+    /**
+     * ReAct 路径拦下的高危操作，同样要经 {@code pendingApproval} 出口交到调用方手里。
+     * <p>
+     * 计划路径在批次执行前就看得见要拦什么；ReAct 只有等模型把工具要出来才知道，
+     * 拦截发生在工具循环内部，拦下的描述经 toolContext 的 sink 回到图。
+     * 这条测试守的是后半截管道：<b>sink 里的东西必须出现在 GraphResult.pendingApproval 里</b>——
+     * 少了这一支，Agent 层看不到它，用户拿到的是一个没有确认卡的中断，
+     * 回复还是那句「抱歉，我没能完成这个请求」，而操作永远批不了。
+     */
+    @Test
+    void ReAct路径拦下的高危操作也经pendingApproval出口交给调用方() {
+        // 模拟 ReAct 路径：计划为空 → answer 节点 → converse → chatWithTools，
+        // 循环在里面拦住未确认的高危操作（写 sink、这轮没有最终回答）
+        LLMProvider reactProvider = new LLMProvider() {
+            @Override
+            public LLMResponse chat(List<ChatMessage> messages, LLMConfig config) {
+                return LLMResponse.builder().content("好的").build();
+            }
+
+            @Override
+            public LLMResponse chatWithTools(List<ChatMessage> messages, LLMConfig config,
+                                             Map<String, Object> toolContext) {
+                @SuppressWarnings("unchecked")
+                List<String> sink = (List<String>) toolContext.get(ToolContextKeys.PENDING_APPROVAL);
+                sink.add("order_cancel(orderId=12)");
+                return LLMResponse.builder().content("").build();
+            }
+
+            @Override
+            public List<PlanStep> plan(String userMessage, List<ToolDefinition> availableTools, String context) {
+                return List.of();
+            }
+        };
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(cancelTool());
+        AgentGraph graph = new AgentGraph(reactProvider, CONFIG, registry, executor);
+        AgentGraph.GraphResult result = graph.run("u1", "帮我取消订单 12", "", List.of(), false,
+                new LoopGuard(new LoopBudget(8, 2, 2)), null);
+
+        assertThat(result.getPendingApproval())
+                .as("ReAct 拦下的操作必须走到与计划路径同一个出口，否则前端没有确认卡可渲染")
+                .containsExactly("order_cancel(orderId=12)");
+        assertThat(cancellations.get())
+                .as("拦截发生之后工具仍不该被执行")
+                .isZero();
     }
 }

@@ -20,6 +20,7 @@ import yumefusaka.envoymart.agent.tool.ToolDefinition;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -318,5 +319,140 @@ class ReactToolLoopTest {
         assertThat(requests.get())
                 .as("往返次数由代码封顶（预算 2 + 余量 2），不随模型行为浮动")
                 .isEqualTo(4);
+    }
+
+    // ==================== 高危确认（ReAct 路径） ====================
+
+    /** 一个需要用户确认的高危工具，记录它被真正执行的次数 */
+    private Tool cancelTool(AtomicInteger executions) {
+        return new Tool() {
+            @Override
+            public ToolDefinition getDefinition() {
+                return ToolDefinition.builder()
+                        .name("order_cancel")
+                        .description("取消未支付的订单。不可撤销，需要用户确认。")
+                        .requiresConfirmation(true)
+                        .parameters(Map.of())
+                        .build();
+            }
+
+            @Override
+            public ToolResult execute(ToolCall call) {
+                executions.incrementAndGet();
+                return ToolResult.builder().success(true).output("订单已取消").build();
+            }
+        };
+    }
+
+    /** 永远要取消订单的模型——循环不中断它就会一直要下去 */
+    private ChatModel greedyCanceller(AtomicInteger requests) {
+        return new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                return ChatResponse.builder()
+                        .aiMessage(AiMessage.from("", List.of(ToolExecutionRequest.builder()
+                                .id("c" + requests.incrementAndGet())
+                                .name("order_cancel").arguments("{\"orderId\":12}").build())))
+                        .build();
+            }
+        };
+    }
+
+    /** 第一轮要取消订单，之后收口给最终回答——确认路径下的一次正常往返 */
+    private ChatModel cancelThenAnswer(AtomicInteger requests) {
+        return new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                if (requests.incrementAndGet() == 1) {
+                    return ChatResponse.builder()
+                            .aiMessage(AiMessage.from("", List.of(ToolExecutionRequest.builder()
+                                    .id("c1").name("order_cancel").arguments("{\"orderId\":12}").build())))
+                            .build();
+                }
+                return ChatResponse.builder().aiMessage(AiMessage.from("订单 12 已取消")).build();
+            }
+        };
+    }
+
+    /**
+     * 高危工具在 ReAct 路径必须在<b>执行之前</b>被拦下 —— 用户没确认过的取消绝不能发出去。
+     * <p>
+     * ReAct 与计划路径的拦截位置相同（调用之前），时机不同：计划路径看得见整份计划、
+     * 能在批次执行前拦；ReAct 无从预知模型要调什么，只能在它要出来之后、动手之前拦。
+     * <p>
+     * 拦下必须<b>中断整条循环</b>，而不是回填一条拒绝让模型绕着走——被拦的是
+     * 「用户还没批准」，不是「模型想错了」，转一圈它只会换个说法再要一次，
+     * 每一圈都是真实计费的调用。桩模型这里永不收手，正好把这个依赖暴露成断言：
+     * 不中断的话模型会被反复问下去。
+     * <p>
+     * 还有一条同样重要：被拦的操作<b>不产生「失败」轨迹</b>。它根本没执行，
+     * 记成 success=false 会让前端把它渲染成红色「失败」——把「等你批准」说成「出错了」，
+     * 而且 pendingApproval 为空时用户连确认卡都看不到，永远批不了这一次操作。
+     */
+    @Test
+    @Timeout(10)
+    void ReAct路径对未确认的高危工具执行前拦截并中断循环() {
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger requests = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(cancelTool(executions));
+
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(greedyCanceller(requests), null,
+                registry, LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+        List<String> pending = new ArrayList<>();
+
+        LLMResponse response = provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.LOOP_GUARD, new LoopGuard(new LoopBudget(8, 2, 2)),
+                        ToolContextKeys.PENDING_APPROVAL, pending));
+
+        assertThat(executions.get())
+                .as("中断必须发生在执行之前——没确认过的取消绝不能真的发出去")
+                .isZero();
+        assertThat(pending)
+                .as("拦下的操作要带参数交给调用方，用户才知道自己确认的是哪一单")
+                .containsExactly("order_cancel(orderId=12)");
+        assertThat(requests.get())
+                .as("拦下即收口：不能回填拒绝再转一圈，那不解决「用户没批准」")
+                .isEqualTo(1);
+        assertThat(response.getToolExecutions())
+                .as("被拦的操作不是执行轨迹——报成失败会把「等你批准」说成「出错了」")
+                .isEmpty();
+    }
+
+    /**
+     * 确认之后必须真的执行。
+     * <p>
+     * 与 {@code AgentGraphApprovalTest} 里计划路径的同名断言对应：如果 ReAct 的拦截
+     * 把确认路径也堵死，用户就永远取消不掉订单——一个自称支持高危确认、
+     * 实则不可用的功能，比没有这个功能更糟。
+     */
+    @Test
+    void 确认之后高危工具在ReAct路径真正执行() {
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger requests = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(cancelTool(executions));
+
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(cancelThenAnswer(requests), null,
+                registry, LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+        List<String> pending = new ArrayList<>();
+
+        LLMResponse response = provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.LOOP_GUARD, new LoopGuard(new LoopBudget(8, 2, 2)),
+                        ToolContextKeys.APPROVED, true,
+                        ToolContextKeys.PENDING_APPROVAL, pending));
+
+        assertThat(executions.get())
+                .as("确认路径不通的话，用户永远取消不掉订单")
+                .isEqualTo(1);
+        assertThat(pending)
+                .as("已经执行过，不该再要求一次确认")
+                .isEmpty();
+        assertThat(response.getToolExecutions())
+                .as("这次是真的执行了，轨迹要回收")
+                .hasSize(1);
+        assertThat(response.getContent())
+                .as("执行完要回到模型拿到最终回答，这才是完整往返")
+                .isEqualTo("订单 12 已取消");
     }
 }

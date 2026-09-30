@@ -181,6 +181,8 @@ public class Agent {
         log.info("[Agent] loops {}", guard.summary());
 
         // 图的「中断出口」：高危操作未确认，图在此结束，等用户确认后作为新请求重入。
+        // 两条路径都会走到这里——计划路径在执行前拦整批计划；ReAct 路径无从预知模型
+        // 要调什么，由工具循环在执行前拦下、经 pendingApproval 交回（见 AgentGraph#answerNode）。
         //
         // 重入时前端带 approved=true，图跳过拦截直接执行——注意那是**请求级**开关，
         // 一旦置位，本轮计划里所有高危步骤都放行。这不是漏洞：列表里每一项都会
@@ -199,6 +201,10 @@ public class Agent {
                     .source("approval")
                     .knowledge(knowledge)
                     .pendingActions(graphResult.getPendingApproval())
+                    // 中断之前已跑完的工具轨迹照常下发：计划路径可能执行过前几层，
+                    // ReAct 路径可能已经查过订单才走到取消那一步。丢掉它们，
+                    // 用户看到的确认卡片就悬在一段没有任何来路的空白上
+                    .toolExecutions(graphResult.getToolExecutions())
                     .build();
         }
 
