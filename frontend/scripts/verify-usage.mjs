@@ -174,7 +174,11 @@ await page.locator('.composer textarea').fill('帮我推荐几款乳清蛋白粉
 await page.getByRole('button', { name: /发送消息/ }).click()
 const card = page.locator('.message-card.assistant').nth(before)
 await card.waitFor({ state: 'visible', timeout: 20000 })
-await poll(() => page.getByRole('button', { name: /发送消息/ }).isEnabled(), (e) => e === true)
+// 等生成结束：判据是流式指示点消失。发送按钮不能用 —— 它带 `!input.trim()` 禁用条件，
+// 输入框发送后就被清空，流结束了按钮仍然是禁用的
+const live = page.locator('.message-live')
+await live.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {})
+await live.waitFor({ state: 'detached', timeout: 180000 })
 await page.screenshot({ path: resolve(OUT_DIR, 'usage-1.png'), fullPage: true })
 
 const details = card.locator('details.usage')

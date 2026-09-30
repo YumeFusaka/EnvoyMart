@@ -16,6 +16,7 @@ import yumefusaka.envoymart.agent.memory.Memory;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.MemoryItem;
 import yumefusaka.envoymart.agent.memory.ProfileEntry;
+import yumefusaka.envoymart.agent.memory.ShortTermMemoryStore;
 import yumefusaka.envoymart.agent.memory.UserProfile;
 import yumefusaka.envoymart.agent.memory.UserProfileStore;
 import yumefusaka.envoymart.agent.rag.CitationVerifier;
@@ -102,7 +103,7 @@ public class Agent {
         shortTermMemory.add(MemoryItem.builder()
                 .id(UUID.randomUUID().toString())
                 .userId(userId)
-                .sessionId(scopedSession(userId, sessionId))
+                .sessionId(ShortTermMemoryStore.scoped(userId, sessionId))
                 .content("user: " + message)
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
@@ -142,7 +143,7 @@ public class Agent {
         shortTermMemory.add(MemoryItem.builder()
                 .id(UUID.randomUUID().toString())
                 .userId(userId)
-                .sessionId(scopedSession(userId, sessionId))
+                .sessionId(ShortTermMemoryStore.scoped(userId, sessionId))
                 .content("assistant: " + response.getReply())
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
@@ -177,7 +178,7 @@ public class Agent {
         // 循环护栏一次请求一份，同时约束图里的环与框架驱动的工具循环
         LoopGuard guard = new LoopGuard(config.getLoopBudget());
         AgentGraph.GraphResult graphResult = agentGraph.run(
-                userId, message, systemPrompt, recentConversation(scopedSession(userId, sessionId)), approved, guard, onChunk);
+                userId, message, systemPrompt, recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), approved, guard, onChunk);
         log.info("[Agent] loops {}", guard.summary());
 
         // 图的「中断出口」：高危操作未确认，图在此结束，等用户确认后作为新请求重入。
@@ -268,19 +269,8 @@ public class Agent {
         }
     }
 
-    /**
-     * 短期记忆的作用域键 —— <b>把 userId 并进键里</b>。
-     * <p>
-     * sessionId 是客户端传的（前端生成的是时间戳，可枚举）。只按 sessionId 存会话窗口，
-     * 意味着**任何人拿到或猜中别人的 sessionId 就能读到那段对话**——而这段对话会被
-     * 原样注入 prompt，等于直接读到别人的聊天记录。
-     * <p>
-     * 实测确认过：同一个 sessionId 换成另一个 userId 提问，模型能复述出前一个用户的对话。
-     * 把 userId 并进键是最小的修法，且不改变任何调用方的语义。
-     */
-    private String scopedSession(String userId, String sessionId) {
-        return (userId == null ? "" : userId) + "|" + (sessionId == null ? "" : sessionId);
-    }
+    // 作用域键的拼法统一在 ShortTermMemoryStore.scoped()，这里不再自持一份 ——
+    // 删除接口要清同一个键，两边各拼一份必然分叉（见该方法的注释）
 
     private List<ChatMessage> recentConversation(String scopedSessionId) {
         // 窗口按条数取，再按 token 裁一刀：条数是「最多几条」，token 才是「最多多大」。
@@ -365,7 +355,7 @@ public class Agent {
         }
         try {
             MemoryConsolidator.ConsolidationResult result = consolidator.extract(
-                    userId, shortTermMemory.recent(scopedSession(userId, sessionId), config.getMemoryWindow()));
+                    userId, shortTermMemory.recent(ShortTermMemoryStore.scoped(userId, sessionId), config.getMemoryWindow()));
 
             profileStore.update(userId, result.profileEntries());
             // 身份在这里统一打上，存储层不需要也不应该自己推断归属

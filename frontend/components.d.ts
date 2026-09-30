@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AiChatMessageList: typeof import('./src/components/ai/ChatMessageList.vue')['default']
+    AiChatSessionList: typeof import('./src/components/ai/ChatSessionList.vue')['default']
     AiCitationList: typeof import('./src/components/ai/CitationList.vue')['default']
     AiConflictList: typeof import('./src/components/ai/ConflictList.vue')['default']
     AiMessageContent: typeof import('./src/components/ai/MessageContent.vue')['default']

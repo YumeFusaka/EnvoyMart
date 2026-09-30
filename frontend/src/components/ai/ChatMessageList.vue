@@ -4,7 +4,9 @@ import ConflictList from '@/components/ai/ConflictList.vue'
 import MessageContent from '@/components/ai/MessageContent.vue'
 import PendingApprovalCard from '@/components/ai/PendingApprovalCard.vue'
 import RecommendationCards from '@/components/ai/RecommendationCards.vue'
+import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
+import { formatClock } from '@/utils/format'
 import {
   formatMs,
   formatTokens,
@@ -16,8 +18,10 @@ import {
 } from '@/utils/tools'
 import { nextTick, ref } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   messages: ChatMessage[]
+  /** 正在生成的那条消息的下标；-1 表示没有在飞的流 */
+  streamingIndex?: number
 }>()
 
 const emit = defineEmits<{
@@ -25,6 +29,8 @@ const emit = defineEmits<{
   approve: []
   dismiss: []
 }>()
+
+const userStore = useUserStore()
 
 /** 当前被点亮的引用角标。`[n]` 点下去要能一眼看到它对应的是哪张卡片 */
 const activeCite = ref<{ messageId: string; index: number } | null>(null)
@@ -39,6 +45,27 @@ async function handleCite(messageId: string, index: number) {
     behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
   })
 }
+
+/** 刚复制过的那条。1.5 秒后复位，让按钮文字回到「复制」 */
+const copiedId = ref<string | null>(null)
+let copiedTimer: number | undefined
+
+/**
+ * 复制整条回答。失败**静默**：剪贴板权限被浏览器拒绝（非安全上下文、无用户手势）
+ * 是环境问题，弹一个报错框对用户毫无帮助 —— 他重试一次也不会成功。
+ */
+async function handleCopy(message: ChatMessage) {
+  try {
+    await navigator.clipboard.writeText(message.content)
+  } catch {
+    return
+  }
+  copiedId.value = message.id
+  window.clearTimeout(copiedTimer)
+  copiedTimer = window.setTimeout(() => {
+    copiedId.value = null
+  }, 1500)
+}
 </script>
 
 <template>
@@ -52,13 +79,38 @@ async function handleCite(messageId: string, index: number) {
       :key="message.id"
       :class="['message-card', message.role]"
     >
-      <header>
+      <header class="message-head">
+        <span v-if="message.role === 'assistant'" class="message-avatar is-assistant" aria-hidden="true">
+          EM
+        </span>
+        <img
+          v-else-if="userStore.profile?.avatar"
+          class="message-avatar"
+          :src="userStore.profile.avatar"
+          alt=""
+        />
+        <span v-else class="message-avatar is-user" aria-hidden="true">你</span>
         <strong>{{ message.role === 'assistant' ? 'Yume AI' : '你' }}</strong>
+        <span v-if="position === streamingIndex" class="message-live">
+          <span class="message-live__dot" aria-hidden="true" />
+          正在生成
+        </span>
+        <time v-else-if="message.at" :datetime="message.at">{{ formatClock(message.at) }}</time>
+        <button
+          v-if="message.role === 'assistant' && message.content"
+          type="button"
+          class="message-copy"
+          :aria-label="copiedId === message.id ? '已复制' : '复制这条回答'"
+          @click="handleCopy(message)"
+        >
+          {{ copiedId === message.id ? '已复制' : '复制' }}
+        </button>
       </header>
 
       <MessageContent
         :content="message.content"
         :citation-count="message.knowledge?.length ?? 0"
+        :streaming="position === streamingIndex"
         @cite="(index) => handleCite(message.id, index)"
       />
 
@@ -182,28 +234,145 @@ async function handleCite(messageId: string, index: number) {
 <style scoped>
 .message-list {
   display: grid;
-  gap: var(--ys-space-5);
+  gap: var(--ys-space-6);
 }
 
 .message-card {
-  padding: var(--ys-space-5);
-  border-radius: var(--ys-radius-lg);
+  display: grid;
+  gap: var(--ys-space-2);
   line-height: var(--ys-leading-base);
 }
 
-.message-card.user {
-  background: var(--color-primary-subtle);
-  border: 1px solid var(--color-primary-border);
-}
-
+/*
+  助手回答不做气泡、不做卡片边框：整页白底就是它的底。
+  对话流里每一条都套个盒子，读起来像一串公告；让文本直接铺在页面上，
+  视线只需要跟着往下走 —— 这是主流对话产品的排版基线。
+*/
 .message-card.assistant {
-  background: var(--color-bg-surface);
-  border: var(--card-border);
+  max-width: 100%;
 }
 
-.message-card header strong {
+/* 用户自己的话才配气泡，且靠右——扫一眼就能分辨「谁在说」 */
+.message-card.user {
+  justify-self: end;
+  max-width: min(86%, 640px);
+  padding: var(--ys-space-3) var(--ys-space-4);
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--ys-radius-lg);
+  background: var(--color-primary-subtle);
+}
+
+.message-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ys-space-2);
+  min-height: 24px;
+}
+
+/* 用户消息头像同侧靠右，与气泡对齐 */
+.message-card.user .message-head {
+  flex-direction: row-reverse;
+}
+
+.message-head strong {
   font-size: var(--ys-font-sm);
   color: var(--color-text-secondary);
+}
+
+.message-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ys-radius-full);
+  object-fit: cover;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.message-avatar.is-assistant {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+  color: var(--color-text-on-primary);
+}
+
+.message-avatar.is-user {
+  background: var(--color-bg-sunken);
+  color: var(--color-text-secondary);
+}
+
+.message-head time {
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「正在生成」替代时间显示：这一轮还没结束这件事，比当前钟点重要 */
+.message-live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ys-space-1);
+  color: var(--color-primary);
+  font-size: var(--ys-font-xs);
+}
+
+.message-live__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ys-radius-full);
+  background: currentColor;
+  animation: live-pulse 1s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-live__dot {
+    animation: none;
+  }
+}
+
+/*
+  复制按钮悬停浮现。`margin-inline-start: auto` 把它推到头部行尾，
+  不挤占名字与时间的空间；键盘用户 Tab 到它时同样可见（focus-visible）。
+*/
+.message-copy {
+  margin-inline-start: auto;
+  padding: 0 var(--ys-space-1);
+  border: 0;
+  border-radius: var(--ys-radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.message-card:hover .message-copy,
+.message-copy:focus-visible {
+  opacity: 1;
+}
+
+.message-copy:hover {
+  color: var(--color-primary);
+}
+
+.message-copy:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 没有悬停能力的设备（触屏）上，藏起来的按钮等于不存在，常显 */
+@media (hover: none) {
+  .message-copy {
+    opacity: 1;
+  }
 }
 
 .grounding {

@@ -27,6 +27,24 @@ public interface ShortTermMemoryStore {
     /** 清空该会话。 */
     void clear(String sessionId);
 
+    /**
+     * 会话窗口的作用域键 —— <b>把 userId 并进键里</b>。
+     * <p>
+     * sessionId 是客户端传的（前端生成的是时间戳，可枚举）。只按 sessionId 存会话窗口，
+     * 意味着**任何人拿到或猜中别人的 sessionId 就能读到那段对话**——而这段对话会被
+     * 原样注入 prompt，等于直接读到别人的聊天记录。
+     * <p>
+     * 实测确认过：同一个 sessionId 换成另一个 userId 提问，模型能复述出前一个用户的对话。
+     * 把 userId 并进键是最小的修法，且不改变任何调用方的语义。
+     * <p>
+     * 拼法放在接口上而不是各调用点各拼一次：写入方（{@code Agent}）与清理方
+     * （会话删除接口）各拼一份的话，两边一旦分叉，就会出现「删了会话但窗口还在」
+     * ——而删除接口的日志照样打"已删除"，看不见任何异常。
+     */
+    static String scoped(String userId, String sessionId) {
+        return (userId == null ? "" : userId) + "|" + (sessionId == null ? "" : sessionId);
+    }
+
     /** 未接入持久化时的空实现 —— 退化为纯内存，与从前行为逐位一致。 */
     ShortTermMemoryStore NOOP = new ShortTermMemoryStore() {
         @Override

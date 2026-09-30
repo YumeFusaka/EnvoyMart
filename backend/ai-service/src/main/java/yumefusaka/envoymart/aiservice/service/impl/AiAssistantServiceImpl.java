@@ -8,6 +8,7 @@ import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.rag.ConflictReporter;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.aiservice.llm.ModelPricing;
+import yumefusaka.envoymart.aiservice.memory.ChatHistoryStore;
 import yumefusaka.envoymart.aiservice.model.ChatRequest;
 import yumefusaka.envoymart.aiservice.model.ChatResponse;
 import yumefusaka.envoymart.aiservice.model.KnowledgeSnippet;
@@ -31,10 +32,12 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
     private final Agent agent;
     private final ModelPricing pricing;
+    private final ChatHistoryStore history;
 
-    public AiAssistantServiceImpl(Agent agent, ModelPricing pricing) {
+    public AiAssistantServiceImpl(Agent agent, ModelPricing pricing, ChatHistoryStore history) {
         this.agent = agent;
         this.pricing = pricing;
+        this.history = history;
     }
 
     /**
@@ -51,8 +54,10 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 userId, request.getSessionId(), request.getMessage());
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
-            return toChatResponse(request, agent.chat(
+            ChatResponse response = toChatResponse(request, agent.chat(
                     userId, request.getSessionId(), request.getMessage(), request.isApproved()), ledger);
+            recordTurn(userId, request, response);
+            return response;
         }
     }
 
@@ -62,9 +67,26 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 userId, request.getSessionId(), request.getMessage());
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
-            return toChatResponse(request, agent.chatStream(
+            ChatResponse response = toChatResponse(request, agent.chatStream(
                     userId, request.getSessionId(), request.getMessage(), request.isApproved(), onChunk), ledger);
+            recordTurn(userId, request, response);
+            return response;
         }
+    }
+
+    /**
+     * 一轮对话结束后落历史 —— 侧栏的「切换会话能看到原话」靠它。
+     * <p>
+     * 记录点在服务实现层而不是控制器：非流式、SSE 两条路都从这里出去，
+     * 放在这里只有一处；而这两条路各有自己的控制器方法，放在控制器要写两遍
+     * （写两遍的代价是将来加第三条路时漏掉一处，历史从此静默不完整）。
+     * <p>
+     * 记的是<b>校验之后</b>的最终答复：带引用的句子被剔除过的那一版才是用户看到的，
+     * 历史要和它对上。
+     */
+    private void recordTurn(String userId, ChatRequest request, ChatResponse response) {
+        history.recordTurn(userId, request.getSessionId(), request.getMessage(),
+                response.getReply(), response);
     }
 
     private ChatResponse toChatResponse(ChatRequest request, Agent.AgentResponse agentResp,

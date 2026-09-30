@@ -117,16 +117,25 @@ await page.addInitScript(
 )
 
 let turn = 0
+
+/**
+ * 等这一轮生成结束。判据是占位消息上的流式指示点（`.message-live`）消失 ——
+ * 它只在生成期间存在。发送按钮不能用：它的禁用条件含 `!input.trim()`，
+ * 输入框在发送时已清空，流结束后按钮**仍是禁用态**，等它变可点等于每题白等一轮轮询。
+ */
+async function settle() {
+  const live = page.locator('.message-live')
+  await live.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {})
+  await live.waitFor({ state: 'detached', timeout: 180000 })
+}
+
 async function ask(text) {
   const before = await page.locator('.message-card.assistant').count()
   await page.locator('.composer textarea').fill(text)
   await page.getByRole('button', { name: /发送消息/ }).click()
   const card = page.locator('.message-card.assistant').nth(before)
   await card.waitFor({ state: 'visible', timeout: 20000 })
-  await poll(
-    () => page.getByRole('button', { name: /发送消息/ }).isEnabled(),
-    (enabled) => enabled === true,
-  )
+  await settle()
   turn += 1
   await page.screenshot({ path: resolve(OUT_DIR, `tool-trace-${turn}.png`), fullPage: true })
   return card
@@ -205,7 +214,7 @@ if (missTrace) {
 // ─────────── 四、不调工具 ───────────
 console.log('\n四、不调工具的那一轮')
 const plainCard = await ask('你好')
-await poll(() => page.getByRole('button', { name: /发送消息/ }).isEnabled(), (e) => e === true)
+await settle()
 ck(
   '纯寒暄不该出现工具轨迹',
   (await plainCard.locator('details.trace').count()) === 0,

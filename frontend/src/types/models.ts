@@ -515,6 +515,8 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  /** 消息时间（ISO）。实时消息由前端打点、历史消息由服务端带回，只用于展示 */
+  at?: string
   knowledge?: KnowledgeSnippet[]
   toolCalls?: ToolCall[]
   recommendedProducts?: ProductSummary[]

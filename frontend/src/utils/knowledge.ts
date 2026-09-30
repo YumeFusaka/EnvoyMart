@@ -62,41 +62,8 @@ export function relevanceText(score: number | null, reranked: boolean | null): s
   return reranked === false ? `向量相似度 ${value}` : `重排相关度 ${value}`
 }
 
-/** 回答正文的一段：普通文本，或一个引用角标 */
-export type Segment = { type: 'text'; text: string } | { type: 'cite'; index: number }
-
-/**
- * 把回答正文按 `[n]` 切成可渲染的段落。
- *
- * 提示词要求模型「凡结论来自依据，必须在句末标注来源编号」，所以正文里的 `[1]`
- * 是**唯一**能把一句话与它的依据对上的信息 —— 点它要能跳过去。
- *
- * <b>为什么切段而不是 v-html</b>：正文是模型生成的，直接塞进 `innerHTML` 等于
- * 把模型输出当 HTML 执行。切段之后每个片段都走 Vue 的文本插值，标签不可能变成元素。
- * 这也顺手解决了「正则替换回字符串再 v-html」那条路必然要面对的转义问题。
- *
- * 编号越界（`[7]` 但只有 3 条依据）时不当作引用，按原文渲染 ——
- * 提示词明令禁止编造编号，但它真的编了的时候，界面不该给出一个点不动的角标。
+/*
+ * 引用角标 `[n]` 的解析已迁到 utils/markdown.ts 的 markdown-it 内联规则里 ——
+ * 富文本渲染接管正文后，切段方案（把正文拆成文本与角标两类片段）无法与
+ * 列表、表格、代码块共存。这里不再保留第二份实现。
  */
-export function splitCitations(text: string, available: number): Segment[] {
-  const segments: Segment[] = []
-  const pattern = /\[(\d{1,2})\]/g
-  let cursor = 0
-  let match: RegExpExecArray | null
-
-  while ((match = pattern.exec(text)) !== null) {
-    const index = Number(match[1])
-    if (index < 1 || index > available) continue
-
-    if (match.index > cursor) {
-      segments.push({ type: 'text', text: text.slice(cursor, match.index) })
-    }
-    segments.push({ type: 'cite', index })
-    cursor = match.index + match[0].length
-  }
-
-  if (cursor < text.length) {
-    segments.push({ type: 'text', text: text.slice(cursor) })
-  }
-  return segments
-}

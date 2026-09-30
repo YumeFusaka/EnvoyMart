@@ -43,6 +43,34 @@ export function parseYuan(text: string | null | undefined): number | null {
   return Math.round(Number(trimmed) * 100)
 }
 
+/** 时钟时间，形如 `14:32`。消息头上的时间用它 */
+export function formatClock(value: string | null | undefined): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/**
+ * 会话列表用的时间：今天/昨天给时钟，更早给日期。
+ * 侧栏一行宽度有限，写完整的年月日时分会把标题挤没。
+ */
+export function formatChatStamp(value: string | null | undefined): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const stamp = date.getTime()
+  if (stamp >= startOfToday) return formatClock(value)
+  if (stamp >= startOfToday - 24 * 3600 * 1000) return '昨天'
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日`
+  }
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
+}
+
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return '—'

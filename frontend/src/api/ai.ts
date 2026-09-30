@@ -21,6 +21,46 @@ export async function chat(payload: ChatPayload) {
   return response.data.data as ChatResponse
 }
 
+// ==================== 会话管理（侧栏） ====================
+
+/** 侧栏一行。`title` 是首条用户消息的截断，由服务端给出，前端不自己拼 */
+export interface ChatSessionSummary {
+  sessionId: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  messageCount: number
+}
+
+/**
+ * 服务端存下的一条消息。
+ *
+ * `response` 就是当轮 `ChatResponse` 的 JSON（结构完全相同，只是反序列化时
+ * 不落到具体类型上）——恢复历史时把它摊回 `ChatMessage`，引用卡片、工具轨迹、
+ * 用量明细就能原样重现，而不是只剩一段光秃秃的文字。
+ */
+export interface StoredChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  at: string
+  response: ChatResponse | null
+}
+
+export async function fetchSessions() {
+  const response = await request.get('/ai/sessions')
+  return response.data.data as ChatSessionSummary[]
+}
+
+export async function fetchSessionMessages(sessionId: string) {
+  const response = await request.get(`/ai/sessions/${encodeURIComponent(sessionId)}/messages`)
+  return response.data.data as StoredChatMessage[]
+}
+
+export async function deleteSession(sessionId: string) {
+  await request.delete(`/ai/sessions/${encodeURIComponent(sessionId)}`)
+}
+
 export interface StreamHandlers {
   onDelta: (text: string) => void
   onDone: (response: ChatResponse) => void
