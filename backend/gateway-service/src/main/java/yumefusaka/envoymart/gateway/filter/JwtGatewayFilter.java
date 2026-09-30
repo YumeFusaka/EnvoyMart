@@ -60,6 +60,11 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             PublicRule.of("GET", "/brands/**"),
             // 知识库只读：引用要让**任何人**都能自己核对，「登录了才给你看依据」
             // 与溯源的目的正好相反。这里也没有任何用户数据，全是平台规则与说明书
+            // 商品评价：商品详情公开，而评价是详情的一部分 ——
+            // 「详情能看、大家怎么说要登录才给看」是自相矛盾的，而且评价里没有任何
+            // 用户数据（提交者已按匿名/昵称脱敏）。同前缀下的写接口是 POST，不受影响；
+            // /reviews/admin/** 由 ADMIN_SEGMENT 强制登录
+            PublicRule.of("GET", "/reviews/spu/**"),
             PublicRule.of("GET", "/knowledge/documents"),
             PublicRule.of("GET", "/knowledge/documents/**"),
             PublicRule.of("GET", "/knowledge/chunks/**"),

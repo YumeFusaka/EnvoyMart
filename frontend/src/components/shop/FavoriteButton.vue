@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { useFavoriteStore, useUserStore } from '@/stores'
+import { useFavoriteStore } from '@/stores'
+import { ensureLogin } from '@/utils/login'
 
 const props = withDefaults(
   defineProps<{
@@ -24,8 +24,6 @@ const props = withDefaults(
 const emit = defineEmits<{ (e: 'change', favorited: boolean): void }>()
 
 const favorite = useFavoriteStore()
-const userStore = useUserStore()
-const router = useRouter()
 const busy = ref(false)
 /** 只在用户真的点过之后才播动画：进页面时的心形会「跳」一下，那是装饰，不是反馈 */
 const justToggled = ref(false)
@@ -39,9 +37,7 @@ const ariaLabel = computed(() =>
 onMounted(() => favorite.ensure([props.spuId]))
 
 async function onClick() {
-  if (!userStore.token) {
-    ElMessage.info('登录后即可收藏商品')
-    router.push({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } })
+  if (!ensureLogin('登录后即可收藏商品')) {
     return
   }
   if (busy.value) return

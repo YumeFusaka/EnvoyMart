@@ -19,7 +19,7 @@ import {
 } from '@/utils/tools'
 import { nextTick, ref } from 'vue'
 
-const props = defineProps<{
+defineProps<{
   messages: ChatMessage[]
   /** 正在生成的那条消息的下标；-1 表示没有在飞的流 */
   streamingIndex?: number

@@ -6,6 +6,7 @@ import { formatPrice, getProductDetail } from '@/api/product'
 import ReviewSection from '@/components/review/ReviewSection.vue'
 import FavoriteButton from '@/components/shop/FavoriteButton.vue'
 import { useCartStore } from '@/stores'
+import { ensureLogin } from '@/utils/login'
 import type { ProductDetail, SkuView } from '@/types/models'
 
 // 加购必须走 store，不能直接调 API：顶栏角标读的是 store 里的状态，
@@ -54,7 +55,11 @@ const gallery = computed(() => {
   if (!product) {
     return []
   }
-  const images = product.images.length ? product.images : product.mainImage ? [product.mainImage] : []
+  const images = product.images.length
+    ? product.images
+    : product.mainImage
+      ? [product.mainImage]
+      : []
   return images
 })
 
@@ -124,6 +129,10 @@ async function load() {
 }
 
 async function handleAddToCart() {
+  // 未登录先引导登录，别让用户选完规格才被 401 顶回来
+  if (!ensureLogin('登录后即可加入购物车')) {
+    return
+  }
   const sku = currentSku.value
   if (!sku) {
     ElMessage.warning('请先选择商品规格')

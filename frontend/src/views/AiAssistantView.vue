@@ -11,7 +11,7 @@ import ChatSessionList from '@/components/ai/ChatSessionList.vue'
 import QuickPromptBar from '@/components/ai/QuickPromptBar.vue'
 import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 

@@ -203,8 +203,67 @@ ck('清空后回到空态', await page.locator('.el-empty').isVisible())
 const remaining = await api('/favorites?page=0&size=20')
 ck('服务端也真的空了', remaining.total === 0, `实得 ${remaining.total}`)
 
-// ─────────── 五、收尾 ───────────
-console.log('\n五、控制台')
+// ─────────── 五、未登录态：能逛，不能收藏 ───────────
+console.log('\n五、未登录态：商品浏览公开，收藏引导登录')
+// 未登录必须换一个 context：addInitScript 注册的注入脚本会在**每个新文档**创建时重放，
+// 同一个 page 上无论怎么清 localStorage，reload 之后那张令牌都会回来
+const anonContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+const anonPage = await anonContext.newPage()
+anonPage.on('console', (m) => m.type() === 'error' && problems.push(`[匿名] ${m.text()}`))
+anonPage.on('pageerror', (e) => problems.push(`[匿名] pageerror: ${e.message}`))
+
+await anonPage.goto(`${BASE}/#/favorites`, { waitUntil: 'networkidle' })
+await anonPage.waitForSelector('.el-form, .page', { timeout: 15000 })
+ck('未登录访问收藏页被挡在登录页', anonPage.url().includes('#/login'), anonPage.url())
+ck(
+  '登录页带上了要回跳的地址',
+  decodeURIComponent(anonPage.url()).includes('redirect=/favorites'),
+  anonPage.url(),
+)
+
+await anonPage.goto(`${BASE}/#/shop`, { waitUntil: 'networkidle' })
+await anonPage.waitForFunction(
+  () => document.querySelectorAll('.shop__grid .product-card').length >= 10,
+  null,
+  { timeout: 15000 },
+)
+const anonCards = await anonPage.locator('.shop__grid .product-card').count()
+ck('未登录也能逛商城（商品卡渲染出来了）', anonCards >= 10, `实得 ${anonCards}`)
+const anonHeartsOn = await anonPage.locator('.shop__grid .fav[aria-pressed="true"]').count()
+ck(
+  '未登录时心形一律是灰的（没有对着服务端问过收藏状态）',
+  anonHeartsOn === 0,
+  `实得 ${anonHeartsOn}`,
+)
+await anonPage.screenshot({ path: `${OUT_DIR}/13a-anon-shop.png`, fullPage: true })
+
+await anonPage.locator('.shop__grid .fav').first().click()
+await anonPage.waitForTimeout(800)
+ck('点收藏被引导到登录页', anonPage.url().includes('#/login'), anonPage.url())
+ck(
+  '登录后能回到刚才那一页',
+  decodeURIComponent(anonPage.url()).includes('redirect=/shop'),
+  anonPage.url(),
+)
+
+await anonPage.goto(`${BASE}/#/products/${products[0].id}`, { waitUntil: 'networkidle' })
+await anonPage.waitForSelector('.detail', { timeout: 15000 })
+ck(
+  '未登录也能打开商品详情页（没有被守卫弹走）',
+  anonPage.url().includes('#/products/'),
+  anonPage.url(),
+)
+await anonPage.waitForSelector('.detail .section-title', { timeout: 15000 })
+const anonReviewError = await anonPage.locator('.detail .error-state').count()
+ck(
+  '游客能看见评价区（评价是商品详情的一部分，不该落失败态）',
+  anonReviewError === 0,
+  `失败了 ${anonReviewError} 个区块`,
+)
+await anonContext.close()
+
+// ─────────── 六、收尾 ───────────
+console.log('\n六、控制台')
 const realProblems = problems.filter((p) => !p.includes('favicon'))
 ck('没有控制台报错', realProblems.length === 0, realProblems.slice(0, 3).join(' | '))
 

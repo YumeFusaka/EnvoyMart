@@ -19,6 +19,7 @@ import { useUserStore } from './user'
  * 给出一个陈旧的心形。token 一变（登录、登出、401 被清）整个缓存作废，见下面的 watch。
  */
 export const useFavoriteStore = defineStore('favorite', () => {
+  const userStore = useUserStore()
   const ids = ref(new Set<number>())
   /** 已经问过后端的 id。没有它就没法区分「没收藏」和「还没问过」 */
   const known = ref(new Set<number>())
@@ -35,6 +36,9 @@ export const useFavoriteStore = defineStore('favorite', () => {
    * 失败只是这批 id 保持未知（按钮维持灰的），不会抛给调用方——一次核对失败不该让页面报错。
    */
   function ensure(spuIds: number[]) {
+    // 未登录不问：商品浏览是公开的，而 /favorites/check 必然 401，
+    // 白白在每个访客的控制台里留一条红字。心形保持灰的，点它才引导登录
+    if (!userStore.token) return
     const missing = spuIds.filter((id) => !known.value.has(id) && !pending.includes(id))
     if (!missing.length) return
     pending.push(...missing)
@@ -90,7 +94,6 @@ export const useFavoriteStore = defineStore('favorite', () => {
     }
   }
 
-  const userStore = useUserStore()
   watch(
     () => userStore.token,
     () => {

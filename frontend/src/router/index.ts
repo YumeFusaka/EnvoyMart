@@ -36,16 +36,21 @@ const router = createRouter({
       children: [
         { path: '', redirect: '/shop' },
         {
+          // 逛商品**不需要登录**。这不是顺手放开：网关的白名单里 `GET /products/**`
+          // 从一开始就是公开的（还专门配了反向排除挡住 `/products/admin/**` 与内部接口），
+          // 被挡住的一直只是前端这一层守卫。一个要登录才能看的商城，
+          // 第一眼就不像电商，而且它让「未登录点收藏 → 引导登录」这个流程无从发生。
+          // 购物车、订单、收藏这些**属于某个人的东西**仍然要求登录
           path: 'shop',
           name: 'shop',
           component: () => import('@/views/ShopView.vue'),
-          meta: { title: '商城' },
+          meta: { public: true, title: '商城' },
         },
         {
           path: 'products/:id',
           name: 'product-detail',
           component: () => import('@/views/ProductDetailView.vue'),
-          meta: { title: '商品详情' },
+          meta: { public: true, title: '商品详情' },
         },
         {
           path: 'cart',

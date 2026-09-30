@@ -297,6 +297,38 @@ class JwtGatewayFilterTest {
     }
 
     /**
+     * 商品评价匿名可读：详情页公开，评价是详情的一部分，
+     * 「详情能看、评价要登录」是自相矛盾的。
+     * <p>
+     * 但**提交**评价与标记有用（POST）仍然要求登录，管理端的评价接口在 /admin 段下，
+     * 已被 {@link #管理路径不应被公开前缀放行} 扫源码自动纳入。
+     */
+    @Test
+    void 商品评价列表应匿名放行而提交仍要求登录() {
+        MockServerWebExchange read = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/reviews/spu/12").build());
+        filter.filter(read, chain).block();
+        assertThat(forwarded.get()).as("评价列表应当照常转发").isNotNull();
+
+        MockServerWebExchange stat = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/reviews/spu/12/statistics").build());
+        filter.filter(stat, chain).block();
+        assertThat(forwarded.get()).as("评价统计应当照常转发").isNotNull();
+
+        forwarded.set(null);
+        MockServerWebExchange write = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/reviews").build());
+        Throwable thrown = null;
+        try {
+            filter.filter(write, chain).block();
+        } catch (Throwable error) {
+            thrown = error;
+        }
+        assertThat(thrown).as("匿名提交评价应当要求登录").isInstanceOf(ResponseStatusException.class);
+        assertThat(forwarded.get()).as("被拒绝的请求不应转发到下游").isNull();
+    }
+
+    /**
      * 被禁用的账号，手里的旧 Token 立刻失效。
      * <p>
      * 这是本批次存在的理由：JWT 自证，签发之后服务端管不着它了。没有这条检查，

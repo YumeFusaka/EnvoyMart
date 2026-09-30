@@ -39,10 +39,11 @@ const navItems = [
 
 /**
  * 未登录时只留公开入口，而不是把整条导航渲染成一片点了就跳登录页的死链。
- * 知识库与它底下的原文页是公开的——这是登录页之外第一次出现「不需要账号也能看的页面」，
- * 顶栏必须能在这个状态下站得住。
+ * 商城的商品浏览与知识库（含原文、图谱、评测报告）都是公开的——网关侧一直是这个口径，
+ * 前端守卫跟上之后，顶栏必须能在未登录状态下站得住。
  */
-const publicNavItems = navItems.filter((item) => item.to === '/knowledge')
+const PUBLIC_ROUTES = ['/shop', '/knowledge']
+const publicNavItems = navItems.filter((item) => PUBLIC_ROUTES.includes(item.to))
 const visibleNavItems = computed(() => (userStore.token ? navItems : publicNavItems))
 
 const displayName = computed(

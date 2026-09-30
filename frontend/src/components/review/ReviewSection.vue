@@ -3,6 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getReviewStatistics, listReviews, markReviewUseful, ratingText } from '@/api/review'
 import { formatDate } from '@/utils/format'
+import ErrorState from '@/components/ui/ErrorState.vue'
+import { ensureLogin } from '@/utils/login'
 import type { Review, ReviewStatistics } from '@/types/models'
 
 const props = defineProps<{ spuId: number }>()
@@ -10,6 +12,7 @@ const props = defineProps<{ spuId: number }>()
 const reviews = ref<Review[]>([])
 const statistics = ref<ReviewStatistics | null>(null)
 const loading = ref(false)
+const failed = ref(false)
 const filter = ref<'ALL' | 'IMAGE'>('ALL')
 /** 已点过「有用」的条目，防止同一会话里重复点 */
 const usefulClicked = ref<Set<number>>(new Set())
@@ -29,6 +32,7 @@ function bucketPercent(count: number): string {
 
 async function load() {
   loading.value = true
+  failed.value = false
   try {
     const [list, stats] = await Promise.all([
       listReviews(props.spuId),
@@ -36,6 +40,10 @@ async function load() {
     ])
     reviews.value = list
     statistics.value = stats
+  } catch {
+    // 拉不到与「没有评价」必须分开：静默成空列表，用户读到的是一句
+    //「这件商品还没人评价过」——那是界面在替服务端下一个它不知道的结论
+    failed.value = true
   } finally {
     loading.value = false
   }
@@ -45,10 +53,18 @@ async function handleUseful(review: Review) {
   if (usefulClicked.value.has(review.id)) {
     return
   }
-  await markReviewUseful(review.id)
-  usefulClicked.value.add(review.id)
-  review.usefulCount += 1
-  ElMessage.success('感谢反馈')
+  // 商品详情对游客开放，而「有用」是一票一次的用户行为，未登录先引导登录
+  if (!ensureLogin('登录后即可标记有用')) {
+    return
+  }
+  try {
+    await markReviewUseful(review.id)
+    usefulClicked.value.add(review.id)
+    review.usefulCount += 1
+    ElMessage.success('感谢反馈')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '操作失败，请稍后再试')
+  }
 }
 
 // 商品切换时要重新拉 —— 详情页是同一个组件复用的，不重建
@@ -60,7 +76,9 @@ onMounted(load)
   <section v-loading="loading" class="surface">
     <h2 class="section-title">商品评价</h2>
 
-    <div v-if="statistics && statistics.total > 0" class="summary">
+    <ErrorState v-if="failed" :on-retry="load" />
+
+    <div v-else-if="statistics && statistics.total > 0" class="summary">
       <div class="summary__score">
         <span class="summary__average">{{ statistics.average.toFixed(1) }}</span>
         <el-rate :model-value="statistics.average" disabled allow-half />
@@ -78,68 +96,73 @@ onMounted(load)
       </ul>
     </div>
 
-    <div class="filters">
-      <button
-        type="button"
-        class="filters__item"
-        :class="{ 'is-active': filter === 'ALL' }"
-        @click="filter = 'ALL'"
-      >
-        全部 {{ reviews.length }}
-      </button>
-      <button
-        type="button"
-        class="filters__item"
-        :class="{ 'is-active': filter === 'IMAGE' }"
-        @click="filter = 'IMAGE'"
-      >
-        有图 {{ statistics?.withImage ?? 0 }}
-      </button>
-    </div>
+    <template v-else>
+      <div class="filters">
+        <button
+          type="button"
+          class="filters__item"
+          :class="{ 'is-active': filter === 'ALL' }"
+          @click="filter = 'ALL'"
+        >
+          全部 {{ reviews.length }}
+        </button>
+        <button
+          type="button"
+          class="filters__item"
+          :class="{ 'is-active': filter === 'IMAGE' }"
+          @click="filter = 'IMAGE'"
+        >
+          有图 {{ statistics?.withImage ?? 0 }}
+        </button>
+      </div>
 
-    <el-empty v-if="filtered.length === 0" :description="filter === 'IMAGE' ? '还没有带图的评价' : '还没有评价'" />
+      <el-empty
+        v-if="filtered.length === 0"
+        :description="filter === 'IMAGE' ? '还没有带图的评价' : '还没有评价'"
+      />
 
-    <ul v-else class="list">
-      <li v-for="review in filtered" :key="review.id" class="review">
-        <header class="review__head">
-          <el-avatar :size="32">{{ review.anonymous ? '匿' : '用' }}</el-avatar>
-          <div class="review__meta">
-            <span class="review__user">{{ review.anonymous ? '匿名用户' : review.userId }}</span>
-            <span class="review__time">{{ formatDate(review.createdAt) }}</span>
+      <ul v-else class="list">
+        <li v-for="review in filtered" :key="review.id" class="review">
+          <header class="review__head">
+            <el-avatar :size="32">{{ review.anonymous ? '匿' : '用' }}</el-avatar>
+            <div class="review__meta">
+              <span class="review__user">{{ review.anonymous ? '匿名用户' : review.userId }}</span>
+              <span class="review__time">{{ formatDate(review.createdAt) }}</span>
+            </div>
+            <el-rate :model-value="review.rating" disabled size="small" />
+          </header>
+
+          <p v-if="review.content" class="review__content">{{ review.content }}</p>
+
+          <div v-if="review.images.length" class="review__images">
+            <el-image
+              v-for="url in review.images"
+              :key="url"
+              :src="url"
+              :preview-src-list="review.images"
+              fit="cover"
+              class="review__image"
+            />
           </div>
-          <el-rate :model-value="review.rating" disabled size="small" />
-        </header>
 
-        <p v-if="review.content" class="review__content">{{ review.content }}</p>
+          <p v-if="review.replyContent" class="review__reply">
+            <strong>商家回复：</strong>{{ review.replyContent }}
+          </p>
 
-        <div v-if="review.images.length" class="review__images">
-          <el-image
-            v-for="url in review.images"
-            :key="url"
-            :src="url"
-            :preview-src-list="review.images"
-            fit="cover"
-            class="review__image"
-          />
-        </div>
-
-        <p v-if="review.replyContent" class="review__reply">
-          <strong>商家回复：</strong>{{ review.replyContent }}
-        </p>
-
-        <footer class="review__foot">
-          <el-button
-            link
-            size="small"
-            :disabled="usefulClicked.has(review.id)"
-            @click="handleUseful(review)"
-          >
-            有用（{{ review.usefulCount }}）
-          </el-button>
-          <span class="review__rating-text">{{ ratingText(review.rating) }}</span>
-        </footer>
-      </li>
-    </ul>
+          <footer class="review__foot">
+            <el-button
+              link
+              size="small"
+              :disabled="usefulClicked.has(review.id)"
+              @click="handleUseful(review)"
+            >
+              有用（{{ review.usefulCount }}）
+            </el-button>
+            <span class="review__rating-text">{{ ratingText(review.rating) }}</span>
+          </footer>
+        </li>
+      </ul>
+    </template>
   </section>
 </template>
 
