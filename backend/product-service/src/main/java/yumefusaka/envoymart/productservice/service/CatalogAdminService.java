@@ -1,7 +1,9 @@
 package yumefusaka.envoymart.productservice.service;
 
 import yumefusaka.envoymart.productservice.model.CategoryNode;
+import yumefusaka.envoymart.productservice.model.admin.AdminAttribute;
 import yumefusaka.envoymart.productservice.model.admin.AdminBrand;
+import yumefusaka.envoymart.productservice.model.admin.AttributeUpsertRequest;
 import yumefusaka.envoymart.productservice.model.admin.BrandUpsertRequest;
 import yumefusaka.envoymart.productservice.model.admin.CategoryUpsertRequest;
 
@@ -41,6 +43,26 @@ public interface CatalogAdminService {
 
     /** @throws IllegalStateException 有子类目、挂着商品、或被参数模板引用 */
     void deleteCategory(Long categoryId);
+
+    // ==================== 参数模板 ====================
+
+    /**
+     * 某个类目的参数模板，按 {@code sort} 排序。
+     * <p>
+     * 参数模板此前<b>只在库里、没有出口</b>：商品编辑页要摆哪几个参数输入框无从得知，
+     * 而 {@code SpuUpsertRequest.attributes} 又要求 {@code attributeId} 必须已存在 ——
+     * 结果是这个字段事实上只能由 SQL 直接写库来填。补上读出口，它才是一条走得通的链路。
+     */
+    List<AdminAttribute> attributes(Long categoryId);
+
+    /** @throws IllegalArgumentException 类目不存在、同类目下重名 */
+    Long createAttribute(Long categoryId, AttributeUpsertRequest request);
+
+    /** @throws IllegalArgumentException 参数项不存在、同类目下重名 */
+    void updateAttribute(Long attributeId, AttributeUpsertRequest request);
+
+    /** @throws IllegalStateException 已有商品填过这个参数 */
+    void deleteAttribute(Long attributeId);
 
     /** 全部品牌，含停用 */
     List<AdminBrand> brands();

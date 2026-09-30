@@ -11,7 +11,9 @@ import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.RequireAdmin;
 import yumefusaka.envoymart.productservice.model.CategoryNode;
+import yumefusaka.envoymart.productservice.model.admin.AdminAttribute;
 import yumefusaka.envoymart.productservice.model.admin.AdminBrand;
+import yumefusaka.envoymart.productservice.model.admin.AttributeUpsertRequest;
 import yumefusaka.envoymart.productservice.model.admin.BrandUpsertRequest;
 import yumefusaka.envoymart.productservice.model.admin.CategoryUpsertRequest;
 import yumefusaka.envoymart.productservice.service.CatalogAdminService;
@@ -66,6 +68,41 @@ public class CatalogAdminController {
     @DeleteMapping("/categories/admin/{id}")
     public Result<Void> deleteCategory(@PathVariable("id") Long id) {
         catalogAdminService.deleteCategory(id);
+        return Result.success();
+    }
+
+    // ==================== 参数模板 ====================
+
+    /**
+     * 类目的参数模板。商品编辑页靠它决定摆哪几个参数输入框。
+     * <p>
+     * 路径挂在 {@code /categories/admin} 下而不是单开 {@code /attributes/admin}：
+     * 网关对 {@code /categories/**} 已有路由，新开一个前缀就要同时改网关路由与白名单判据，
+     * 而参数模板本来就是类目的从属资源。
+     */
+    @GetMapping("/categories/admin/{id}/attributes")
+    public Result<List<AdminAttribute>> attributes(@PathVariable("id") Long categoryId) {
+        return Result.success(catalogAdminService.attributes(categoryId));
+    }
+
+    @PostMapping("/categories/admin/{id}/attributes")
+    public Result<Long> createAttribute(@PathVariable("id") Long categoryId,
+                                        @Valid @RequestBody AttributeUpsertRequest request) {
+        return Result.success(catalogAdminService.createAttribute(categoryId, request));
+    }
+
+    /** 不含 {@code categoryId}：换挂类目等于换一整套模板，已填过的值不会跟着走 */
+    @PutMapping("/categories/admin/attributes/{attributeId}")
+    public Result<Void> updateAttribute(@PathVariable("attributeId") Long attributeId,
+                                        @Valid @RequestBody AttributeUpsertRequest request) {
+        catalogAdminService.updateAttribute(attributeId, request);
+        return Result.success();
+    }
+
+    /** 已有商品填过这个参数时拒绝删除，提示先清空取值 */
+    @DeleteMapping("/categories/admin/attributes/{attributeId}")
+    public Result<Void> deleteAttribute(@PathVariable("attributeId") Long attributeId) {
+        catalogAdminService.deleteAttribute(attributeId);
         return Result.success();
     }
 

@@ -11,10 +11,12 @@ import yumefusaka.envoymart.productservice.entity.BrandEntity;
 import yumefusaka.envoymart.productservice.entity.CategoryEntity;
 import yumefusaka.envoymart.productservice.entity.ProductAttributeEntity;
 import yumefusaka.envoymart.productservice.entity.ProductSpuEntity;
+import yumefusaka.envoymart.productservice.entity.SpuAttributeValueEntity;
 import yumefusaka.envoymart.productservice.mapper.BrandMapper;
 import yumefusaka.envoymart.productservice.mapper.CategoryMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductAttributeMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSpuMapper;
+import yumefusaka.envoymart.productservice.mapper.SpuAttributeValueMapper;
 import yumefusaka.envoymart.productservice.model.admin.CategoryUpsertRequest;
 import yumefusaka.envoymart.productservice.service.CategoryService;
 
@@ -42,6 +44,8 @@ class CatalogAdminServiceImplTest {
 
     private CategoryMapper categoryMapper;
     private ProductSpuMapper spuMapper;
+    private ProductAttributeMapper attributeMapper;
+    private SpuAttributeValueMapper spuAttributeValueMapper;
     private CategoryService categoryService;
     private ProductDerivedRefresh derivedRefresh;
     private CatalogAdminServiceImpl service;
@@ -50,7 +54,7 @@ class CatalogAdminServiceImplTest {
     static void initMybatisPlusMetadata() {
         MapperBuilderAssistant assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "");
         for (Class<?> entity : List.of(CategoryEntity.class, BrandEntity.class,
-                ProductSpuEntity.class, ProductAttributeEntity.class)) {
+                ProductSpuEntity.class, ProductAttributeEntity.class, SpuAttributeValueEntity.class)) {
             TableInfoHelper.initTableInfo(assistant, entity);
         }
     }
@@ -60,11 +64,12 @@ class CatalogAdminServiceImplTest {
         categoryMapper = mock(CategoryMapper.class);
         BrandMapper brandMapper = mock(BrandMapper.class);
         spuMapper = mock(ProductSpuMapper.class);
-        ProductAttributeMapper attributeMapper = mock(ProductAttributeMapper.class);
+        attributeMapper = mock(ProductAttributeMapper.class);
+        spuAttributeValueMapper = mock(SpuAttributeValueMapper.class);
         categoryService = mock(CategoryService.class);
         derivedRefresh = mock(ProductDerivedRefresh.class);
         service = new CatalogAdminServiceImpl(categoryMapper, brandMapper, spuMapper, attributeMapper,
-                new CategoryTreeAssembler(), categoryService, derivedRefresh);
+                spuAttributeValueMapper, new CategoryTreeAssembler(), categoryService, derivedRefresh);
     }
 
     // ==================== 移动类目 ====================

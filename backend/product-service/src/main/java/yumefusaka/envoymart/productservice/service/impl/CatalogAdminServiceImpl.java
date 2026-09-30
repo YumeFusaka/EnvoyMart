@@ -10,12 +10,16 @@ import yumefusaka.envoymart.productservice.entity.BrandEntity;
 import yumefusaka.envoymart.productservice.entity.CategoryEntity;
 import yumefusaka.envoymart.productservice.entity.ProductAttributeEntity;
 import yumefusaka.envoymart.productservice.entity.ProductSpuEntity;
+import yumefusaka.envoymart.productservice.entity.SpuAttributeValueEntity;
 import yumefusaka.envoymart.productservice.mapper.BrandMapper;
 import yumefusaka.envoymart.productservice.mapper.CategoryMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductAttributeMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSpuMapper;
+import yumefusaka.envoymart.productservice.mapper.SpuAttributeValueMapper;
 import yumefusaka.envoymart.productservice.model.CategoryNode;
+import yumefusaka.envoymart.productservice.model.admin.AdminAttribute;
 import yumefusaka.envoymart.productservice.model.admin.AdminBrand;
+import yumefusaka.envoymart.productservice.model.admin.AttributeUpsertRequest;
 import yumefusaka.envoymart.productservice.model.admin.BrandUpsertRequest;
 import yumefusaka.envoymart.productservice.model.admin.CategoryUpsertRequest;
 import yumefusaka.envoymart.productservice.service.CatalogAdminService;
@@ -45,10 +49,13 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
     /** 顶级类目的 parentId 约定值。库里是 `not null default 0`，不是 null */
     private static final long ROOT_PARENT_ID = 0L;
 
+    private static final String DEFAULT_INPUT_TYPE = "text";
+
     private final CategoryMapper categoryMapper;
     private final BrandMapper brandMapper;
     private final ProductSpuMapper spuMapper;
     private final ProductAttributeMapper attributeMapper;
+    private final SpuAttributeValueMapper spuAttributeValueMapper;
     private final CategoryTreeAssembler treeAssembler;
     private final CategoryService categoryService;
     private final ProductDerivedRefresh derivedRefresh;
@@ -57,6 +64,7 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
                                    BrandMapper brandMapper,
                                    ProductSpuMapper spuMapper,
                                    ProductAttributeMapper attributeMapper,
+                                   SpuAttributeValueMapper spuAttributeValueMapper,
                                    CategoryTreeAssembler treeAssembler,
                                    CategoryService categoryService,
                                    ProductDerivedRefresh derivedRefresh) {
@@ -64,6 +72,7 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
         this.brandMapper = brandMapper;
         this.spuMapper = spuMapper;
         this.attributeMapper = attributeMapper;
+        this.spuAttributeValueMapper = spuAttributeValueMapper;
         this.treeAssembler = treeAssembler;
         this.categoryService = categoryService;
         this.derivedRefresh = derivedRefresh;
@@ -230,6 +239,131 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
     private List<CategoryEntity> descendantsOf(CategoryEntity entity) {
         return categoryMapper.selectList(new LambdaQueryWrapper<CategoryEntity>()
                 .likeRight(CategoryEntity::getPath, entity.getPath() + "/"));
+    }
+
+    // ==================== 参数模板 ====================
+
+    @Override
+    public List<AdminAttribute> attributes(Long categoryId) {
+        requireCategory(categoryId);
+        return attributeMapper.selectList(new LambdaQueryWrapper<ProductAttributeEntity>()
+                        .eq(ProductAttributeEntity::getCategoryId, categoryId)
+                        .orderByAsc(ProductAttributeEntity::getSort)
+                        .orderByAsc(ProductAttributeEntity::getId))
+                .stream()
+                .map(CatalogAdminServiceImpl::toAdminAttribute)
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public Long createAttribute(Long categoryId, AttributeUpsertRequest request) {
+        requireCategory(categoryId);
+        String name = request.getName().trim();
+        requireAttributeNameFree(categoryId, name, null);
+
+        ProductAttributeEntity entity = new ProductAttributeEntity();
+        entity.setCategoryId(categoryId);
+        entity.setName(name);
+        entity.setInputType(normalizeInputType(request.getInputType()));
+        entity.setUnit(trimToNull(request.getUnit()));
+        entity.setSort(request.getSort() == null ? 0 : request.getSort());
+        attributeMapper.insert(entity);
+        log.info("[管理] 新建参数项 id={} categoryId={} name={}", entity.getId(), categoryId, name);
+        return entity.getId();
+    }
+
+    @Override
+    @Transactional
+    public void updateAttribute(Long attributeId, AttributeUpsertRequest request) {
+        ProductAttributeEntity entity = requireAttribute(attributeId);
+        String name = request.getName().trim();
+        requireAttributeNameFree(entity.getCategoryId(), name, attributeId);
+
+        // 改名与否必须在 setName 之前算，否则两边一定相等、renamed 恒为 false，
+        // 下面那段刷新成为死代码（改类目名时踩过同一个坑）
+        boolean renamed = !Objects.equals(entity.getName(), name);
+
+        entity.setName(name);
+        entity.setInputType(normalizeInputType(request.getInputType()));
+        entity.setUnit(trimToNull(request.getUnit()));
+        entity.setSort(request.getSort() == null ? 0 : request.getSort());
+        attributeMapper.updateById(entity);
+
+        if (renamed) {
+            // 参数名被拼进了 ES 的 attribute_text（「净含量:90克」整串进索引），
+            // 不刷的话搜「净含量」搜不到，而商品详情页显示的是新名字 —— 两处对不上
+            refreshProductsWithAttribute(attributeId);
+        }
+        log.info("[管理] 编辑参数项 id={} name={} renamed={}", attributeId, name, renamed);
+    }
+
+    @Override
+    @Transactional
+    public void deleteAttribute(Long attributeId) {
+        ProductAttributeEntity entity = requireAttribute(attributeId);
+        long used = spuAttributeValueMapper.selectCount(new LambdaQueryWrapper<SpuAttributeValueEntity>()
+                .eq(SpuAttributeValueEntity::getAttributeId, attributeId));
+        if (used > 0) {
+            throw new IllegalStateException("已有 " + used + " 个商品填过「" + entity.getName()
+                    + "」这个参数。删掉定义会让这些取值失去定义可依——"
+                    + "它们仍在库里，但在商品详情页面上不会再出现。请先清空商品上的该参数取值。");
+        }
+        attributeMapper.deleteById(attributeId);
+        log.info("[管理] 删除参数项 id={} name={}", attributeId, entity.getName());
+    }
+
+    private void requireAttributeNameFree(Long categoryId, String name, Long excludeId) {
+        long sameName = attributeMapper.selectCount(new LambdaQueryWrapper<ProductAttributeEntity>()
+                .eq(ProductAttributeEntity::getCategoryId, categoryId)
+                .eq(ProductAttributeEntity::getName, name)
+                .ne(excludeId != null, ProductAttributeEntity::getId, excludeId));
+        if (sameName > 0) {
+            throw new IllegalArgumentException("该类目下已经有叫「" + name + "」的参数了");
+        }
+    }
+
+    private ProductAttributeEntity requireAttribute(Long attributeId) {
+        ProductAttributeEntity entity = attributeId == null ? null : attributeMapper.selectById(attributeId);
+        if (entity == null) {
+            throw new IllegalArgumentException("参数项不存在");
+        }
+        return entity;
+    }
+
+    /**
+     * 刷新填过这个参数的商品。
+     * <p>
+     * 代价与用到它的商品数成正比，和改类目名是同一类操作。取的是 {@code select distinct spu_id}：
+     * 一个参数在一个 SPU 上只该有一条取值（{@code reconcileAttributes} 保证），
+     * 但即便出现脏数据重复，刷新侧也不该跟着重复刷。
+     */
+    private void refreshProductsWithAttribute(Long attributeId) {
+        List<Long> spuIds = spuAttributeValueMapper.selectList(
+                        new LambdaQueryWrapper<SpuAttributeValueEntity>()
+                                .select(SpuAttributeValueEntity::getSpuId)
+                                .eq(SpuAttributeValueEntity::getAttributeId, attributeId))
+                .stream()
+                .map(SpuAttributeValueEntity::getSpuId)
+                .distinct()
+                .toList();
+        derivedRefresh.afterCommit(spuIds);
+    }
+
+    private static AdminAttribute toAdminAttribute(ProductAttributeEntity entity) {
+        return AdminAttribute.builder()
+                .id(entity.getId())
+                .categoryId(entity.getCategoryId())
+                .name(entity.getName())
+                .inputType(entity.getInputType())
+                .unit(entity.getUnit())
+                .sort(entity.getSort())
+                .build();
+    }
+
+    /** 控件类型只是个提示，允许运营填自己想要的；空值兜回 text */
+    private String normalizeInputType(String inputType) {
+        return StringUtils.hasText(inputType) ? inputType.trim() : DEFAULT_INPUT_TYPE;
     }
 
     // ==================== 品牌 ====================
