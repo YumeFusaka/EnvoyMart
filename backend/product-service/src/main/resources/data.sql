@@ -4,6 +4,15 @@
 -- 一次插入多行且整体幂等。H2(MODE=MySQL) 与 MySQL 都认这个写法；
 -- H2 的 `merge into ... key()` 是专有语法，换成本地 MySQL 时会在初始化阶段直接失败。
 --
+-- <b>守卫要对着表上真正管唯一性的那一列写，不能一律写 `id`。</b>
+-- `id` 只是代理键；下面有五张表的唯一性由自然键承担：
+-- brand.name、product_spu.spu_code、product_sku.sku_code、
+-- product_sku_spec(sku_id, spec_id)、spu_attribute_value(spu_id, attribute_id)。
+-- 只守 id 的后果不是「多插一行」而是**服务起不来**：某行被删掉又建回来时会拿到新的自增 id，
+-- id 守卫于是放行，插进去撞上自然键的唯一索引，报出来的是
+-- `Duplicate entry '9-5' for key 'uk_sku_spec'` —— 出现在应用启动阶段，
+-- 错误信息里没有一个字提到种子脚本，只能顺着调用栈一路挖到这里。
+--
 -- 幂等是必须的：`spring.sql.init.mode=always` 让这个脚本**每次启动都跑一遍**，
 -- 不幂等的写法会让商品每重启一次就翻一倍。
 
@@ -39,7 +48,8 @@ select * from (
     union all select 5, '深海鲜', 'https://picsum.photos/seed/brand5/120', '海洋来源营养', 1
     union all select 6, '本草纪', 'https://picsum.photos/seed/brand6/120', '中式草本与现代营养结合', 1
 ) as seed
-where not exists (select 1 from brand where id = seed.id);
+-- brand 的唯一键是 name，不是 id
+where not exists (select 1 from brand where name = seed.name);
 
 -- ==================== 商品（SPU） ====================
 -- 价格与库存在 SKU 上，这里只有商品概念与展示信息
@@ -95,7 +105,8 @@ select * from (
            'https://picsum.photos/seed/spu15/600', 'https://picsum.photos/seed/spu15a/800', '儿童',
            '<h2>产品说明</h2><p>软糖剂型，儿童易接受。</p>', 1, 1180, 4.70, 246, now(), now()
 ) as seed
-where not exists (select 1 from product_spu where id = seed.id);
+-- product_spu 的唯一键是 spu_code：运营改过商品编号之后，id 守卫会放行、spu_code 撞车
+where not exists (select 1 from product_spu where spu_code = seed.spu_code);
 
 -- ==================== 规格 ====================
 -- 决定「买哪一个」。属性描述事实，规格决定选择
@@ -166,7 +177,10 @@ select * from (
     union all select 23, 15, 'SKU023', 7900, 9900, 420, 'https://picsum.photos/seed/sku23/400', 1
     union all select 24, 15, 'SKU024', 7900, 9900, 380, 'https://picsum.photos/seed/sku24/400', 1
 ) as seed
-where not exists (select 1 from product_sku where id = seed.id);
+-- product_sku 的唯一键是 sku_code。**这一条是最容易踩的**：规格组合重算会删掉旧 SKU、
+-- 按新 id 建回来（这正是 `verify-sku-regen.mjs` 盯着的那条路径），
+-- 建回来的行 id 变了、sku_code 没变 —— 于是 id 守卫放行，撞上 sku_code
+where not exists (select 1 from product_sku where sku_code = seed.sku_code);
 
 -- ==================== SKU ↔ 规格值 ====================
 insert into product_sku_spec (id, sku_id, spec_id, spec_value_id)
@@ -194,7 +208,13 @@ select * from (
     union all select 21, 23, 9, 18
     union all select 22, 24, 9, 19
 ) as seed
-where not exists (select 1 from product_sku_spec where id = seed.id);
+-- 这一条**已经真实挡住过一次启动**：某次重算把 sku 9/10 的规格行删了又建，
+-- id 从 13/14 变成 97/98，于是这两行的 id 守卫全部放行、插进去撞上 uk_sku_spec(sku_id, spec_id)，
+-- product-service 直接起不来。守卫换成它真正管唯一性的那两列之后才成立
+where not exists (
+    select 1 from product_sku_spec
+    where sku_id = seed.sku_id and spec_id = seed.spec_id
+);
 
 -- ==================== 商品参数 ====================
 -- 属性定义挂类目，取值挂商品
@@ -231,4 +251,8 @@ select * from (
     union all select 16, 13, 8, '进食受限人群的营养补充'
     union all select 17, 15, 2, '儿童'
 ) as seed
-where not exists (select 1 from spu_attribute_value where id = seed.id);
+-- 唯一键是 uk_spu_attribute(spu_id, attribute_id)：同一个商品的同一个参数只该有一行
+where not exists (
+    select 1 from spu_attribute_value
+    where spu_id = seed.spu_id and attribute_id = seed.attribute_id
+);

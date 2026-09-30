@@ -5,7 +5,11 @@
  *   - tokens 必须最先 —— 后面两个文件都引用它定义的变量；
  *   - element 必须最后 —— 它覆盖 Element Plus 自己的变量定义，
  *     排在 EP 样式之前会被 EP 覆盖回去，表现为「改了没效果」。
+ *
+ * admin 夹在中间：它只用 `admin-` 前缀的类，不碰 EP 的变量，
+ * 放哪一层都不会打架，跟着 base 后面纯粹是「全局骨架放一起」。
  */
 @import './tokens.css';
 @import './base.css';
+@import './admin.css';
 @import './element.css';

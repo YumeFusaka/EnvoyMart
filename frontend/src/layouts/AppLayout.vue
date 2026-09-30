@@ -10,6 +10,7 @@ import {
   List,
   Reading,
   RefreshLeft,
+  Setting,
   ShoppingCart,
   SwitchButton,
   User,
@@ -45,6 +46,14 @@ const visibleNavItems = computed(() => (userStore.token ? navItems : publicNavIt
 const displayName = computed(
   () => userStore.profile?.nickname || userStore.profile?.username || '用户',
 )
+
+/**
+ * 管理台入口只对管理员展示。
+ * <p>
+ * 这不是鉴权 —— 真正的拦截在网关与各服务的 `@RequireAdmin`。这里只是不把一条走不通的路
+ * 摆给普通用户看。反过来，角色是以**服务端返回的 profile** 为准的，前端不解析 Token、不猜。
+ */
+const isAdmin = computed(() => userStore.profile?.roleName === 'ADMIN')
 
 function handleLogout() {
   userStore.clearSession()
@@ -106,6 +115,7 @@ onMounted(() => {
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click="router.push('/profile')">个人中心</el-dropdown-item>
+                <el-dropdown-item v-if="isAdmin" @click="router.push('/admin')">管理台</el-dropdown-item>
                 <el-dropdown-item divided @click="handleLogout">
                   <el-icon><SwitchButton /></el-icon>
                   退出登录
@@ -148,6 +158,10 @@ onMounted(() => {
         <RouterLink v-if="userStore.token" to="/profile" class="app-nav__link" @click="closeDrawer">
           <el-icon><User /></el-icon>
           <span>个人中心</span>
+        </RouterLink>
+        <RouterLink v-if="isAdmin" to="/admin" class="app-nav__link" @click="closeDrawer">
+          <el-icon><Setting /></el-icon>
+          <span>管理台</span>
         </RouterLink>
         <RouterLink v-else to="/login" class="app-nav__link" @click="closeDrawer">
           <el-icon><User /></el-icon>

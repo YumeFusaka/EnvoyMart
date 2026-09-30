@@ -503,9 +503,24 @@ export interface PageResult<T> {
 
 export interface CategoryNode {
   id: number
+  /**
+   * 挂在哪个类目下，0 表示一级类目。
+   *
+   * 不要用「树上的父」代替它：父类目被停用时，子节点会被挂到根上展示，
+   * 这时候它在树里看着是一级类目，真实的挂载点却还在那个停用的父类目下。
+   * 编辑类目时提交这一项，才不会因为改了个名字而把整棵子树挪到根。
+   */
+  parentId: number
   name: string
   level: number
   sort: number
+  /**
+   * 1 启用 / 0 停用。
+   * <p>
+   * 公开树里恒为 1（停用的类目根本不在结果里），管理树才有区分 ——
+   * 管理台必须看得到停用的类目，否则停用之后就再没有入口把它改回来。
+   */
+  status: number
   children: CategoryNode[]
 }
 

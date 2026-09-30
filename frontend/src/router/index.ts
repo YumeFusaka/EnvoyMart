@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores'
 import pinia from '@/stores'
 
@@ -8,6 +9,12 @@ declare module 'vue-router' {
     public?: boolean
     /** 页面标题，用于 document.title */
     title?: string
+    /**
+     * 仅管理员可进。**这只是不把走不通的路摆出来**，不是鉴权：
+     * 真正的拦截在网关（`/admin` 路径段判据）与下游 `@RequireAdmin` 两层，
+     * 前端守卫拦得住的是误点，拦不住改地址栏。
+     */
+    admin?: boolean
   }
 }
 
@@ -147,6 +154,75 @@ const router = createRouter({
       ],
     },
     {
+      // 管理台。与商城挂在同一个域名下、共用 token，但布局与信息密度完全不同，
+      // 所以是第三个布局而不是 AppLayout 里加一个条件分支
+      path: '/admin',
+      component: () => import('@/layouts/AdminLayout.vue'),
+      meta: { admin: true },
+      children: [
+        {
+          path: '',
+          name: 'admin-dashboard',
+          component: () => import('@/views/admin/AdminDashboardView.vue'),
+          meta: { admin: true, title: '概览' },
+        },
+        {
+          path: 'products',
+          name: 'admin-products',
+          component: () => import('@/views/admin/AdminProductListView.vue'),
+          meta: { admin: true, title: '商品管理' },
+        },
+        {
+          path: 'products/new',
+          name: 'admin-product-create',
+          component: () => import('@/views/admin/AdminProductEditView.vue'),
+          meta: { admin: true, title: '新建商品' },
+        },
+        {
+          path: 'products/:id/edit',
+          name: 'admin-product-edit',
+          component: () => import('@/views/admin/AdminProductEditView.vue'),
+          meta: { admin: true, title: '编辑商品' },
+        },
+        {
+          path: 'catalog',
+          name: 'admin-catalog',
+          component: () => import('@/views/admin/AdminCatalogView.vue'),
+          meta: { admin: true, title: '类目与品牌' },
+        },
+        {
+          path: 'orders',
+          name: 'admin-orders',
+          component: () => import('@/views/admin/AdminOrderView.vue'),
+          meta: { admin: true, title: '订单管理' },
+        },
+        {
+          path: 'after-sales',
+          name: 'admin-after-sales',
+          component: () => import('@/views/admin/AdminAfterSaleView.vue'),
+          meta: { admin: true, title: '售后工作台' },
+        },
+        {
+          path: 'reviews',
+          name: 'admin-reviews',
+          component: () => import('@/views/admin/AdminReviewView.vue'),
+          meta: { admin: true, title: '评价管理' },
+        },
+        {
+          path: 'users',
+          name: 'admin-users',
+          component: () => import('@/views/admin/AdminUserView.vue'),
+          meta: { admin: true, title: '用户管理' },
+        },
+        {
+          path: 'tickets',
+          name: 'admin-tickets',
+          component: () => import('@/views/admin/AdminTicketView.vue'),
+          meta: { admin: true, title: '客服工单' },
+        },
+      ],
+    },
+    {
       // 通配必须放最后：它匹配一切，放在前面会把所有路由都吃掉
       path: '/:pathMatch(.*)*',
       name: 'not-found',
@@ -170,6 +246,13 @@ router.beforeEach((to) => {
   if (!userStore.token) {
     // 带上原目标地址：登完回到被拦下的那一页，而不是一律丢回商城
     return { path: '/login', query: { redirect: to.fullPath } }
+  }
+
+  // 管理台的路由名与路径都带 admin 前缀，用 meta 判定而不是 `path.startsWith('/admin')`：
+  // 后者会在将来出现 `/administer` 之类的路径时静默放行
+  if (to.meta.admin && userStore.profile?.roleName !== 'ADMIN') {
+    ElMessage.error('需要管理员权限')
+    return { path: '/shop' }
   }
   return true
 })

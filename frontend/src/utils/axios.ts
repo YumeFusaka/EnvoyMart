@@ -29,7 +29,13 @@ instance.interceptors.response.use(
       return res
     }
     ElMessage({ message: res.data.msg || '服务异常', type: 'error' })
-    return Promise.reject(res.data)
+    // 抛 Error 而不是那个响应体对象：页面里写的是 `e instanceof Error ? e.message : '加载失败'`，
+    // 抛普通对象会让它们**全部**退化成「加载失败」，后端那句「商品不存在或已下架」就只剩
+    // 右上角一闪而过的提示，页面里留给用户重试的地方反而什么都不说。
+    // 收口在这里改一处，六个页面同时正确
+    const error = new Error(res.data.msg || '服务异常') as Error & { code?: number }
+    error.code = res.data.code
+    return Promise.reject(error)
   },
   (err) => {
     ElMessage({ message: err.response?.data?.data || err.response?.data?.msg || '服务异常', type: 'error' })

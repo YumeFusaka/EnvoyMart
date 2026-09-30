@@ -34,6 +34,9 @@ public class CategoryTreeAssembler {
             node.setLevel(entity.getLevel());
             node.setSort(entity.getSort());
             node.setStatus(entity.getStatus());
+            // 真实的挂载点，与它在树里被摆在哪个位置无关：父类目停用后子节点会被挂到根上，
+            // 那时候「树上的父」和「库里记的父」不是同一个（见 CategoryNode#parentId）
+            node.setParentId(entity.getParentId() == null ? 0L : entity.getParentId());
             nodes.put(entity.getId(), node);
         }
 

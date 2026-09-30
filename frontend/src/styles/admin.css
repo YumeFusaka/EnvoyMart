@@ -1,0 +1,277 @@
+/**
+ * 管理台共享样式。
+ *
+ * 八个列表页的骨架是同一个：筛选条 → 工具行 → 表格 → 分页。
+ * 这些类只描述**骨架**，不描述任何一个域的内容 —— 域自己的排版留在各自的组件里。
+ * 放在全局而不是每个页面 `<style scoped>` 里，是因为同一段留白规则抄八遍之后，
+ * 一定会有一两个页面悄悄用了别的数值，把「一套系统」变成「八个近似物」。
+ *
+ * 所有类名以 `admin-` 起头，避免与商城侧样式撞名。
+ */
+
+/* ==================== 面板 ==================== */
+
+.admin-panel {
+  background: var(--color-bg-surface);
+  border: var(--card-border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+}
+
+/* ==================== 筛选条 ==================== */
+
+.admin-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--ys-space-3);
+  padding: var(--ys-space-4) var(--ys-space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.admin-filters__item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.admin-filters__label {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+}
+
+/* 关键词这类需要宽一点，状态这类固定宽度就够。
+   用属性写宽度而不是给每个页面调 style，是为了让八个页面的输入框一样宽 */
+.admin-filters__item--wide {
+  flex: 1 1 220px;
+  max-width: 320px;
+}
+
+.admin-filters__item--narrow {
+  width: 140px;
+}
+
+.admin-filters__actions {
+  display: flex;
+  gap: var(--ys-space-2);
+  margin-inline-start: auto;
+}
+
+/* ==================== 工具行 ==================== */
+
+.admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ys-space-3);
+  padding: var(--ys-space-4) var(--ys-space-5) 0;
+}
+
+.admin-toolbar__title {
+  font-size: var(--ys-font-md);
+  font-weight: 600;
+}
+
+.admin-toolbar__count {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
+}
+
+.admin-toolbar__actions {
+  display: flex;
+  gap: var(--ys-space-2);
+  margin-inline-start: auto;
+}
+
+/* ==================== 表格 ==================== */
+
+.admin-table {
+  padding: var(--ys-space-3) var(--ys-space-5) 0;
+}
+
+/* 表格里的操作按钮排成一行，不在窄列里折行 */
+.admin-table__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-1);
+}
+
+.admin-cell--strong {
+  font-weight: 600;
+}
+
+.admin-cell--muted {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
+}
+
+.admin-cell--tiny {
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+}
+
+/* 金额、库存、编号：等宽数字，否则一列数字左右错位 */
+.admin-cell--num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 截断长文本。表格列宽有限，让它换行会把整张表的行高撑得参差不齐 */
+.admin-cell--ellipsis {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.admin-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ==================== 分页 ==================== */
+
+.admin-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--ys-space-4) var(--ys-space-5);
+}
+
+/* ==================== 抽屉详情 ==================== */
+
+.admin-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ys-space-5);
+}
+
+.admin-section__title {
+  margin-bottom: var(--ys-space-3);
+  padding-inline-start: var(--ys-space-2);
+  border-inline-start: 3px solid var(--color-primary);
+  font-size: var(--ys-font-base);
+  font-weight: 600;
+}
+
+/* 键值对。用 grid 而不是 el-descriptions：后者在抽屉的窄宽度里
+   会强行把 label 与 value 排成两列，长值要么被截断要么把表撑破 */
+.admin-kv {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: var(--ys-space-2) var(--ys-space-3);
+  font-size: var(--ys-font-sm);
+}
+
+.admin-kv__key {
+  color: var(--color-text-secondary);
+}
+
+.admin-kv__value {
+  color: var(--color-text-primary);
+  word-break: break-word;
+}
+
+/* ==================== 时间线（状态流水） ==================== */
+
+.admin-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ys-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-timeline__item {
+  position: relative;
+  padding-inline-start: var(--ys-space-5);
+  font-size: var(--ys-font-sm);
+}
+
+.admin-timeline__item::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 3px;
+  top: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--ys-radius-full);
+  background: var(--color-primary);
+}
+
+/* 竖线连着圆点。最后一个不画，避免线尾悬在半空 */
+.admin-timeline__item:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  inset-inline-start: 6px;
+  top: 15px;
+  bottom: calc(-1 * var(--ys-space-3));
+  width: 1px;
+  background: var(--color-border);
+}
+
+.admin-timeline__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ys-space-2);
+}
+
+.admin-timeline__time {
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-timeline__body {
+  color: var(--color-text-secondary);
+  word-break: break-word;
+}
+
+/* ==================== 对话框内的表单 ==================== */
+
+.admin-dialog__hint {
+  margin-top: var(--ys-space-2);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+}
+
+.admin-dialog__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ys-space-2);
+}
+
+/* ==================== 空态 ==================== */
+
+.admin-empty {
+  padding: var(--ys-space-10) 0;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-sm);
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .admin-filters,
+  .admin-toolbar,
+  .admin-table {
+    padding-inline: var(--ys-space-4);
+  }
+
+  .admin-pager {
+    padding-inline: var(--ys-space-4);
+  }
+
+  .admin-kv {
+    grid-template-columns: 1fr;
+    gap: 2px var(--ys-space-3);
+  }
+
+  .admin-kv__key {
+    margin-top: var(--ys-space-2);
+  }
+}

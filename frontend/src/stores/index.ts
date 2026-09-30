@@ -13,3 +13,5 @@ export default pinia
 // 注意购物车**不持久化**：它是服务端数据，本地缓存一份只会在多端操作时给出陈旧结果
 export * from './modules/user.ts'
 export * from './modules/cart.ts'
+// 管理台的待办计数同样不持久化：待办是「现在有多少」，存下来的一律是过去的
+export * from './modules/admin.ts'
