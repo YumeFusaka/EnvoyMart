@@ -44,6 +44,8 @@
         <lombok.version>1.18.42</lombok.version>
         <!-- 知识图谱驱动。5.26 与服务端镜像 neo4j:5.26-community 同一条线 -->
         <neo4j.driver.version>5.26.0</neo4j.driver.version>
+        <!-- HTML 白名单净化（商品详情正文）。见 product-service 的 HtmlSanitizer -->
+        <jsoup.version>1.21.1</jsoup.version>
     </properties>
 
     <dependencyManagement>

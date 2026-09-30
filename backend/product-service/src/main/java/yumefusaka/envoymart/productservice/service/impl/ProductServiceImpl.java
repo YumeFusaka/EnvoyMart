@@ -6,35 +6,23 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import yumefusaka.envoymart.common.result.PageResult;
-import yumefusaka.envoymart.productservice.entity.ProductAttributeEntity;
+import yumefusaka.envoymart.productservice.content.HtmlSanitizer;
 import yumefusaka.envoymart.productservice.entity.ProductSkuEntity;
-import yumefusaka.envoymart.productservice.entity.ProductSpecEntity;
-import yumefusaka.envoymart.productservice.entity.ProductSpecValueEntity;
 import yumefusaka.envoymart.productservice.entity.ProductSpuEntity;
-import yumefusaka.envoymart.productservice.entity.SpuAttributeValueEntity;
-import yumefusaka.envoymart.productservice.mapper.ProductAttributeMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSkuMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSkuSpecMapper;
-import yumefusaka.envoymart.productservice.mapper.ProductSpecMapper;
-import yumefusaka.envoymart.productservice.mapper.ProductSpecValueMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSpuMapper;
-import yumefusaka.envoymart.productservice.mapper.SpuAttributeValueMapper;
-import yumefusaka.envoymart.contract.AttributeView;
 import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.productservice.model.ProductQuery;
 import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.productservice.model.SkuSpecView;
 import yumefusaka.envoymart.contract.SkuSnapshot;
 import yumefusaka.envoymart.contract.SkuView;
-import yumefusaka.envoymart.contract.SpecGroup;
 import yumefusaka.envoymart.productservice.service.CategoryService;
 import yumefusaka.envoymart.productservice.service.ProductService;
 
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -69,32 +57,24 @@ public class ProductServiceImpl implements ProductService {
 
     private final ProductSpuMapper spuMapper;
     private final ProductSkuMapper skuMapper;
-    private final ProductSpecMapper specMapper;
-    private final ProductSpecValueMapper specValueMapper;
     private final ProductSkuSpecMapper skuSpecMapper;
-    private final ProductAttributeMapper attributeMapper;
-    private final SpuAttributeValueMapper spuAttributeValueMapper;
     private final ProductCacheService cacheService;
     private final CategoryService categoryService;
+    /** 规格组、参数、SKU 视图的组装 —— 与管理端的详情共用同一份实现 */
+    private final ProductAssembler assembler;
 
     public ProductServiceImpl(ProductSpuMapper spuMapper,
                               ProductSkuMapper skuMapper,
-                              ProductSpecMapper specMapper,
-                              ProductSpecValueMapper specValueMapper,
                               ProductSkuSpecMapper skuSpecMapper,
-                              ProductAttributeMapper attributeMapper,
-                              SpuAttributeValueMapper spuAttributeValueMapper,
                               ProductCacheService cacheService,
-                              CategoryService categoryService) {
+                              CategoryService categoryService,
+                              ProductAssembler assembler) {
         this.spuMapper = spuMapper;
         this.skuMapper = skuMapper;
-        this.specMapper = specMapper;
-        this.specValueMapper = specValueMapper;
         this.skuSpecMapper = skuSpecMapper;
-        this.attributeMapper = attributeMapper;
-        this.spuAttributeValueMapper = spuAttributeValueMapper;
         this.cacheService = cacheService;
         this.categoryService = categoryService;
+        this.assembler = assembler;
     }
 
     @Override
@@ -118,10 +98,23 @@ public class ProductServiceImpl implements ProductService {
         return withLiveStock(cached);
     }
 
-    /** 回源。返回 null 表示商品不存在，缓存层据此写入空值哨兵，挡住对不存在 id 的反复穿透 */
+    /**
+     * 回源。返回 null 表示商品不存在，缓存层据此写入空值哨兵，挡住对不存在 id 的反复穿透。
+     * <p>
+     * <b>下架商品在这里等同于「不存在」</b>。此前这个方法不看 status，于是上下架只是一个
+     * 存在库里、没有任何作用的字段——下架商品照样能被直接 URL 打开。把判定放在这一层，
+     * 是因为它是公开读的<b>唯一入口</b>：列表、搜索、详情都从这里或同类条件过；
+     * 只在控制器上加判断的话，将来任何一个新的读入口都会绕过它。
+     * <p>
+     * 注意缓存键不变：状态一变就 evict（见 {@code ProductAdminService}），
+     * 所以「下架后读到旧详情」的窗口就是那次 evict 之前，不存在长期悬挂的旧值。
+     */
     private ProductDetail loadDetail(Long spuId) {
         ProductSpuEntity spu = spuMapper.selectById(spuId);
-        return spu == null ? null : buildDetail(spu);
+        if (spu == null || !Integer.valueOf(STATUS_ON).equals(spu.getStatus())) {
+            return null;
+        }
+        return buildDetail(spu);
     }
 
     private ProductDetail buildDetail(ProductSpuEntity spu) {
@@ -146,16 +139,18 @@ public class ProductServiceImpl implements ProductService {
                 .brandId(spu.getBrandId())
                 .brandName(brandNames.get(spu.getBrandId()))
                 .mainImage(spu.getMainImage())
-                .images(splitByComma(spu.getImages()))
-                .detailHtml(spu.getDetailHtml())
+                .images(ProductAssembler.splitByComma(spu.getImages()))
+                // 读路径也过一遍净化：写入侧已经净化，这一层兜的是「净化上线前写进去的数据」
+                // 和「绕过接口直接改库」。详情走缓存，所以它随缓存重建发生，不是每请求一次
+                .detailHtml(HtmlSanitizer.clean(spu.getDetailHtml()))
                 .status(spu.getStatus())
                 .tags(ProductSummary.parseTags(spu.getTags()))
                 .sales(spu.getSales())
                 .ratingAvg(spu.getRatingAvg())
                 .reviewCount(spu.getReviewCount())
-                .specs(buildSpecGroups(spuId))
-                .skus(buildSkuViews(skus))
-                .attributes(buildAttributes(spuId))
+                .specs(assembler.specGroups(spuId))
+                .skus(assembler.skuViews(skus))
+                .attributes(assembler.attributes(spuId))
                 .build();
     }
 
@@ -390,106 +385,4 @@ public class ProductServiceImpl implements ProductService {
                 .build();
     }
 
-    private List<SpecGroup> buildSpecGroups(Long spuId) {
-        List<ProductSpecEntity> specs = specMapper.selectList(new LambdaQueryWrapper<ProductSpecEntity>()
-                .eq(ProductSpecEntity::getSpuId, spuId)
-                .orderByAsc(ProductSpecEntity::getSort)
-                .orderByAsc(ProductSpecEntity::getId));
-        if (specs.isEmpty()) {
-            return List.of();
-        }
-
-        List<Long> specIds = specs.stream().map(ProductSpecEntity::getId).toList();
-        Map<Long, List<ProductSpecValueEntity>> valuesBySpec = specValueMapper.selectList(
-                        new LambdaQueryWrapper<ProductSpecValueEntity>()
-                                .in(ProductSpecValueEntity::getSpecId, specIds)
-                                .orderByAsc(ProductSpecValueEntity::getSort)
-                                .orderByAsc(ProductSpecValueEntity::getId))
-                .stream()
-                .collect(Collectors.groupingBy(ProductSpecValueEntity::getSpecId));
-
-        return specs.stream()
-                .map(spec -> SpecGroup.builder()
-                        .specId(spec.getId())
-                        .name(spec.getName())
-                        .values(valuesBySpec.getOrDefault(spec.getId(), List.of()).stream()
-                                .map(value -> SpecGroup.Value.builder()
-                                        .id(value.getId())
-                                        .value(value.getSpecValue())
-                                        .build())
-                                .toList())
-                        .build())
-                .toList();
-    }
-
-    private List<SkuView> buildSkuViews(List<ProductSkuEntity> skus) {
-        if (skus.isEmpty()) {
-            return List.of();
-        }
-        List<Long> skuIds = skus.stream().map(ProductSkuEntity::getId).toList();
-        Map<Long, List<SkuSpecView>> specsBySku = skuSpecMapper.selectBySkuIds(skuIds).stream()
-                .collect(Collectors.groupingBy(SkuSpecView::getSkuId));
-
-        return skus.stream()
-                .map(sku -> {
-                    List<SkuSpecView> specs = specsBySku.getOrDefault(sku.getId(), List.of());
-                    return SkuView.builder()
-                            .id(sku.getId())
-                            .skuCode(sku.getSkuCode())
-                            .price(sku.getPrice())
-                            .originalPrice(sku.getOriginalPrice())
-                            .stock(sku.getStock())
-                            .image(sku.getImage())
-                            .specValueIds(specs.stream().map(SkuSpecView::getSpecValueId).toList())
-                            .specText(specs.stream()
-                                    .map(s -> s.getSpecName() + ":" + s.getSpecValue())
-                                    .collect(Collectors.joining(";")))
-                            .build();
-                })
-                .toList();
-    }
-
-    private List<AttributeView> buildAttributes(Long spuId) {
-        List<SpuAttributeValueEntity> values = spuAttributeValueMapper.selectList(
-                new LambdaQueryWrapper<SpuAttributeValueEntity>()
-                        .eq(SpuAttributeValueEntity::getSpuId, spuId));
-        if (values.isEmpty()) {
-            return List.of();
-        }
-
-        Map<Long, ProductAttributeEntity> attributes = attributeMapper.selectByIds(
-                        values.stream().map(SpuAttributeValueEntity::getAttributeId)
-                                .collect(Collectors.toSet()))
-                .stream()
-                .collect(Collectors.toMap(ProductAttributeEntity::getId, attribute -> attribute));
-
-        return values.stream()
-                .map(value -> {
-                    ProductAttributeEntity attribute = attributes.get(value.getAttributeId());
-                    if (attribute == null) {
-                        // 属性定义被删了但取值还留着。跳过而不是抛错：
-                        // 一条脏数据不该让整个详情页打不开
-                        return null;
-                    }
-                    return AttributeView.builder()
-                            .attributeId(attribute.getId())
-                            .name(attribute.getName())
-                            .value(value.getAttrValue())
-                            .unit(attribute.getUnit())
-                            .build();
-                })
-                .filter(Objects::nonNull)
-                .sorted(Comparator.comparing(AttributeView::getAttributeId))
-                .toList();
-    }
-
-    private List<String> splitByComma(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return List.of();
-        }
-        return Arrays.stream(raw.split(","))
-                .map(String::trim)
-                .filter(part -> !part.isEmpty())
-                .toList();
-    }
 }

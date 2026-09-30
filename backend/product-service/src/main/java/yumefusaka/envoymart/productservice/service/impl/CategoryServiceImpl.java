@@ -12,7 +12,6 @@ import yumefusaka.envoymart.productservice.service.CategoryService;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -26,44 +25,22 @@ public class CategoryServiceImpl implements CategoryService {
 
     private final CategoryMapper categoryMapper;
     private final BrandMapper brandMapper;
+    private final CategoryTreeAssembler treeAssembler;
 
-    public CategoryServiceImpl(CategoryMapper categoryMapper, BrandMapper brandMapper) {
+    public CategoryServiceImpl(CategoryMapper categoryMapper,
+                               BrandMapper brandMapper,
+                               CategoryTreeAssembler treeAssembler) {
         this.categoryMapper = categoryMapper;
         this.brandMapper = brandMapper;
+        this.treeAssembler = treeAssembler;
     }
 
     @Override
     public List<CategoryNode> tree() {
-        List<CategoryEntity> all = categoryMapper.selectList(new LambdaQueryWrapper<CategoryEntity>()
+        return treeAssembler.build(categoryMapper.selectList(new LambdaQueryWrapper<CategoryEntity>()
                 .eq(CategoryEntity::getStatus, STATUS_ENABLED)
                 .orderByAsc(CategoryEntity::getSort)
-                .orderByAsc(CategoryEntity::getId));
-
-        // 一次查完在内存里挂子树：类目总量是几十条量级，
-        // 逐层查库的往返开销远大于这一步
-        Map<Long, CategoryNode> nodes = new LinkedHashMap<>();
-        for (CategoryEntity entity : all) {
-            CategoryNode node = new CategoryNode();
-            node.setId(entity.getId());
-            node.setName(entity.getName());
-            node.setLevel(entity.getLevel());
-            node.setSort(entity.getSort());
-            nodes.put(entity.getId(), node);
-        }
-
-        List<CategoryNode> roots = new ArrayList<>();
-        for (CategoryEntity entity : all) {
-            CategoryNode node = nodes.get(entity.getId());
-            CategoryNode parent = entity.getParentId() == null ? null : nodes.get(entity.getParentId());
-            if (parent == null) {
-                // 顶级类目（parentId = 0），或父节点被停用而成了孤儿。后者也让它留在根上：
-                // 藏起来的话整棵子树会从界面上消失，而数据其实还在，排查时很难想到是这里
-                roots.add(node);
-            } else {
-                parent.getChildren().add(node);
-            }
-        }
-        return roots;
+                .orderByAsc(CategoryEntity::getId)));
     }
 
     @Override

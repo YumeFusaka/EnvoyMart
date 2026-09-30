@@ -85,6 +85,18 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-elasticsearch</artifactId>
         </dependency>
+        <!--
+            商品详情正文的 HTML 净化。
+            详情正文是**管理员录入、所有访客渲染**的内容（前端 v-html），是典型的存储型 XSS 入口。
+            净化必须走成熟的白名单实现：手写正则净化在 `<scr<script>ipt>` 这类畸形嵌套上会漏，
+            而漏一次就等于没有。jsoup 体积小、无传递依赖，Safelist 就是为这件事设计的。
+            替代方案（自研解析器）成本更高且更不可靠；只存纯文本则丢失了标题/段落的结构。
+        -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>${jsoup.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
