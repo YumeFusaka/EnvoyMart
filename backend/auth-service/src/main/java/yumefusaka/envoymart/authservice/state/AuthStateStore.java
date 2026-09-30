@@ -4,8 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
-import yumefusaka.envoymart.authservice.entity.UserEntity;
-import yumefusaka.envoymart.authservice.model.UserRoles;
 import yumefusaka.envoymart.common.web.AuthState;
 
 import java.util.Map;
@@ -18,13 +16,16 @@ import java.util.Map;
  * （本项目 TTL 是 7 天）。那等于没禁用——一个被禁用的账号仍然能下单、能看自己的订单，
  * 而且界面上一切正常。
  * <p>
- * <b>存什么</b>：只有<b>被改动过</b>的用户才在这个哈希里（field = userId，
+ * <b>存什么</b>：只有<b>被管理操作改动过</b>的用户才在这个哈希里（field = userId，
  * value = {@code status|role}）。没被改动过的用户查不到，网关就按 Token 里的角色放行。
- * 这个「只存异常」的形状是有意的：
+ * 这个「只存被改动过的人」的形状是有意的：
  * <ul>
  *   <li>正常用户零额外存储，也不需要预热全量用户；</li>
- *   <li>Redis 被清空后，唯一丢失的是「已禁用用户仍然被拒」这一条——而它会被
- *       {@link #syncFromDatabase} 在下次启动时补回来，登录链路也始终查库；</li>
+ *   <li>记录一旦写下就是权威的——它同时覆盖「禁用未生效」与「降权被旧 Token 绕过」两类问题，
+ *       所以 {@link #reconcileFromLogin} 不会因为「库里看着是正常的」就把它删掉（见那里的说明）；</li>
+ *   <li>Redis 被清空后，丢失的是「被改动过的用户按新身份判权」这一条——而它会被
+ *       {@link #syncFromDatabase} 在下次启动时补回来（只覆盖禁用与非常规角色，
+ *       降权成 USER 的人补不回来，那需要人工重新处置）；</li>
  *   <li>「查不到就放行」让 Redis 故障时退化成「回到只有 JWT 的旧行为」，
  *       而不是「全站用户突然都登不上」。</li>
  * </ul>
@@ -58,34 +59,50 @@ public class AuthStateStore {
     /**
      * 把 Redis 里的认证态对齐到「刚刚查库得到的真相」。登录成功后调一次。
      * <p>
-     * 这是一个便宜的自愈点：登录成功本身就是「库里这个账号是启用状态」的证明，
-     * 顺手把陈旧条目纠回来。要纠的场景很窄——管理操作里 Redis 写成功、而事务最后提交失败，
-     * 于是 Redis 记着「已禁用」而库里其实没变。此时那个用户会在下次登录成功后立刻恢复正常，
-     * 而不是一直被判为禁用直到服务重启。
+     * 这是一个便宜的自愈点，要纠的场景很窄——管理操作里 Redis 写成功、而事务最后提交失败，
+     * 于是 Redis 记着「已禁用/旧角色」而库里其实没变。此时那个用户会在下次登录成功后恢复正常，
+     * 而不是一直被判错到服务重启。
+     * <p>
+     * <b>只有「记录与库不一致」才改写，一致的记录一律原样留着。</b>这一点是被一次真实漏洞
+     * 逼出来的（曾经这里对「启用 + USER」直接删记录）：
+     * <ul>
+     *   <li>删除的语义是「这个用户从没被管理操作碰过，Token 里的角色就是当前的」——
+     *       网关查不到记录时会退回 Token 里的 {@code role} 快照（见 {@code JwtGatewayFilter}）。</li>
+     *   <li>但「被降权成 USER」的库状态，与「从没被碰过」的库状态<b>一模一样</b>。
+     *       于是被降级的人只要自己重新登录一次（不需要任何特权），就把降权留下的
+     *       {@code 1|USER} 擦掉，手里那张还没过期的 ADMIN Token 立刻重新拿到全部管理权限——
+     *       撤销被静默回滚，而且网关的回落分支不写日志，事后查不出来。</li>
+     *   <li>记录因此是「这个用户被改动过」的唯一凭证，不能靠比对库状态推断出来，
+     *       只能留在原地。</li>
+     * </ul>
+     * 禁用不走这条路径：被禁用的账号登录时在上游就被挡住了，根本到不了这里。
      * <p>
      * 失败只记警告：登录是主链路，不能因为 Redis 抖一下就登不上——那正是本类
      * 「读侧降级」要避免的事情。
+     * <p>
+     * ponytail: 记录只增不减，规模 = 被管理操作碰过的用户数。要回收得给值加上改写时间，
+     * 清扫掉超过 JWT TTL 的条目（那时它们护着的旧 Token 都已过期）；量级上去再做。
      */
     public void reconcileFromLogin(String userId, int status, String role) {
         try {
-            if (isNormal(status, role)) {
-                // 正常态不该留在哈希里。用 remove 而不是 put("1|USER")：
-                // 让「查不到就放行」这条降级路径继续覆盖绝大多数用户
-                if (Boolean.TRUE.equals(redisTemplate.opsForHash().hasKey(AuthState.KEY, userId))) {
-                    redisTemplate.opsForHash().delete(AuthState.KEY, userId);
-                    log.info("[AuthState] 登录纠正：清除陈旧的认证态 userId={}", userId);
-                }
-            } else {
-                publish(userId, status, role);
+            Object raw = redisTemplate.opsForHash().get(AuthState.KEY, userId);
+            if (raw == null) {
+                // 没有记录 = 这个用户从没被管理操作碰过，Token 里的角色就是当前的。
+                // 什么都不写：绝大多数用户走这条路径，哈希里只有被改动过的人才占位
+                return;
             }
+            String current = raw.toString();
+            if (current.equals(AuthState.format(status, role))) {
+                return;
+            }
+            // 不一致 = 陈旧条目（Redis 写成功而事务回滚）。以库为准覆盖，
+            // 而不是删除：删除等于把判断权交回给 Token 快照，那正是上面说的那个漏洞
+            publish(userId, status, role);
+            log.info("[AuthState] 登录纠正陈旧认证态: userId={}, {} -> {}",
+                    userId, current, AuthState.format(status, role));
         } catch (Exception e) {
             log.warn("[AuthState] 登录纠正失败（不影响本次登录）userId={}", userId, e);
         }
-    }
-
-    /** 「正常态」的定义：启用且默认角色。与网关「查不到就按 Token 放行」是同一件事的两面 */
-    public static boolean isNormal(int status, String role) {
-        return status == UserEntity.STATUS_ENABLED && UserRoles.USER.equals(role);
     }
 
     /**

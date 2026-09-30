@@ -5,6 +5,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 
+import java.sql.SQLException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -92,5 +93,63 @@ class GlobalExceptionHandlerTest {
                 .as("内网地址与部署细节只能进日志，不能回给调用方")
                 .doesNotContain("127.0.0.1")
                 .doesNotContain("9200");
+    }
+
+    /**
+     * 值太长塞不进列 —— 这条是实测撞出来的：接口契约写「详情正文最长 20 万字符」，
+     * 而列是 MySQL {@code text}（65535 <b>字节</b>），校验放行、落库报错，
+     * 客户端拿到的是「服务暂时不可用，请稍后再试」，而这是缩短一下正文就能成功的事。
+     */
+    @Test
+    void 值超长回400而不是500() {
+        var result = handler.handleUnknown(wrap(new SQLException(
+                "Data truncation: Data too long for column 'detail_html' at row 1", "22001")));
+
+        assertThat(result.getCode())
+                .as("缩短内容就能成功，是客户端问题，不该拉响服务端告警")
+                .isEqualTo(400);
+        assertThat(result.getMsg())
+                .as("列名和 SQL 语句不能出现在给用户的文案里")
+                .doesNotContain("detail_html")
+                .doesNotContain("Data truncation");
+    }
+
+    @Test
+    void 唯一键冲突回400而不是500() {
+        var result = handler.handleUnknown(wrap(new SQLException(
+                "Duplicate entry 'DUP-1' for key 'product_spu.uk_spu_code'", "23000")));
+
+        assertThat(result.getCode()).isEqualTo(400);
+        assertThat(result.getMsg()).doesNotContain("uk_spu_code");
+    }
+
+    /**
+     * 真实链路上，MyBatis 与 Spring 的异常翻译会套好几层，
+     * {@code SQLException} 未必就在最外层 —— 只认最外层等于这个处理器在线上从不生效。
+     */
+    @Test
+    void 深层原因里的SQLException同样能被认出() {
+        var result = handler.handleUnknown(
+                new RuntimeException("service layer", wrap(new SQLException("too long", "22001"))));
+
+        assertThat(result.getCode()).isEqualTo(400);
+    }
+
+    /**
+     * 反向：不能把无关异常也当成「客户端写错了」——
+     * 那会把真正的服务端故障报成 400，调用方于是不再重试也不再告警。
+     */
+    @Test
+    void 无关异常仍然回500() {
+        assertThat(handler.handleUnknown(new RuntimeException("ES 连不上", new RuntimeException("超时")))
+                .getCode()).isEqualTo(500);
+        assertThat(handler.handleUnknown(new IllegalArgumentException())
+                .getCode()).as("SQLState 解析不出来时按兜底走，不能靠猜")
+                .isEqualTo(500);
+    }
+
+    /** 模拟 Spring / MyBatis 的异常包装层次 */
+    private static RuntimeException wrap(Throwable cause) {
+        return new RuntimeException("translated by the persistence layer", cause);
     }
 }

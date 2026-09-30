@@ -186,9 +186,15 @@ public class UserAdminServiceImpl implements UserAdminService {
      * 禁用自己之后没法再登录，降权自己之后没有了管理权限，两种情况下撤销操作所需的权限
      * 恰好就是刚刚丢掉的那一个。这类操作只能由另一个管理员来做，而「另一个管理员」
      * 是否存在是外部事实，服务层不该假设。
+     * <p>
+     * <b>大小写不敏感</b>：{@code id} 列在 MySQL 默认 collation（{@code utf8mb4_0900_ai_ci}）下
+     * 比较是不分大小写的，所以 {@code selectById("U1001")} 照样命中 {@code u1001} 那一行。
+     * 用区分大小写的 {@code equals} 判自己，就留下一条「把路径里的 id 换成大写」的绕过路径——
+     * 改动照常落库，自我保护被跳过，而审计里 operator 与 target 明明是同一行。
+     * 比较口径必须与真正决定「改的是哪一行」的那次查询一致。
      */
     private void rejectSelfOperation(String userId, String operatorId, String what) {
-        if (userId.equals(operatorId)) {
+        if (userId.equalsIgnoreCase(operatorId)) {
             throw new IllegalStateException("不能修改自己的" + what + "：改动一旦生效，你自己无法撤销它");
         }
     }

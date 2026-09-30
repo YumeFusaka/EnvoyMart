@@ -44,7 +44,16 @@ create table if not exists product_spu (
     main_image varchar(512),
     -- 轮播图，逗号分隔。图片只用于展示、不参与查询条件，因此不做规范化
     images varchar(2048),
-    detail_html text,
+    -- mediumtext 而不是 text：MySQL 里 text 的上限是 65535 **字节**（注意不是字符），
+    -- 中文按 utf8mb4 每字 4 字节算，约 1.6 万字就顶到上限；而接口契约允许 20 万字符。
+    -- 两者对不上时的表现是：保存商品返回 500，日志里只有一句
+    -- `Data truncation: Data too long for column 'detail_html'`。
+    -- mediumtext 是 16MB，装得下契约允许的最大值。
+    --
+    -- 注意：本文件全部是 create table if not exists，对**已经存在的库**不会改列。
+    -- 老库需要手工执行一次
+    --   alter table product_spu modify detail_html mediumtext;
+    detail_html mediumtext,
     -- 营销标签（"热销" "新品"），逗号分隔。与「属性」的区别：属性描述事实，
     -- 标签服务于运营，所以它不挂类目、也没有候选项约束
     tags varchar(255),

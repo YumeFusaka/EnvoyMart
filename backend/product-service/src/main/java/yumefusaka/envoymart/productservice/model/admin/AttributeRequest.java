@@ -19,6 +19,7 @@ public class AttributeRequest {
     private Long attributeId;
 
     @NotBlank(message = "参数值不能为空")
-    @Size(max = 500, message = "参数值最长 500 个字符")
+    /** 上限对齐 {@code product_attribute_value.attr_value varchar(255)}——超过就是落库时 500 */
+    @Size(max = 255, message = "参数值最长 255 个字符")
     private String value;
 }

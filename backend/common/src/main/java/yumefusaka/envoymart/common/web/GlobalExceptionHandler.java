@@ -2,6 +2,7 @@ package yumefusaka.envoymart.common.web;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindException;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
@@ -14,6 +15,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import yumefusaka.envoymart.common.result.Result;
+
+import java.sql.SQLException;
 
 /**
  * 业务服务的统一异常出口。
@@ -176,6 +179,23 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 请求体读不出来 —— 不是合法 JSON，或者超出了 {@link RequestSizeLimitFilter} 之外的
+     * 解析层限制。
+     * <p>
+     * 与上面几条同族：问题在调用方，重试无用。原先是落到兜底分支的，于是
+     * 「报文超长」被报成「服务暂时不可用，请稍后再试」——调用方会一直重试同一个必然失败的请求，
+     * 而监控上看起来是服务端在故障。
+     * <p>
+     * <b>不回原始消息</b>：Jackson 的解析异常里带着出错位置与上下文片段，
+     * 而这段报文可能正是别人的敏感数据；这里只需要告诉调用方「这报文我读不了」。
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public Result<String> handleUnreadableBody(HttpMessageNotReadableException exception) {
+        log.warn("Unreadable request body: {}", exception.getMessage());
+        return Result.error(400, "请求体格式不正确或内容过大");
+    }
+
+    /**
      * 兜底 —— 非预期异常。
      * <p>
      * 原先直接把 {@code exception.getMessage()} 回给调用方，实测会把内网地址和部署细节
@@ -183,10 +203,56 @@ public class GlobalExceptionHandler {
      * 「Connect to http://127.0.0.1:9200 [/127.0.0.1] failed: Connection refused」，
      * 而且这个接口是<b>匿名可达</b>的。调用方既不能据此重试，也不该知道内网拓扑；
      * 真正的排障信息留在服务端日志里。
+     * <p>
+     * <b>但「数据库说这条数据不合规」要在这一层被认出来</b>，见
+     * {@link #describeConstraintViolation}。它落到这里就变成 500，而 500 在监控里
+     * 是服务端故障的信号——为客户端写错的东西拉响服务端告警，是这个类从第一行起就在避免的事。
      */
     @ExceptionHandler(Exception.class)
     public Result<String> handleUnknown(Exception exception) {
+        String constraint = describeConstraintViolation(exception);
+        if (constraint != null) {
+            log.warn("Constraint violation: {}", exception.getMessage());
+            return Result.error(400, constraint);
+        }
         log.error("Unhandled exception", exception);
         return Result.error(500, "服务暂时不可用，请稍后再试");
+    }
+
+    /**
+     * 从异常链里认出「这一次写入是调用方的数据不合规」，返回给调用方的一句话；认不出返回 null。
+     * <p>
+     * 两类：<b>值太长塞不进列</b>（SQLState 22001）和<b>唯一键/外键冲突</b>（23000）。
+     * 两者都<b>只可能由请求内容决定</b>——缩短字段、换个编码重试就好了——所以是 400 而不是 500。
+     * 实测撞到过前者：接口契约写「详情正文最长 20 万字符」，而列是 MySQL {@code text}
+     * （上限 65535 <b>字节</b>），于是校验放行、落库报错，客户端拿到的是
+     * 「服务暂时不可用」，日志里只有一句 {@code Data too long for column 'detail_html'}。
+     * <p>
+     * <b>为什么在这里翻异常链，而不是直接 {@code @ExceptionHandler(DataIntegrityViolationException.class)}</b>：
+     * 那个类来自 spring-tx，而 {@code common} 没有这个依赖（它只带 spring-web / spring-webmvc）。
+     * 把依赖加成 optional 也不成立——Spring 在<i>启动时</i>就要解析 {@code @ExceptionHandler}
+     * 上的类型，缺少该类的服务会直接起不来。<b>依赖可以可选，启动期的类型解析不能。</b>
+     * {@link SQLException} 在 JDK 里，永远都在。
+     * <p>
+     * SQLState 是 MySQL 的口径，本项目的数据源就是 MySQL。换库时这一处要跟着改——
+     * 值得的代价是：换库时你会看见这段注释，而不是在线上盯着一条没人看得懂的 500。
+     */
+    private static String describeConstraintViolation(Throwable exception) {
+        for (Throwable t = exception; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (!(t instanceof SQLException sql)) {
+                continue;
+            }
+            String state = sql.getSQLState();
+            if (state == null) {
+                continue;
+            }
+            if (state.startsWith("22")) {
+                return "提交的内容超出长度或取值范围限制，请检查后重试";
+            }
+            if (state.startsWith("23")) {
+                return "该数据已存在或与已有数据冲突，请勿重复提交";
+            }
+        }
+        return null;
     }
 }

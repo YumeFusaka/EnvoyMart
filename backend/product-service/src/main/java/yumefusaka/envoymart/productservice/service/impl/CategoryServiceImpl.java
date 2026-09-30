@@ -12,6 +12,8 @@ import yumefusaka.envoymart.productservice.service.CategoryService;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -87,7 +89,7 @@ public class CategoryServiceImpl implements CategoryService {
     public Map<Long, String> categoryNames(Collection<Long> ids) {
         Set<Long> cleaned = cleanIds(ids);
         if (cleaned.isEmpty()) {
-            return Map.of();
+            return EMPTY_LOOKUP;
         }
         return categoryMapper.selectByIds(cleaned).stream()
                 .collect(Collectors.toMap(CategoryEntity::getId, CategoryEntity::getName));
@@ -97,11 +99,26 @@ public class CategoryServiceImpl implements CategoryService {
     public Map<Long, String> brandNames(Collection<Long> ids) {
         Set<Long> cleaned = cleanIds(ids);
         if (cleaned.isEmpty()) {
-            return Map.of();
+            return EMPTY_LOOKUP;
         }
         return brandMapper.selectByIds(cleaned).stream()
                 .collect(Collectors.toMap(BrandEntity::getId, BrandEntity::getName));
     }
+
+    /**
+     * 「什么都没查到」时返回的空表。
+     * <p>
+     * <b>不能用 {@code Map.of()}</b>：调用方拿到这张表后会直接
+     * {@code get(spu.getBrandId())}，而 {@link #cleanIds} 的注释已经写明「品牌可以为空、
+     * null 必然出现」。不可变空表（{@code Map.of()}、{@code Collections.emptyMap()}）
+     * 的 {@code get(null)} 抛 {@link NullPointerException} 而不是返回 null ——
+     * 于是「这一页商品恰好都没有品牌」会让整个管理端商品列表报 500，
+     * 而错误信息里只有一句 NullPointerException，看不出跟品牌有什么关系。
+     * <p>
+     * 这里用的是可接受 null 键的 {@link HashMap}（再包一层只读视图），
+     * 语义与「查了但没有」一致：<b>返回 null，不抛异常</b>。
+     */
+    private static final Map<Long, String> EMPTY_LOOKUP = Collections.unmodifiableMap(new HashMap<>());
 
     /**
      * 剔除 null 再查。
