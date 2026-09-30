@@ -185,6 +185,18 @@ public class InMemoryVectorStore implements VectorStore {
     }
 
     @Override
+    public void deleteByIds(List<String> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return;
+        }
+        // 只删真删掉的：本来就不在库里的 id 不会让索引失效，白重建一次聚类
+        boolean removed = store.keySet().removeAll(chunkIds);
+        if (removed) {
+            indexed = false;
+        }
+    }
+
+    @Override
     public void removeAll() {
         store.clear();
         indexed = false;

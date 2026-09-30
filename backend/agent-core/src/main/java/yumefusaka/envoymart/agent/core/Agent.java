@@ -11,6 +11,7 @@ import yumefusaka.envoymart.agent.llm.ChatMessage;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopBudget;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
+import yumefusaka.envoymart.agent.memory.ContextBudget;
 import yumefusaka.envoymart.agent.memory.Memory;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.MemoryItem;
@@ -276,12 +277,17 @@ public class Agent {
     }
 
     private List<ChatMessage> recentConversation(String scopedSessionId) {
-        return shortTermMemory.recent(scopedSessionId, config.getMemoryWindow()).stream()
-                .map(m -> ChatMessage.builder()
-                        .role(m.getContent().startsWith("user:") ? ChatMessage.Role.USER : ChatMessage.Role.ASSISTANT)
-                        .content(m.getContent().replaceAll("^(user:|assistant:)", "").trim())
-                        .build())
-                .toList();
+        // 窗口按条数取，再按 token 裁一刀：条数是「最多几条」，token 才是「最多多大」。
+        // 只有条数上限时，一条长消息就能把输入撑到几万 token 而不报错
+        return ContextBudget.fit(
+                shortTermMemory.recent(scopedSessionId, config.getMemoryWindow()).stream()
+                        .map(m -> ChatMessage.builder()
+                                .role(m.getContent().startsWith("user:")
+                                        ? ChatMessage.Role.USER : ChatMessage.Role.ASSISTANT)
+                                .content(m.getContent().replaceAll("^(user:|assistant:)", "").trim())
+                                .build())
+                        .toList(),
+                ContextBudget.DEFAULT_HISTORY_TOKENS);
     }
 
     private void emit(Consumer<String> onChunk, String text) {

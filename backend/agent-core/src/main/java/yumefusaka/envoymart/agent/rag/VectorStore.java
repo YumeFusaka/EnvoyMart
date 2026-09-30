@@ -23,6 +23,16 @@ public interface VectorStore {
     void deleteByDocId(String docId);
 
     /**
+     * 按切片 id 删除。
+     * <p>
+     * 粒度必须细到切片，因为配额淘汰是<b>按条</b>发生的：情节记忆挤到上限时挤出的是旧的那一条，
+     * 不是这个用户的全部。用 {@link #deleteByDocId} 顶替会把整个用户删掉。
+     * 若只从内存队列里移除、不删向量，被淘汰的条目会继续被召回——
+     * 而上层已经查不到它了，还原出来只剩内容和默认类型，用户看到一条"自己没存过"的记忆。
+     */
+    void deleteByIds(List<String> chunkIds);
+
+    /**
      * 清空整个集合。
      * <p>
      * 重建索引用的是它，不是逐篇 {@link #deleteByDocId}：后者只清得掉「这次的语料里有的」

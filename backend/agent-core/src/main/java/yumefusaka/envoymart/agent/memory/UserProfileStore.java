@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -39,15 +40,26 @@ public class UserProfileStore {
         if (cached != null) {
             return cached;
         }
+        return load(userId).orElseGet(() -> new UserProfile(userId));
+    }
+
+    /**
+     * 回源并转入内存副本；回源失败返回空。
+     * <p>
+     * <b>失败不落缓存</b>，否则一次读取抖动会永久化：空画像进了缓存，之后每次 {@link #get}
+     * 都命中它，再也不回源；而 Redis 里那份数据还在，只是再也没人读得到。
+     * 返回空时调用方拿到的是一份「已知不完整」的画像，只能当临时值用。
+     */
+    private Optional<UserProfile> load(String userId) {
         UserProfile loaded = new UserProfile(userId);
         try {
-            List<ProfileEntry> stored = repository.load(userId);
-            stored.forEach(entry -> loaded.update(entry.getSlot(), entry.getValue(), entry.getConfidence()));
+            repository.load(userId)
+                    .forEach(entry -> loaded.update(entry.getSlot(), entry.getValue(), entry.getConfidence()));
         } catch (Exception e) {
-            // 回源失败不能拖垮对话——画像只是增强项，退化成空画像继续
             log.warn("[UserProfile] 读取画像失败 userId={}: {}", userId, e.getMessage());
+            return Optional.empty();
         }
-        return profiles.merge(userId, loaded, (existing, ignored) -> existing);
+        return Optional.of(profiles.merge(userId, loaded, (existing, ignored) -> existing));
     }
 
     /** 写入若干槽位取值。空列表时不做任何事，避免无谓地创建空画像。 */
@@ -55,7 +67,21 @@ public class UserProfileStore {
         if (userId == null || userId.isBlank() || entries == null || entries.isEmpty()) {
             return;
         }
-        UserProfile profile = get(userId);
+        UserProfile profile = profiles.get(userId);
+        if (profile == null) {
+            Optional<UserProfile> loaded = load(userId);
+            if (loaded.isPresent()) {
+                profile = loaded.get();
+            } else {
+                // 回源失败时不能回写：save 是覆盖写，拿一份已知不完整的画像当基准落盘，
+                // 等于用本轮抽到的一两个槽位顶掉该用户在 Redis 里的其余全部槽位。
+                // 而读取失败往往是持久的（值损坏、类型不对），一旦如此，每轮对话都会
+                // 覆盖一次，画像被逐步削成一条。本轮更新只作用于临时副本，丢弃。
+                log.warn("[UserProfile] userId={} 回源失败，跳过本轮 {} 个槽位的写入，避免覆盖已有画像",
+                        userId, entries.size());
+                return;
+            }
+        }
         for (ProfileEntry entry : entries) {
             profile.update(entry.getSlot(), entry.getValue(), entry.getConfidence());
         }

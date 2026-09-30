@@ -69,11 +69,23 @@ public class EpisodicMemory implements Memory {
         }
 
         Deque<MemoryItem> deque = store.computeIfAbsent(item.getUserId(), k -> new ArrayDeque<>());
+        List<String> evictedIds = new ArrayList<>();
         synchronized (deque) {
             deque.addLast(item);
             while (deque.size() > MAX_ITEMS_PER_USER) {
                 MemoryItem evicted = deque.removeFirst();
                 perUser.remove(normalize(evicted.getContent()));
+                evictedIds.add(evicted.getId());
+            }
+        }
+        // 淘汰必须连向量一起删。只从队列里移除的话，被挤出的条目仍留在向量库里，
+        // recall 照样把它捞回来——而 findById 已经查不到它，还原出来只剩正文和一个默认类型，
+        // 用户看到一条自己从没存过的"记忆"，且永远删不掉（配额每满一次它就多活一次）。
+        if (vectorStore != null && !evictedIds.isEmpty()) {
+            try {
+                vectorStore.deleteByIds(evictedIds);
+            } catch (Exception e) {
+                log.warn("[EpisodicMemory] 淘汰条目时清理向量库失败 userId={}：{}", item.getUserId(), e.getMessage());
             }
         }
 

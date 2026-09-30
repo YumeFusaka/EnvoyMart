@@ -42,6 +42,11 @@ class RrfMultiChunkTest {
             }
 
             @Override
+            public void deleteByIds(List<String> chunkIds) {
+                // 桩实现不删除
+            }
+
+            @Override
             public void removeAll() {
                 // 桩实现不删除
             }

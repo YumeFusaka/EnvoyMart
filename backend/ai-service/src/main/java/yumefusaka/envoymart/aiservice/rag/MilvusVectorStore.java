@@ -74,6 +74,20 @@ public class MilvusVectorStore implements VectorStore {
     }
 
     @Override
+    public void deleteByIds(List<String> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return;
+        }
+        // chunkId 是索引时写进元数据的，老集合里可能没有这个键——
+        // 那时删不掉，但也不该抛异常让整轮对话失败
+        try {
+            delegate.removeAll(metadataKey(META_CHUNK_ID).isIn(chunkIds));
+        } catch (RuntimeException e) {
+            log.warn("[Milvus] 按 chunkId 删除失败，已跳过 {} 条：{}", chunkIds.size(), e.getMessage());
+        }
+    }
+
+    @Override
     public void removeAll() {
         delegate.removeAll();
     }

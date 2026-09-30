@@ -40,6 +40,11 @@ class EpisodicMemoryTest {
         }
 
         @Override
+        public void deleteByIds(List<String> chunkIds) {
+            chunks.removeIf(c -> chunkIds.contains(c.getChunkId()));
+        }
+
+        @Override
         public void removeAll() {
             chunks.clear();
         }
@@ -106,6 +111,32 @@ class EpisodicMemoryTest {
                 .as("只删内存会让已删条目继续被召回（幽灵记忆）")
                 .contains("u1001");
         assertThat(store.chunks).isEmpty();
+    }
+
+    /**
+     * 配额淘汰必须连向量一起删。
+     * <p>
+     * 这是「幽灵记忆」的第二条来路：条目被挤出内存队列后，上层已经 {@code findById} 不到它，
+     * 但向量库还留着，{@code recall} 照样把它捞回来——还原出来只剩正文和默认类型，
+     * 用户看到一条自己从没存过、也永远删不掉的记忆。清除走的是 {@code deleteByDocId}（另一条测试守着），
+     * 淘汰走的是这里。
+     */
+    @Test
+    void 配额淘汰的条目不再被召回() {
+        RecordingVectorStore store = new RecordingVectorStore();
+        EpisodicMemory memory = new EpisodicMemory(store);
+
+        memory.add(item("u1001", "最早的那条"));
+        for (int i = 0; i < 200; i++) {
+            memory.add(item("u1001", "第 " + i + " 条"));
+        }
+
+        assertThat(memory.sizeOf("u1001")).isEqualTo(200);
+        assertThat(store.chunks)
+                .as("被挤出的条目仍留在向量库里")
+                .noneSatisfy(c -> assertThat(c.getContent()).isEqualTo("最早的那条"));
+        assertThat(memory.recall("u1001", "最早", 10))
+                .noneSatisfy(m -> assertThat(m.getContent()).isEqualTo("最早的那条"));
     }
 
     @Test
