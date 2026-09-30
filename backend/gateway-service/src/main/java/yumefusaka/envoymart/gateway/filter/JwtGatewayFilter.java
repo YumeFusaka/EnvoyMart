@@ -19,8 +19,10 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
+import yumefusaka.envoymart.gateway.auth.AuthStateReader;
 import yumefusaka.envoymart.common.properties.JwtProperties;
 import yumefusaka.envoymart.common.util.JwtUtils;
+import yumefusaka.envoymart.common.web.AuthState;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.common.web.InternalAuth;
 
@@ -30,12 +32,15 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
 
     private final JwtProperties jwtProperties;
     private final String internalToken;
+    private final AuthStateReader authStateReader;
 
     public JwtGatewayFilter(JwtProperties jwtProperties,
-                            @Value("${INTERNAL_TOKEN:}") String internalToken) {
+                            @Value("${INTERNAL_TOKEN:}") String internalToken,
+                            AuthStateReader authStateReader) {
         this.jwtProperties = jwtProperties;
         // 网关是注入方：拿不到令牌就无法把身份可信地传给下游，同样拒绝启动
         this.internalToken = InternalAuth.requireValid(internalToken);
+        this.authStateReader = authStateReader;
     }
 
     /**
@@ -200,20 +205,51 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
         }
         try {
             Claims claims = JwtUtils.parseToken(jwtProperties.getSecretKey(), token);
-            // 身份头与「这是我加的」的凭证一起注入。下游两个都要看：只有身份头说明不了
-            // 它是网关加的，还是调用方自己塞的；而下游服务的端口是直接监听的，直连就能绕过网关。
-            // 两者绑在一起，「这个身份声明可信」才有依据。
-            downstreamRequest
-                    .header(IdentityHeaderInterceptor.USER_ID_HEADER, String.valueOf(claims.get("id")))
-                    .header(InternalAuth.TOKEN_HEADER, internalToken);
-            // 角色同样取自签了名的 Token（claim 的写入方是 auth-service，取值来自 sys_user.role_name）。
+            String userId = String.valueOf(claims.get("id"));
+            // 角色取自签了名的 Token（claim 的写入方是 auth-service，取值来自 sys_user.role_name）。
             // 角色是这个批次新加的 claim，此前签发的 Token 里没有它——那种 Token 不注入角色头，
             // 下游解析不出 ADMIN 会按 403 拒绝，是安全的方向；绝不能退化成「没有角色就当普通用户放行」。
-            Object role = claims.get(JwtUtils.CLAIM_ROLE);
-            if (role != null) {
-                downstreamRequest.header(IdentityHeaderInterceptor.USER_ROLE_HEADER, String.valueOf(role));
-            }
-            return chain.filter(exchange.mutate().request(downstreamRequest.build()).build());
+            Object tokenRole = claims.get(JwtUtils.CLAIM_ROLE);
+
+            // 最后一道问询：这个 Token 现在还作数吗？
+            //
+            // JWT 是自证的，签发之后服务端就再也管不着它了——于是「禁用用户」与「改角色」
+            // 这两个管理动作只改数据库的话，对方手里的 Token 还能继续用到过期（本项目 7 天）。
+            // 那等于没禁用。所以每次鉴权都去 Redis 问一次，那里的记录才是当前真相。
+            //
+            // 代价是每个认证请求多一次 Redis 往返。这是「Token 可撤销」的固有成本，
+            // 换来的是管理动作能立即生效——对一个要演示「禁用后立刻踢下线」的系统，
+            // 这笔账是划算的。真嫌贵可以上布隆过滤器 + 本地缓存，那是后话。
+            return authStateReader.read(userId)
+                    // 兜底：接口约定「读不到就返回空」，但那是对实现的约定，不是编译器能保证的事。
+                    // 一旦哪个实现把异常放出来，这里就是全站认证请求 500 —— 而它想要的语义
+                    // 明明是「读不到就按旧行为放行」。所以在这唯一的消费点再兜一层
+                    .onErrorResume(e -> Mono.empty())
+                    // 用 defaultIfEmpty 而不是让空 Mono 直接穿过 flatMap：没有记录（绝大多数用户）
+                    // 是常态，空流会在 flatMap 处直接完成，请求<b>既不放行也不报错</b>地挂在那里
+                    .defaultIfEmpty("")
+                    .flatMap(state -> {
+                        if (AuthState.isDisabled(state)) {
+                            log.warn("已禁用账号的请求被拒: userId={}, path={}", userId, path);
+                            return reject(HttpStatus.UNAUTHORIZED, "账号已被禁用");
+                        }
+                        // 身份头与「这是我加的」的凭证一起注入。下游两个都要看：只有身份头说明不了
+                        // 它是网关加的，还是调用方自己塞的；而下游服务的端口是直接监听的，直连就能绕过网关。
+                        // 两者绑在一起，「这个身份声明可信」才有依据。
+                        downstreamRequest
+                                .header(IdentityHeaderInterceptor.USER_ID_HEADER, userId)
+                                .header(InternalAuth.TOKEN_HEADER, internalToken);
+                        // 角色以 Redis 为准：Token 里那个是签发时刻的快照，提权 / 降权之后就是过期的。
+                        // 只有 Redis 里没有记录时才退回 Token 里的角色（「只存异常用户」的直接结果）
+                        String role = AuthState.roleOf(state);
+                        if (role == null && tokenRole != null) {
+                            role = String.valueOf(tokenRole);
+                        }
+                        if (role != null) {
+                            downstreamRequest.header(IdentityHeaderInterceptor.USER_ROLE_HEADER, role);
+                        }
+                        return chain.filter(exchange.mutate().request(downstreamRequest.build()).build());
+                    });
         } catch (Exception exception) {
             log.warn("Token parse failed: {}", exception.getMessage());
             return reject(HttpStatus.UNAUTHORIZED, "令牌无效或已过期");

@@ -44,6 +44,13 @@
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-alibaba-sentinel-gateway</artifactId>
         </dependency>
+        <!-- 读认证态：禁用用户 / 改角色要立刻对存量 Token 生效。
+             用 -reactive 而不是普通 starter —— 网关跑在 Netty 上，过滤器链里阻塞式调用
+             会占住事件循环线程，把非阻塞这件事作废 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

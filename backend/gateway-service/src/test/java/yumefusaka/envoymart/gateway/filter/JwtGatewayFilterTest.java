@@ -18,6 +18,7 @@ import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.common.web.InternalAuth;
 
 import java.net.URI;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -43,13 +44,17 @@ class JwtGatewayFilterTest {
     private JwtGatewayFilter filter;
     private AtomicReference<ServerWebExchange> forwarded;
     private GatewayFilterChain chain;
+    /** 假认证态存储：默认空（等于「没有记录」，绝大多数用户的真实状态），用例按需塞值 */
+    private final Map<String, String> authStates = new HashMap<>();
 
     @BeforeEach
     void setUp() {
         JwtProperties jwtProperties = new JwtProperties();
         jwtProperties.setSecretKey(SECRET);
         jwtProperties.setTtl(60_000);
-        filter = new JwtGatewayFilter(jwtProperties, INTERNAL_TOKEN);
+        authStates.clear();
+        filter = new JwtGatewayFilter(jwtProperties, INTERNAL_TOKEN,
+                userId -> Mono.justOrEmpty(authStates.get(userId)));
         forwarded = new AtomicReference<>();
         chain = exchange -> {
             forwarded.set(exchange);
@@ -270,5 +275,75 @@ class JwtGatewayFilterTest {
         filter.filter(exchange, chain).block();
 
         assertThat(forwarded.get()).as("文档编号里带 admin 的公开资源应当照常放行").isNotNull();
+    }
+
+    /**
+     * 被禁用的账号，手里的旧 Token 立刻失效。
+     * <p>
+     * 这是本批次存在的理由：JWT 自证，签发之后服务端管不着它了。没有这条检查，
+     * 「禁用用户」就只是改了个数据库字段，被禁用的人照样能下单、能看订单，界面上一切正常。
+     */
+    @Test
+    void 已禁用用户的旧token应立即被拒() {
+        authStates.put("u1001", "0|USER");
+        MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/orders/1")
+                .header("Authorization", "Bearer " + token("u1001", "USER"))
+                .build());
+
+        Throwable thrown = null;
+        try {
+            filter.filter(exchange, chain).block();
+        } catch (Throwable error) {
+            thrown = error;
+        }
+
+        assertThat(thrown).isInstanceOf(ResponseStatusException.class);
+        assertThat(((ResponseStatusException) thrown).getStatusCode().value())
+                .isEqualTo(HttpStatus.UNAUTHORIZED.value());
+        assertThat(forwarded.get()).as("被拒绝的请求不应转发到下游").isNull();
+    }
+
+    /**
+     * 角色以认证态为准，Token 里那个只是签发时刻的快照。
+     * <p>
+     * 两个方向都要钉死：降权之后不能还顶着 ADMIN 继续管人，提权之后也不该等到重新登录才生效。
+     */
+    @Test
+    void 角色应以认证态为准而不是token里的快照() {
+        // Token 说 USER，实际已经是 ADMIN（刚提权，手里的票还没换）
+        authStates.put("u1001", "1|ADMIN");
+        filter.filter(MockServerWebExchange.from(MockServerHttpRequest.get("/orders/1")
+                .header("Authorization", "Bearer " + token("u1001", "USER"))
+                .build()), chain).block();
+        assertThat(downstreamHeaders().get(IdentityHeaderInterceptor.USER_ROLE_HEADER))
+                .containsExactly("ADMIN");
+
+        // Token 说 ADMIN，实际已经被降成 USER（刚被撤权，手里的票还没过期）——
+        // 这一侧才是安全相关的那一侧
+        setUp();
+        authStates.put("u1002", "1|USER");
+        filter.filter(MockServerWebExchange.from(MockServerHttpRequest.get("/orders/1")
+                .header("Authorization", "Bearer " + token("u1002", "ADMIN"))
+                .build()), chain).block();
+        assertThat(downstreamHeaders().get(IdentityHeaderInterceptor.USER_ROLE_HEADER))
+                .containsExactly("USER");
+    }
+
+    /**
+     * 认证态读不到时必须退回「按 Token 放行」的旧行为。
+     * <p>
+     * 这条覆盖的是 Redis 挂掉 / 被清空 / 没配好：绝大多数用户在认证态存储里本来就没有记录，
+     * 若把「查不到」当成「有问题」，表现会是全站用户突然都登不上——那是比它要防的问题更大的事故。
+     */
+    @Test
+    void 认证态读不到时应按token放行() {
+        filter.filter(MockServerWebExchange.from(MockServerHttpRequest.get("/orders/1")
+                .header("Authorization", "Bearer " + token("u1001", "USER"))
+                .build()), chain).block();
+
+        assertThat(downstreamHeaders().get(IdentityHeaderInterceptor.USER_ID_HEADER))
+                .containsExactly("u1001");
+        assertThat(downstreamHeaders().get(IdentityHeaderInterceptor.USER_ROLE_HEADER))
+                .containsExactly("USER");
     }
 }

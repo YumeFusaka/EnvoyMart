@@ -7,6 +7,17 @@ spring:
   # 未显式指定 profile 时默认走 standalone：用静态实例列表代替注册中心，开箱即可路由
   profiles:
     default: standalone
+  # 认证态：auth-service 在禁用 / 改角色时写这里，网关每次鉴权读一次。
+  # 放在默认文档里而不是某个 profile 下——所有 profile 都要用它，漏配的表现是
+  # 「禁用用户后他的旧 Token 还能用」，而这种缺失不会报错
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      # 默认 60 秒——Redis 挂掉时每个请求都要等满 60 秒才走到「按无记录放行」的降级分支，
+      # 降级就变成了「慢 60 秒再降级」。压到 1 秒，故障时立刻退回只有 JWT 的旧行为
+      timeout: 1s
+      connect-timeout: 1s
   cloud:
     nacos:
       discovery:

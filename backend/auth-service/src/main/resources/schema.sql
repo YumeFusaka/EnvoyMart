@@ -16,6 +16,11 @@ create table if not exists sys_user (
     -- 0 禁用 / 1 正常。禁用后拒绝登录，但历史订单仍可查询
     status tinyint not null default 1,
     role_name varchar(32) not null,
+    -- 禁用要留痕：与评价隐藏同一个道理，这是「让一个人用不了系统」的动作，
+    -- 事后必须答得出是谁、什么时候、因为什么做的。恢复时三列一起清空
+    disabled_reason varchar(255),
+    disabled_by varchar(32),
+    disabled_at datetime,
     created_at datetime not null,
     updated_at datetime not null
 );

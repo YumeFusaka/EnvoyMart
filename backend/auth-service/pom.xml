@@ -40,6 +40,19 @@
             <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
             <version>${mybatis.plus.version}</version>
         </dependency>
+        <!-- 用户管理列表要分页。分页插件自 3.5.9 拆到独立模块，且只加依赖不配拦截器
+             会「静默返回全部数据」——见 MybatisPlusConfig -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+            <version>${mybatis.plus.version}</version>
+        </dependency>
+        <!-- 认证态变更（禁用 / 改角色）要立刻生效：写入 Redis 供网关校验，
+             否则被禁用的用户手里的 Token 还能继续用到过期 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>

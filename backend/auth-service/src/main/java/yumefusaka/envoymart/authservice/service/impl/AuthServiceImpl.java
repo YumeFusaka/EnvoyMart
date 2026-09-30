@@ -9,7 +9,9 @@ import yumefusaka.envoymart.authservice.model.LoginRequest;
 import yumefusaka.envoymart.authservice.model.LoginResponse;
 import yumefusaka.envoymart.authservice.model.RegisterRequest;
 import yumefusaka.envoymart.authservice.model.UserProfile;
+import yumefusaka.envoymart.authservice.model.UserRoles;
 import yumefusaka.envoymart.authservice.service.AuthService;
+import yumefusaka.envoymart.authservice.state.AuthStateStore;
 import yumefusaka.envoymart.common.properties.JwtProperties;
 import yumefusaka.envoymart.common.util.JwtUtils;
 import yumefusaka.envoymart.common.util.Passwords;
@@ -22,15 +24,14 @@ import java.util.UUID;
 @Service
 public class AuthServiceImpl implements AuthService {
 
-    private static final int STATUS_ENABLED = 1;
-    private static final String DEFAULT_ROLE = "USER";
-
     private final UserMapper userMapper;
     private final JwtProperties jwtProperties;
+    private final AuthStateStore authStateStore;
 
-    public AuthServiceImpl(UserMapper userMapper, JwtProperties jwtProperties) {
+    public AuthServiceImpl(UserMapper userMapper, JwtProperties jwtProperties, AuthStateStore authStateStore) {
         this.userMapper = userMapper;
         this.jwtProperties = jwtProperties;
+        this.authStateStore = authStateStore;
     }
 
     @Override
@@ -52,8 +53,8 @@ public class AuthServiceImpl implements AuthService {
         user.setPassword(Passwords.hash(request.getPassword()));
         user.setNickname(request.getNickname());
         user.setPhone(blankToNull(request.getPhone()));
-        user.setRoleName(DEFAULT_ROLE);
-        user.setStatus(STATUS_ENABLED);
+        user.setRoleName(UserRoles.USER);
+        user.setStatus(UserEntity.STATUS_ENABLED);
         user.setCreatedAt(now);
         user.setUpdatedAt(now);
 
@@ -83,9 +84,13 @@ public class AuthServiceImpl implements AuthService {
         }
         // 禁用检查放在口令校验**之后**：否则「这个账号存在但被禁用」会先于
         // 密码是否正确暴露出去，等于送给攻击者一个账号枚举接口
-        if (user.getStatus() != null && user.getStatus() != STATUS_ENABLED) {
+        if (user.getStatus() != null && user.getStatus() != UserEntity.STATUS_ENABLED) {
             throw new IllegalStateException("账号已被禁用，请联系客服");
         }
+        // 走到这里就证明库里是启用状态，顺手把 Redis 里的认证态对齐（管理员操作在极端情况下
+        // 可能留下陈旧的「已禁用」条目，见 AuthStateStore.reconcileFromLogin）。
+        // 失败不影响登录：登录是主链路，不能因为 Redis 抖一下就登不上
+        authStateStore.reconcileFromLogin(user.getId(), user.getStatus(), user.getRoleName());
         return issueToken(user);
     }
 
