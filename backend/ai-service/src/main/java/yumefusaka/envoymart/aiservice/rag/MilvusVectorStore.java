@@ -34,6 +34,8 @@ public class MilvusVectorStore implements VectorStore {
     private static final String META_VERSION = "version";
     private static final String META_POSITION = "position";
     private static final String META_CHAR_OFFSET = "charOffset";
+    private static final String META_TYPE = "type";
+    private static final String META_TIMESTAMP = "timestamp";
 
     private final EmbeddingStore<TextSegment> delegate;
     private final EmbeddingService embeddingService;
@@ -117,6 +119,10 @@ public class MilvusVectorStore implements VectorStore {
         if (chunk.getCharOffset() != null) {
             metadata.put(META_CHAR_OFFSET, chunk.getCharOffset().longValue());
         }
+        putIfPresent(metadata, META_TYPE, chunk.getType());
+        if (chunk.getTimestamp() != null) {
+            metadata.put(META_TIMESTAMP, chunk.getTimestamp());
+        }
         return metadata;
     }
 
@@ -147,6 +153,8 @@ public class MilvusVectorStore implements VectorStore {
                 .version(string(metadata, META_VERSION, null))
                 .position(string(metadata, META_POSITION, null))
                 .charOffset(nullableInteger(metadata, META_CHAR_OFFSET))
+                .type(string(metadata, META_TYPE, null))
+                .timestamp(nullableLong(metadata, META_TIMESTAMP))
                 .score(Double.valueOf(match.score()))
                 .reranked(Boolean.FALSE)
                 .build();
@@ -174,12 +182,16 @@ public class MilvusVectorStore implements VectorStore {
     }
 
     private Integer nullableInteger(Metadata metadata, String key) {
+        Long value = nullableLong(metadata, key);
+        return value == null ? null : value.intValue();
+    }
+
+    private Long nullableLong(Metadata metadata, String key) {
         if (metadata == null || !metadata.containsKey(key)) {
             return null;
         }
         try {
-            Long value = metadata.getLong(key);
-            return value == null ? null : value.intValue();
+            return metadata.getLong(key);
         } catch (RuntimeException e) {
             log.warn("[Milvus] 元数据 {} 类型不是数字，已忽略：{}", key, e.getMessage());
             return null;

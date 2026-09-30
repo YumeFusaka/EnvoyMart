@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.VectorStore;
 
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -28,6 +29,16 @@ public class EpisodicMemory implements Memory {
 
     /** 单用户条目上限，超出按时间淘汰最旧的 */
     private static final int MAX_ITEMS_PER_USER = 200;
+
+    /**
+     * 偏好类条目的独立上限。
+     * <p>
+     * 偏好不参与「先进先出」的淘汰（见 {@link #evict}），但没有上限的不淘汰就是无界增长：
+     * 抽取器每几轮跑一次，"用户是什么样的人"这类句子会一直累积，最终把注入给模型的
+     * 上下文撑满。给它的额度比事件小一个量级 —— 一个人的长期特征是有限的，
+     * 而经历过的事可以很多。
+     */
+    private static final int MAX_PREFERENCES_PER_USER = 50;
 
     /**
      * 召回时的过取倍数。
@@ -72,11 +83,7 @@ public class EpisodicMemory implements Memory {
         List<String> evictedIds = new ArrayList<>();
         synchronized (deque) {
             deque.addLast(item);
-            while (deque.size() > MAX_ITEMS_PER_USER) {
-                MemoryItem evicted = deque.removeFirst();
-                perUser.remove(normalize(evicted.getContent()));
-                evictedIds.add(evicted.getId());
-            }
+            evict(deque, perUser, evictedIds);
         }
         // 淘汰必须连向量一起删。只从队列里移除的话，被挤出的条目仍留在向量库里，
         // recall 照样把它捞回来——而 findById 已经查不到它，还原出来只剩正文和一个默认类型，
@@ -95,8 +102,57 @@ public class EpisodicMemory implements Memory {
                     .chunkId(item.getId())
                     .docId(item.getUserId())
                     .content(item.getContent())
+                    // 类型与时间必须一起落库：重启后内存队列是空的，读回来的路径只剩这一条，
+                    // 少写一个字段，读回来就是默认值，而默认值看起来完全正常
+                    .type(item.getType() == null ? null : item.getType().name())
+                    .timestamp(item.getTimestamp() == null ? null : item.getTimestamp().toEpochMilli())
                     .build()));
         }
+    }
+
+    /**
+     * 按价值分层淘汰：事件先走，偏好后走。
+     * <p>
+     * 原来是无差别 FIFO，于是「用户是学生党」和「用户刚问了衬衫尺码」完全等价，
+     * 谁先进来谁先走；而淘汰会连向量一起删，被挤出去就是永久丢失——
+     * 下次再问预算，没人记得他是学生。
+     * <p>
+     * 偏好也不是留着不动：它有自己的额度，到顶后同样按最旧的先走（同一个人的偏好会更新，
+     * 新说法才作数）。两条路径都在这里收口，配额判断只有一处。
+     */
+    private void evict(Deque<MemoryItem> deque, Map<String, MemoryItem> perUser, List<String> evictedIds) {
+        int preferences = (int) deque.stream().filter(EpisodicMemory::isPreference).count();
+        while (deque.size() > MAX_ITEMS_PER_USER || preferences > MAX_PREFERENCES_PER_USER) {
+            MemoryItem evicted = pickEviction(deque, preferences);
+            if (evicted == null) {
+                return;
+            }
+            if (isPreference(evicted)) {
+                preferences--;
+            }
+            deque.remove(evicted);
+            perUser.remove(normalize(evicted.getContent()));
+            evictedIds.add(evicted.getId());
+        }
+    }
+
+    /**
+     * 挑一个该走的。
+     * <p>
+     * 偏好没超额时整队跳过偏好，淘汰第一个事件；超额时第一个偏好就是最旧的那个。
+     * 遍历顺序即入库顺序（{@link ArrayDeque} 从队头到队尾）。
+     */
+    private MemoryItem pickEviction(Deque<MemoryItem> deque, int preferences) {
+        for (MemoryItem candidate : deque) {
+            if (!isPreference(candidate) || preferences > MAX_PREFERENCES_PER_USER) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isPreference(MemoryItem item) {
+        return item.getType() == MemoryItem.Type.PREFERENCE;
     }
 
     @Override
@@ -187,8 +243,29 @@ public class EpisodicMemory implements Memory {
                 .id(chunk.getChunkId())
                 .userId(chunk.getDocId())
                 .content(chunk.getContent())
-                .type(MemoryItem.Type.FACT)
+                .type(parseType(chunk.getType()))
+                .timestamp(chunk.getTimestamp() == null
+                        ? Instant.now()
+                        : Instant.ofEpochMilli(chunk.getTimestamp()))
                 .build();
+    }
+
+    /**
+     * 类型串还原成枚举。
+     * <p>
+     * 认不出的一律按事件处理，两个方向的代价不对称：误判成事件的偏好只会被正常淘汰，
+     * 误判成偏好的噪声则永久占着不参与淘汰的额度，收不回来。认不出的来路有两类——
+     * 升级前入库的老条目没有这个键，以及将来枚举改名。
+     */
+    private static MemoryItem.Type parseType(String raw) {
+        if (raw == null) {
+            return MemoryItem.Type.FACT;
+        }
+        try {
+            return MemoryItem.Type.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            return MemoryItem.Type.FACT;
+        }
     }
 
     private List<MemoryItem> mergeRecent(String userId, List<MemoryItem> current, int limit) {
