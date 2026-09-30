@@ -49,12 +49,15 @@ import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
 import io.micrometer.core.instrument.MeterRegistry;
 import yumefusaka.envoymart.aiservice.tool.MicrometerToolCallListener;
+import yumefusaka.envoymart.common.web.RequestId;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Agent 框架的 Spring 配置 —— 将自研 agent-core 组件注入 Spring 容器。
@@ -434,10 +437,52 @@ public class AiAgentConfig {
     /**
      * 执行计划中无依赖步骤的并发执行器。
      * 任务是阻塞式外部调用，用虚拟线程比固定线程池更合适。
+     * <p>
+     * 外面包一层日志上下文传递（见 {@link #inheriting}）：这些步骤换到别的线程上跑，
+     * 而工具内部会发起跨服务调用（Feign 出站从 MDC 取请求标识）。不带过去的话，
+     * 一次问答跨了三个服务、中间那一跳的日志却是散的，下游也只能自己发一个新标识——
+     * 整条链路断在最有价值的那一段上。
      */
     @Bean(destroyMethod = "shutdown")
     public ExecutorService agentExecutor() {
-        return Executors.newVirtualThreadPerTaskExecutor();
+        return inheriting(Executors.newVirtualThreadPerTaskExecutor());
+    }
+
+    /** 让交给这个执行器的每个任务都带上提交线程的日志上下文 */
+    private static ExecutorService inheriting(ExecutorService delegate) {
+        // 只覆盖 execute：AbstractExecutorService 的 submit / invokeAll 全都经由它落地，
+        // 一个方法就拿下全部提交入口
+        return new AbstractExecutorService() {
+            @Override
+            public void execute(Runnable command) {
+                delegate.execute(RequestId.inherit(command));
+            }
+
+            @Override
+            public void shutdown() {
+                delegate.shutdown();
+            }
+
+            @Override
+            public List<Runnable> shutdownNow() {
+                return delegate.shutdownNow();
+            }
+
+            @Override
+            public boolean isShutdown() {
+                return delegate.isShutdown();
+            }
+
+            @Override
+            public boolean isTerminated() {
+                return delegate.isTerminated();
+            }
+
+            @Override
+            public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+                return delegate.awaitTermination(timeout, unit);
+            }
+        };
     }
 
     @Bean

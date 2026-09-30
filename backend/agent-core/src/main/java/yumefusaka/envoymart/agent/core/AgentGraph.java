@@ -297,6 +297,8 @@ public class AgentGraph {
         List<Future<GraphStep>> futures = new ArrayList<>(batch.size());
         for (Integer index : batch) {
             PlanStep step = plan.get(index);
+            // 工具在这里换到别的线程上跑。工具内部发起的跨服务调用要能带上请求上下文，
+            // 那是执行器的契约（见 AiAgentConfig#agentExecutor），本层不掺和线程细节
             futures.add(executor.submit(() -> executeStep(round, index, step, ctx)));
         }
 
@@ -522,10 +524,15 @@ public class AgentGraph {
             // 与非流式那条分支同理：节点内的 ReAct 轨迹要回收。少了这一步，
             // 流式下走 ReAct 的那些轮次在前端是空轨迹，而且回答会被后置校验判成「无依据」——
             // 它确实有工具依据，只是依据没被带回来
-            ctx.executions().addAll(llmProvider.chatStreamWithTools(messages, llmConfig, loopContext, chunk -> {
+            List<ToolExecution> nodeExecutions = llmProvider.chatStreamWithTools(messages, llmConfig, loopContext, chunk -> {
                 accumulated.append(chunk);
                 ctx.onChunk().accept(chunk);
-            }));
+            });
+            // null 检查与非流式分支一致：provider 违约时，正文已经推给用户收不回来了，
+            // 至少别让这里的 NPE 把这一轮变成兜底话术
+            if (nodeExecutions != null) {
+                ctx.executions().addAll(nodeExecutions);
+            }
             return accumulated.toString();
         } catch (Exception e) {
             log.error("[Graph] answer generation failed", e);

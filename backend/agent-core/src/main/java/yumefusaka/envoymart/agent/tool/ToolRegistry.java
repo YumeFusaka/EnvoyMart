@@ -1,5 +1,7 @@
 package yumefusaka.envoymart.agent.tool;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -8,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 工具注册中心 —— 以名称索引管理所有可用工具。
  */
+@Slf4j
 public class ToolRegistry {
 
     private final Map<String, Tool> tools = new ConcurrentHashMap<>();
@@ -62,11 +65,26 @@ public class ToolRegistry {
                         .errorMessage("Tool not found: " + call.getToolName())
                         .build());
 
-        // 三条来路（计划节点 / ReAct 循环 / MCP）都汇到这里，观测点放这儿才能全覆盖
+        // 三条来路（计划节点 / ReAct 循环 / MCP）都汇到这里，观测点放这儿才能全覆盖。
+        // 观测不能影响被观测的行为：listener 一抛，工具本体已经执行完的结果就被丢掉，
+        // 调用方看到的是失败、重试一次，一次取消/下单就被执行了两遍
         long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
-        listener.onToolCall(call.getToolName(),
-                raw.isSuccess() ? ToolCallListener.Outcome.SUCCESS : ToolCallListener.Outcome.ERROR,
-                latencyMs);
+
+        // 工具是这套系统里唯一「跨出本进程」的动作（Feign 调下游服务、MCP 调外部服务），
+        // 而成功时它除了一个计数指标什么都不留。于是「回答不对」时的第一个问题——
+        // 「这次到底调没调工具、调的是哪个」——只能靠翻模型侧的 tool_calls 反推。
+        // 失败尤其要留：失败返回的是一句给模型看的话，它可能被模型转述、也可能被忽略，
+        // 而这一行不会被谁转述走样
+        log.info("[Tool] {} success={} noData={} latencyMs={}{}", call.getToolName(), raw.isSuccess(),
+                raw.isNoData(), latencyMs,
+                raw.isSuccess() || raw.getErrorMessage() == null ? "" : " error=" + raw.getErrorMessage());
+        try {
+            listener.onToolCall(call.getToolName(),
+                    raw.isSuccess() ? ToolCallListener.Outcome.SUCCESS : ToolCallListener.Outcome.ERROR,
+                    latencyMs);
+        } catch (RuntimeException e) {
+            log.warn("[Tool] 调用监听器自身异常，不影响本次结果 tool={} : {}", call.getToolName(), e.toString());
+        }
         return cap(raw.toBuilder().latencyMs(latencyMs).build());
     }
 

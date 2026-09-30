@@ -4,6 +4,7 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
+import lombok.extern.slf4j.Slf4j;
 import yumefusaka.envoymart.agent.llm.TokenLedger;
 import yumefusaka.envoymart.agent.rag.EmbeddingService;
 
@@ -13,6 +14,7 @@ import java.util.List;
  * LangChain4j 向量化适配器 —— 复用 LangChain4j 的 EmbeddingModel
  * （百炼 text-embedding-v4 / OpenAI text-embedding-3 等 OpenAI 兼容端点）。
  */
+@Slf4j
 public class LangChain4jEmbeddingService implements EmbeddingService {
 
     private final EmbeddingModel embeddingModel;
@@ -53,7 +55,11 @@ public class LangChain4jEmbeddingService implements EmbeddingService {
     private <T> T record(Response<T> response) {
         if (response.tokenUsage() != null && response.tokenUsage().totalTokenCount() != null) {
             String model = embeddingModel.modelName() == null ? "embedding" : embeddingModel.modelName();
-            TokenLedger.record(model, response.tokenUsage().totalTokenCount(), 0);
+            int tokens = response.tokenUsage().totalTokenCount();
+            TokenLedger.record(model, tokens, 0);
+            // 这行与账本相互独立，是给账本留的对照：只有两边加起来的数对不上，
+            // 才知道某一天有一笔没记上（见 scripts/verify-usage.mjs）
+            log.info("[Embed] model={} tokens={}", model, tokens);
         }
         return response.content();
     }

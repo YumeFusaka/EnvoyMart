@@ -14,6 +14,7 @@ import yumefusaka.envoymart.aiservice.model.KnowledgeSnippet;
 import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.aiservice.model.ToolCallResponse;
 import yumefusaka.envoymart.aiservice.service.AiAssistantService;
+import yumefusaka.envoymart.common.web.RequestId;
 
 import java.util.List;
 import java.util.Objects;
@@ -73,6 +74,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
         return ChatResponse.builder()
                 .usage(usageOf(ledger))
+                .requestId(RequestId.current())
                 .sessionId(request.getSessionId())
                 .reply(agentResp.getReply())
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))

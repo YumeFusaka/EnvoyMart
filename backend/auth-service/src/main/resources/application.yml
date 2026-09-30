@@ -56,3 +56,9 @@ info:
     name: auth-service
     build-sha: ${BUILD_SHA:local-unknown}
     build-time: ${BUILD_TIME:unknown}
+
+# 每行日志前缀里带上请求标识（MDC 键 requestId，写入见 common 的 RequestIdFilter）。
+# 没有请求上下文的行（启动期、定时任务）该位置为空。
+logging:
+  pattern:
+    correlation: "[%X{requestId:-}] "

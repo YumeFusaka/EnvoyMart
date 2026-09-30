@@ -13,6 +13,17 @@ public class ChatResponse {
 
     private String sessionId;
     private String reply;
+
+    /**
+     * 本轮的请求标识 —— 与后台日志里的 {@code [requestId]} 是同一个值。
+     * <p>
+     * 下发给界面是为了让「用户报障」这件事可操作：他说得出「刚才那次回答不对」，
+     * 但说不出时间；界面上有这一串，就能直接定位到日志里的那一段，
+     * 包括它经过了哪些服务、调了哪些工具、花了多少 token。
+     * <p>
+     * 它是一个<b>关联字段，不是凭证</b>：拿到它不获得任何权限。
+     */
+    private String requestId;
     private List<KnowledgeSnippet> knowledge;
     private List<ToolCallResponse> toolCalls;
     private List<ProductSummary> recommendedProducts;

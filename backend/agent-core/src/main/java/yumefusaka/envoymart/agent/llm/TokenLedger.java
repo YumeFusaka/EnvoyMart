@@ -80,8 +80,9 @@ public final class TokenLedger {
     /** 账本的存活范围。关掉即解绑，并<b>还原</b>外层账本——嵌套时内层不该把外层顶掉 */
     public static final class Scope implements AutoCloseable {
         private final TokenLedger previous;
-        private TokenLedger ledger;
+        private final TokenLedger ledger;
         private Snapshot snapshot;
+        private boolean closed;
 
         private Scope(TokenLedger previous) {
             this.previous = previous;
@@ -89,13 +90,12 @@ public final class TokenLedger {
             CURRENT.set(ledger);
         }
 
-        public TokenLedger ledger() {
-            return ledger;
-        }
-
         /**
          * 结账。可重复调用，返回同一个快照——收尾代码可能分散在正常路径与异常路径上，
          * 让第二次调用返回另一个数会制造两个不同的"总额"。
+         * <p>
+         * 关账之后仍可调用：返回的就是关账那一刻的数。收尾代码在 try 块外取数很自然，
+         * 在那里抛 NPE 会显得像是账本坏了。
          */
         public Snapshot snapshot() {
             if (snapshot == null) {
@@ -106,6 +106,14 @@ public final class TokenLedger {
 
         @Override
         public void close() {
+            if (closed) {
+                // 幂等。两次 close 之间可能有别的账本开在同一个线程上（收尾代码重复执行，
+                // 或手动 close 之后又走了一遍 try-with-resources），再解一次就会把它顶掉，
+                // 而之后所有记账都会记进一个已经没人看的账本里
+                return;
+            }
+            // 先结账再解绑：快照缓存在 Scope 上，关账后取数拿到的仍是这一轮的值
+            snapshot();
             if (previous == null) {
                 // remove 而不是 set(null)：线程池的线程还要活很久，set(null) 会让这个
                 // ThreadLocal 在这个线程上永远留一个键
@@ -113,7 +121,7 @@ public final class TokenLedger {
             } else {
                 CURRENT.set(previous);
             }
-            ledger = null;
+            closed = true;
         }
     }
 

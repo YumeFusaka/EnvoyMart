@@ -6,11 +6,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+import yumefusaka.envoymart.agent.llm.TokenLedger;
 import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.HybridRetriever;
 import yumefusaka.envoymart.agent.rag.TextSplitter;
 import yumefusaka.envoymart.agent.rag.VectorStore;
+import yumefusaka.envoymart.aiservice.llm.ModelPricing;
 
 import java.time.Instant;
 import java.util.List;
@@ -35,6 +37,7 @@ public class KnowledgeIndexer {
     private final TextSplitter splitter;
     private final HybridRetriever retriever;
     private final KnowledgeGraphBuilder graphBuilder;
+    private final ModelPricing pricing;
 
     /**
      * 是否在启动时自动构建索引。
@@ -58,12 +61,14 @@ public class KnowledgeIndexer {
                             TextSplitter splitter,
                             HybridRetriever retriever,
                             KnowledgeGraphBuilder graphBuilder,
+                            ModelPricing pricing,
                             @Value("${envoymart.rag.auto-index:true}") boolean autoIndex) {
         this.corpus = corpus;
         this.vectorStore = vectorStore;
         this.splitter = splitter;
         this.retriever = retriever;
         this.graphBuilder = graphBuilder;
+        this.pricing = pricing;
         this.autoIndex = autoIndex;
     }
 
@@ -89,18 +94,43 @@ public class KnowledgeIndexer {
         // 状态由这里推进，不由 rebuildAsync 推进：启动时的 indexOnStartup 也走这个方法，
         // 只在异步包装里记状态的话，启动建的那一次在管理台上会显示成「从没跑过」
         status = new Status(true, startedAt, null, status.result(), null);
-        try {
-            Result result = doRebuild();
-            status = new Status(false, startedAt, Instant.now(), result, null);
-            return result;
-        } catch (RuntimeException | Error e) {
-            // 失败必须落到状态里：只回 running=false 的话，「跑完了什么都没发生」
-            // 与「跑起来就崩了」在调用方看来完全一样
-            log.error("[Knowledge] 索引重建失败", e);
-            status = new Status(false, startedAt, Instant.now(), status.result(),
-                    e.getClass().getSimpleName() + ": " + e.getMessage());
-            throw e;
+        // 重建是花钱最集中的动作（整库 embedding + 全量图谱抽取），却不在任何一轮对话里，
+        // 没有调用方会去读这份账。不自己开一次，那些 TokenLedger.record 就是往真空里记
+        // （无账本即静默丢弃），这笔钱只剩 [LLM] 里几十行碎片，没人加得起来
+        try (TokenLedger.Scope ledger = TokenLedger.begin()) {
+            try {
+                Result result = doRebuild();
+                status = new Status(false, startedAt, Instant.now(), result, null);
+                logCost("完成", ledger.snapshot());
+                return result;
+            } catch (RuntimeException | Error e) {
+                // 失败必须落到状态里：只回 running=false 的话，「跑完了什么都没发生」
+                // 与「跑起来就崩了」在调用方看来完全一样
+                log.error("[Knowledge] 索引重建失败", e);
+                status = new Status(false, startedAt, Instant.now(), status.result(),
+                        e.getClass().getSimpleName() + ": " + e.getMessage());
+                // 失败也要结账：已经花掉的钱不会因为结尾失败退回来
+                logCost("失败", ledger.snapshot());
+                throw e;
+            }
         }
+    }
+
+    /**
+     * 本次重建的账单。
+     * <p>
+     * 没配单价的模型单独点名——不点的话，金额看起来像是个完整的数，而它其实只覆盖了其中一部分。
+     */
+    private void logCost(String outcome, TokenLedger.Snapshot snapshot) {
+        if (snapshot.isEmpty()) {
+            log.info("[Knowledge] 索引重建{}，本次未发生模型调用", outcome);
+            return;
+        }
+        List<String> unpriced = pricing.unpricedModels(snapshot.models());
+        log.info("[Knowledge] 索引重建{}，本次用量 tokens={}（输入 {} / 输出 {}）约 {} 元{}",
+                outcome, snapshot.totalTokens(), snapshot.promptTokens(), snapshot.completionTokens(),
+                pricing.estimateCny(snapshot.models()),
+                unpriced.isEmpty() ? "" : "；未配单价、未计入金额的模型：" + unpriced);
     }
 
     private Result doRebuild() {

@@ -45,3 +45,9 @@ envoymart:
     # **默认关闭**：这条路径能把订单标记为已支付，不该在任何环境里默认可用，
     # 本地演示时由 run-local.sh 显式打开。
     mock-enabled: ${PAYMENT_MOCK_ENABLED:false}
+
+# 每行日志前缀里带上请求标识（MDC 键 requestId，写入见 common 的 RequestIdFilter）。
+# 没有请求上下文的行（启动期、定时任务）该位置为空。
+logging:
+  pattern:
+    correlation: "[%X{requestId:-}] "

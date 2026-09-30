@@ -133,24 +133,29 @@ public class LangChain4jLLMProvider implements LLMProvider {
         ChatResponse response;
         int rounds = 0;
         int maxRounds = ctx.guard.maxToolCalls() + MAX_ROUND_SLACK;
-        while (true) {
-            response = chatModel.chat(buildRequest(working, config, toolsFor(ctx, specs)));
-            rounds++;
-            TokenUsage usage = response.tokenUsage();
-            promptTokens += usageInt(usage, true);
-            completionTokens += usageInt(usage, false);
+        try {
+            while (true) {
+                response = chatModel.chat(buildRequest(working, config, toolsFor(ctx, specs)));
+                rounds++;
+                TokenUsage usage = response.tokenUsage();
+                promptTokens += usageInt(usage, true);
+                completionTokens += usageInt(usage, false);
 
-            AiMessage aiMessage = response.aiMessage();
-            if (!aiMessage.hasToolExecutionRequests()) {
-                break;
+                AiMessage aiMessage = response.aiMessage();
+                if (!aiMessage.hasToolExecutionRequests()) {
+                    break;
+                }
+                if (rounds >= maxRounds) {
+                    log.warn("[LLM] 工具循环触到硬性轮次上限 model={} rounds={} {}",
+                            config.getModel(), rounds, ctx.guard.summary());
+                    break;
+                }
+                working.add(aiMessage);
+                executeToolRequests(aiMessage.toolExecutionRequests(), working, ctx, executions);
             }
-            if (rounds >= maxRounds) {
-                log.warn("[LLM] 工具循环触到硬性轮次上限 model={} rounds={} {}",
-                        config.getModel(), rounds, ctx.guard.summary());
-                break;
-            }
-            working.add(aiMessage);
-            executeToolRequests(aiMessage.toolExecutionRequests(), working, ctx, executions);
+        } catch (RuntimeException e) {
+            recordAbortedRound(config.getModel(), false, startedAt, rounds, promptTokens, completionTokens, executions);
+            throw e;
         }
         long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
 
@@ -188,39 +193,44 @@ public class LangChain4jLLMProvider implements LLMProvider {
         // 而非流式那条（chatWithTools）从一开始就是累加的——同一条循环，两条分支两种口径
         int promptTokens = 0;
         int completionTokens = 0;
-        while (true) {
-            // 同 chatWithTools：护栏耗尽后不再下发工具定义，这是循环的终止判据
-            StreamedRound round = streamOneRound(working, config, toolsFor(ctx, specs));
-            rounds++;
-            promptTokens += round.promptTokens;
-            completionTokens += round.completionTokens;
+        try {
+            while (true) {
+                // 同 chatWithTools：护栏耗尽后不再下发工具定义，这是循环的终止判据
+                StreamedRound round = streamOneRound(working, config, toolsFor(ctx, specs));
+                rounds++;
+                promptTokens += round.promptTokens;
+                completionTokens += round.completionTokens;
 
-            if (!round.aiMessage.hasToolExecutionRequests()) {
-                // 最终回答：此时才把这一轮攒下的 chunk 推出去
-                round.chunks.forEach(onChunk);
-                long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
-                log.info("[LLM] stream+tools model={} latencyMs={} rounds={} chars={} "
-                                + "promptTokens={} completionTokens={} toolExecutions={}",
-                        config.getModel(), latencyMs, rounds, round.totalChars(),
-                        promptTokens, completionTokens, executions.size());
-                recordLlmMetrics(config.getModel(), true, latencyMs, promptTokens, completionTokens);
-                return List.copyOf(executions);
+                if (!round.aiMessage.hasToolExecutionRequests()) {
+                    // 最终回答：此时才把这一轮攒下的 chunk 推出去
+                    round.chunks.forEach(onChunk);
+                    long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
+                    log.info("[LLM] stream+tools model={} latencyMs={} rounds={} chars={} "
+                                    + "promptTokens={} completionTokens={} toolExecutions={}",
+                            config.getModel(), latencyMs, rounds, round.totalChars(),
+                            promptTokens, completionTokens, executions.size());
+                    recordLlmMetrics(config.getModel(), true, latencyMs, promptTokens, completionTokens);
+                    return List.copyOf(executions);
+                }
+
+                if (rounds >= maxRounds) {
+                    log.warn("[LLM] 流式工具循环触到硬性轮次上限 model={} rounds={} {}",
+                            config.getModel(), rounds, ctx.guard.summary());
+                    // 走到这里说明最后一轮的正文是空的（它整轮都在要工具），一个字都没推过。
+                    // 不补一句，前端就是一个空气泡——非流式那条分支有 AgentGraph 兜底把空正文
+                    // 换成「抱歉，我没能完成这个请求」，流式这条没有，正文早就推完了
+                    onChunk.accept("抱歉，这个问题涉及的操作步骤过多，我没能在限定轮次内完成。请换个说法或拆开再问一次。");
+                    recordLlmMetrics(config.getModel(), true,
+                            (System.nanoTime() - startedAt) / 1_000_000, promptTokens, completionTokens);
+                    return List.copyOf(executions);
+                }
+
+                working.add(round.aiMessage);
+                executeToolRequests(round.aiMessage.toolExecutionRequests(), working, ctx, executions);
             }
-
-            if (rounds >= maxRounds) {
-                log.warn("[LLM] 流式工具循环触到硬性轮次上限 model={} rounds={} {}",
-                        config.getModel(), rounds, ctx.guard.summary());
-                // 走到这里说明最后一轮的正文是空的（它整轮都在要工具），一个字都没推过。
-                // 不补一句，前端就是一个空气泡——非流式那条分支有 AgentGraph 兜底把空正文
-                // 换成「抱歉，我没能完成这个请求」，流式这条没有，正文早就推完了
-                onChunk.accept("抱歉，这个问题涉及的操作步骤过多，我没能在限定轮次内完成。请换个说法或拆开再问一次。");
-                recordLlmMetrics(config.getModel(), true,
-                        (System.nanoTime() - startedAt) / 1_000_000, promptTokens, completionTokens);
-                return List.copyOf(executions);
-            }
-
-            working.add(round.aiMessage);
-            executeToolRequests(round.aiMessage.toolExecutionRequests(), working, ctx, executions);
+        } catch (RuntimeException e) {
+            recordAbortedRound(config.getModel(), true, startedAt, rounds, promptTokens, completionTokens, executions);
+            throw e;
         }
     }
 
@@ -318,9 +328,11 @@ public class LangChain4jLLMProvider implements LLMProvider {
         round.chunks.forEach(onChunk);
 
         long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
-        log.info("[LLM] stream model={} latencyMs={} chars={}", config.getModel(), latencyMs, round.totalChars());
-        // 流式拿不到增量 token 用量，这里只记耗时；stream=true 与同步调用分开看，
-        // 否则首字延迟会被整轮时长污染
+        log.info("[LLM] stream model={} latencyMs={} chars={} promptTokens={} completionTokens={}",
+                config.getModel(), latencyMs, round.totalChars(),
+                round.promptTokens, round.completionTokens);
+        // stream=true 与同步调用分开看，否则首字延迟会被整轮时长污染。
+        // 用量取自流末的收尾帧（onCompleteResponse）：增量块不带用量，收尾这一份才是全的
         recordLlmMetrics(config.getModel(), true, latencyMs, round.promptTokens, round.completionTokens);
     }
 
@@ -567,6 +579,29 @@ public class LangChain4jLLMProvider implements LLMProvider {
                         ? LLMResponse.FinishReason.STOP
                         : LLMResponse.FinishReason.TOOL_CALL)
                 .build();
+    }
+
+    /**
+     * 工具循环中途失败时的补记。
+     * <p>
+     * 转了几圈才失败的循环，前面每一圈都是已经发生过、已经计过费的真实调用。异常直接往上抛时
+     * 它们既不进账本也不进指标，而这一轮的检索侧开销（向量化、重排）照记不误——账面上会留下
+     * 一个「比真实值小、且没有任何迹象」的数字。失败路径因此是唯一会静默漏账的出口，必须自己结账。
+     * <p>
+     * 顺带把已执行过的工具打成一行 warn：异常抛出去之后，那个轨迹列表就再没有人看得见了，
+     * 而「高危操作到底执行没执行」只能从这一行里找。
+     */
+    private void recordAbortedRound(String model, boolean stream, long startedAt, int rounds,
+                                    int promptTokens, int completionTokens, List<ToolExecution> executions) {
+        if (promptTokens == 0 && completionTokens == 0) {
+            return;
+        }
+        log.warn("[LLM] 工具循环中途失败，补记已完成 {} 轮的用量 model={} promptTokens={} completionTokens={} "
+                        + "executedTools={}",
+                rounds, model, promptTokens, completionTokens,
+                executions.stream().map(execution -> execution.getTool()).toList());
+        recordLlmMetrics(model, stream, (System.nanoTime() - startedAt) / 1_000_000,
+                promptTokens, completionTokens);
     }
 
     /**

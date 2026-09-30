@@ -46,7 +46,9 @@ import java.io.IOException;
  */
 @Slf4j
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
+// 排在 RequestIdFilter 之后（同为最高优先级时顺序不定，必须用具体值分开）：
+// 这一条拒绝请求时也要打日志，那条日志同样需要请求标识才能被查出来
+@Order(Ordered.HIGHEST_PRECEDENCE + 10)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class RequestSizeLimitFilter extends OncePerRequestFilter {
 

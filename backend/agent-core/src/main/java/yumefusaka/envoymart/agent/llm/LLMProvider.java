@@ -64,8 +64,14 @@ public interface LLMProvider {
     default List<ToolExecution> chatStreamWithTools(List<ChatMessage> messages, LLMConfig config,
                                                     java.util.Map<String, Object> toolContext,
                                                     java.util.function.Consumer<String> onChunk) {
-        chatStream(messages, config, toolContext, onChunk);
-        return List.of();
+        // 回退到非流式的带工具版本：工具照常执行，正文一次性经 onChunk 推出。
+        // 退到 chatStream 是错的——那条路连工具定义都不下发，整条 ReAct 往返悄无声息地消失，
+        // 症状是「同一个问题走流式不查订单、走非流式查」，两条路径都不报错。
+        LLMResponse response = chatWithTools(messages, config, toolContext);
+        if (response.getContent() != null) {
+            onChunk.accept(response.getContent());
+        }
+        return response.getToolExecutions() == null ? List.of() : response.getToolExecutions();
     }
 
     /**

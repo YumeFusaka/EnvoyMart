@@ -7,7 +7,10 @@
  *   一、是整轮的，不是最后一次调用的 —— 检索的重排与向量化必须在明细里。
  *       只统计对话模型的话，数字会小一大截，而它看起来照样精确。
  *   二、拆得开 —— 按模型分账，否则「钱花在哪儿」无从判断。
- *   三、算得对 —— 总额等于分项之和（这条在同一次响应内部自查，不依赖后端日志）。
+ *   三、算得对 —— 这里要的是**与日志对账**：响应里的总额必须等于本次请求
+ *       所有 [LLM]/[Rerank]/[Embed] 行的 token 之和。响应内部的
+ *       「总额 = 分项之和」是白送的（它由同一份数据算出），抓不到漏记一类的问题；
+ *       日志是每次调用各自写的，与账本相互独立，两边的数对得上才算真的没漏。
  *   四、说得清 —— 金额必须带「≈」和估算说明；没配单价的模型必须点名而不是算成 0。
  *
  * 前置条件：后端九个服务 + 前端 dev server 已启动。每一问都要调模型，整轮约 30–60 秒。
@@ -19,6 +22,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
+import { logLines } from './lib/logs.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = resolve(HERE, '../.screenshots')
@@ -61,10 +65,15 @@ const session = await (async () => {
   return body.data
 })()
 
-async function askApi(message) {
+/** 请求标识带上，事后才能把这一次请求在日志里的每一行捞出来对账 */
+async function askApi(message, requestId) {
   const res = await fetch(`${GW}/ai/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.token}` },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.token}`,
+      'X-Request-Id': requestId,
+    },
     body: JSON.stringify({ sessionId: `verify-usage-${Date.now()}`, message }),
   })
   const body = await res.json()
@@ -72,17 +81,38 @@ async function askApi(message) {
   return body.data
 }
 
+/**
+ * 日志行里的 token 加总：模型调用认 promptTokens/completionTokens，检索侧认 tokens=。
+ *
+ * 「本轮用量」那一行必须跳过 —— 它是这一轮所有调用的汇总，与逐条明细是同一批数字的两种粒度。
+ * 一起加进去，对账结果会不多不少正好翻倍，而两倍这个数看起来还挺像个合理的 token 数。
+ */
+function tokensIn(lines) {
+  let total = 0
+  for (const line of lines) {
+    if (line.includes('本轮用量')) {
+      continue
+    }
+    const llm = line.match(/promptTokens=(\d+) completionTokens=(\d+)/)
+    if (llm) {
+      total += Number(llm[1]) + Number(llm[2])
+      continue
+    }
+    const other = line.match(/tokens=(\d+)/)
+    if (other) {
+      total += Number(other[1])
+    }
+  }
+  return total
+}
+
 // ─────────── 一、接口契约 ───────────
 console.log('\n一、接口契约（知识型问题，会走检索）')
-const hit = await askApi('帮我推荐几款乳清蛋白粉')
+const usageRequestId = `verifyusage-${Date.now()}`
+const hit = await askApi('帮我推荐几款乳清蛋白粉', usageRequestId)
 const usage = hit.usage
 ck('返回里带 usage', Boolean(usage), JSON.stringify(hit.usage))
 ck('总 token 大于零', usage?.totalTokens > 0, `totalTokens=${usage?.totalTokens}`)
-ck(
-  '总额等于输入加输出',
-  usage?.totalTokens === usage?.promptTokens + usage?.completionTokens,
-  `${usage?.promptTokens} + ${usage?.completionTokens} != ${usage?.totalTokens}`,
-)
 ck(
   '金额大于零',
   typeof usage?.costCny === 'number' && usage.costCny > 0,
@@ -101,10 +131,25 @@ ck(
   models.some((m) => /embedding/.test(m)),
   `实际明细：${models.join('/')}`,
 )
+
+// ─────────── 二、与日志对账（真正的证据在这里） ───────────
+console.log('\n二、与日志对账')
+const lines = await logLines('ai-service', usageRequestId, 6000)
+ck('拿到了这次请求的日志行', lines.length > 0, `requestId=${usageRequestId}，一行都没捞到`)
+const llmLines = lines.filter((l) => l.includes('[LLM]'))
+const rerankLines = lines.filter((l) => l.includes('[Rerank]'))
+const embedLines = lines.filter((l) => l.includes('[Embed]'))
+const fromLog = tokensIn(lines)
 ck(
-  '分项之和等于总额（这一次响应内部自查）',
-  usage?.models?.reduce((sum, m) => sum + m.promptTokens + m.completionTokens, 0) === usage?.totalTokens,
-  `分项 ${usage?.models?.reduce((s, m) => s + m.promptTokens + m.completionTokens, 0)} vs 总额 ${usage?.totalTokens}`,
+  '账本总额等于日志里每次调用之和',
+  fromLog === usage?.totalTokens,
+  `日志合计 ${fromLog}（[LLM] ${llmLines.length} 行 / [Rerank] ${rerankLines.length} 行 / [Embed] ${embedLines.length} 行）`
+    + ` vs 响应里的 ${usage?.totalTokens}。差额为正说明有调用没进账本（数字偏小且看不出来）`,
+)
+ck(
+  '检索侧的两类调用都留下了日志',
+  rerankLines.length > 0 && embedLines.length > 0,
+  `[Rerank] ${rerankLines.length} 行 / [Embed] ${embedLines.length} 行`,
 )
 
 // ─────────── 浏览器部分 ───────────
@@ -123,7 +168,7 @@ await page.addInitScript(
 mkdirSync(OUT_DIR, { recursive: true })
 await page.goto(`${BASE}/#/assistant`, { waitUntil: 'networkidle', timeout: 30000 })
 
-console.log('\n二、界面')
+console.log('\n三、界面')
 const before = await page.locator('.message-card.assistant').count()
 await page.locator('.composer textarea').fill('帮我推荐几款乳清蛋白粉')
 await page.getByRole('button', { name: /发送消息/ }).click()

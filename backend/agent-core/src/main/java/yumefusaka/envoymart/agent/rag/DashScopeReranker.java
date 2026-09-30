@@ -36,6 +36,7 @@ public class DashScopeReranker implements Reranker {
     private final String endpoint;
     private final Duration timeout;
 
+    /** 真正生效过的重排次数 */
     private final java.util.concurrent.atomic.AtomicInteger successCount =
             new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger degradedCount =
@@ -88,7 +89,7 @@ public class DashScopeReranker implements Reranker {
             // 重排是这一步里最贵的调用之一（query + 全部候选一起进 cross-encoder），
             // 而它此前完全不在任何成本口径里：账本只覆盖对话模型，检索这条路是另一条链路。
             // 用量只在响应里报一次，就地入账
-            recordUsage(payload);
+            int usageTokens = recordUsage(payload);
 
             List<Map<String, Object>> results = payload
                     .get("output") instanceof Map<?, ?> output && output.get("results") instanceof List<?> list
@@ -112,9 +113,11 @@ public class DashScopeReranker implements Reranker {
                             .build());
                 }
             }
-            log.info("[Rerank] model={} candidates={} kept={} topScore={}",
+            // tokens 进日志是为了给账本留一个独立的对照：这行与账本无关，
+            // 某一天账本少记了一笔，只有把两者相加对一下才发现得了（见 scripts/verify-usage.mjs）
+            log.info("[Rerank] model={} candidates={} kept={} topScore={} tokens={}",
                     model, candidates.size(), reranked.size(),
-                    reranked.isEmpty() ? "-" : reranked.get(0).getScore());
+                    reranked.isEmpty() ? "-" : reranked.get(0).getScore(), usageTokens);
             successCount.incrementAndGet();
             return reranked.stream().limit(topK).toList();
 
@@ -124,7 +127,6 @@ public class DashScopeReranker implements Reranker {
         }
     }
 
-    /** 真正生效过的重排次数 */
     /**
      * 把响应里的用量记进本轮账本。
      * <p>
@@ -132,18 +134,23 @@ public class DashScopeReranker implements Reranker {
      * 调用链上，所以账本在别处记多少都不会带上它。字段名按百炼的口径取
      * {@code usage.total_tokens}——重排没有输出 token 的概念，全部计入输入侧。
      * 取不到就什么都不记：宁可少一笔，也不编一笔。
+     *
+     * @return 入账的 token 数；取不到用量时为 0
      */
-    private void recordUsage(Map<String, Object> payload) {
+    private int recordUsage(Map<String, Object> payload) {
         if (!(payload.get("usage") instanceof Map<?, ?> usage)) {
-            return;
+            return 0;
         }
         Object total = usage.get("total_tokens");
         if (total instanceof Number number && number.intValue() > 0) {
             TokenLedger.record(model, number.intValue(), 0);
+            return number.intValue();
         }
+        return 0;
     }
 
-    public int successCount() {        return successCount.get();
+    public int successCount() {
+        return successCount.get();
     }
 
     /** 静默降级为"不重排"的次数——结果与没配重排完全一致 */

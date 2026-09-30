@@ -33,6 +33,16 @@ public class InternalFeignConfig {
     @Bean
     public RequestInterceptor internalTokenInterceptor(@Value("${INTERNAL_TOKEN:}") String internalToken) {
         String token = InternalAuth.requireValid(internalToken);
-        return template -> template.header(InternalAuth.TOKEN_HEADER, token);
+        return template -> {
+            template.header(InternalAuth.TOKEN_HEADER, token);
+            // 请求标识一并带过去，下游服务用它接上同一条轨迹。
+            // 不加这一步，「ai-service 说它调过 order-service」与「order-service 说自己被调过」
+            // 就是两份对不上的日志，只能靠时间戳猜。放在这里同样是一次覆盖三处（见类注释）。
+            // 当前线程没有标识（定时任务、启动期调用）时不带头，下游会自己发一个新的。
+            String requestId = RequestId.current();
+            if (requestId != null) {
+                template.header(RequestId.HEADER, requestId);
+            }
+        };
     }
 }

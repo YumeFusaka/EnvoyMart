@@ -5,6 +5,7 @@ import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.HybridRetriever;
 import yumefusaka.envoymart.agent.rag.TextSplitter;
 import yumefusaka.envoymart.agent.rag.VectorStore;
+import yumefusaka.envoymart.aiservice.llm.ModelPricing;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -146,6 +147,7 @@ class KnowledgeIndexerStatusTest {
                 splitter,
                 mock(HybridRetriever.class),
                 mock(KnowledgeGraphBuilder.class),
+                mock(ModelPricing.class),
                 false);
     }
 

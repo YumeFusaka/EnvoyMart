@@ -17,6 +17,7 @@ import yumefusaka.envoymart.aiservice.model.ChatResponse;
 import yumefusaka.envoymart.aiservice.service.AiAssistantService;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
+import yumefusaka.envoymart.common.web.RequestId;
 
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
@@ -67,7 +68,10 @@ public class AiController {
         emitter.onTimeout(emitter::complete);
         emitter.onError(e -> log.warn("[SSE] emitter error: {}", e.getMessage()));
 
-        streamExecutor.submit(() -> {
+        // 流式这段跑在另一个线程上，日志上下文要显式带过去（见 RequestId#inherit）：
+        // 不带的话，整轮对话里最有价值的那些日志（工具调用、模型往返、检索命中）
+        // 全部没有请求标识，恰好是最需要串联的一段断了线
+        streamExecutor.submit(RequestId.inherit(() -> {
             try {
                 ChatResponse response = aiAssistantService.chatStream(userId, request, chunk -> send(emitter, "delta", chunk));
                 emitter.send(SseEmitter.event().name("done").data(response, MediaType.APPLICATION_JSON));
@@ -77,7 +81,7 @@ public class AiController {
                 send(emitter, "error", "智能助手暂时不可用，请稍后再试");
                 emitter.complete();
             }
-        });
+        }));
         return emitter;
     }
 
