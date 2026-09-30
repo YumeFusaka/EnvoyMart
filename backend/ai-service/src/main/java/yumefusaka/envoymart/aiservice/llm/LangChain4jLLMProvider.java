@@ -165,14 +165,14 @@ public class LangChain4jLLMProvider implements LLMProvider {
      * 代价是首字延迟只取决于最终回答的首个 token，而不是工具轮的快速吐字。
      */
     @Override
-    public void chatStreamWithTools(List<ChatMessage> messages, LLMConfig config,
-                                    Map<String, Object> toolContext, Consumer<String> onChunk) {
+    public List<ToolExecution> chatStreamWithTools(List<ChatMessage> messages, LLMConfig config,
+                                                   Map<String, Object> toolContext, Consumer<String> onChunk) {
         if (streamingChatModel == null) {
             LLMResponse fallback = chatWithTools(messages, config, toolContext);
             if (fallback.getContent() != null) {
                 onChunk.accept(fallback.getContent());
             }
-            return;
+            return fallback.getToolExecutions() == null ? List.of() : fallback.getToolExecutions();
         }
 
         List<ToolExecution> executions = new ArrayList<>();
@@ -196,13 +196,13 @@ public class LangChain4jLLMProvider implements LLMProvider {
                         config.getModel(), latencyMs, rounds, round.totalChars(), executions.size());
                 recordLlmMetrics(config.getModel(), true, latencyMs,
                         round.promptTokens, round.completionTokens);
-                return;
+                return List.copyOf(executions);
             }
 
             if (rounds >= maxRounds) {
                 log.warn("[LLM] 流式工具循环触到硬性轮次上限 model={} rounds={} {}",
                         config.getModel(), rounds, ctx.guard.summary());
-                return;
+                return List.copyOf(executions);
             }
 
             working.add(round.aiMessage);
@@ -271,6 +271,8 @@ public class LangChain4jLLMProvider implements LLMProvider {
                     .input(request.arguments())
                     .output(output)
                     .success(result.isSuccess())
+                    .noData(result.isNoData())
+                    .latencyMs(result.getLatencyMs())
                     .rawData(result.getRawData())
                     .build());
 

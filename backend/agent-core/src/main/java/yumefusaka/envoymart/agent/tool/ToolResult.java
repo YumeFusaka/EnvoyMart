@@ -12,7 +12,7 @@ import lombok.Data;
  * 真的报错时才转，自我纠偏等于残废一半。见 {@link #noData}。
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 public class ToolResult {
     private boolean success;
     private String output;          // 文本结果
@@ -34,4 +34,15 @@ public class ToolResult {
      */
     @Builder.Default
     private boolean noData = false;
+
+    /**
+     * 这次调用从进入注册中心到返回的墙钟耗时（毫秒）。
+     * <p>
+     * 由 {@code ToolRegistry} 在出口统一填，工具自己不测——三个工具各测一遍，
+     * 必然有的测有的不测，而且各测各的就把「注册中心的开销」漏在外头。
+     * <p>
+     * 之所以要它：轨迹上只有工具名和入参，看不出「这个商品检索扫了 3 秒」。
+     * 一次问话慢在哪，只能靠这串数字定位。
+     */
+    private long latencyMs;
 }

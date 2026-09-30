@@ -49,11 +49,23 @@ public interface LLMProvider {
         return chat(messages, config, toolContext);
     }
 
-    /** 流式版本的 {@link #chatWithTools}。 */
-    default void chatStreamWithTools(List<ChatMessage> messages, LLMConfig config,
-                                     java.util.Map<String, Object> toolContext,
-                                     java.util.function.Consumer<String> onChunk) {
+    /**
+     * 流式版本的 {@link #chatWithTools}。
+     * <p>
+     * <b>返回本次真正执行过的工具</b>，与 {@link #chatWithTools} 通过
+     * {@link LLMResponse#getToolExecutions()} 返回是同一件事。
+     * 这里之所以要显式返回而不是像 {@link #chat} 那样把结果塞进返回值：
+     * 文本增量是<b>边生成边推</b>的，推完就没有第二份了，所以正文只能走回调，
+     * 剩下的工具轨迹就只剩返回值这一条路。
+     * <p>
+     * 曾经它是 {@code void}，于是流式下的 ReAct 轨迹整段丢失——前端看不到调用记录，
+     * 后置校验还会把一条<b>明明有工具依据</b>的回答判成「无依据」而挂上横幅。
+     */
+    default List<ToolExecution> chatStreamWithTools(List<ChatMessage> messages, LLMConfig config,
+                                                    java.util.Map<String, Object> toolContext,
+                                                    java.util.function.Consumer<String> onChunk) {
         chatStream(messages, config, toolContext, onChunk);
+        return List.of();
     }
 
     /**

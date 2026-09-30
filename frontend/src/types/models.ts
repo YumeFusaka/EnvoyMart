@@ -433,6 +433,11 @@ export interface ToolCall {
   tool: string
   input: string
   output: string
+  success: boolean
+  /** 跑通了但什么都没查到 —— 与失败是两种结局，见后端 `ToolResult.noData` */
+  noData: boolean
+  /** 墙钟耗时（毫秒） */
+  latencyMs: number
 }
 
 export interface ChatResponse {

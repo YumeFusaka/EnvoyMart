@@ -5,7 +5,7 @@ import MessageContent from '@/components/ai/MessageContent.vue'
 import PendingApprovalCard from '@/components/ai/PendingApprovalCard.vue'
 import RecommendationCards from '@/components/ai/RecommendationCards.vue'
 import type { ChatMessage, ProductSummary } from '@/types/models'
-import { toolLabel } from '@/utils/tools'
+import { formatMs, outcomeLabel, toolLabel, traceOutcome, traceSummary } from '@/utils/tools'
 import { nextTick, ref } from 'vue'
 
 defineProps<{
@@ -101,11 +101,20 @@ async function handleCite(messageId: string, index: number) {
         比手写一个「点标题切换 v-if」少一半代码，还白拿一层可访问性。
       -->
       <details v-if="message.toolCalls?.length" class="trace">
-        <summary>工具轨迹 {{ message.toolCalls.length }} 次</summary>
+        <summary>
+          工具轨迹 {{ message.toolCalls.length }} 次
+          <span class="trace__total">{{ traceSummary(message.toolCalls) }}</span>
+        </summary>
         <div v-for="(call, i) in message.toolCalls" :key="`${message.id}-${i}`" class="trace__item">
-          <p class="trace__name">{{ toolLabel(call.tool) }}</p>
+          <p class="trace__name">
+            <span>{{ toolLabel(call.tool) }}</span>
+            <span :class="['trace__badge', `is-${traceOutcome(call)}`]">
+              {{ outcomeLabel(traceOutcome(call)) }}
+            </span>
+            <span class="trace__ms">{{ formatMs(call.latencyMs) }}</span>
+          </p>
           <p class="trace__io"><span>入参</span>{{ call.input }}</p>
-          <p class="trace__io"><span>返回</span>{{ call.output }}</p>
+          <p class="trace__io trace__io--output"><span>返回</span>{{ call.output }}</p>
         </div>
       </details>
 
@@ -219,6 +228,11 @@ async function handleCite(messageId: string, index: number) {
   border-radius: var(--ys-radius-sm);
 }
 
+.trace__total {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .trace__item {
   margin-top: var(--ys-space-2);
   padding-top: var(--ys-space-2);
@@ -226,9 +240,45 @@ async function handleCite(messageId: string, index: number) {
 }
 
 .trace__name {
+  display: flex;
+  align-items: center;
+  gap: var(--ys-space-2);
   margin: 0;
   font-size: var(--ys-font-sm);
   font-weight: 600;
+}
+
+/* 三态各自的底色。成功最轻——它是常态，不该抢走对工具名的注意力；
+   「无结果」用警告色而不是危险色：它是有效答案，不是故障。 */
+.trace__badge {
+  padding: 0 var(--ys-space-1);
+  border-radius: var(--ys-radius-sm);
+  font-size: var(--ys-font-xs);
+  font-weight: 500;
+}
+
+.trace__badge.is-ok {
+  color: var(--color-success);
+  background: var(--color-success-subtle);
+}
+
+.trace__badge.is-empty {
+  color: var(--color-warning);
+  background: var(--color-warning-subtle);
+}
+
+.trace__badge.is-fail {
+  color: var(--color-danger);
+  background: var(--color-danger-subtle);
+}
+
+.trace__ms {
+  margin-inline-start: auto;
+  color: var(--color-text-muted);
+  font-family: var(--ys-font-mono);
+  font-size: var(--ys-font-xs);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 
 .trace__io {
@@ -242,6 +292,17 @@ async function handleCite(messageId: string, index: number) {
   line-height: var(--ys-leading-base);
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/*
+  返回可能长达数千字符（服务端已在上游封顶）。展开后不限高的话，
+  一次商品检索就能把整页对话顶出屏幕——轨迹是给人"扫一眼"的，不是给人读长文的。
+  限高 + 滚动：默认看到的是一屏以内，想看全文就在框里滚。
+*/
+.trace__io--output {
+  max-block-size: 12rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .trace__io span {

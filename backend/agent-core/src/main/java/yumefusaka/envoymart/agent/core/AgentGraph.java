@@ -358,6 +358,8 @@ public class AgentGraph {
                 .input(String.valueOf(arguments))
                 .output(output)
                 .success(result.isSuccess())
+                .noData(result.isNoData())
+                .latencyMs(result.getLatencyMs())
                 .rawData(result.getRawData())
                 .build());
 
@@ -517,10 +519,13 @@ public class AgentGraph {
                 return content == null || content.isBlank() ? "抱歉，我没能完成这个请求。" : content;
             }
             StringBuilder accumulated = new StringBuilder();
-            llmProvider.chatStreamWithTools(messages, llmConfig, loopContext, chunk -> {
+            // 与非流式那条分支同理：节点内的 ReAct 轨迹要回收。少了这一步，
+            // 流式下走 ReAct 的那些轮次在前端是空轨迹，而且回答会被后置校验判成「无依据」——
+            // 它确实有工具依据，只是依据没被带回来
+            ctx.executions().addAll(llmProvider.chatStreamWithTools(messages, llmConfig, loopContext, chunk -> {
                 accumulated.append(chunk);
                 ctx.onChunk().accept(chunk);
-            });
+            }));
             return accumulated.toString();
         } catch (Exception e) {
             log.error("[Graph] answer generation failed", e);

@@ -84,6 +84,9 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .tool(execution.getTool())
                 .input(execution.getInput())
                 .output(execution.getOutput())
+                .success(execution.isSuccess())
+                .noData(execution.isNoData())
+                .latencyMs(execution.getLatencyMs())
                 .build();
     }
 

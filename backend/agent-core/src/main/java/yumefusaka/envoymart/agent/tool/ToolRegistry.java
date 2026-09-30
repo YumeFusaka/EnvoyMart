@@ -41,7 +41,7 @@ public class ToolRegistry {
 
     public ToolResult execute(ToolCall call) {
         long startedAt = System.nanoTime();
-        ToolResult result = get(call.getToolName())
+        ToolResult raw = get(call.getToolName())
                 .map(tool -> {
                     ToolResult missing = missingRequired(tool.getDefinition(), call);
                     if (missing != null) {
@@ -63,10 +63,53 @@ public class ToolRegistry {
                         .build());
 
         // 三条来路（计划节点 / ReAct 循环 / MCP）都汇到这里，观测点放这儿才能全覆盖
+        long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
         listener.onToolCall(call.getToolName(),
-                result.isSuccess() ? ToolCallListener.Outcome.SUCCESS : ToolCallListener.Outcome.ERROR,
-                (System.nanoTime() - startedAt) / 1_000_000);
-        return result;
+                raw.isSuccess() ? ToolCallListener.Outcome.SUCCESS : ToolCallListener.Outcome.ERROR,
+                latencyMs);
+        return cap(raw.toBuilder().latencyMs(latencyMs).build());
+    }
+
+    /**
+     * 单次工具输出的上限（字符）。
+     * <p>
+     * <b>工具的返回值是唯一一处「长度由业务数据决定、又被原样塞进模型上下文」的输入。</b>
+     * 用户消息在入口有长度校验，知识片段按 512 字切分，画像 6 槽、情节 3 条——
+     * 都是定量的。只有工具输出不是，而且不是一个工具如此：
+     * <ul>
+     *   <li>{@code logistics_query} 遍历运单的全部轨迹节点；</li>
+     *   <li>{@code order_query} 遍历订单的全部明细行；</li>
+     *   <li>{@code interaction_check} 遍历图谱命中的全部风险边（{@code risksOf} 侧刻意没有条数上限）。</li>
+     * </ul>
+     * 返回多少取决于这条运单有多少节点、这个用户下过多少单、这个成分在图上连了多少条边——
+     * 都在系统的控制之外，而它每轮工具调用都要完整发一次。
+     * 后果不是报错，是<b>成本随业务数据量静默增长</b>。
+     * <p>
+     * 4000 是「够用且封顶」的取法：正常规模下最长的是商品检索（10 条带卖点，1–2 KB），
+     * 留了余量；再长多半是该加分页没加，那是工具自己该修的问题，
+     * 截断至少让它在成本上不再失控。配合护栏的 8 次工具预算，单次请求的工具观测总量
+     * 有确定上界。
+     * <p>
+     * <b>截断必须留痕</b>：不写「已截断」，模型会以为这就是全部，
+     * 转而去分析一份半截的列表，最后给出一个基于残缺数据、却毫无保留的结论。
+     * 结构化数据（{@code rawData}）不截断——它是给前端做二次加工的，
+     * 不进模型上下文，也就没有撑爆成本的问题。
+     * <p>
+     * 放在这个出口而不是各工具里：注册中心是计划节点、ReAct 循环、MCP 三条来路的唯一汇合点，
+     * 写一次三处都有。代价是 MCP 那条来路（外部客户端直接调用）也会被截断——
+     * 它换来的是一句<b>不变的契约</b>：任何工具的输出都不超过这个长度，与走哪条路无关。
+     */
+    public static final int MAX_TOOL_OUTPUT_CHARS = 4000;
+
+    private static ToolResult cap(ToolResult result) {
+        String output = result.getOutput();
+        if (output == null || output.length() <= MAX_TOOL_OUTPUT_CHARS) {
+            return result;
+        }
+        String truncated = output.substring(0, MAX_TOOL_OUTPUT_CHARS)
+                + "\n…（输出过长已截断，完整长度 " + output.length()
+                + " 字符，以上仅为前 " + MAX_TOOL_OUTPUT_CHARS + " 字符）";
+        return result.toBuilder().output(truncated).build();
     }
 
     /**
