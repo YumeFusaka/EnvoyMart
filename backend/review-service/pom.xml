@@ -51,6 +51,16 @@
             <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
             <version>${mybatis.plus.version}</version>
         </dependency>
+        <!--
+            MyBatis-Plus 3.5.9 起把分页插件拆成了独立模块（它要解析 SQL，因而依赖 JSqlParser）。
+            评价域此前不分页（按商品列评价，一个商品下没有多少条），是随管理端的评价列表一起来的。
+            注意：加了这一条**还必须配上分页拦截器**，否则 selectPage 不报错、**静默返回全部数据**。
+        -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+            <version>${mybatis.plus.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
@@ -65,6 +75,11 @@
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
         </dependency>
         <!-- 接口文档 -->
         <dependency>

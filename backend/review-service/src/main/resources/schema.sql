@@ -15,6 +15,12 @@ create table if not exists review (
     -- 商家回复。原实现把评价做成只写孤岛，商家侧无从回应
     reply_content varchar(500),
     reply_at datetime,
+    reply_by varchar(32),
+    -- 隐藏原因与操作人。隐藏是能被滥用的动作（商家隐藏差评），不能是不留痕的状态位。
+    -- 恢复时清空，让「HIDDEN」与「有隐藏原因」始终是同一件事的两个说法
+    hidden_reason varchar(255),
+    hidden_by varchar(32),
+    hidden_at datetime,
     useful_count int not null default 0,
     created_at datetime not null,
     -- 「同一订单行只能评价一次」由数据库唯一约束保证。
