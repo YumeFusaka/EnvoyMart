@@ -16,6 +16,14 @@ public class AfterSaleResponse {
     private Long orderId;
     private String orderNo;
     private Long orderItemId;
+    /**
+     * 申请人。
+     * <p>
+     * 用户侧看到的是他自己，无所谓；管理侧**必须有它** ——
+     * 售后工作台上一行只写「退货退款 待审核」，处理的人不知道是谁提的，
+     * 而这决定了要不要先打个电话问问。
+     */
+    private String userId;
     private String type;
     private String typeText;
     private String status;

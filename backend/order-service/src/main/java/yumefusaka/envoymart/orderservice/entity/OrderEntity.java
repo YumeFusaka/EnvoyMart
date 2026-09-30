@@ -46,6 +46,18 @@ public class OrderEntity {
     private LocalDateTime closedAt;
     private LocalDateTime finishedAt;
 
+    /** 买家留言，下单时填的。用户侧可见 */
     private String remark;
+
+    /**
+     * 商家备注，管理端写的内部说明（"客户要求周末送""这单已电话确认"）。
+     * <p>
+     * <b>与 {@link #remark} 是两个字段，不是同一个</b>：覆盖买家的留言会让那句
+     * 「请放门口」永久消失，而它往往是售后争议里唯一能证明买家说过什么的东西。
+     * 它是内部备注，因此不进 {@code contract.OrderResponse} ——
+     * 那个类型同时被 AI 的订单工具消费，运营写给自己的话不该出现在给买家的回复里。
+     */
+    private String adminRemark;
+
     private String cancelReason;
 }

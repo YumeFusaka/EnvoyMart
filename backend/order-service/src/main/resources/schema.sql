@@ -59,7 +59,15 @@ create table if not exists shop_order (
     closed_at datetime,
     finished_at datetime,
 
+    -- 买家留言
     remark varchar(255),
+    -- 商家备注（管理端写的内部说明）。与 remark 分开存：覆盖买家留言会让那句
+    -- 「请放门口」永久消失，而它往往是售后争议里唯一能证明买家说过什么的东西。
+    --
+    -- 注意：本文件全部是 create table if not exists，对**已经存在的库**不会加列。
+    -- 新库自动带上这一列；老库需要手工执行一次
+    --   alter table shop_order add column admin_remark varchar(255) null;
+    admin_remark varchar(255),
     cancel_reason varchar(255),
 
     index idx_order_user_status (user_id, status),

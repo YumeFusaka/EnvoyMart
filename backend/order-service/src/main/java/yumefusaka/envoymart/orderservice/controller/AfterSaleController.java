@@ -15,27 +15,26 @@ import yumefusaka.envoymart.contract.AfterSalePreview;
 import yumefusaka.envoymart.orderservice.model.AfterSaleResponse;
 import yumefusaka.envoymart.orderservice.model.ApplyAfterSaleRequest;
 import yumefusaka.envoymart.orderservice.service.AfterSaleService;
-import yumefusaka.envoymart.orderservice.service.impl.AfterSaleServiceImpl;
 
 import java.util.List;
 
 /**
- * 售后。
+ * 售后的用户侧接口。
  * <p>
- * 内部入口（{@code /internal/}）是管理侧动作，网关对该前缀一律 404 ——
- * 用户能自己审核通过自己的退款申请，那这套流程就没有意义了。
+ * 管理侧动作<b>不在这里</b>：审核、确认收到退货、重试退款已经搬到
+ * {@link AfterSaleAdminController}（{@code /after-sales/admin}）。
+ * 它们原先以 {@code /internal/} 的形式挂在本控制器下 —— 那是服务间通道，
+ * 网关一律 404，因此既不记录审核人、也只能靠「进不来」当作授权。
+ * 用户能自己审核通过自己的退款申请，这套流程就没有意义了，所以这两件事必须分开两条路。
  */
 @RestController
 @RequestMapping("/after-sales")
 public class AfterSaleController {
 
     private final AfterSaleService afterSaleService;
-    private final AfterSaleServiceImpl afterSaleServiceImpl;
 
-    public AfterSaleController(AfterSaleService afterSaleService,
-                               AfterSaleServiceImpl afterSaleServiceImpl) {
+    public AfterSaleController(AfterSaleService afterSaleService) {
         this.afterSaleService = afterSaleService;
-        this.afterSaleServiceImpl = afterSaleServiceImpl;
     }
 
     /** 填表前先问「能不能退、最多退多少」，而不是提交完才被拒 */
@@ -75,38 +74,4 @@ public class AfterSaleController {
         return Result.success(afterSaleService.cancel(userId, id));
     }
 
-    /**
-     * 审核 —— 管理侧动作，写在 {@code /internal/} 下，网关对 {@code /after-sales/internal/} 一律 404。
-     * <p>
-     * <b>不读身份、不校验审核人</b>：它记不下「谁批的」，「同意/拒绝」这件事本身也没有任何一层在鉴权，
-     * 唯一的门是网关那份排除清单。同类的洞真的出现过一次（{@code /orders/internal/{id}/ship}
-     * 漏登记），现在由 {@code InternalEndpointCoverageTest} 兜住漏登记。
-     * <p>
-     * 后续的管理后台<b>不能复用这个接口</b>：它需要有审核人、需要有权限判定，
-     * 而这条路按设计是服务间通道。管理侧入口要另开一条带 {@code @RequireAdmin} 的接口。
-     */
-    @PostMapping("/internal/{id}/audit")
-    public Result<AfterSaleResponse> audit(
-            @PathVariable("id") Long id,
-            @RequestParam("approved") boolean approved,
-            @RequestParam(value = "remark", required = false) String remark) {
-        return Result.success(afterSaleService.audit(id, approved, remark));
-    }
-
-    /**
-     * 重试退款 —— 用于「退款失败后停在退款中」的售后单。
-     * <p>
-     * 退款失败时状态故意不回滚，那些单子会停在退款中等人处理；
-     * 没有这个入口它们就永远停在那里，用户的钱也永远退不回去。
-     */
-    @PostMapping("/internal/{id}/retry-refund")
-    public Result<AfterSaleResponse> retryRefund(@PathVariable("id") Long id) {
-        return Result.success(afterSaleServiceImpl.retryRefund(id));
-    }
-
-    /** 确认收到退货并打款。真实流程由商家收货触发 */
-    @PostMapping("/internal/{id}/received")
-    public Result<AfterSaleResponse> received(@PathVariable("id") Long id) {
-        return Result.success(afterSaleServiceImpl.confirmReceived(id));
-    }
 }

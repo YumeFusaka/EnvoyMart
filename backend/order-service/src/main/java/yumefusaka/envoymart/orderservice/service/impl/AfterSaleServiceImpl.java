@@ -2,9 +2,11 @@ package yumefusaka.envoymart.orderservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.orderservice.client.PaymentClient;
@@ -22,6 +24,9 @@ import yumefusaka.envoymart.orderservice.model.AfterSaleStatus;
 import yumefusaka.envoymart.orderservice.model.AfterSaleType;
 import yumefusaka.envoymart.orderservice.model.ApplyAfterSaleRequest;
 import yumefusaka.envoymart.orderservice.model.PolicyDecision;
+import yumefusaka.envoymart.orderservice.model.admin.AdminAfterSaleDetail;
+import yumefusaka.envoymart.orderservice.model.admin.AdminAfterSaleQuery;
+import yumefusaka.envoymart.orderservice.model.admin.StatusLogView;
 import yumefusaka.envoymart.contract.RefundRequest;
 import yumefusaka.envoymart.contract.RefundResponse;
 import yumefusaka.envoymart.orderservice.service.AfterSalePolicyEngine;
@@ -31,7 +36,11 @@ import java.time.format.DateTimeFormatter;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -147,11 +156,8 @@ public class AfterSaleServiceImpl implements AfterSaleService {
 
     @Override
     @Transactional
-    public AfterSaleResponse audit(Long afterSaleId, boolean approved, String remark) {
-        AfterSaleEntity entity = afterSaleId == null ? null : afterSaleMapper.selectById(afterSaleId);
-        if (entity == null) {
-            throw new IllegalArgumentException("售后单不存在");
-        }
+    public AfterSaleResponse audit(Long afterSaleId, boolean approved, String remark, String operatorId) {
+        AfterSaleEntity entity = requireAfterSale(afterSaleId);
 
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
         if (current != AfterSaleStatus.APPLIED) {
@@ -163,7 +169,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         }
 
         AfterSaleStatus target = approved ? AfterSaleStatus.APPROVED : AfterSaleStatus.REJECTED;
-        transit(entity, current, target, OPERATOR_ADMIN, null,
+        transit(entity, current, target, OPERATOR_ADMIN, operatorId,
                 approved ? "审核通过" : remark);
 
         if (!approved) {
@@ -192,43 +198,146 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         return toResponse(entity, null, null, null);
     }
 
-    /**
-     * 确认收到退货并打款。真实流程里这一步由商家收货触发，本项目没有管理端，
-     * 因此作为内部能力保留，供后续接入。
-     */
+    @Override
     @Transactional
-    public AfterSaleResponse confirmReceived(Long afterSaleId) {
-        AfterSaleEntity entity = afterSaleId == null ? null : afterSaleMapper.selectById(afterSaleId);
-        if (entity == null) {
-            throw new IllegalArgumentException("售后单不存在");
-        }
+    public AfterSaleResponse confirmReceived(Long afterSaleId, String operatorId) {
+        AfterSaleEntity entity = requireAfterSale(afterSaleId);
+
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
         if (current != AfterSaleStatus.RETURNING) {
             throw new IllegalStateException("售后单当前状态为「" + current.text() + "」，不可确认收货");
         }
-        transit(entity, current, AfterSaleStatus.RECEIVED, OPERATOR_ADMIN, null, "商家已收到退货");
+        transit(entity, current, AfterSaleStatus.RECEIVED, OPERATOR_ADMIN, operatorId, "商家已收到退货");
         refund(entity);
         return toResponse(entity, null, null, null);
     }
 
-    /**
-     * 重试退款。用于「退款失败后停在退款中」的售后单。
-     * <p>
-     * <b>必须有这个入口</b>：退款失败时状态故意不回滚（把状态退回去会让「已审核通过」
-     * 这个事实消失），于是那些单子会停在退款中等人处理。没有重试入口的话，
-     * 它们就永远停在那里，而用户的钱也永远退不回去。
-     */
+    @Override
     @Transactional
-    public AfterSaleResponse retryRefund(Long afterSaleId) {
+    public AfterSaleResponse retryRefund(Long afterSaleId, String operatorId) {
+        AfterSaleEntity entity = requireAfterSale(afterSaleId);
+
+        if (AfterSaleStatus.parse(entity.getStatus()) != AfterSaleStatus.REFUNDING) {
+            throw new IllegalStateException("只有「退款中」的售后单可以重试退款");
+        }
+        // 重试本身不改状态，但**要留一条流水**：否则「这单被重试过三次」这个事实
+        // 只存在于日志里，而排障的人看的是流水
+        writeLog(entity.getId(), AfterSaleStatus.REFUNDING, AfterSaleStatus.REFUNDING,
+                OPERATOR_ADMIN, operatorId, "人工重试退款");
+        refundFromRefunding(entity);
+        return toResponse(entity, null, null, null);
+    }
+
+    @Override
+    public PageResult<AfterSaleResponse> adminPage(AdminAfterSaleQuery query) {
+        Page<AfterSaleEntity> page = new Page<>(query.safePage(), query.safeSize());
+        Page<AfterSaleEntity> result = afterSaleMapper.selectPage(page, adminWrapper(query));
+
+        // 商品快照**一次查完这一页的**：toResponse 里那句 selectById 是给单条详情用的，
+        // 放在列表里就是 20 次额外查询
+        Map<Long, OrderItemEntity> items = itemsOf(result.getRecords());
+
+        List<AfterSaleResponse> records = result.getRecords().stream()
+                .map(entity -> toResponse(entity, items.get(entity.getOrderItemId()), null, null))
+                .toList();
+
+        return PageResult.<AfterSaleResponse>builder()
+                .records(records)
+                .total(result.getTotal())
+                .page(query.safePage())
+                .size(query.safeSize())
+                .build();
+    }
+
+    @Override
+    public AdminAfterSaleDetail adminDetail(Long afterSaleId) {
+        AfterSaleEntity entity = requireAfterSale(afterSaleId);
+
+        List<StatusLogView> logs = afterSaleLogMapper.selectList(
+                        new LambdaQueryWrapper<AfterSaleLogEntity>()
+                                .eq(AfterSaleLogEntity::getAfterSaleId, afterSaleId)
+                                .orderByAsc(AfterSaleLogEntity::getId))
+                .stream()
+                .map(entry -> StatusLogView.builder()
+                        .fromStatus(entry.getFromStatus())
+                        .toStatus(entry.getToStatus())
+                        .operatorType(entry.getOperatorType())
+                        .operatorId(entry.getOperatorId())
+                        .remark(entry.getRemark())
+                        .createdAt(entry.getCreatedAt())
+                        .build())
+                .toList();
+
+        return AdminAfterSaleDetail.builder()
+                .afterSale(toResponse(entity, null, null, null))
+                .logs(logs)
+                .build();
+    }
+
+    private LambdaQueryWrapper<AfterSaleEntity> adminWrapper(AdminAfterSaleQuery query) {
+        LambdaQueryWrapper<AfterSaleEntity> wrapper = new LambdaQueryWrapper<>();
+
+        if (query.getUserId() != null && !query.getUserId().isBlank()) {
+            wrapper.eq(AfterSaleEntity::getUserId, query.getUserId().trim());
+        }
+        List<String> statuses = query.statusList();
+        if (!statuses.isEmpty()) {
+            wrapper.in(AfterSaleEntity::getStatus, statuses);
+        }
+        if (query.getType() != null && !query.getType().isBlank()) {
+            String type = query.getType().trim();
+            // 类型取值非法时抛 400 —— 与状态同一条理由：静默忽略会让页面
+            // 展示「全部售后」而看的人以为筛过了
+            if (!AfterSaleType.isValid(type)) {
+                throw new IllegalArgumentException("不支持的售后类型：" + type);
+            }
+            wrapper.eq(AfterSaleEntity::getType, type);
+        }
+        if (query.getAppliedFrom() != null) {
+            wrapper.ge(AfterSaleEntity::getAppliedAt, query.getAppliedFrom());
+        }
+        if (query.getAppliedTo() != null) {
+            wrapper.le(AfterSaleEntity::getAppliedAt, query.getAppliedTo());
+        }
+        if (query.getKeyword() != null && !query.getKeyword().isBlank()) {
+            String keyword = query.getKeyword().trim();
+            // 三个条件的 **或** 必须整体包进 and(...)：or 的优先级低于 and，
+            // 散着写会把上面的状态、类型、时间条件一起短路掉
+            wrapper.and(w -> w.like(AfterSaleEntity::getAfterSaleNo, keyword)
+                    .or().like(AfterSaleEntity::getOrderNo, keyword)
+                    .or().like(AfterSaleEntity::getUserId, keyword));
+        }
+
+        // 排序带唯一兜底列：只按 applied_at 排时，同一秒申请的两单翻页会漏一条、重一条
+        return wrapper.orderByDesc(AfterSaleEntity::getAppliedAt).orderByDesc(AfterSaleEntity::getId);
+    }
+
+    private Map<Long, OrderItemEntity> itemsOf(List<AfterSaleEntity> afterSales) {
+        if (afterSales.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> itemIds = afterSales.stream()
+                .map(AfterSaleEntity::getOrderItemId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (itemIds.isEmpty()) {
+            return Map.of();
+        }
+        return orderItemMapper.selectList(new LambdaQueryWrapper<OrderItemEntity>()
+                        .in(OrderItemEntity::getId, itemIds))
+                .stream()
+                .collect(Collectors.toMap(OrderItemEntity::getId, Function.identity(),
+                        (first, second) -> first));
+    }
+
+    /** 售后单不存在时的统一入口 —— 详情、审核、收货、重试四条路都要这一句 */
+    private AfterSaleEntity requireAfterSale(Long afterSaleId) {
         AfterSaleEntity entity = afterSaleId == null ? null : afterSaleMapper.selectById(afterSaleId);
         if (entity == null) {
             throw new IllegalArgumentException("售后单不存在");
         }
-        if (AfterSaleStatus.parse(entity.getStatus()) != AfterSaleStatus.REFUNDING) {
-            throw new IllegalStateException("只有「退款中」的售后单可以重试退款");
-        }
-        refundFromRefunding(entity);
-        return toResponse(entity, null, null, null);
+        return entity;
     }
 
     @Override
@@ -373,6 +482,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
                 .orderId(entity.getOrderId())
                 .orderNo(entity.getOrderNo())
                 .orderItemId(entity.getOrderItemId())
+                .userId(entity.getUserId())
                 .type(entity.getType())
                 .typeText(AfterSaleType.text(entity.getType()))
                 .status(status.name())

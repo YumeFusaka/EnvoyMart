@@ -71,4 +71,29 @@ public enum OrderStatus {
             throw new IllegalArgumentException("未知的订单状态：" + value);
         }
     }
+
+    /**
+     * 状态的中文说明，展示给用户。
+     * <p>
+     * 放在服务端而不是前端：状态集合会变，散在客户端的那份迟早与后端不一致 ——
+     * 而那时用户看到的是一个没人认识的状态名。
+     * <p>
+     * 放在枚举上而不是某个 service 的私有方法里：订单状态的中文说法原先写在
+     * {@code OrderDomainServiceImpl} 内部，于是管理端要显示状态时只有两条路——
+     * 复制那份 switch，或者调一个只对买家开放的接口。它属于状态集合本身。
+     * （售后那边 {@link AfterSaleStatus#text()} 一直是这么放的。）
+     */
+    public String text() {
+        return switch (this) {
+            case CREATED -> "待支付";
+            case PAID -> "待发货";
+            case SHIPPED -> "已发货";
+            case RECEIVED -> "已收货";
+            case COMPLETED -> "已完成";
+            case CANCELLED -> "已取消";
+            case CLOSED -> "已关闭";
+            case REFUNDING -> "退款中";
+            case REFUNDED -> "已退款";
+        };
+    }
 }

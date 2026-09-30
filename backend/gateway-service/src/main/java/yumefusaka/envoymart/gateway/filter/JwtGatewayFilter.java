@@ -109,18 +109,20 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 但它是「不分页拉全库」的口子——公开出去等于给了每个匿名请求一条
             // 绕过 /products 分页上限的取数通道
             "/products/internal/",
-            // 发货。这个方法不读身份、不校验订单归属，设计上唯一的防线就是「只有服务间
-            // 或运维直连够得着」——而网关这份清单里原先没有它，那条防线<b>根本不存在</b>。
-            // 后果是任何登录用户带自己的 Token 调它，就能把任意订单改成已发货并写入履约单
-            // 与物流轨迹。补 /products/internal/ 时漏掉的同类项，现在由
-            // InternalEndpointCoverageTest 兜住：新增内部接口却忘了登记会直接构建失败
-            "/orders/internal/",
+            // 注意 /orders/internal/ 与 /after-sales/internal/ 两项**已经删掉**，
+            // 因为那段路径下的接口全搬走了：
+            //   发货  → /orders/admin/orders/{id}/ship
+            //   售后审核 / 确认收货 / 重试退款 → /after-sales/admin/after-sales/{id}/...
+            // 它们原先在这里是因为「服务间通道，网关一律 404」——那既是它们唯一的一道门，
+            // 也是它们不记录操作人的理由。管理台需要身份与追责，所以改成了走网关的管理接口。
+            //
+            // 留着一条护不住任何东西的记录会让人以为那条路还在被守着。清单与源码的一致性
+            // 由 InternalEndpointCoverageTest 双向兜住：源码里有、清单里没有会失败；
+            // 而清单里多出来的项没有自动检查，所以搬走时**必须手工删**——就是这里这一步。
+            //
             // 服务间退款入口：它没有调用方身份，只表达「这笔订单的钱要还回去」，
             // 经网关暴露出去等于任何人凭订单号就能触发退款
             "/payments/internal/",
-            // 售后审核与重试退款。它们不读审核人身份，用户当然更不该够得着——
-            // 放出去等于任何人凭售后单号就能批自己的退款
-            "/after-sales/internal/",
             // 优惠券核销：让用户能自己核销等于让他自己改优惠金额
             "/coupons/internal/",
             // 知识库内部接口：语料下发与种子重导。上面刚把 /knowledge/** 开了公开读，

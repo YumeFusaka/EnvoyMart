@@ -175,10 +175,15 @@ class JwtGatewayFilterTest {
      */
     @Test
     void 路径段内的分号参数不能绕过内部接口排除() {
+        // 这几条都是从 INTERNAL_ONLY_PREFIXES 里现挑的。原先其中一条是
+        // /orders/internal;x/1/ship —— 发货搬到 /orders/admin 之后那条前缀就没了，
+        // 于是它不再被按「内部接口」拒绝，而是掉进「需要登录」拿到 401，
+        // 断言 404 便失败了。**这不是测试写错了，是它跟着清单一起过期了**：
+        // 内部接口的清单变了，测它的样例就得跟着换。
         for (String path : new String[]{
                 "/products/internal;x/catalog",
                 "/products/internal%3Bx/catalog",
-                "/orders/internal;x/1/ship",
+                "/payments/internal;x/refund",
                 "/products/stock;x/deduct"}) {
             MockServerWebExchange exchange = MockServerWebExchange.from(
                     MockServerHttpRequest.method(HttpMethod.GET, URI.create(path)).build());
