@@ -66,6 +66,11 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 图谱同上：它返回的每一条边都带着知识库文档里的原文引文，
             // 公开它和公开那些文档是同一件事。真实用户数据一条都没有
             PublicRule.of("GET", "/knowledge/graph/**"),
+            // 检索评测报告：与知识库文档同理——「检索质量 0.633」是个对外的质量声明，
+            // 让任何人打开报告、点重新运行就能现场复现，是它可信的全部理由；
+            // 只给登录用户看没有意义，报告里也没有任何用户数据。
+            // 只放行「读报告」这一个端点：同前缀下的重跑接口在 /admin 段下，由 ADMIN_SEGMENT 强制登录
+            PublicRule.of("GET", "/knowledge/eval/report"),
             PublicRule.of("POST", "/payments/callback")
     );
 
