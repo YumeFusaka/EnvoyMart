@@ -12,8 +12,10 @@ import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.contract.AfterSalePreview;
+import yumefusaka.envoymart.orderservice.model.AfterSaleDetail;
 import yumefusaka.envoymart.orderservice.model.AfterSaleResponse;
 import yumefusaka.envoymart.orderservice.model.ApplyAfterSaleRequest;
+import yumefusaka.envoymart.orderservice.model.ShipBackRequest;
 import yumefusaka.envoymart.orderservice.service.AfterSaleService;
 
 import java.util.List;
@@ -60,8 +62,9 @@ public class AfterSaleController {
         return Result.success(afterSaleService.listByUser(userId));
     }
 
+    /** 详情带流转流水（时间线）：「我的退货到哪一步了」的唯一完整答案 */
     @GetMapping("/{id}")
-    public Result<AfterSaleResponse> detail(
+    public Result<AfterSaleDetail> detail(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @PathVariable("id") Long id) {
         return Result.success(afterSaleService.detail(userId, id));
@@ -72,6 +75,15 @@ public class AfterSaleController {
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @PathVariable("id") Long id) {
         return Result.success(afterSaleService.cancel(userId, id));
+    }
+
+    /** 寄回退货：审核通过后由用户录入物流单号，售后再往下走 */
+    @PostMapping("/{id}/ship-back")
+    public Result<AfterSaleResponse> shipBack(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("id") Long id,
+            @Valid @RequestBody ShipBackRequest request) {
+        return Result.success(afterSaleService.shipBack(userId, id, request.getCarrier(), request.getTrackingNo()));
     }
 
 }

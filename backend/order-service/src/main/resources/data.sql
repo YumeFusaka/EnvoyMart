@@ -15,7 +15,8 @@ select * from (
            '商品需保持完好、不影响二次销售' as requirements, 'KB-0001' as doc_ref
     union all select 2, null, 'RETURN_REFUND', 1, 7, 15, 1.00,
            '商品需保持完好、不影响二次销售，寄回运费由责任方承担', 'KB-0001'
-    union all select 3, null, 'EXCHANGE', 1, 7, 15, 1.00,
+    -- 换货是「换」不是「退」：max_refund_ratio 必须为 0，否则一次换货走完流程会把货款也退掉
+    union all select 3, null, 'EXCHANGE', 1, 7, 15, 0.00,
            '仅支持同款同规格换货，需商品完好', 'KB-0002'
 
     -- 特殊医学用途配方食品：食品安全考虑，**拆封后不支持无理由退货**，
@@ -30,3 +31,7 @@ select * from (
            '食品类商品一经拆封不支持无理由退货；存在质量问题的除外', 'KB-0004'
 ) as seed
 where not exists (select 1 from after_sale_policy where id = seed.id);
+
+-- 修正已播过种的老库：EXCHANGE 原先配了 1.00 的退款比例，换货会被算成全额退款。
+-- 带条件更新，重复执行无副作用
+update after_sale_policy set max_refund_ratio = 0.00 where id = 3 and max_refund_ratio = 1.00;

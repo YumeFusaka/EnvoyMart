@@ -1,14 +1,17 @@
 package yumefusaka.envoymart.promotionservice.controller;
 
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
+import yumefusaka.envoymart.contract.RedeemRequest;
 import yumefusaka.envoymart.promotionservice.model.CouponResponse;
 import yumefusaka.envoymart.promotionservice.model.UserCouponResponse;
 import yumefusaka.envoymart.promotionservice.service.CouponService;
@@ -67,10 +70,8 @@ public class CouponController {
     @PostMapping("/internal/redeem")
     public Result<Long> redeem(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @RequestParam("userCouponId") Long userCouponId,
-            @RequestParam("orderNo") String orderNo,
-            @RequestParam("orderAmount") long orderAmount) {
-        return Result.success(couponService.redeem(userId, userCouponId, orderNo, orderAmount));
+            @Valid @RequestBody RedeemRequest request) {
+        return Result.success(couponService.redeem(userId, request));
     }
 
     /**

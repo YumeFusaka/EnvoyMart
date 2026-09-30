@@ -60,4 +60,12 @@ public class OrderEntity {
     private String adminRemark;
 
     private String cancelReason;
+
+    /**
+     * 本单核销的用户券 id（见 promotion 库 {@code user_coupon}）。
+     * <p>
+     * 取消/超时关单时据此把券退还 —— 光靠 {@code discountAmount} 退不了券：
+     * 那只是一个金额，退给哪张券、谁的券，都无从得知。
+     */
+    private Long userCouponId;
 }

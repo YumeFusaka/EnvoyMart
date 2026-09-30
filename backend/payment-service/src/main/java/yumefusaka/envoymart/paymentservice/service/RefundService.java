@@ -14,7 +14,7 @@ public interface RefundService {
      * 这是全项目唯一的退款写入口。曾经还有一条用户侧入口（用户直接对自己的支付单退款），
      * 它只校验支付单归属、不经过售后政策引擎与状态机，已删除——退款必须有闸门。
      */
-    RefundResponse refundForOrder(Long orderId, Long afterSaleId, Long amount, String reason);
+    RefundResponse refundForOrder(Long orderId, Long afterSaleId, String bizNo, Long amount, String reason);
 
     List<RefundResponse> listByOrder(String userId, Long orderId);
 }

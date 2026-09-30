@@ -70,6 +70,12 @@ create table if not exists shop_order (
     admin_remark varchar(255),
     cancel_reason varchar(255),
 
+    -- 本单核销的用户券 id。取消/超时关单时据此把券退还 —— 不记下来的话，
+    -- 「券被核销了但订单没成交」在数据上无处可查，用户只能找客服对质。
+    -- 老库需要手工执行一次（新库自动带上）
+    --   alter table shop_order add column user_coupon_id bigint null;
+    user_coupon_id bigint,
+
     index idx_order_user_status (user_id, status),
     -- 超时关单的扫描任务走这个索引：where status = 'CREATED' and expire_at < now()
     index idx_order_status_expire (status, expire_at)
@@ -159,6 +165,17 @@ create table if not exists after_sale (
     audited_at datetime,
     finished_at datetime,
     audit_remark varchar(255),
+    -- 退货物流（仅退货退款/换货填写）：审核通过后由用户寄回时录入。
+    -- 没有这几列时，「用户说寄了」在系统里没有任何凭证，而商家收货那一端
+    -- 也就无从对照 —— 退货退款的链路会停在「待寄回」永远向前走不动。
+    -- 老库需要手工执行一次（新库自动带上）
+    --   alter table after_sale
+    --     add column return_carrier varchar(32) null,
+    --     add column return_tracking_no varchar(64) null,
+    --     add column returned_at datetime null;
+    return_carrier varchar(32),
+    return_tracking_no varchar(64),
+    returned_at datetime,
     index idx_after_sale_order (order_id),
     index idx_after_sale_user_status (user_id, status)
 );

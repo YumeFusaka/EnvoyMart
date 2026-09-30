@@ -61,7 +61,7 @@ class RefundServiceImplTest {
         when(paymentMapper.selectByOrderIdForUpdate(9L)).thenReturn(payment(9L, 19800L));
         when(refundMapper.selectOne(any())).thenReturn(refund("RF001", 9900L, 7001L));
 
-        RefundResponse response = service.refundForOrder(9L, 7001L, 9900L, "售后退款");
+        RefundResponse response = service.refundForOrder(9L, 7001L, null, 9900L, "售后退款");
 
         assertThat(response.getRefundNo()).isEqualTo("RF001");
         verify(refundMapper, never()).insert(any(RefundEntity.class));
@@ -74,7 +74,7 @@ class RefundServiceImplTest {
         when(paymentMapper.selectByOrderIdForUpdate(9L)).thenReturn(payment(9L, 19800L));
         when(refundMapper.selectOne(any())).thenReturn(null);
 
-        service.refundForOrder(9L, 7001L, 9900L, "售后退款");
+        service.refundForOrder(9L, 7001L, null, 9900L, "售后退款");
 
         // 只按 afterSaleId 查是不行的：这个方法的另一条入口是用户侧的 /payments/refund，
         // 调用方拿别人的售后单号就能换出别人的退款记录
@@ -87,11 +87,38 @@ class RefundServiceImplTest {
     void 没有售后单号的主动退款不做查重() {
         when(paymentMapper.selectByOrderIdForUpdate(9L)).thenReturn(payment(9L, 19800L));
 
-        // 订单已关闭却收到支付 —— 这笔退款没有售后单，幂等键为空，靠「已全额退」的余额检查兜底
-        service.refundForOrder(9L, null, null, "订单已关闭，自动全额退款");
+        // 两个幂等键都为空的兜底路径：查重全部跳过，靠「已全额退」的余额检查兜底
+        service.refundForOrder(9L, null, null, null, "订单已关闭，自动全额退款");
 
         verify(refundMapper, never()).selectOne(any());
         verify(refundMapper).insert(any(RefundEntity.class));
+    }
+
+    @Test
+    void 同一业务键重试主动退款只退一次() {
+        when(paymentMapper.selectByOrderIdForUpdate(9L)).thenReturn(payment(9L, 19800L));
+        when(refundMapper.selectOne(any())).thenReturn(refundWithBizNo("RF002", 19800L, "CANCEL:OM20260930001"));
+
+        // 订单取消退款：响应在路上丢了，订单服务拿同一个业务键重试
+        RefundResponse response = service.refundForOrder(9L, null, "CANCEL:OM20260930001", null, "订单取消退款");
+
+        assertThat(response.getRefundNo()).isEqualTo("RF002");
+        verify(refundMapper, never()).insert(any(RefundEntity.class));
+        verify(refundMapper, never()).sumRefundedAmount(any());
+    }
+
+    @Test
+    void 业务键查重必须限定在同一张支付单内() {
+        when(paymentMapper.selectByOrderIdForUpdate(9L)).thenReturn(payment(9L, 19800L));
+        when(refundMapper.selectOne(any())).thenReturn(null);
+
+        service.refundForOrder(9L, null, "CANCEL:OM20260930001", null, "订单取消退款");
+
+        // 与售后单号同理：业务键按订单号生成但查重不带 payment_id 的话，
+        // 异常数据下会拿别的支付单上的记录当幂等命中，该退的钱退不出去
+        assertThat(capturedLookup().getSqlSegment())
+                .contains("payment_id")
+                .contains("biz_no");
     }
 
     @SuppressWarnings("unchecked")
@@ -123,6 +150,12 @@ class RefundServiceImplTest {
         entity.setUserId("u1001");
         entity.setAmount(amount);
         entity.setStatus("SUCCESS");
+        return entity;
+    }
+
+    private static RefundEntity refundWithBizNo(String refundNo, long amount, String bizNo) {
+        RefundEntity entity = refund(refundNo, amount, null);
+        entity.setBizNo(bizNo);
         return entity;
     }
 }

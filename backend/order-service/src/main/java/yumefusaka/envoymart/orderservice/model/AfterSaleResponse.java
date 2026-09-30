@@ -41,6 +41,11 @@ public class AfterSaleResponse {
     private LocalDateTime finishedAt;
     private String auditRemark;
 
+    /** 退货物流：用户寄回时填写。时间线上「已寄回」那一节点靠它 */
+    private String returnCarrier;
+    private String returnTrackingNo;
+    private LocalDateTime returnedAt;
+
     /** 政策依据的文档编号 —— 售后的每个结论都能指回原文 */
     private String docRef;
     /** 商品快照，售后列表里要展示是哪件商品 */

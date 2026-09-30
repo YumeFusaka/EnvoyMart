@@ -34,12 +34,12 @@ public class RefundServiceImpl implements RefundService {
 
     @Override
     @Transactional
-    public RefundResponse refundForOrder(Long orderId, Long afterSaleId, Long amount, String reason) {
+    public RefundResponse refundForOrder(Long orderId, Long afterSaleId, String bizNo, Long amount, String reason) {
         PaymentEntity payment = paymentMapper.selectByOrderIdForUpdate(orderId);
         if (payment == null) {
             throw new IllegalArgumentException("支付记录不存在");
         }
-        return doRefund(payment, afterSaleId, amount, reason);
+        return doRefund(payment, afterSaleId, bizNo, amount, reason);
     }
 
     @Override
@@ -64,12 +64,13 @@ public class RefundServiceImpl implements RefundService {
      * <b>调用前必须已持有支付单的行锁</b>（{@code selectByOrderIdForUpdate}）——
      * 这里是「读已退金额 → 判断够不够 → 写退款单」三步，没有锁的话并发请求会各算各的。
      */
-    private RefundResponse doRefund(PaymentEntity payment, Long afterSaleId, Long amount, String reason) {
+    private RefundResponse doRefund(PaymentEntity payment, Long afterSaleId, String bizNo,
+                                    Long amount, String reason) {
         if (!PAY_SUCCESS.equals(payment.getStatus())) {
             throw new IllegalStateException("只有支付成功的订单可以退款，当前支付状态：" + payment.getStatus());
         }
 
-        // 幂等：同一张支付单上，同一个售后单只退一次。
+        // 幂等：同一张支付单上，同一个售后单（或同一个业务键）只退一次。
         // 售后侧的重试是运营手点的动作，而「上次其实退成功了、只是响应在路上丢了」正是重试
         // 最常见的触发场景；没有这道检查，第二次会再插一条退款单、再退一笔钱，
         // 而两边的日志都写着「退款完成」，对账时才会发现。
@@ -86,6 +87,19 @@ public class RefundServiceImpl implements RefundService {
             if (done != null) {
                 log.info("[Refund] 该售后单已退过款，按幂等返回原结果 afterSaleId={} refundNo={}",
                         afterSaleId, done.getRefundNo());
+                return toResponse(done);
+            }
+        } else if (bizNo != null && !bizNo.isBlank()) {
+            // 主动退款（订单取消等）没有售后单可挂，幂等靠调用方给的业务键。
+            // 键由调用方按「同一件事」生成——重试必须用同一个键，否则这里什么都挡不住
+            RefundEntity done = refundMapper.selectOne(new LambdaQueryWrapper<RefundEntity>()
+                    .eq(RefundEntity::getPaymentId, payment.getId())
+                    .eq(RefundEntity::getBizNo, bizNo)
+                    .eq(RefundEntity::getStatus, REFUND_SUCCESS)
+                    .last("limit 1"));
+            if (done != null) {
+                log.info("[Refund] 该业务键已退过款，按幂等返回原结果 bizNo={} refundNo={}",
+                        bizNo, done.getRefundNo());
                 return toResponse(done);
             }
         }
@@ -110,6 +124,7 @@ public class RefundServiceImpl implements RefundService {
         entity.setPaymentId(payment.getId());
         entity.setOrderId(payment.getOrderId());
         entity.setAfterSaleId(afterSaleId);
+        entity.setBizNo(bizNo);
         entity.setUserId(payment.getUserId());
         entity.setAmount(requestAmount);
         // 本项目没有对接真实渠道，所以退款直接置为成功。

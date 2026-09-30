@@ -9,20 +9,26 @@ import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.util.Times;
+import yumefusaka.envoymart.contract.StockChangeRequest;
 import yumefusaka.envoymart.orderservice.client.PaymentClient;
+import yumefusaka.envoymart.orderservice.client.ProductClient;
 import yumefusaka.envoymart.orderservice.entity.AfterSaleEntity;
 import yumefusaka.envoymart.orderservice.entity.AfterSaleLogEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderItemEntity;
+import yumefusaka.envoymart.orderservice.entity.OrderStatusLogEntity;
 import yumefusaka.envoymart.orderservice.mapper.AfterSaleLogMapper;
 import yumefusaka.envoymart.orderservice.mapper.AfterSaleMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderItemMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderMapper;
+import yumefusaka.envoymart.orderservice.mapper.OrderStatusLogMapper;
 import yumefusaka.envoymart.contract.AfterSalePreview;
+import yumefusaka.envoymart.orderservice.model.AfterSaleDetail;
 import yumefusaka.envoymart.orderservice.model.AfterSaleResponse;
 import yumefusaka.envoymart.orderservice.model.AfterSaleStatus;
 import yumefusaka.envoymart.orderservice.model.AfterSaleType;
 import yumefusaka.envoymart.orderservice.model.ApplyAfterSaleRequest;
+import yumefusaka.envoymart.orderservice.model.OrderStatus;
 import yumefusaka.envoymart.orderservice.model.PolicyDecision;
 import yumefusaka.envoymart.orderservice.model.admin.AdminAfterSaleDetail;
 import yumefusaka.envoymart.orderservice.model.admin.AdminAfterSaleQuery;
@@ -39,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -49,33 +56,34 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     private static final String OPERATOR_USER = "USER";
     private static final String OPERATOR_ADMIN = "ADMIN";
 
-    /** 进行中的售后状态：同一订单行不允许同时有两个 */
-    private static final List<String> ACTIVE_STATUSES = List.of(
-            AfterSaleStatus.APPLIED.name(),
-            AfterSaleStatus.APPROVED.name(),
-            AfterSaleStatus.RETURNING.name(),
-            AfterSaleStatus.RECEIVED.name(),
-            AfterSaleStatus.REFUNDING.name());
+    /** 退货入库回补库存时写进库存流水的来源分类 */
+    private static final String BIZ_TYPE_AFTER_SALE = "AFTER_SALE_RETURN";
 
     private final AfterSaleMapper afterSaleMapper;
     private final AfterSaleLogMapper afterSaleLogMapper;
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
+    private final OrderStatusLogMapper orderStatusLogMapper;
     private final AfterSalePolicyEngine policyEngine;
     private final PaymentClient paymentClient;
+    private final ProductClient productClient;
 
     public AfterSaleServiceImpl(AfterSaleMapper afterSaleMapper,
                                 AfterSaleLogMapper afterSaleLogMapper,
                                 OrderMapper orderMapper,
                                 OrderItemMapper orderItemMapper,
+                                OrderStatusLogMapper orderStatusLogMapper,
                                 AfterSalePolicyEngine policyEngine,
-                                PaymentClient paymentClient) {
+                                PaymentClient paymentClient,
+                                ProductClient productClient) {
         this.afterSaleMapper = afterSaleMapper;
         this.afterSaleLogMapper = afterSaleLogMapper;
         this.orderMapper = orderMapper;
         this.orderItemMapper = orderItemMapper;
+        this.orderStatusLogMapper = orderStatusLogMapper;
         this.policyEngine = policyEngine;
         this.paymentClient = paymentClient;
+        this.productClient = productClient;
     }
 
     @Override
@@ -115,7 +123,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         // 但那个约束是「已完成的不许再申请」，两条一起才完整
         Long active = afterSaleMapper.selectCount(new LambdaQueryWrapper<AfterSaleEntity>()
                 .eq(AfterSaleEntity::getOrderItemId, item.getId())
-                .in(AfterSaleEntity::getStatus, ACTIVE_STATUSES));
+                .in(AfterSaleEntity::getStatus, AfterSaleStatus.ACTIVE_NAMES));
         if (active != null && active > 0) {
             throw new IllegalStateException("该商品已有进行中的售后申请");
         }
@@ -189,12 +197,46 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         AfterSaleEntity entity = requireOwned(userId, afterSaleId);
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
 
-        if (current == AfterSaleStatus.REFUNDING || current.isTerminal()) {
-            // 已经在打款了就不能撤 —— 撤了钱也会到账，状态和事实对不上
+        // 退款中不可撤：钱已经在路上，撤了钱也会到账，状态和事实对不上。
+        // 已收货（RECEIVED）同样不可撤：货已经回到商家手里，撤销等于货被白拿
+        if (current == AfterSaleStatus.REFUNDING || current == AfterSaleStatus.RECEIVED
+                || current.isTerminal()) {
             throw new IllegalStateException("售后单当前状态为「" + current.text() + "」，不可撤销");
         }
 
         transit(entity, current, AfterSaleStatus.CANCELLED, OPERATOR_USER, userId, "用户撤销申请");
+        return toResponse(entity, null, null, null);
+    }
+
+    @Override
+    @Transactional
+    public AfterSaleResponse shipBack(String userId, Long afterSaleId, String carrier, String trackingNo) {
+        AfterSaleEntity entity = requireOwned(userId, afterSaleId);
+
+        AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
+        if (current != AfterSaleStatus.APPROVED) {
+            throw new IllegalStateException("售后单当前状态为「" + current.text() + "」，不可填写寄回信息");
+        }
+        // 仅退款的单没有货要寄 —— 走到这里说明是流程被绕了，如实拒绝
+        if (!AfterSaleType.requiresReturn(entity.getType())) {
+            throw new IllegalStateException("该售后类型无需寄回商品");
+        }
+
+        LocalDateTime returnedAt = Times.now();
+        transit(entity, current, AfterSaleStatus.RETURNING, OPERATOR_USER, userId,
+                "用户已寄回：" + carrier + " " + trackingNo,
+                wrapper -> wrapper
+                        .set(AfterSaleEntity::getReturnCarrier, carrier)
+                        .set(AfterSaleEntity::getReturnTrackingNo, trackingNo)
+                        .set(AfterSaleEntity::getReturnedAt, returnedAt));
+
+        // 条件更新只落库、不回写实体（transit 只同步了状态）。响应要展示刚填的值，
+        // 就得在这里同步 —— 否则用户刚提交成功，看到的三个字段却都是空
+        entity.setReturnCarrier(carrier);
+        entity.setReturnTrackingNo(trackingNo);
+        entity.setReturnedAt(returnedAt);
+
+        log.info("售后单已寄回 no={} carrier={} trackingNo={}", entity.getAfterSaleNo(), carrier, trackingNo);
         return toResponse(entity, null, null, null);
     }
 
@@ -207,7 +249,12 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         if (current != AfterSaleStatus.RETURNING) {
             throw new IllegalStateException("售后单当前状态为「" + current.text() + "」，不可确认收货");
         }
-        transit(entity, current, AfterSaleStatus.RECEIVED, OPERATOR_ADMIN, operatorId, "商家已收到退货");
+        transit(entity, current, AfterSaleStatus.RECEIVED, OPERATOR_ADMIN, operatorId,
+                "商家已收到退货：" + (entity.getReturnCarrier() == null ? "" : entity.getReturnCarrier() + " ")
+                        + (entity.getReturnTrackingNo() == null ? "" : entity.getReturnTrackingNo()));
+        // 货回到仓库，库存跟着还回来。**在退款之前**：入库是已发生的事实，
+        // 而退款只是打款动作 —— 打款失败不该让库存也挂着不还
+        restoreReturnedStockQuietly(entity);
         refund(entity);
         return toResponse(entity, null, null, null);
     }
@@ -253,24 +300,9 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     public AdminAfterSaleDetail adminDetail(Long afterSaleId) {
         AfterSaleEntity entity = requireAfterSale(afterSaleId);
 
-        List<StatusLogView> logs = afterSaleLogMapper.selectList(
-                        new LambdaQueryWrapper<AfterSaleLogEntity>()
-                                .eq(AfterSaleLogEntity::getAfterSaleId, afterSaleId)
-                                .orderByAsc(AfterSaleLogEntity::getId))
-                .stream()
-                .map(entry -> StatusLogView.builder()
-                        .fromStatus(entry.getFromStatus())
-                        .toStatus(entry.getToStatus())
-                        .operatorType(entry.getOperatorType())
-                        .operatorId(entry.getOperatorId())
-                        .remark(entry.getRemark())
-                        .createdAt(entry.getCreatedAt())
-                        .build())
-                .toList();
-
         return AdminAfterSaleDetail.builder()
                 .afterSale(toResponse(entity, null, null, null))
-                .logs(logs)
+                .logs(logsOf(afterSaleId, false))
                 .build();
     }
 
@@ -355,8 +387,12 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     }
 
     @Override
-    public AfterSaleResponse detail(String userId, Long afterSaleId) {
-        return toResponse(requireOwned(userId, afterSaleId), null, null, null);
+    public AfterSaleDetail detail(String userId, Long afterSaleId) {
+        AfterSaleEntity entity = requireOwned(userId, afterSaleId);
+        return AfterSaleDetail.builder()
+                .afterSale(toResponse(entity, null, null, null))
+                .logs(logsOf(afterSaleId, true))
+                .build();
     }
 
     /**
@@ -370,6 +406,20 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
         transit(entity, current, AfterSaleStatus.REFUNDING, "SYSTEM", null, "发起退款");
 
+        long amount = entity.getRefundAmount() == null ? 0L : entity.getRefundAmount();
+        if (amount <= 0) {
+            // 0 元售后（换货等）不调支付：支付侧拒绝 0 元退款是对的（「退款金额必须大于 0」），
+            // 硬调只会让单子永远卡在退款中。
+            // 也不投影订单：一分钱没动，把订单标成「退款中」再弹回去，用户的时间线上
+            // 会白白多出一条「售后退款发起」——换货根本没有退款这回事
+            transit(entity, AfterSaleStatus.REFUNDING, AfterSaleStatus.FINISHED,
+                    "SYSTEM", null, "无需退款（金额为 0），直接完成");
+            return;
+        }
+
+        // 订单投影为退款中：用户看订单列表时，「退款在路上」这件事必须立刻可见，
+        // 而不是等退款完成才一次性变化
+        projectOrderRefunding(entity);
         refundFromRefunding(entity);
     }
 
@@ -404,26 +454,200 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         }
         transit(entity, AfterSaleStatus.REFUNDING, AfterSaleStatus.FINISHED,
                 "SYSTEM", null, "退款完成：" + refundNo);
+        projectOrderAfterFinish(entity);
         log.info("售后退款完成: no={}, amount={}, refundNo={}",
                 entity.getAfterSaleNo(), entity.getRefundAmount(), refundNo);
     }
 
+    /**
+     * 把订单投影为「退款中」。
+     * <p>
+     * <b>失败只留痕、不抛出</b>：订单状态是所有订单行事实的投影，而这里是投影没跟上，
+     * 抛出去会把已经发生的资金动作一起回滚掉（本地事务回滚撤销不了远端的退款调用）。
+     * 投影丢了有 WARN，钱乱了就找不回来了 —— 两者的严重性不在一个量级。
+     */
+    private void projectOrderRefunding(AfterSaleEntity entity) {
+        OrderEntity order = orderMapper.selectById(entity.getOrderId());
+        if (order == null) {
+            return;
+        }
+        OrderStatus current = OrderStatus.parse(order.getStatus());
+        if (!current.canTransitTo(OrderStatus.REFUNDING)) {
+            // 已经是退款中/已退款：重试或并发路径，属正常
+            return;
+        }
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, order.getId())
+                .eq(OrderEntity::getStatus, current.name())
+                .set(OrderEntity::getStatus, OrderStatus.REFUNDING.name()));
+        if (updated > 0) {
+            writeOrderLog(order.getId(), current, OrderStatus.REFUNDING,
+                    "售后退款发起（" + entity.getAfterSaleNo() + "）");
+        } else {
+            log.warn("[AfterSale] 订单状态并发变更，未投影为退款中 orderId={} no={}",
+                    order.getId(), entity.getAfterSaleNo());
+        }
+    }
+
+    /**
+     * 售后单完成后推进订单：所有订单行都退完 → 已退款；只退了一部分 → 回到已收货。
+     * <p>
+     * 回到 RECEIVED 而不是停在 REFUNDING：一单两件只退一件时，剩下的那件还在用户手上、
+     * 售后权利也还在，订单却挂着「退款中」—— 展示与事实不符。回到「已收货」后，
+     * 剩余商品可以继续申请售后，超时任务也会照常把它推进到已完成。
+     */
+    private void projectOrderAfterFinish(AfterSaleEntity entity) {
+        OrderEntity order = orderMapper.selectById(entity.getOrderId());
+        if (order == null) {
+            return;
+        }
+        OrderStatus current = OrderStatus.parse(order.getStatus());
+        if (current != OrderStatus.REFUNDING) {
+            return;
+        }
+
+        List<OrderItemEntity> items = orderItemMapper.selectList(
+                new LambdaQueryWrapper<OrderItemEntity>().eq(OrderItemEntity::getOrderId, order.getId()));
+        OrderStatus target = OrderStatus.RECEIVED;
+        long finishedRefunded = 0L;
+        if (!items.isEmpty()) {
+            List<Long> itemIds = items.stream().map(OrderItemEntity::getId).toList();
+            // 只数「真正退过钱」的完成售后：换货是「换」不是「退」，它完成时金额为 0，
+            // 把它数进来会把一张没退过一分钱的订单标成「已退款」。
+            // distinct 而不是 selectCount：一行理论上只可能有一条 FINISHED 售后
+            // （数据库唯一约束保证），但统计与判定按「行」来算，语义更直
+            finishedRefunded = afterSaleMapper.selectList(new LambdaQueryWrapper<AfterSaleEntity>()
+                            .in(AfterSaleEntity::getOrderItemId, itemIds)
+                            .eq(AfterSaleEntity::getStatus, AfterSaleStatus.FINISHED.name())
+                            .gt(AfterSaleEntity::getRefundAmount, 0L))
+                    .stream()
+                    .map(AfterSaleEntity::getOrderItemId)
+                    .distinct()
+                    .count();
+            if (finishedRefunded >= itemIds.size()) {
+                target = OrderStatus.REFUNDED;
+            }
+        }
+
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, order.getId())
+                .eq(OrderEntity::getStatus, OrderStatus.REFUNDING.name())
+                .set(OrderEntity::getStatus, target.name()));
+        if (updated > 0) {
+            // 文案分三态：换货这类 0 元售后完成时写「部分商品退款完成」是假话——
+            // 一分钱没退，用户却在流水里看到「退款完成」四个字
+            String remark = target == OrderStatus.REFUNDED ? "全部商品退款完成"
+                    : (finishedRefunded == 0 ? "售后完成（未退款），订单继续" : "部分商品退款完成，订单继续");
+            writeOrderLog(order.getId(), OrderStatus.REFUNDING, target, remark);
+        }
+    }
+
+    private void writeOrderLog(Long orderId, OrderStatus from, OrderStatus to, String remark) {
+        OrderStatusLogEntity entry = new OrderStatusLogEntity();
+        entry.setOrderId(orderId);
+        entry.setFromStatus(from.name());
+        entry.setToStatus(to.name());
+        entry.setOperatorType("SYSTEM");
+        entry.setRemark(remark);
+        entry.setCreatedAt(Times.now());
+        orderStatusLogMapper.insert(entry);
+    }
+
+    /**
+     * 退货入库：把退回的商品数量补回库存。
+     * <p>
+     * <b>失败不抛出</b>：货实际已经在仓库里，库存数字没跟上而已 —— 抛出去会把
+     * 「商家已确认收货」这件事一起回滚，而货是真实存在的。留 ERROR 等人工对账，
+     * 与订单侧的 {@code restoreStockQuietly} 同一套哲学。
+     * <p>
+     * 仅退款类型没有货回来，不调用。
+     */
+    private void restoreReturnedStockQuietly(AfterSaleEntity entity) {
+        if (!AfterSaleType.requiresReturn(entity.getType())) {
+            return;
+        }
+        OrderItemEntity item = entity.getOrderItemId() == null
+                ? null : orderItemMapper.selectById(entity.getOrderItemId());
+        if (item == null) {
+            log.error("[AfterSale] 退货入库找不到订单行，库存未回补 no={} orderItemId={}",
+                    entity.getAfterSaleNo(), entity.getOrderItemId());
+            return;
+        }
+        try {
+            Result<?> result = productClient.restoreStock(StockChangeRequest.builder()
+                    .skuId(item.getSkuId())
+                    .quantity(item.getQuantity())
+                    .bizType(BIZ_TYPE_AFTER_SALE)
+                    .bizId(entity.getAfterSaleNo())
+                    .remark("售后退货入库")
+                    .build());
+            if (result == null || result.getCode() == null || result.getCode() != 200) {
+                throw new IllegalStateException(result == null ? "无响应" : result.getMsg());
+            }
+            log.info("[AfterSale] 退货入库回补库存 no={} skuId={} quantity={}",
+                    entity.getAfterSaleNo(), item.getSkuId(), item.getQuantity());
+        } catch (Exception e) {
+            log.error("[AfterSale] 退货入库回补库存失败，需人工对账 no={} skuId={} quantity={}: {}",
+                    entity.getAfterSaleNo(), item.getSkuId(), item.getQuantity(), e.getMessage());
+        }
+    }
+
     private void transit(AfterSaleEntity entity, AfterSaleStatus from, AfterSaleStatus to,
                          String operatorType, String operatorId, String remark) {
-        int updated = afterSaleMapper.update(null, new LambdaUpdateWrapper<AfterSaleEntity>()
+        transit(entity, from, to, operatorType, operatorId, remark, null);
+    }
+
+    /**
+     * 状态推进 + 流水，可选携带额外字段。
+     * <p>
+     * 额外字段走 {@code extraSet} 而不是每次单独 update：状态与随状态一起写入的字段
+     * （寄回单号等）必须落在**同一条条件更新**里 —— 分两次写就会出现「状态已是退货中、
+     * 单号还没写进去」的中间态，而这个中间态恰好是排障时最先看到的。
+     */
+    private void transit(AfterSaleEntity entity, AfterSaleStatus from, AfterSaleStatus to,
+                         String operatorType, String operatorId, String remark,
+                         Consumer<LambdaUpdateWrapper<AfterSaleEntity>> extraSet) {
+        LambdaUpdateWrapper<AfterSaleEntity> wrapper = new LambdaUpdateWrapper<AfterSaleEntity>()
                 .eq(AfterSaleEntity::getId, entity.getId())
                 .eq(AfterSaleEntity::getStatus, from.name())
                 .set(AfterSaleEntity::getStatus, to.name())
                 .set(to == AfterSaleStatus.FINISHED, AfterSaleEntity::getFinishedAt, Times.now())
                 .set(to == AfterSaleStatus.APPROVED || to == AfterSaleStatus.REJECTED,
                         AfterSaleEntity::getAuditedAt, Times.now())
-                .set(to == AfterSaleStatus.REJECTED, AfterSaleEntity::getAuditRemark, remark));
+                .set(to == AfterSaleStatus.REJECTED, AfterSaleEntity::getAuditRemark, remark);
+        if (extraSet != null) {
+            extraSet.accept(wrapper);
+        }
+        int updated = afterSaleMapper.update(null, wrapper);
         if (updated == 0) {
             // 状态被并发改过。条件更新是唯一能裁决它的地方
             throw new IllegalStateException("售后单状态刚刚发生变化，请刷新后重试");
         }
         entity.setStatus(to.name());
         writeLog(entity.getId(), from, to, operatorType, operatorId, remark);
+    }
+
+    /**
+     * 售后流水。
+     *
+     * @param maskOperator 用户侧调用时置 true：操作人 id 对用户抹掉。
+     *                     管理端账号 id 透给用户既无意义，也平白多一个可枚举的内部标识
+     */
+    private List<StatusLogView> logsOf(Long afterSaleId, boolean maskOperator) {
+        return afterSaleLogMapper.selectList(
+                        new LambdaQueryWrapper<AfterSaleLogEntity>()
+                                .eq(AfterSaleLogEntity::getAfterSaleId, afterSaleId)
+                                .orderByAsc(AfterSaleLogEntity::getId))
+                .stream()
+                .map(entry -> StatusLogView.builder()
+                        .fromStatus(entry.getFromStatus())
+                        .toStatus(entry.getToStatus())
+                        .operatorType(entry.getOperatorType())
+                        .operatorId(maskOperator ? null : entry.getOperatorId())
+                        .remark(entry.getRemark())
+                        .createdAt(entry.getCreatedAt())
+                        .build())
+                .toList();
     }
 
     private void writeLog(Long afterSaleId, AfterSaleStatus from, AfterSaleStatus to,
@@ -508,6 +732,9 @@ public class AfterSaleServiceImpl implements AfterSaleService {
                 .auditedAt(entity.getAuditedAt())
                 .finishedAt(entity.getFinishedAt())
                 .auditRemark(entity.getAuditRemark())
+                .returnCarrier(entity.getReturnCarrier())
+                .returnTrackingNo(entity.getReturnTrackingNo())
+                .returnedAt(entity.getReturnedAt())
                 .docRef(docRef)
                 .spuName(snapshot == null ? null : snapshot.getSpuName())
                 .skuSpecText(snapshot == null ? null : snapshot.getSkuSpecText())

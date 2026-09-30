@@ -42,7 +42,12 @@ public enum OrderStatus {
             SHIPPED, EnumSet.of(RECEIVED, REFUNDING),
             RECEIVED, EnumSet.of(COMPLETED, REFUNDING),
             COMPLETED, EnumSet.of(REFUNDING),
-            REFUNDING, EnumSet.of(REFUNDED),
+            // REFUNDING 有两条出口：全退完 → REFUNDED；只退了部分行 → 回到 RECEIVED。
+            // 订单状态是「所有订单行事实的投影」，不是独立事实 —— 一单两件只退一件时，
+            // 退完就该回到正常状态继续，而不是把整单标成已退款。回到 RECEIVED 而不是
+            // COMPLETED，是因为 COMPLETED 是超时任务从 RECEIVED 推进的，让任务重新走一遍
+            // 即可，不影响语义（申诉期按 receivedAt 计算，与状态无关）
+            REFUNDING, EnumSet.of(REFUNDED, RECEIVED),
             CANCELLED, EnumSet.noneOf(OrderStatus.class),
             CLOSED, EnumSet.noneOf(OrderStatus.class),
             REFUNDED, EnumSet.noneOf(OrderStatus.class));

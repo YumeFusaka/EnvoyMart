@@ -13,6 +13,7 @@ import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.contract.RefundResponse;
 import yumefusaka.envoymart.orderservice.client.PaymentClient;
+import yumefusaka.envoymart.orderservice.client.ProductClient;
 import yumefusaka.envoymart.orderservice.entity.AfterSaleEntity;
 import yumefusaka.envoymart.orderservice.entity.AfterSaleLogEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderEntity;
@@ -21,6 +22,7 @@ import yumefusaka.envoymart.orderservice.mapper.AfterSaleLogMapper;
 import yumefusaka.envoymart.orderservice.mapper.AfterSaleMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderItemMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderMapper;
+import yumefusaka.envoymart.orderservice.mapper.OrderStatusLogMapper;
 import yumefusaka.envoymart.orderservice.model.AfterSaleResponse;
 import yumefusaka.envoymart.orderservice.model.AfterSaleStatus;
 import yumefusaka.envoymart.orderservice.model.AfterSaleType;
@@ -83,7 +85,9 @@ class AfterSaleServiceImplTest {
         paymentClient = mock(PaymentClient.class);
         service = new AfterSaleServiceImpl(afterSaleMapper, afterSaleLogMapper,
                 mock(OrderMapper.class), mock(OrderItemMapper.class),
-                mock(AfterSalePolicyEngine.class), paymentClient);
+                mock(OrderStatusLogMapper.class),
+                mock(AfterSalePolicyEngine.class), paymentClient,
+                mock(ProductClient.class));
     }
 
     // ==================== 审核 ====================

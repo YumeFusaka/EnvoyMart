@@ -2,6 +2,7 @@ package yumefusaka.envoymart.orderservice.service;
 
 import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.contract.AfterSalePreview;
+import yumefusaka.envoymart.orderservice.model.AfterSaleDetail;
 import yumefusaka.envoymart.orderservice.model.AfterSaleResponse;
 import yumefusaka.envoymart.orderservice.model.ApplyAfterSaleRequest;
 import yumefusaka.envoymart.orderservice.model.admin.AdminAfterSaleDetail;
@@ -51,9 +52,19 @@ public interface AfterSaleService {
     /** 用户撤销申请。已进入退款中的不允许撤销 */
     AfterSaleResponse cancel(String userId, Long afterSaleId);
 
+    /**
+     * 用户寄回退货，录入物流单号。
+     * <p>
+     * <b>这是退货退款链路曾经缺的那一环</b>：审核通过后售后单停在「待寄回」，
+     * 而没有任何接口能把它推到「退货中」—— 后续的商家收货、退款全都到不了。
+     * 没有它，所有需要寄回的售后单都是一条死路。
+     */
+    AfterSaleResponse shipBack(String userId, Long afterSaleId, String carrier, String trackingNo);
+
     List<AfterSaleResponse> listByUser(String userId);
 
-    AfterSaleResponse detail(String userId, Long afterSaleId);
+    /** 用户侧详情：售后单 + 流转流水（时间线）。流水里的操作人 id 已抹掉 */
+    AfterSaleDetail detail(String userId, Long afterSaleId);
 
     // ==================== 管理侧 ====================
 

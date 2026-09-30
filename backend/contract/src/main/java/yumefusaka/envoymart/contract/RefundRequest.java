@@ -28,6 +28,17 @@ public class RefundRequest {
     /** 由售后退款时关联售后单；为空表示订单取消等主动退款 */
     private Long afterSaleId;
 
+    /**
+     * 主动退款的幂等键（{@code afterSaleId} 为空时使用）。
+     * <p>
+     * 同一支付单上，同一 bizNo 只退一次；重复请求返回首次的结果。
+     * 「上次其实退成功了、只是响应在路上丢了」是重试最常见的触发场景 ——
+     * 售后退款用 afterSaleId 兜住了这件事，主动退款没有它就只能是裸奔。
+     * 约定格式：{@code CANCEL:{orderNo}}。
+     */
+    @Size(max = 64, message = "幂等键最长 64 位")
+    private String bizNo;
+
     /** 退款金额（分）。不传表示全额退（扣除已退部分） */
     private Long amount;
 

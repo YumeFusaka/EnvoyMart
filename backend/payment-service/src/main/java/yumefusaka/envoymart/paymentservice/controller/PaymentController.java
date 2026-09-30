@@ -116,7 +116,7 @@ public class PaymentController {
     @PostMapping("/internal/refunds")
     public Result<RefundResponse> refundInternal(@Valid @RequestBody RefundRequest request) {
         return Result.success(refundService.refundForOrder(
-                request.getOrderId(), request.getAfterSaleId(),
+                request.getOrderId(), request.getAfterSaleId(), request.getBizNo(),
                 request.getAmount(), request.getReason()));
     }
 

@@ -37,4 +37,9 @@ public class AfterSaleEntity {
     private LocalDateTime auditedAt;
     private LocalDateTime finishedAt;
     private String auditRemark;
+
+    /** 退货物流（仅退货退款/换货在用户寄回时录入），是「货已寄出」在系统里的唯一凭证 */
+    private String returnCarrier;
+    private String returnTrackingNo;
+    private LocalDateTime returnedAt;
 }

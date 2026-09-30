@@ -18,6 +18,11 @@ select * from (
 ) as seed
 where not exists (select 1 from coupon where id = seed.id);
 
--- 限类目券的作用域：category_id = 1 是「营养保健」
-update coupon set scope_ids = '1'
- where id = 5 and (scope_ids is null or scope_ids = '');
+-- 限类目券的作用域：列出「营养保健」下的叶子类目。
+-- 商品挂的是叶子类目（2 维生素矿物质、3 蛋白质氨基酸、4 益生菌与肠道、
+-- 5 特殊医学用途、6 功能性食品），而作用域匹配是**精确**的 —— 写一级类目 1
+-- 一张都匹配不上，券会永远用不出去（曾真的这么配过）。
+-- 一级类目自动包含子类目需要配置侧展开类目树，本项目按叶子类目配置，
+-- 语义由名称兜住（这些都是「营养保健」的子类）。
+update coupon set scope_ids = '2,3,4,5,6'
+ where id = 5 and (scope_ids is null or scope_ids = '' or scope_ids = '1');

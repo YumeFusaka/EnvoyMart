@@ -1,5 +1,6 @@
 package yumefusaka.envoymart.promotionservice.service;
 
+import yumefusaka.envoymart.contract.RedeemRequest;
 import yumefusaka.envoymart.promotionservice.model.CouponResponse;
 import yumefusaka.envoymart.promotionservice.model.UserCouponResponse;
 
@@ -25,12 +26,15 @@ public interface CouponService {
     /**
      * 核销一张券并返回<b>抵扣金额（分）</b>。
      * <p>
+     * 请求带订单行明细：限类目/限商品的券按「范围内商品小计」判门槛、算折扣
+     * （见 {@link RedeemRequest}）—— 只传总额的话，券的范围形同虚设。
+     * <p>
      * 扣减由 SQL 的条件更新裁决（未使用 + 未过期），并发下只有一次能成功 ——
      * 折扣只能减一次钱。
      *
-     * @throws IllegalStateException 券不可用（已用 / 已过期 / 不满足门槛）
+     * @throws IllegalStateException 券不可用（已用 / 已过期 / 不满足门槛 / 不适用所选商品）
      */
-    long redeem(String userId, Long userCouponId, String orderNo, long orderAmount);
+    long redeem(String userId, RedeemRequest request);
 
     /**
      * 退还一张已核销但未实际使用的券。

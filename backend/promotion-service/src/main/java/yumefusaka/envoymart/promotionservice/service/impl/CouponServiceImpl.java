@@ -6,6 +6,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.util.Times;
+import yumefusaka.envoymart.contract.RedeemItem;
+import yumefusaka.envoymart.contract.RedeemRequest;
 import yumefusaka.envoymart.promotionservice.entity.CouponEntity;
 import yumefusaka.envoymart.promotionservice.entity.UserCouponEntity;
 import yumefusaka.envoymart.promotionservice.mapper.CouponMapper;
@@ -17,6 +19,7 @@ import yumefusaka.envoymart.promotionservice.service.CouponService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,6 +36,11 @@ public class CouponServiceImpl implements CouponService {
     private static final String TYPE_FIXED = "FIXED";
     private static final String TYPE_DISCOUNT = "DISCOUNT";
     private static final int COUPON_ENABLED = 1;
+
+    /** 作用域：全场 / 限类目 / 限商品 */
+    private static final String SCOPE_ALL = "ALL";
+    private static final String SCOPE_CATEGORY = "CATEGORY";
+    private static final String SCOPE_SPU = "SPU";
 
     /** 领取后默认有效期。模板没配 validDays 也没配绝对时间时用它 */
     private static final int DEFAULT_VALID_DAYS = 30;
@@ -138,7 +146,8 @@ public class CouponServiceImpl implements CouponService {
 
     @Override
     @Transactional
-    public long redeem(String userId, Long userCouponId, String orderNo, long orderAmount) {
+    public long redeem(String userId, RedeemRequest request) {
+        Long userCouponId = request.getUserCouponId();
         UserCouponEntity entity = userCouponId == null ? null : userCouponMapper.selectById(userCouponId);
         // 不区分「不存在」与「不属于你」：区分开来等于告诉调用方哪些 id 有效
         if (entity == null || !entity.getUserId().equals(userId)) {
@@ -150,21 +159,28 @@ public class CouponServiceImpl implements CouponService {
             throw new IllegalStateException("优惠券已下架");
         }
 
-        // 门槛在核销前校验一次，给出能指导下一步的提示（还差多少）
+        // 门槛与折扣都按「券作用范围内商品的小计」算，范围外的商品不参与
+        long scopeAmount = scopeAmount(coupon, request.getItems());
+
+        // 门槛在核销前校验一次，给出能指导下一步的提示（还差多少）。
+        // 差在范围上还是差在总额上，提示不同 —— 限类目券差 50 分和全场券差 50 分，
+        // 用户要做的操作（加购哪类商品）不一样
         long threshold = coupon.getThreshold() == null ? 0L : coupon.getThreshold();
-        if (orderAmount < threshold) {
-            throw new IllegalStateException("订单金额未达到使用门槛，还差 " + (threshold - orderAmount) + " 分");
+        if (scopeAmount < threshold) {
+            long all = request.getItems().stream().mapToLong(this::subtotalOf).sum();
+            String what = all > scopeAmount ? "优惠券适用范围内的商品金额" : "订单金额";
+            throw new IllegalStateException(what + "未达到使用门槛，还差 " + (threshold - scopeAmount) + " 分");
         }
 
         // 扣减由条件更新裁决：未使用 + 未过期。并发下只有一次能成功 ——
         // 折扣只能减一次钱，这条约束必须落在 SQL 上
-        if (userCouponMapper.redeem(userCouponId, userId, orderNo) == 0) {
+        if (userCouponMapper.redeem(userCouponId, userId, request.getOrderNo()) == 0) {
             throw new IllegalStateException("优惠券不可用（已使用或已过期）");
         }
 
-        long deduct = computeDeduction(coupon, orderAmount);
-        log.info("优惠券已核销 userId={} userCouponId={} orderNo={} 抵扣={}分",
-                userId, userCouponId, orderNo, deduct);
+        long deduct = computeDeduction(coupon, scopeAmount);
+        log.info("优惠券已核销 userId={} userCouponId={} orderNo={} 范围内小计={}分 抵扣={}分",
+                userId, userCouponId, request.getOrderNo(), scopeAmount, deduct);
         return deduct;
     }
 
@@ -195,6 +211,70 @@ public class CouponServiceImpl implements CouponService {
                 .eq(UserCouponEntity::getStatus, STATUS_UNUSED)
                 .lt(UserCouponEntity::getExpireAt, Times.now())
                 .set(UserCouponEntity::getStatus, STATUS_EXPIRED));
+    }
+
+    /**
+     * 算「券作用范围内商品的小计（分）」。
+     * <p>
+     * 范围外的商品既不参与门槛、也不参与折扣 —— 只按订单总额算的话，
+     * 一张「保健品满 100 减 20」的券能被 1 元的保健品凑上 99 元的别的商品用掉。
+     * <p>
+     * 作用域数据不自洽（类型未知 / 声明了范围却没配 id / id 非法）时拒绝而不是猜：
+     * 与售后政策引擎同一条理由 —— 猜错的方向是多减钱。不限范围的券适用于全部商品。
+     */
+    private long scopeAmount(CouponEntity coupon, List<RedeemItem> items) {
+        String scopeType = coupon.getScopeType();
+        if (scopeType == null || scopeType.isBlank() || SCOPE_ALL.equals(scopeType)) {
+            return items.stream().mapToLong(this::subtotalOf).sum();
+        }
+        boolean byCategory = SCOPE_CATEGORY.equals(scopeType);
+        if (!byCategory && !SCOPE_SPU.equals(scopeType)) {
+            log.warn("[Coupon] 未知作用域类型 {}，按不可用处理 couponId={}", scopeType, coupon.getId());
+            throw new IllegalStateException("该优惠券暂不可用");
+        }
+        Set<Long> scopeIds = parseScopeIds(coupon);
+        long amount = items.stream()
+                .filter(item -> {
+                    Long key = byCategory ? item.getCategoryId() : item.getSpuId();
+                    return key != null && scopeIds.contains(key);
+                })
+                .mapToLong(this::subtotalOf)
+                .sum();
+        if (amount <= 0) {
+            throw new IllegalStateException("该优惠券不适用于订单中的商品");
+        }
+        return amount;
+    }
+
+    /**
+     * 解析作用域 id 列表。声明了范围却没配 id（或数据非法）时判不可用 ——
+     * 静默当成全场券是最糟的错法：配置漏填会直接变成资损。
+     */
+    private Set<Long> parseScopeIds(CouponEntity coupon) {
+        String raw = coupon.getScopeIds();
+        if (raw == null || raw.isBlank()) {
+            log.warn("[Coupon] 券声明了作用域 {} 但未配置 scopeIds，按不可用处理 couponId={}",
+                    coupon.getScopeType(), coupon.getId());
+            throw new IllegalStateException("该优惠券暂不可用");
+        }
+        try {
+            Set<Long> ids = Arrays.stream(raw.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .map(Long::valueOf)
+                    .collect(Collectors.toSet());
+            if (ids.isEmpty()) {
+                throw new NumberFormatException("空列表");
+            }
+            return ids;
+        } catch (NumberFormatException e) {
+            log.warn("[Coupon] scopeIds 数据非法，按不可用处理 couponId={} scopeIds={}", coupon.getId(), raw);
+            throw new IllegalStateException("该优惠券暂不可用");
+        }
+    }
+
+    private long subtotalOf(RedeemItem item) {
+        return item.getSubtotal() == null ? 0L : item.getSubtotal();
     }
 
     /**

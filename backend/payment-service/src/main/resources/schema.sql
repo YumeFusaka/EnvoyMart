@@ -37,6 +37,13 @@ create table if not exists refund (
     order_id bigint not null,
     -- 售后退款时关联售后单；超时未发货等场景的主动退款为空
     after_sale_id bigint,
+    -- 主动退款的幂等键（售后单之外的第二种退款来源）：如 "CANCEL:YS2026..."。
+    -- 售后退款走 after_sale_id 幂等；取消订单这类没有售后单的退款没有它，
+    -- 就会出现「上次其实退成功了、只是响应在路上丢了」→ 重试 → 又退一笔。
+    -- 老库需要手工执行一次（新库自动带上）
+    --   alter table refund add column biz_no varchar(64) null;
+    --   alter table refund add unique key uk_refund_biz_no (payment_id, biz_no);
+    biz_no varchar(64),
     user_id varchar(32) not null,
     amount bigint not null,
     -- PENDING / SUCCESS / FAILED
@@ -48,8 +55,9 @@ create table if not exists refund (
     index idx_refund_order (order_id),
     -- 一个售后单只对应一笔退款：重试要重发同一笔，不能变成第二笔。
     -- 应用层已经在支付单行锁内查重，这里是数据库那一层的最终防线
-    -- （MySQL 的唯一索引允许多个 null，所以超时未发货的主动退款不受影响）
-    unique key uk_refund_after_sale (after_sale_id)
+    -- （MySQL 的唯一索引允许多个 null，所以主动退款不受影响）
+    unique key uk_refund_after_sale (after_sale_id),
+    unique key uk_refund_biz_no (payment_id, biz_no)
 );
 
 -- 回调流水。**验签失败的记录也要落库**——被伪造的回调是有价值的排查线索，

@@ -15,12 +15,14 @@ import yumefusaka.envoymart.orderservice.client.PaymentClient;
 import yumefusaka.envoymart.orderservice.client.ProductClient;
 import yumefusaka.envoymart.orderservice.client.PromotionClient;
 import yumefusaka.envoymart.orderservice.config.SentinelDegradeConfig;
+import yumefusaka.envoymart.orderservice.entity.AfterSaleEntity;
 import yumefusaka.envoymart.orderservice.entity.CartItemEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderDeliveryEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderDeliveryTraceEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderItemEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderStatusLogEntity;
+import yumefusaka.envoymart.orderservice.mapper.AfterSaleMapper;
 import yumefusaka.envoymart.orderservice.mapper.CartItemMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderDeliveryMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderDeliveryTraceMapper;
@@ -32,7 +34,10 @@ import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.contract.LogisticsStepResponse;
 import yumefusaka.envoymart.contract.OrderItemResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
+import yumefusaka.envoymart.orderservice.model.AfterSaleStatus;
 import yumefusaka.envoymart.orderservice.model.OrderStatus;
+import yumefusaka.envoymart.contract.RedeemItem;
+import yumefusaka.envoymart.contract.RedeemRequest;
 import yumefusaka.envoymart.contract.RefundRequest;
 import yumefusaka.envoymart.contract.RefundResponse;
 import yumefusaka.envoymart.contract.SkuSnapshot;
@@ -57,6 +62,8 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
     /** 下单后多久未支付就关单。前端据此显示倒计时，定时任务据此扫描 */
     private static final int PAYMENT_WINDOW_MINUTES = 30;
+    /** 收货后多久自动完成。与售后政策的最长时限呼应：交易正式结束，售后入口随政策窗关闭 */
+    private static final int AUTO_COMPLETE_DAYS = 7;
     /** 全场包邮：运费先留字段，等有运费规则时再填 */
     private static final long FREIGHT_FREE = 0L;
 
@@ -71,6 +78,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     private final OrderStatusLogMapper orderStatusLogMapper;
     private final OrderDeliveryMapper deliveryMapper;
     private final OrderDeliveryTraceMapper deliveryTraceMapper;
+    private final AfterSaleMapper afterSaleMapper;
     private final ProductClient productClient;
     private final PaymentClient paymentClient;
     private final PromotionClient promotionClient;
@@ -83,6 +91,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                                   OrderStatusLogMapper orderStatusLogMapper,
                                   OrderDeliveryMapper deliveryMapper,
                                   OrderDeliveryTraceMapper deliveryTraceMapper,
+                                  AfterSaleMapper afterSaleMapper,
                                   ProductClient productClient,
                                   PaymentClient paymentClient,
                                   PromotionClient promotionClient,
@@ -94,6 +103,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         this.orderStatusLogMapper = orderStatusLogMapper;
         this.deliveryMapper = deliveryMapper;
         this.deliveryTraceMapper = deliveryTraceMapper;
+        this.afterSaleMapper = afterSaleMapper;
         this.productClient = productClient;
         this.paymentClient = paymentClient;
         this.promotionClient = promotionClient;
@@ -120,6 +130,8 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         List<OrderItemEvent> eventItems = new ArrayList<>();
         // 记账本：已经成功扣掉的库存，失败时按相反顺序还回去
         List<StockChangeRequest> deducted = new ArrayList<>();
+        // 传给券服务的订单行明细：限类目/限商品的券按「范围内商品小计」判门槛、算折扣
+        List<RedeemItem> redeemItems = new ArrayList<>();
 
         try {
             for (CartItemEntity cartItem : cartItems) {
@@ -168,6 +180,9 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             order.setReceiverDistrict(request.getReceiverDistrict());
             order.setReceiverDetail(request.getReceiverDetail());
             order.setRemark(request.getRemark());
+            // 记下用的哪张券：取消/关单/退款时要靠它把券退回去。
+            // 光有 discountAmount 退不了券 —— 它只是一笔钱，对不回具体是哪张券
+            order.setUserCouponId(request.getUserCouponId());
             order.setFreightAmount(FREIGHT_FREE);
             order.setTotalAmount(0L);
             order.setPayAmount(0L);
@@ -197,6 +212,12 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     long subtotal = sku.getPrice() * cartItem.getQuantity();
                     total += subtotal;
 
+                    redeemItems.add(RedeemItem.builder()
+                            .spuId(sku.getSpuId())
+                            .categoryId(sku.getCategoryId())
+                            .subtotal(subtotal)
+                            .build());
+
                     OrderItemEntity item = new OrderItemEntity();
                     item.setOrderId(order.getId());
                     item.setOrderNo(order.getOrderNo());
@@ -225,7 +246,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 // 优惠券在这里核销：金额要先算出来才知道门槛够不够。
                 // 放在扣库存**之后**是有意的 —— 核销需要的「订单金额」此时才确定，
                 // 而它失败时下面的 catch 会连同库存一起补偿
-                long discount = redeemCoupon(userId, request.getUserCouponId(), order.getOrderNo(), total);
+                long discount = redeemCoupon(userId, request.getUserCouponId(), order.getOrderNo(), redeemItems);
 
                 order.setTotalAmount(total);
                 order.setDiscountAmount(discount);
@@ -265,14 +286,21 @@ public class OrderDomainServiceImpl implements OrderDomainService {
      * <p>
      * 没传券就直接返回 0，不走网络。<b>核销失败一律抛异常</b>：用户选了券却没用上，
      * 而订单按原价建出来 —— 那比下单失败糟糕得多，因为用户要等到付款时才发现。
+     * <p>
+     * 传行明细而不是总额：券服务要按「适用范围内商品小计」判门槛、算折扣，
+     * 只给总额的话限类目的券无从校验。
      */
-    private long redeemCoupon(String userId, Long userCouponId, String orderNo, long orderAmount) {
+    private long redeemCoupon(String userId, Long userCouponId, String orderNo, List<RedeemItem> items) {
         if (userCouponId == null) {
             return 0L;
         }
         Result<Long> result;
         try {
-            result = promotionClient.redeem(userId, userCouponId, orderNo, orderAmount);
+            result = promotionClient.redeem(userId, RedeemRequest.builder()
+                    .userCouponId(userCouponId)
+                    .orderNo(orderNo)
+                    .items(items)
+                    .build());
         } catch (Exception e) {
             log.warn("[Order] 核销优惠券失败 orderNo={} userCouponId={}: {}", orderNo, userCouponId, e.getMessage());
             throw new IllegalStateException("优惠券服务暂时不可用，请稍后再试");
@@ -424,6 +452,12 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 .build();
     }
 
+    /**
+     * 取消订单。
+     * <p>
+     * 两条路：未支付 → 直接关闭；已支付未发货 → 关闭并**全额退款**。
+     * 已发货之后不从这里走 —— 要退就走进售后，那条路上有政策判定与商家审核。
+     */
     @Override
     @Transactional
     public OrderResponse cancelOrder(String userId, Long orderId) {
@@ -435,20 +469,27 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         }
 
         OrderStatus current = OrderStatus.parse(order.getStatus());
-        // 只有未支付的订单能直接取消。已支付的要走退款流程 —— 直接取消会让钱货两空，
-        // 而那条流程还没做，所以这里如实拒绝而不是假装能办
-        if (current != OrderStatus.CREATED) {
-            if (current.isTerminal()) {
-                throw new IllegalStateException("订单已" + current.text() + "，无需重复操作");
-            }
-            throw new IllegalStateException("订单已支付，请走退款流程");
+        if (current == OrderStatus.CREATED) {
+            return cancelUnpaidOrder(order, userId);
         }
+        if (current == OrderStatus.PAID || current == OrderStatus.REFUNDING) {
+            return cancelPaidOrder(order, userId);
+        }
+        if (current.isTerminal()) {
+            throw new IllegalStateException("订单已" + current.text() + "，无需重复操作");
+        }
+        // SHIPPED / RECEIVED / COMPLETED：货已在路上或已签收，取消入口关闭
+        throw new IllegalStateException("订单已" + current.text() + "，请通过售后申请退款");
+    }
 
+    /** 未支付订单取消：不涉及资金，关闭并回补库存、退还优惠券 */
+    private OrderResponse cancelUnpaidOrder(OrderEntity order, String userId) {
+        OrderStatus current = OrderStatus.parse(order.getStatus());
         // 状态判断下沉到 SQL 的 where 里，由数据库裁决并发，而不是在内存里"读-判断-写"。
         // 纯内存判断挡不住并发：两个取消请求各自读到 CREATED，双双通过守卫，
         // 于是一笔订单回补两次库存 —— 实测 8 个并发取消，库存比正确值多出整整一倍。
         int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
-                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getId, order.getId())
                 .eq(OrderEntity::getStatus, current.name())
                 .set(OrderEntity::getStatus, OrderStatus.CANCELLED.name())
                 .set(OrderEntity::getClosedAt, Times.now()));
@@ -456,10 +497,89 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             throw new IllegalStateException("订单状态刚刚发生变化，请刷新后重试");
         }
         order.setStatus(OrderStatus.CANCELLED.name());
-        writeStatusLog(orderId, current, OrderStatus.CANCELLED, "USER", userId, "用户取消订单");
+        order.setClosedAt(Times.now());
+        writeStatusLog(order.getId(), current, OrderStatus.CANCELLED, "USER", userId, "用户取消订单");
 
         restoreStockQuietly(order);
+        // 券在下单时就核销了，订单既然没成交，券要还给用户 ——
+        // 不退的话「用了券又取消」等于券被静默吃掉
+        unrederemCouponQuietly(order.getUserId(), order.getUserCouponId());
         log.info("用户 {} 取消订单 {}", userId, order.getOrderNo());
+        return toOrderResponse(order);
+    }
+
+    /**
+     * 已支付未发货订单的取消：全额退款 + 回补库存 + 退券。
+     * <p>
+     * 也是「退款失败后停在退款中」的<b>重试入口</b>：用户再点一次取消即重试。
+     * 重试之所以安全，是因为退款请求带着固定的幂等键（{@code CANCEL:订单号}）——
+     * 上次「退成功但响应丢了」时，支付侧按幂等返回原结果，不会退第二笔。
+     * <p>
+     * <b>退款失败不向上抛</b>：抛出去会把「已置退款中」一起回滚，而退款调用可能已经生效 ——
+     * 那才是最难查的一类不一致。失败时留在退款中并留 ERROR，订单列表上如实显示
+     * 「退款处理中」，用户可以重试。
+     */
+    private OrderResponse cancelPaidOrder(OrderEntity order, String userId) {
+        // 有售后记录的订单不归这里管：它的退款正门是售后流程。
+        // 不挡这一下，一条部分退过款的订单（售后驱动）被取消流程再全额退一次 —— 资损
+        Long sales = afterSaleMapper.selectCount(new LambdaQueryWrapper<AfterSaleEntity>()
+                .eq(AfterSaleEntity::getOrderId, order.getId()));
+        if (sales != null && sales > 0) {
+            throw new IllegalStateException("该订单存在售后记录，无法通过取消流程退款");
+        }
+
+        OrderStatus current = OrderStatus.parse(order.getStatus());
+        boolean retry = current == OrderStatus.REFUNDING;
+        if (!retry) {
+            int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                    .eq(OrderEntity::getId, order.getId())
+                    .eq(OrderEntity::getStatus, current.name())
+                    .set(OrderEntity::getStatus, OrderStatus.REFUNDING.name()));
+            if (updated == 0) {
+                throw new IllegalStateException("订单状态刚刚发生变化，请刷新后重试");
+            }
+            writeStatusLog(order.getId(), current, OrderStatus.REFUNDING, "USER", userId,
+                    "用户取消订单，发起退款");
+            order.setStatus(OrderStatus.REFUNDING.name());
+        }
+
+        String refundNo;
+        try {
+            Result<RefundResponse> result = paymentClient.refundForOrder(RefundRequest.builder()
+                    .orderId(order.getId())
+                    .bizNo("CANCEL:" + order.getOrderNo())
+                    .reason("订单取消退款")
+                    .build());
+            if (result == null || result.getCode() == null || result.getCode() != 200) {
+                throw new IllegalStateException(result == null ? "无响应" : result.getMsg());
+            }
+            refundNo = result.getData() == null ? "" : result.getData().getRefundNo();
+        } catch (Exception e) {
+            log.error("[Order] 取消订单退款失败，订单停留在退款中，用户可再次取消以重试 orderNo={}: {}",
+                    order.getOrderNo(), e.getMessage());
+            return toOrderResponse(order);
+        }
+
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, order.getId())
+                .eq(OrderEntity::getStatus, OrderStatus.REFUNDING.name())
+                .set(OrderEntity::getStatus, OrderStatus.REFUNDED.name())
+                .set(OrderEntity::getClosedAt, Times.now()));
+        if (updated == 0) {
+            // 钱退完了但状态没推动：并发路径。留痕，不抛 —— 事实（钱已退）优先于投影
+            log.warn("[Order] 退款已完成但订单状态并发变更 orderNo={} refundNo={}",
+                    order.getOrderNo(), refundNo);
+            return toOrderResponse(order);
+        }
+        order.setStatus(OrderStatus.REFUNDED.name());
+        order.setClosedAt(Times.now());
+        writeStatusLog(order.getId(), OrderStatus.REFUNDING, OrderStatus.REFUNDED, "SYSTEM", null,
+                "取消订单退款完成：" + refundNo);
+
+        // 退款已完成，货不可能再发，库存还回去；券同理
+        restoreStockQuietly(order);
+        unrederemCouponQuietly(order.getUserId(), order.getUserCouponId());
+        log.info("用户 {} 取消已支付订单 {}，已全额退款 refundNo={}", userId, order.getOrderNo(), refundNo);
         return toOrderResponse(order);
     }
 
@@ -494,12 +614,54 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             writeStatusLog(order.getId(), OrderStatus.CREATED, OrderStatus.CLOSED,
                     "SYSTEM", null, "超时未支付，自动关闭");
             restoreStockQuietly(order);
+            // 券在下单时就核销了 —— 关单同样要把券还回去，否则用户「忘了付款」
+            // 的代价是静默丢一张券，而没有任何地方提示过他
+            unrederemCouponQuietly(order.getUserId(), order.getUserCouponId());
             closed++;
         }
         if (closed > 0) {
-            log.info("[Order] 超时关单 {} 笔，库存已回补", closed);
+            log.info("[Order] 超时关单 {} 笔，库存与优惠券已归还", closed);
         }
         return closed;
+    }
+
+    /**
+     * 已收货超过 {@value #AUTO_COMPLETE_DAYS} 天的订单自动完成。
+     * <p>
+     * 「已完成」原先没有任何写入方：订单走到已收货就停住了，完成状态永远空着。
+     * 主动确认收货之外总要有自动的那一半 —— 用户不会专门回来点一个「完成」，
+     * 而交易需要一个终点（售后期满、账目结清）。
+     * <p>
+     * 幂等：状态条件更新让同一条订单被扫到两次时第二次返回 0。
+     *
+     * @return 本次真正完成的订单数
+     */
+    @Transactional
+    public int completeExpiredReceipts(int batchSize) {
+        LocalDateTime deadline = Times.now().minusDays(AUTO_COMPLETE_DAYS);
+        List<OrderEntity> due = orderMapper.selectList(new LambdaQueryWrapper<OrderEntity>()
+                .eq(OrderEntity::getStatus, OrderStatus.RECEIVED.name())
+                .lt(OrderEntity::getReceivedAt, deadline)
+                .last("limit " + batchSize));
+        int completed = 0;
+        for (OrderEntity order : due) {
+            int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                    .eq(OrderEntity::getId, order.getId())
+                    .eq(OrderEntity::getStatus, OrderStatus.RECEIVED.name())
+                    .set(OrderEntity::getStatus, OrderStatus.COMPLETED.name())
+                    .set(OrderEntity::getFinishedAt, Times.now()));
+            if (updated == 0) {
+                continue;
+            }
+            order.setStatus(OrderStatus.COMPLETED.name());
+            writeStatusLog(order.getId(), OrderStatus.RECEIVED, OrderStatus.COMPLETED,
+                    "SYSTEM", null, "收货 " + AUTO_COMPLETE_DAYS + " 天期满，交易自动完成");
+            completed++;
+        }
+        if (completed > 0) {
+            log.info("[Order] 收货期满自动完成 {} 笔", completed);
+        }
+        return completed;
     }
 
     /**
@@ -713,6 +875,10 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         try {
             Result<RefundResponse> result = paymentClient.refundForOrder(RefundRequest.builder()
                     .orderId(order.getId())
+                    // 幂等键固定：这条路径由 MQ 消费触发，重试是常态 ——
+                    // 键不变时「上次退成功但响应丢了」的重试会按幂等返回原结果，
+                    // 而不是撞在额度校验上抛异常、最终进死信
+                    .bizNo("CANCEL:" + order.getOrderNo())
                     // 金额留空 = 全额退。订单已关闭，没有任何部分退的理由
                     .reason("订单已" + current.text() + "，支付结果迟到，自动全额退款")
                     .build());

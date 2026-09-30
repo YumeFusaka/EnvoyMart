@@ -6,11 +6,14 @@ import org.springframework.stereotype.Component;
 import yumefusaka.envoymart.orderservice.service.impl.OrderDomainServiceImpl;
 
 /**
- * 超时未支付订单的关单任务。
+ * 订单超时任务：未支付关单 + 已收货自动完成。
  * <p>
- * 没有这个任务的话，未支付订单会**永久占用库存**：库存在下单时就已经扣掉了，
+ * 没有关单任务的话，未支付订单会**永久占用库存**：库存在下单时就已经扣掉了，
  * 而订单停在待支付不动 —— 既不会关单，也不会有任何地方报错，只是可卖的货
  * 一天天变少。
+ * <p>
+ * 没有自动完成任务的话，「已完成」永远没有写入方 —— 订单走到已收货就停住了。
+ * 用户不会专门回来点一个「完成」，而交易需要一个终点（售后期满、账目结清）。
  * <p>
  * 单批上限 100：一次扫出几万条会让这一趟跑很久，而下一分钟还要再来一趟。
  * 剩余的下次继续处理，堆积不会变成阻塞。
@@ -44,6 +47,19 @@ public class OrderCloseScheduler {
             // 任务抛出去只会让调度线程记一笔，下一趟照跑；这里显式接住并留全栈，
             // 是为了让「关单一直失败」在日志里看得见，而不是散成一条条调度异常
             log.error("[Order] 超时关单任务执行失败", e);
+        }
+    }
+
+    /**
+     * 收货期满自动完成。与关单同一分钟节拍上跑，但门槛是「天」级的，
+     * 跑多勤都只是扫一遍索引，开销可以忽略。
+     */
+    @Scheduled(fixedDelay = 60_000, initialDelay = 45_000)
+    public void completeExpiredReceipts() {
+        try {
+            orderDomainService.completeExpiredReceipts(BATCH_SIZE);
+        } catch (Exception e) {
+            log.error("[Order] 自动完成任务执行失败", e);
         }
     }
 }

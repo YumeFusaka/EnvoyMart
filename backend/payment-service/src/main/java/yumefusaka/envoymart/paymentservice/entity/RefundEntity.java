@@ -24,6 +24,8 @@ public class RefundEntity {
     private Long orderId;
     /** 由售后退款时关联售后单；已支付订单被取消等场景为空 */
     private Long afterSaleId;
+    /** 主动退款的幂等键（售后单之外的第二种退款来源），如 "CANCEL:{orderNo}"。为空表示走 afterSaleId 那一套 */
+    private String bizNo;
     private String userId;
     /** 单位「分」，不得超过对应支付单的剩余可退金额 */
     private Long amount;
