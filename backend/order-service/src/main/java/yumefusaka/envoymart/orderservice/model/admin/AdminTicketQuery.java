@@ -24,8 +24,12 @@ public class AdminTicketQuery {
     private String category;
 
     /**
-     * 只看向客服的（最后一条消息来自用户）—— 客服上班第一件事是捞自己的欠账，
-     * 而不是逐页翻。这个筛选对应列表上的 last_reply_by 列。
+     * 按球权分诊，<b>两个取值都只在未关闭的工单里筛</b>：
+     * {@code true} = 球在用户侧、等着客服回；{@code false} = 球在客服侧
+     * （含从没有任何人回复过的），即"还欠着的"。
+     * <p>
+     * 已关闭的工单两边都不出现：关掉的工单没有球权可言，把它算进任何一侧都是噪声。
+     * 传 {@code null}（不传）则不按球权筛，含已关闭。
      */
     private Boolean awaitingAdmin;
 

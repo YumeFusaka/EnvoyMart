@@ -48,9 +48,40 @@ public interface TicketDomainService {
      * <p>
      * 消息与工单上的 {@code last_reply_by} 必须一起动：列表页靠它标「待客服回复 /
      * 待用户确认」，只插消息不刷新的话，客服回了十条列表上仍显示"等客服回"。
+     *
+     * <h3>调用前提（不变量）</h3>
+     * <b>调用方必须在同一事务内、在调本方法之前，先对这条工单做过一次成功的条件 UPDATE</b> ——
+     * 要么 {@link #transit}（带状态条件），要么 {@link #requireOpenForConversation}。
+     * 那次 UPDATE 会持有该行的排他锁直到事务提交，本方法内"检查状态→插消息→改球权"
+     * 这三步才是原子的。
+     * <p>
+     * 为什么本方法自己不加 {@code status <> 'CLOSED'} 条件：客服关闭工单时，
+     * 紧随 {@code transit} 之后的那条「工单已关闭：原因」消息自己就会被挡下来。
+     * 先拿锁、再无条件写，是这条链路上唯一自洽的顺序。
      */
     TicketMessageView appendMessage(SupportTicketEntity ticket, TicketSenderType senderType,
                                     String senderId, String content);
+
+    /**
+     * 参与对话前的准入：用一次条件更新确认工单<b>还没关闭</b>，命中 0 行即 409。
+     * <p>
+     * 它同时是 {@link #appendMessage} 要的那把行锁 —— 见该方法的不变量说明。
+     * {@code action} 只用于拼错误消息，如「回复」「补充说明」。
+     * <p>
+     * 为什么不是「读一次再 if 判 isTerminal」：读到的状态在插入消息之前可能已被另一个
+     * 请求改成 CLOSED，于是消息落在一条已关闭的工单上，还把 {@code last_reply_by}
+     * 翻回 USER —— 它重新出现在客服的待回复队列里，而工单是关着的，客服点开才发现。
+     */
+    void requireOpenForConversation(SupportTicketEntity ticket, String action);
+
+    /**
+     * 只把球权交给某一方，<b>不落消息</b>。
+     * <p>
+     * 给「重开但一句话没说」用：用户点了重开却没填说明，球权仍必须推回用户侧，
+     * 否则工单不在客服的待回复队列里（那个队列看的就是 {@code last_reply_by}），
+     * 用户以为重开即已送达，客服那边却看不见它。
+     */
+    void handOver(SupportTicketEntity ticket, TicketSenderType side);
 
     /**
      * 追加一条系统消息，<b>不动 {@code last_reply_by}</b> ——

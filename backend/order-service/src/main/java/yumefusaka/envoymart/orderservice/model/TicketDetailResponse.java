@@ -11,6 +11,9 @@ import java.util.List;
  * <p>
  * 详情里一次性带回全部消息，不分页：工单是对话，中间缺一段就读不懂，
  * 而单条工单的消息量天然有界（varchar 2000 × 来回几十条已经是很长的纠纷）。
+ * <p>
+ * <b>这是用户侧的类型</b>（客服侧是 {@code AdminTicketDetail}），所以消息一律过
+ * {@link TicketMessageView#forCustomer()} —— 客服的账号 id 不出现在给用户的回执里。
  */
 @Data
 @Builder
@@ -22,7 +25,7 @@ public class TicketDetailResponse {
     public static TicketDetailResponse of(SupportTicketEntity entity, List<TicketMessageView> messages) {
         return TicketDetailResponse.builder()
                 .ticket(TicketResponse.from(entity))
-                .messages(messages)
+                .messages(messages.stream().map(TicketMessageView::forCustomer).toList())
                 .build();
     }
 }

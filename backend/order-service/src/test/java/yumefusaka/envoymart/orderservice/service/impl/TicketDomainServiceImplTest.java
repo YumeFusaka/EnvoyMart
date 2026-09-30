@@ -42,6 +42,10 @@ import static org.mockito.Mockito.when;
  *   <li><b>自动关闭给已被用户确认的工单补一条"系统已关闭"</b> —— 用户手快先确认了，
  *       系统再补一刀，消息流里就出现了两条都能解释"为什么关闭"的记录。</li>
  * </ul>
+ * <p>
+ * 断言尽量落在 {@code getSqlSet()}/{@code getSqlSegment()} 上而不是内存对象上：
+ * mock 的 mapper 不会真的写库，同一个实体实例在「读」与「写」之间来回传，
+ * 只看对象状态的断言分不清「发了 UPDATE」和「只改了内存里的字段」。
  */
 class TicketDomainServiceImplTest {
 
@@ -172,6 +176,35 @@ class TicketDomainServiceImplTest {
                 .as("球权列不更新，客服工作台就分不出「等我处理」和「等用户回复」")
                 .contains("last_reply_by");
         assertThat(ticket.getLastReplyBy()).isEqualTo(TicketSenderType.USER.name());
+    }
+
+    @Test
+    void 参与对话前的准入用条件更新挡住已关闭的工单() {
+        when(ticketMapper.update(isNull(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> domain.requireOpenForConversation(ticket(7L, TicketStatus.CLOSED), "补充说明"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("已关闭");
+
+        // 条件是"还没关闭"写在 SQL 里，而不是把状态查出来再 if：
+        // 读到的状态到插入消息之间可能已被另一个请求改成 CLOSED，
+        // 于是消息落在一条已关闭的工单上、还把球权翻回 USER ——
+        // 它重新出现在客服的待回复队列里，而工单是关着的
+        assertThat(capturedUpdate(1).getSqlSegment())
+                .as("状态条件必须在 WHERE 里，那同时也是后续写操作要用的行锁")
+                .contains("status");
+    }
+
+    @Test
+    void 只交球权时不落消息() {
+        when(ticketMapper.update(isNull(), any())).thenReturn(1);
+        SupportTicketEntity ticket = ticket(7L, TicketStatus.PROCESSING);
+
+        domain.handOver(ticket, TicketSenderType.USER);
+
+        assertThat(capturedUpdate(1).getSqlSet()).contains("last_reply_by");
+        assertThat(ticket.getLastReplyBy()).isEqualTo(TicketSenderType.USER.name());
+        verify(messageMapper, never()).insert(any(SupportTicketMessageEntity.class));
     }
 
     @Test

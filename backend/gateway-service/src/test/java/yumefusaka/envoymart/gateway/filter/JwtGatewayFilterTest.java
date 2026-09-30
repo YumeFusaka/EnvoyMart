@@ -13,6 +13,7 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 import yumefusaka.envoymart.common.properties.JwtProperties;
+import yumefusaka.envoymart.gateway.ControllerSources;
 import yumefusaka.envoymart.common.util.JwtUtils;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.common.web.InternalAuth;
@@ -231,18 +232,19 @@ class JwtGatewayFilterTest {
      * 前缀下面。前缀放行意味着一个**不带任何身份**的匿名请求会被判成公开、一路进到服务里，
      * 只剩 {@code AdminGuardInterceptor} 一道防线。这里钉死的是「本来就进不来」，
      * 而不是「进来了但被拦住了」——两道防线不该塌成一道。
+     * <p>
+     * 路径清单<b>扫源码得出</b>而不是手写：原先这份数组是硬编码的，新加
+     * {@code /tickets/admin}、{@code /ai/admin} 时没人回来补，测试照样绿——
+     * 而它守的恰恰是"每个管理入口都进不来"。加接口时漏一次登记，正是这条测试存在的理由。
      */
     @Test
     void 管理路径不应被公开前缀放行() {
-        for (String path : new String[]{
-                "/products/admin/spus",
-                "/products/admin",
-                "/categories/admin",
-                "/brands/admin",
-                "/orders/admin",
-                "/after-sales/admin",
-                "/reviews/admin",
-                "/auth/admin/users"}) {
+        var adminPaths = ControllerSources.adminPaths();
+        assertThat(adminPaths)
+                .as("一个管理路径都没扫到，源码扫描的路径推算错了——这条测试会变成永远通过的空壳")
+                .hasSizeGreaterThan(5);
+
+        for (String path : adminPaths) {
             MockServerWebExchange exchange = MockServerWebExchange.from(
                     MockServerHttpRequest.get(path).build());
 

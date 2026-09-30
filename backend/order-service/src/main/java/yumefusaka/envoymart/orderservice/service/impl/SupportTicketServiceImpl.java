@@ -110,7 +110,7 @@ public class SupportTicketServiceImpl implements SupportTicketService {
     @Transactional
     public TicketDetailResponse addMessage(String userId, Long ticketId, String content) {
         SupportTicketEntity ticket = domain.requireOwned(ticketId, userId);
-        requireNotClosed(ticket, "补充说明");
+        domain.requireOpenForConversation(ticket, "补充说明");
         domain.appendMessage(ticket, TicketSenderType.USER, userId, content.trim());
         return TicketDetailResponse.of(ticket, domain.messagesOf(ticketId));
     }
@@ -142,14 +142,13 @@ public class SupportTicketServiceImpl implements SupportTicketService {
         domain.transit(ticket, TicketStatus.PROCESSING, null);
         if (content != null && !content.isBlank()) {
             domain.appendMessage(ticket, TicketSenderType.USER, userId, content.trim());
+        } else {
+            // 不带说明重开，球权仍要推回用户侧。落在 ADMIN 那边的话，工单不在客服的
+            // 待回复队列里（那个队列看的就是 last_reply_by），用户以为重开即已送达，
+            // 客服那边却看不见它 —— 一条不出声的工单，而两边都以为对方在处理
+            domain.handOver(ticket, TicketSenderType.USER);
         }
         return TicketDetailResponse.of(ticket, domain.messagesOf(ticketId));
-    }
-
-    private void requireNotClosed(SupportTicketEntity ticket, String action) {
-        if (TicketStatus.parse(ticket.getStatus()).isTerminal()) {
-            throw new IllegalStateException("工单已关闭，不能再" + action);
-        }
     }
 
     private String generateTicketNo() {

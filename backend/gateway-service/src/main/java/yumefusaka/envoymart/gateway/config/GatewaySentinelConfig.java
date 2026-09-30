@@ -26,6 +26,10 @@ import java.util.Set;
  * 此处是启动默认值，运行时可在 Sentinel 控制台直接调整。被拦下的请求由
  * {@link GatewayErrorHandler} 写成 429 与可读提示，不会暴露堆栈。
  * <p>
+ * <b>每加一条路由，这里就要加一条规则</b>：漏登记不报错也不告警，只是那条路由
+ * 悄无声息地不限流了 —— 和 {@code RouteCoverageTest} 守的是同一类"漏一次登记"。
+ * {@code SentinelCoverageTest} 双向守住这件事（路由都有规则、规则都指向真实路由）。
+ * <p>
  * <b>只用路由级规则，不用参数级（{@code GatewayParamFlowItem}）。</b>
  * 按来源 IP 的配额留给上游 WAF 或业务侧做，网关这层只做路由总量。
  * <p>
@@ -42,12 +46,21 @@ public class GatewaySentinelConfig {
     public void loadRules() {
         Set<GatewayFlowRule> rules = new HashSet<>();
         rules.add(route("ai-service", 5));
-        rules.add(route("order-service-orders", 20));
         rules.add(route("payment-service", 10));
         rules.add(route("auth-service", 20));
+        rules.add(route("order-service-orders", 20));
+        // 售后与领券都是写接口，且各自压着一个稀缺资源：售后审核会动库存回补，
+        // 领券会动券的剩余量。和下单同档，理由也一样——限的是下游的争用，不是自己
+        rules.add(route("order-service-after-sales", 20));
+        rules.add(route("promotion-service", 20));
+        // 工单读写都不碰库存，代价只在几次单表写；比订单宽，但比纯读紧
+        rules.add(route("order-service-tickets", 30));
+        // 知识图谱查询会打到 Neo4j（图遍历）+ 向量检索，代价介于普通读与 AI 之间
+        rules.add(route("knowledge-service", 30));
         rules.add(route("order-service-cart", 50));
         rules.add(route("review-service", 50));
         rules.add(route("product-service", 100));
+        rules.add(route("product-service-catalog", 100));
 
         GatewayRuleManager.loadRules(rules);
         log.info("[Sentinel] 网关限流规则已加载 {} 条: {}", rules.size(),

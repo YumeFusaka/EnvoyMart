@@ -72,8 +72,13 @@ public class TicketDomainServiceImpl implements TicketDomainService {
         LocalDateTime now = Times.now();
         SupportTicketMessageEntity message = insertMessage(ticket.getId(), senderType, senderId, content, now);
 
-        // 球权与活跃时间跟着最后一条人工消息走。用条件更新没必要 —— 这两个字段
-        // 的并发语义是"最后写的赢"，而值本身来自刚刚插入的那条消息，不会算错
+        // 球权与活跃时间跟着最后一条人工消息走。
+        //
+        // 这里刻意**不加状态条件**：调用方已经通过 requireOpenForConversation 或 transit
+        // 拿到了这一行的排他锁（两条都是对该行的 UPDATE，锁持有到事务提交），此后状态
+        // 不可能再被别人改掉。反过来若在这里写 status <> 'CLOSED'，客服关闭工单时那条
+        // 「工单已关闭：原因」的消息会连自己一起挡下来 —— 关闭动作留下一句没说出口的
+        // 解释，而接口一路成功。
         ticketMapper.update(null, new LambdaUpdateWrapper<SupportTicketEntity>()
                 .eq(SupportTicketEntity::getId, ticket.getId())
                 .set(SupportTicketEntity::getLastReplyBy, senderType.name())
@@ -81,6 +86,25 @@ public class TicketDomainServiceImpl implements TicketDomainService {
         ticket.setLastReplyBy(senderType.name());
         ticket.setUpdatedAt(now);
         return TicketMessageView.from(message);
+    }
+
+    @Override
+    public void requireOpenForConversation(SupportTicketEntity ticket, String action) {
+        int rows = ticketMapper.update(null, new LambdaUpdateWrapper<SupportTicketEntity>()
+                .eq(SupportTicketEntity::getId, ticket.getId())
+                .ne(SupportTicketEntity::getStatus, TicketStatus.CLOSED.name())
+                .set(SupportTicketEntity::getUpdatedAt, Times.now()));
+        if (rows == 0) {
+            throw new IllegalStateException("工单已关闭，不能再" + action);
+        }
+    }
+
+    @Override
+    public void handOver(SupportTicketEntity ticket, TicketSenderType side) {
+        ticketMapper.update(null, new LambdaUpdateWrapper<SupportTicketEntity>()
+                .eq(SupportTicketEntity::getId, ticket.getId())
+                .set(SupportTicketEntity::getLastReplyBy, side.name()));
+        ticket.setLastReplyBy(side.name());
     }
 
     @Override
@@ -136,12 +160,16 @@ public class TicketDomainServiceImpl implements TicketDomainService {
     }
 
     /**
-     * {@code @Transactional} 由调度器跨 bean 调用进入，事务覆盖整批：
-     * 一条失败回滚全批，下一趟重来（条件更新保证已处理过的不会重复处理）。
+     * 事务由调度器跨 bean 调用进入，覆盖整批。<b>但它并不是"一条失败回滚全批"</b>：
+     * 循环里显式接住了 {@link IllegalStateException}，被并发的用户确认抢先的工单跳过、
+     * 其余照常提交。{@code @Transactional} 真正买到的是<b>逐条内部的成对性</b> ——
+     * {@code transit} 与那条"系统已自动关闭"的消息要么都生效要么都不生效，
+     * 不会出现一条状态已关闭却没有解释的工单。
      * <p>
-     * 个别条目在「扫出来」到「处理」的间隙被用户抢先确认，会以
-     * {@link IllegalStateException} 的形式失败 —— 那是<b>预期的并发</b>，
-     * 跳过它继续，不让一个人手快导致这一批全滚。
+     * 非 {@code IllegalStateException} 的异常（数据库断了之类）不受这个 catch 保护，
+     * 会照常冒出整批回滚，下一趟重来 —— 那才是需要整体重试的失败。
+     * <p>
+     * 条件更新保证已处理过的下趟不会再被扫到（状态已不是 RESOLVED）。
      */
     @Override
     @Transactional

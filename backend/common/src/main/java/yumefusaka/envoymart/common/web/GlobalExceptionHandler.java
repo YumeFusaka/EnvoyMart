@@ -2,6 +2,9 @@ package yumefusaka.envoymart.common.web;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.validation.BindException;
+import org.springframework.validation.BindingResult;
+import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -29,11 +32,44 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public Result<String> handleValidation(MethodArgumentNotValidException exception) {
-        String message = exception.getBindingResult().getFieldErrors().stream()
+        return Result.error(400, firstFieldMessage(exception.getBindingResult()));
+    }
+
+    /**
+     * 查询对象绑定失败（{@code ?createdFrom=昨天} 这种塞不进 {@code LocalDateTime} 的值）。
+     * <p>
+     * 与上面那条是同一个出口的两个入口：{@code @Valid @RequestBody} 抛
+     * {@code MethodArgumentNotValidException}，而 {@code GET} 上的查询对象走的是它的父类
+     * {@code BindException}。只补了前者的话，「请求体写错」是 400 + 一句人话，
+     * 「查询参数写错」却落到兜底分支变成「服务暂时不可用」——两者的成因完全一样。
+     */
+    @ExceptionHandler(BindException.class)
+    public Result<String> handleBind(BindException exception) {
+        return Result.error(400, firstFieldMessage(exception.getBindingResult()));
+    }
+
+    private String firstFieldMessage(BindingResult binding) {
+        return binding.getFieldErrors().stream()
                 .findFirst()
-                .map(error -> error.getDefaultMessage())
+                .map(GlobalExceptionHandler::describeFieldError)
                 .orElse("请求参数错误");
-        return Result.error(400, message);
+    }
+
+    /**
+     * 把一条字段错误转成给调用方看的一句话。
+     * <p>
+     * 只有校验注解上写了 {@code message} 的才回原文（本项目的都写了中文）；
+     * 类型转换失败没有自定义消息，框架给的是「Failed to convert property value of type
+     * 'java.lang.String' to required type 'java.time.LocalDateTime' for property 'createdFrom'」——
+     * 与本类 {@link #handleTypeMismatch} 要挡的是同一种东西：把内部类型和属性名
+     * 直接告诉调用方，对正常用户没有帮助，对探测者则是现成的信息。
+     */
+    private static String describeFieldError(FieldError error) {
+        if (!"typeMismatch".equals(error.getCode())) {
+            String message = error.getDefaultMessage();
+            return message == null || message.isBlank() ? "参数校验未通过：" + error.getField() : message;
+        }
+        return "参数格式不正确：" + error.getField();
     }
 
     /**

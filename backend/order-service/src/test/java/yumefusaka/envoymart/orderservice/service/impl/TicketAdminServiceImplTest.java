@@ -25,7 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -98,10 +100,49 @@ class TicketAdminServiceImplTest {
     @Test
     void 已关闭的工单不能再回复() {
         when(ticketMapper.selectById(7L)).thenReturn(ticket(7L, TicketStatus.CLOSED));
+        // 准入是一次条件更新，命中 0 行
+        when(ticketMapper.update(isNull(), any())).thenReturn(0);
 
         assertThatThrownBy(() -> service.reply(7L, "再看看", OPERATOR))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("已关闭");
+        verify(messageMapper, never()).insert(any(SupportTicketMessageEntity.class));
+    }
+
+    /**
+     * 已解决的工单被客服答复，等于把球又踢回去 —— 必须退回处理中。
+     * <p>
+     * 不退的话它在 7 天计时里继续躺着，10 分钟内就会被超时任务关掉：用户刚收到一条
+     * 客服回复，紧跟着一条「超时未确认，系统已自动关闭」，两句话自相矛盾。
+     * <p>
+     * 断言落在 SET 子句上而不是 {@code detail} 里的状态：单测的 mapper 是 mock，
+     * 读回来的就是传进去的那个实例，只看对象状态分不清「真的发了 UPDATE」和
+     * 「transit 只在内存里改了字段」。
+     */
+    @Test
+    void 已解决的工单被客服答复时退回处理中并清掉解决时间() {
+        when(ticketMapper.selectById(7L)).thenReturn(ticket(7L, TicketStatus.RESOLVED));
+        when(ticketMapper.update(isNull(), any())).thenReturn(1);
+
+        service.reply(7L, "又查了一下，确实是我们漏发", OPERATOR);
+
+        assertThat(capturedUpdates())
+                .as("没有任何一步把状态推回 PROCESSING")
+                .anySatisfy(w -> assertThat(w.getSqlSet())
+                        .contains("status").contains("resolved_at"));
+    }
+
+    @Test
+    void 处理中的工单回复时不重复转移状态() {
+        when(ticketMapper.selectById(7L)).thenReturn(ticket(7L, TicketStatus.PROCESSING));
+        when(ticketMapper.update(isNull(), any())).thenReturn(1);
+
+        service.reply(7L, "在路上", OPERATOR);
+
+        // 每次 UPDATE 都只动球权/活跃时间那一组列，没有一次写 status
+        assertThat(capturedUpdates())
+                .as("已经是处理中，再推一次状态没有意义，还会平白多一次可能失败的并发窗口")
+                .noneSatisfy(w -> assertThat(w.getSqlSet()).contains("status"));
     }
 
     // ==================== 解决 ====================
@@ -178,8 +219,40 @@ class TicketAdminServiceImplTest {
         query.setAwaitingAdmin(true);
         service.list(query);
 
-        // 客服上班第一件事是捞自己的欠账，而不是从第一页翻到最后
-        assertThat(capturedPageWrapper().getSqlSegment()).contains("last_reply_by");
+        // 客服上班第一件事是捞自己的欠账，而不是从第一页翻到最后。
+        // 两个条件缺一不可：只看 last_reply_by 会把已关闭的工单也捞出来 ——
+        // 那些球的落点早已无人关心，混在欠账队列里只会让客服点开一条死单
+        assertThat(capturedPageWrapper().getSqlSegment())
+                .contains("last_reply_by").contains("status");
+    }
+
+    @Test
+    void 球在客服侧的筛选不能漏掉从未有人回复过的工单() {
+        when(ticketMapper.selectPage(any(), any())).thenReturn(new Page<>());
+
+        AdminTicketQuery query = new AdminTicketQuery();
+        query.setAwaitingAdmin(false);
+        service.list(query);
+
+        // 写 ne(USER) 是不够的：SQL 里 NULL 参与比较的结果是 NULL，不是 true，
+        // 于是 last_reply_by 还是空（客服一次都没回过）的工单会被整批漏掉
+        assertThat(capturedPageWrapper().getSqlSegment())
+                .contains("last_reply_by")
+                .containsIgnoringCase("is null")
+                .contains("status");
+    }
+
+    @Test
+    void 关键词也搜工单消息正文() {
+        when(ticketMapper.selectPage(any(), any())).thenReturn(new Page<>());
+
+        AdminTicketQuery query = new AdminTicketQuery();
+        query.setKeyword("漏发");
+        service.list(query);
+
+        // 「之前有人提过同样的问题吗」正是把消息拆成独立表时想要的能力
+        // （见 SupportTicketMessageEntity 的说明），只用单号/标题搜就把它落了空
+        assertThat(capturedPageWrapper().getSqlSegment()).contains("support_ticket_message");
     }
 
     @Test
@@ -233,6 +306,16 @@ class TicketAdminServiceImplTest {
                         ArgumentCaptor.forClass(Wrapper.class);
         verify(ticketMapper).selectPage(any(), captor.capture());
         return captor.getValue();
+    }
+
+    /** 一次动作里发出去的全部 UPDATE；断言落在 SET 子句上，见「已解决的工单被客服答复」的说明 */
+    @SuppressWarnings("unchecked")
+    private List<Wrapper<SupportTicketEntity>> capturedUpdates() {
+        ArgumentCaptor<Wrapper<SupportTicketEntity>> captor =
+                (ArgumentCaptor<Wrapper<SupportTicketEntity>>) (ArgumentCaptor<?>)
+                        ArgumentCaptor.forClass(Wrapper.class);
+        verify(ticketMapper, atLeastOnce()).update(isNull(), captor.capture());
+        return captor.getAllValues();
     }
 
     /** SQL 里有没有出现在<b>最外层</b>的 {@code OR}；{@code order_no} 里的 or 不算。 */
