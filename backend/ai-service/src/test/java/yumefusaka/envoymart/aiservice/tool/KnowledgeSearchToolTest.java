@@ -76,7 +76,7 @@ class KnowledgeSearchToolTest {
                 .contains("出处：《维生素 D3 说明书》")
                 .contains("4000IU")
                 .contains("《文档名》")
-                .contains("不要给它们标注 [编号] 角标");
+                .contains("不要给这些片段标注 [编号] 角标");
     }
 
     @Test

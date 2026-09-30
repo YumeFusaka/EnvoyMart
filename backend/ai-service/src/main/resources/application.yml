@@ -45,6 +45,12 @@ jwt:
   secret-key: ${JWT_SECRET:}
 
 envoymart:
+  agent:
+    # 【高级项】审批令牌的签名密钥。用户点确认时带回的令牌由它签发与验签，
+    # 载荷里写着这次要执行哪几次工具调用，客户端改不了。
+    # 留空则每次启动生成一把进程内随机密钥并打 WARN：单机开发照常可用，
+    # 但多实例部署必须显式配置同一个值，否则 A 实例签发的令牌在 B 实例上验不过。
+    approval-secret: ${AGENT_APPROVAL_SECRET:}
   # 对话与向量化分开配置：两者可以来自不同供应商。
   # DeepSeek 只有 Chat Completions、没有 Embeddings 端点，所以向量化仍留在百炼。
   llm:

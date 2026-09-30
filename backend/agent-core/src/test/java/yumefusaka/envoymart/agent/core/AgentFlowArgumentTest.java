@@ -155,7 +155,7 @@ class AgentFlowArgumentTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<yumefusaka.envoymart.agent.llm.ChatMessage> conversation,
-                               boolean approved, LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk) {
             return GraphResult.builder().answer("stub-graph").steps(List.of()).build();
         }
     }
@@ -165,9 +165,9 @@ class AgentFlowArgumentTest {
         Agent agent = agent();
 
         // 首轮给出订单号，让历史里有「订单 22」可供改写消解
-        agent.chat("u1001", "s1", "订单 22 现在到哪了", false);
+        agent.chat("u1001", "s1", "订单 22 现在到哪了", null);
         // 追问：字面上没有订单号
-        Agent.AgentResponse response = agent.chat("u1001", "s1", "那个订单我要退掉", false);
+        Agent.AgentResponse response = agent.chat("u1001", "s1", "那个订单我要退掉", null);
 
         assertThat(llm.seenByFlow)
                 .as("流程必须先能通过参数校验、再能抽到参数——它只能看路由用的那一句")
@@ -182,7 +182,7 @@ class AgentFlowArgumentTest {
     void 首轮不改写时流程照常拿到原话() {
         Agent agent = agent();
 
-        Agent.AgentResponse response = agent.chat("u1001", "s2", "订单 7 我要退货", false);
+        Agent.AgentResponse response = agent.chat("u1001", "s2", "订单 7 我要退货", null);
 
         assertThat(llm.seenByFlow).isEqualTo("订单 7 我要退货");
         assertThat(response.getSource()).isEqualTo("flow");

@@ -7,13 +7,12 @@ export interface ChatPayload {
   message: string
   contextOrderId?: number
   /**
-   * 用户已确认高危操作。
-   * <p>
-   * 置位后服务端会跳过执行图里的拦截，**放行本轮计划中所有高危步骤**——
-   * 而计划是服务端重新推导的，所以这个位只能在用户明确确认的那一刻置位，
-   * 不能因为「上一条消息提到过确认」就默认带上。
+   * 确认令牌：上一轮响应下发的 `approvalToken`，用户点确认时原样带回。
+   *
+   * 它不是「已确认」这个开关，而是一张写明**要执行哪几次调用**的签名凭证。
+   * 前端只是搬运工——改一个字符都会验签失败，服务端一条也不执行。
    */
-  approved?: boolean
+  approvalToken?: string
 }
 
 export async function chat(payload: ChatPayload) {

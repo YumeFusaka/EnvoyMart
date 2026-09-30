@@ -473,9 +473,16 @@ export interface ChatResponse {
    * 等待用户确认的高危操作，形如 `order_cancel(orderId=12)`。
    * <p>
    * **非空表示本轮对话被中断**：`reply` 是确认提示而不是回答，也没有工具真正执行过。
-   * 前端据此渲染确认卡片；用户确认后带 `approved: true` 重发同一意图，才会真正执行。
+   * 前端据此渲染确认卡片。
    */
   pendingActions: string[] | null
+  /**
+   * 确认令牌，与 `pendingActions` 同时非空、同时为空。
+   *
+   * 用户确认时把它原样带回，服务端据此执行签名里的那批调用。**这一项是给人看的、
+   * 那一项是给机器执行的**：卡片文案改得再漂亮也不影响真正执行什么，反过来也一样。
+   */
+  approvalToken: string | null
   /**
    * 本轮证据门的判定，决定 `knowledge` 该被说成什么。
    *
@@ -551,6 +558,8 @@ export interface ChatMessage {
   recommendedProducts?: ProductSummary[]
   /** 待确认的高危操作。确认或取消后清空，卡片随之消失 */
   pendingActions?: string[]
+  /** 确认这张卡片要带回服务端的令牌，与 `pendingActions` 同生共死 */
+  approvalToken?: string
   /** 证据门判定，随 `knowledge` 一起透传给引用区，决定标题措辞 */
   evidenceLevel?: EvidenceLevel
   /** 本轮检索实际使用的查询句（发生过指代消解改写时才有），透传给引用区标明来路 */

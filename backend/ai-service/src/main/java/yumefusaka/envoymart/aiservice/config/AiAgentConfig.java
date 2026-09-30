@@ -515,10 +515,11 @@ public class AiAgentConfig {
                        UserProfileStore userProfileStore,
                        SimpleRAGEngine ragEngine,
                        MemoryConsolidator memoryConsolidator,
-                       QueryRewriter queryRewriter) {
+                       QueryRewriter queryRewriter,
+                       @Value("${envoymart.agent.approval-secret:}") String approvalSecret) {
         return new Agent(
                 Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3)
-                        .consolidationEveryTurns(3).build(),
+                        .consolidationEveryTurns(3).approvalSecret(approvalSecret).build(),
                 toolRegistry, intentRouter, agentGraph,
                 shortTermMemory, episodicMemory, userProfileStore, ragEngine,
                 memoryConsolidator, queryRewriter

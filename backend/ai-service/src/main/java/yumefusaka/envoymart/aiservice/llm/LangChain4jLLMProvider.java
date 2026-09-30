@@ -26,7 +26,7 @@ import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
 import yumefusaka.envoymart.agent.tool.ToolCall;
-import yumefusaka.envoymart.agent.tool.ToolCallDescription;
+import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
@@ -302,11 +302,10 @@ public class LangChain4jLLMProvider implements LLMProvider {
             //  ① 不执行这一批剩余的工具——它们可能依赖被拦操作的结果；
             //  ② 不把拒绝回填给模型让它绕路——被拦的是「用户还没批准」，不是「模型想错了」，
             //     转一圈它只会换个说法再要一次，每一圈都是一次真实计费的调用。
-            // 描述写进 sink 交给调用方：ReAct 路径的高危确认出口靠它渲染确认卡片
-            if (!ctx.approved && requiresConfirmation(request.name())) {
-                ctx.pendingApproval.add(ToolCallDescription.of(request.name(), arguments));
-                log.info("[LLM] 高危操作待用户确认，ReAct 循环中断 tool={} approved=false",
-                        request.name());
+            // 载荷写进 sink 交给调用方：ReAct 路径的高危确认出口靠它签发确认令牌
+            if (requiresConfirmation(request.name())) {
+                ctx.pendingActions.add(PendingAction.of(request.name(), arguments));
+                log.info("[LLM] 高危操作待用户确认，ReAct 循环中断 tool={}", request.name());
                 return true;
             }
 
@@ -315,9 +314,11 @@ public class LangChain4jLLMProvider implements LLMProvider {
             arguments = new LinkedHashMap<>(arguments);
             arguments.remove(ToolContextKeys.USER_ID);
 
+            // confirmed 恒为 false：走到这里的都是没被拦下的常规工具，本来就不需要批准。
+            // 需要批准的那些上面已经返回了——放行只发生在确认轮，而确认轮不经这个循环
             ToolResult result = toolRegistry.execute(new ToolCall(
                     request.id() == null ? UUID.randomUUID().toString() : request.id(),
-                    request.name(), arguments, ctx.approved, ctx.userId));
+                    request.name(), arguments, false, ctx.userId));
 
             String output = result.isSuccess()
                     ? String.valueOf(result.getOutput())
@@ -774,25 +775,26 @@ public class LangChain4jLLMProvider implements LLMProvider {
     }
 
     /**
-     * 一次请求的循环上下文 —— 护栏、高危确认、调用者身份，以及方向相反的一路：
+     * 一次请求的循环上下文 —— 护栏、调用者身份，以及方向相反的一路：
      * 拦下的高危操作。
      * <p>
-     * 迁到 LangChain4j 后前三样不再需要穿框架：循环就是我们自己写的，
+     * 迁到 LangChain4j 后前两样不再需要穿框架：循环就是我们自己写的，
      * 它们只是循环里的局部变量。这个类只是把解包做一次。
-     * {@code pendingApproval} 是出口——循环往里写，调用方（AgentGraph）读它决定中断。
+     * {@code pendingActions} 是出口——循环往里写，调用方（AgentGraph）读它决定中断。
+     * <p>
+     * 这里<b>没有</b>「用户已确认」这个开关，与 {@link ToolContextKeys} 保持一致：
+     * 需要批准的操作在这一层只会被拦下，放行发生在确认轮，而确认轮压根不进这个循环。
      */
     private static final class LoopContext {
         private final LoopGuard guard;
-        private final boolean approved;
         private final String userId;
-        /** 拦下的高危操作描述，见 {@link ToolContextKeys#PENDING_APPROVAL} */
-        private final List<String> pendingApproval;
+        /** 拦下的高危操作载荷，见 {@link ToolContextKeys#PENDING_ACTIONS} */
+        private final List<PendingAction> pendingActions;
 
-        private LoopContext(LoopGuard guard, boolean approved, String userId, List<String> pendingApproval) {
+        private LoopContext(LoopGuard guard, String userId, List<PendingAction> pendingActions) {
             this.guard = guard;
-            this.approved = approved;
             this.userId = userId;
-            this.pendingApproval = pendingApproval;
+            this.pendingActions = pendingActions;
         }
 
         private static LoopContext from(Map<String, Object> toolContext) {
@@ -809,18 +811,14 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 // 传了护栏的调用方不受影响，两边用的是同一份预算。
                 guard = new LoopGuard();
             }
-            // 出口列表调用方不传就补一个本地的：拦截照常发生、描述照常记录，
+            // 出口列表调用方不传就补一个本地的：拦截照常发生、载荷照常记录，
             // 只是没有调用方读得到 —— 与护栏的兜底同一个道理，责任在这一层
-            Object providedSink = toolContext.get(ToolContextKeys.PENDING_APPROVAL);
+            Object providedSink = toolContext.get(ToolContextKeys.PENDING_ACTIONS);
             @SuppressWarnings("unchecked")
-            List<String> pendingApproval = providedSink instanceof List<?> provided
-                    ? (List<String>) provided
+            List<PendingAction> pendingActions = providedSink instanceof List<?> provided
+                    ? (List<PendingAction>) provided
                     : new ArrayList<>();
-            return new LoopContext(
-                    guard,
-                    Boolean.TRUE.equals(toolContext.get(ToolContextKeys.APPROVED)),
-                    userId,
-                    pendingApproval);
+            return new LoopContext(guard, userId, pendingActions);
         }
     }
 }

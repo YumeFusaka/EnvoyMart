@@ -79,7 +79,7 @@ class AgentToolEvidenceTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               boolean approved, LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk) {
             // steps 不能留空：Agent 用它区分 react / plan 两个出口（getSteps().isEmpty()）
             return GraphResult.builder()
                     .answer(answer).steps(List.of()).toolExecutions(executions)
@@ -112,7 +112,7 @@ class AgentToolEvidenceTest {
         Agent agent = agent(new StubGraph("每日上限为 2000IU [1]。与华法林同服需谨慎（《药物相互作用手册》）。",
                 List.of(search)));
 
-        Agent.AgentResponse response = agent.chat("u1", "s1", "维生素D3和华法林能一起吃吗", false);
+        Agent.AgentResponse response = agent.chat("u1", "s1", "维生素D3和华法林能一起吃吗", null);
 
         assertThat(response.getKnowledge())
                 .as("工具查到的切片要进依据列表：前端据此渲染条目，也据此决定角标上界")
@@ -141,7 +141,7 @@ class AgentToolEvidenceTest {
                 .build();
         Agent agent = agent(new StubGraph("上限为 2000IU（《维生素D3说明书》）。", List.of(search)));
 
-        Agent.AgentResponse response = agent.chat("u1", "s1", "维生素D3每天吃多少", false);
+        Agent.AgentResponse response = agent.chat("u1", "s1", "维生素D3每天吃多少", null);
 
         assertThat(response.getKnowledge())
                 .as("同一条切片只能占一个编号")
@@ -162,7 +162,7 @@ class AgentToolEvidenceTest {
                 .build();
         Agent agent = agent(new StubGraph("你的订单 12 已经发货了。", List.of(order)));
 
-        Agent.AgentResponse response = agent.chat("u1", "s1", "我的订单到哪了", false);
+        Agent.AgentResponse response = agent.chat("u1", "s1", "我的订单到哪了", null);
 
         assertThat(response.getKnowledge())
                 .as("业务系统返回的事实没有「出处」这回事，不能混进知识依据")

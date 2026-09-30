@@ -19,6 +19,12 @@ public class ChatRequest {
     private String message;
     private Long contextOrderId;
 
-    /** 用户是否已确认高危操作（取消订单等），默认未确认 */
-    private boolean approved = false;
+    /**
+     * 用户确认高危操作时，由上一轮响应下发、本轮原样带回的签名令牌。
+     * <p>
+     * 它<b>不是</b>一个「已确认」的开关：令牌里签着服务端自己写下的那批调用
+     * （工具名 + 入参），执行的就是那一批，客户端改不了也换不掉。空值即普通一轮。
+     */
+    @Pattern(regexp = "^[A-Za-z0-9_.=-]{1,8192}$", message = "确认令牌不合法")
+    private String approvalToken;
 }

@@ -8,7 +8,7 @@ import yumefusaka.envoymart.contract.ProductSummary;
 import java.util.List;
 
 @Data
-@Builder
+@Builder(toBuilder = true)
 public class ChatResponse {
 
     private String sessionId;
@@ -43,10 +43,22 @@ public class ChatResponse {
      * <p>
      * 每项是可直接展示的中文描述，形如 {@code order_cancel(orderId=12)}——
      * 不只是工具名。用户看不到要取消的是哪一单时的「确认」，等于没确认。
-     * 非空表示本轮对话<b>被中断</b>、{@code reply} 是确认提示而非回答；
-     * 前端确认后带 {@code approved=true} 重发，才真正执行。
+     * 非空表示本轮对话<b>被中断</b>、{@code reply} 是确认提示而非回答。
+     * <p>
+     * <b>它是给人看的，执行不认它。</b>用户点确认时前端要原样带回的是
+     * {@link #approvalToken}——真正执行什么写在令牌的签名载荷里，
+     * 这两者由服务端在同一次响应里一起生成，前端无权改动其中任何一项。
      */
     private List<String> pendingActions;
+
+    /**
+     * 确认令牌：下发给前端，用户点确认时原样带回，服务端据此执行签名里的那批调用。
+     * <p>
+     * 与 {@link #pendingActions} 同时非空、同时为空。它替代了原先的请求级布尔
+     * {@code approved=true}：布尔不绑定动作也不绑定会话，用户批的到底是不是执行的那一次，
+     * 全看模型重入时有没有从记忆里把意图回忆出来。
+     */
+    private String approvalToken;
 
     /**
      * 本轮证据门的判定，决定 {@link #knowledge} 该被说成什么。

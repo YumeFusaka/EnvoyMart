@@ -252,7 +252,7 @@ async function chat(token, sessionId, message) {
   const res = await fetch(`${GW}/ai/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ sessionId, message, approved: false }),
+    body: JSON.stringify({ sessionId, message }),
   })
   const latencyMs = Date.now() - started
   const body = await res.json()

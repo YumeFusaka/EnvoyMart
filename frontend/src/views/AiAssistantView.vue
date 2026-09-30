@@ -84,11 +84,11 @@ async function refreshSessions() {
 /**
  * 把服务端历史摊回界面消息。当轮响应里的引用、工具轨迹、用量一并还原。
  * <p>
- * **唯独不还原待确认卡片**：确认卡表达的是一件事「此刻有一次高危操作在等你点头」，
- * 而服务端没有这个挂起态——`approved=true` 的含义是"重规划一轮并放行"。
- * 把三天前那张卡照样恢复出来，用户点它，批准的是**按当前上下文重新推导的计划**，
- * 可能已经不是当初那件事了。所以确认卡只属于产生它的那一轮现场，
- * 重新发起会重新拦截、重新出卡。
+ * **唯独不还原待确认卡片**：确认卡表达的是一件事「此刻有一次高危操作在等你点头」。
+ * 令牌虽然绑死了动作、且有效期十分钟，但把三天前那张卡照样恢复出来，用户点下去只会
+ * 得到一句「这次确认已失效」——卡片还在、点不动，比没有这张卡更糟。所以确认卡只属于
+ * 产生它的那一轮现场；重新发起会重新拦截、重新出卡。令牌的时效由服务端把关，
+ * 这里只是不做那件注定失败的事。
  */
 function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[number]): ChatMessage {
   const response = stored.response
@@ -247,10 +247,10 @@ const prompts = [
 ]
 
 /**
- * 用户手打确认词时必须真的置位 `approved`。
+ * 用户手打确认词时，要替他点那张卡片——把令牌带上重发。
  * <p>
- * 服务端的确认提示就写着「回复「确认执行」」，而 `approved` 是请求体里一个独立的布尔位——
- * 前端不翻译这句话，它就会带着 `approved=false` 重新规划，**再次撞上同一个闸口**，
+ * 服务端的确认提示就写着「回复「确认执行」」，而令牌是随请求走的独立字段——
+ * 前端不翻译这句话，它就会以一次普通提问重发，**再次撞上同一个闸口**，
  * 用户看到的是一模一样的提示，永远取消不掉订单。
  * <p>
  * 判据收得很紧：必须是「最新一条助手消息正挂着待确认」**且**「整句就是一个确认词」。
@@ -273,19 +273,25 @@ function abortStream() {
   loading.value = false
 }
 
-async function sendMessage(message = input.value, approved = false) {
+async function sendMessage(message = input.value, approvalToken?: string) {
   const content = message.trim()
   if (!content) return
   // 上一轮还在生成时不接新的发送：两条流会各自往自己的占位消息里写，界面看似正常，
-  // 但 `approved` 是随消息走的——确认词可能被配到错误的那一轮上
+  // 但令牌是随消息走的——确认词可能被配到错误的那一轮上
   if (loading.value) return
   // 历史还在加载时也不接：`selectSession` 拿到历史后会整体替换消息列表，
   // 此刻发出去的消息会连同回复一起被覆盖掉——界面上凭空消失，服务端却照常生成
   if (bootstrapping.value) return
 
+  // 手打确认词等价于点那张卡片：把最新一条助手消息挂着的令牌取来带上。
+  // 拿不到令牌（卡片已经收起、或用户只是碰巧说了声「好」）就只是一次普通提问，
+  // 服务端会照常重新规划——撞上闸口就再出一次卡，这是正确的保守行为
   const latest = messages.value[messages.value.length - 1]
-  const confirming =
-    !approved && Boolean(latest?.pendingActions?.length) && CONFIRM_PATTERN.test(content)
+  const token =
+    approvalToken ??
+    (Boolean(latest?.pendingActions?.length) && CONFIRM_PATTERN.test(content)
+      ? latest?.approvalToken
+      : undefined)
 
   // 新会话在第一条消息发出时才落号，空会话不进侧栏
   if (!activeSessionId.value) {
@@ -318,7 +324,7 @@ async function sendMessage(message = input.value, approved = false) {
 
   try {
     await chatStream(
-      { sessionId: sessionId!, message: content, approved: approved || confirming },
+      { sessionId: sessionId!, message: content, approvalToken: token },
       {
         onDelta: (text) => {
           assistantMessage.content += text
@@ -331,6 +337,8 @@ async function sendMessage(message = input.value, approved = false) {
           assistantMessage.recommendedProducts = response.recommendedProducts
           // 非空即本轮被中断：回复是确认提示，没有任何工具真正执行过
           assistantMessage.pendingActions = response.pendingActions ?? undefined
+          // 卡片与令牌同生共死：只留卡片不留令牌，用户点确认时无从证明自己批的是哪一次
+          assistantMessage.approvalToken = response.approvalToken ?? undefined
           assistantMessage.evidenceLevel = response.evidenceLevel ?? undefined
           assistantMessage.retrievalQuery = response.retrievalQuery ?? undefined
           // 后置校验的两项结果。流式下 delta 已经渲染过了，`content` 的赋值在上面
@@ -410,10 +418,11 @@ function openProduct(product: ProductSummary) {
 /** 先收起卡片再重发：新消息一入列，这张卡就不是「最新一条」，会立刻变成过期的灰态 */
 function handleApprove() {
   const latest = messages.value[messages.value.length - 1]
-  if (latest) {
-    latest.pendingActions = undefined
-  }
-  void sendMessage('确认执行', true)
+  if (!latest?.approvalToken) return
+  const token = latest.approvalToken
+  latest.pendingActions = undefined
+  latest.approvalToken = undefined
+  void sendMessage('确认执行', token)
 }
 
 /**
@@ -427,6 +436,7 @@ function handleDismiss() {
   const latest = messages.value[messages.value.length - 1]
   if (latest) {
     latest.pendingActions = undefined
+    latest.approvalToken = undefined
     latest.content = '已取消，本次没有执行任何操作。'
   }
 }

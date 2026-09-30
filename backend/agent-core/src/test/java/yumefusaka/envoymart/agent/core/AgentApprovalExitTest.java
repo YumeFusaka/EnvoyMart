@@ -15,9 +15,11 @@ import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
+import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
@@ -63,9 +65,9 @@ class AgentApprovalExitTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               boolean approved, LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk) {
             return GraphResult.builder()
-                    .pendingApproval(List.of("order_cancel(orderId=12)"))
+                    .pendingActions(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))))
                     .toolExecutions(executions)
                     .build();
         }
@@ -94,7 +96,7 @@ class AgentApprovalExitTest {
                 .build();
         Agent agent = agent(new BlockingGraph(List.of(preExecuted)));
 
-        Agent.AgentResponse response = agent.chat("u1", "s1", "帮我取消订单 12", false);
+        Agent.AgentResponse response = agent.chat("u1", "s1", "帮我取消订单 12", null);
 
         assertThat(response.getSource())
                 .as("中断轮必须走 approval 出口，否则前端拿不到确认卡片")
@@ -102,6 +104,10 @@ class AgentApprovalExitTest {
         assertThat(response.getPendingActions())
                 .as("要确认的是哪一单必须结构化下发，前端据此渲染确认卡片")
                 .containsExactly("order_cancel(orderId=12)");
+        assertThat(response.getApprovalToken())
+                .as("确认卡片必须一并带上签名令牌——没有它，用户点确认时前端无从"
+                        + "证明自己确认的是哪一次调用，只能退回请求级布尔那条老路")
+                .isNotBlank();
         assertThat(response.getToolExecutions())
                 .as("中断之前跑完的查询轨迹要保留：确认卡片不能悬在没有任何来路的空白上")
                 .hasSize(1)

@@ -55,7 +55,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             ChatResponse response = toChatResponse(request, agent.chat(
-                    userId, request.getSessionId(), request.getMessage(), request.isApproved()), ledger);
+                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken()), ledger);
             recordTurn(userId, request, response);
             return response;
         }
@@ -68,7 +68,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             ChatResponse response = toChatResponse(request, agent.chatStream(
-                    userId, request.getSessionId(), request.getMessage(), request.isApproved(), onChunk), ledger);
+                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken(), onChunk), ledger);
             recordTurn(userId, request, response);
             return response;
         }
@@ -83,10 +83,15 @@ public class AiAssistantServiceImpl implements AiAssistantService {
      * <p>
      * 记的是<b>校验之后</b>的最终答复：带引用的句子被剔除过的那一版才是用户看到的，
      * 历史要和它对上。
+     * <p>
+     * <b>确认令牌不落历史。</b>它是一张写明「执行哪几次调用」的签名凭证，靠会话归属和
+     * 十分钟有效期兜底；而历史在 Redis 里存得更久，且每次拉会话都会随 `response` 原样回给
+     * 客户端。界面本来就不恢复确认卡片（过期卡片点不动），把它留在历史里就是一份
+     * 白白多躺十天的凭证。卡片文案照旧保留：用户回看时该看到「当时问过他要不要确认」。
      */
     private void recordTurn(String userId, ChatRequest request, ChatResponse response) {
         history.recordTurn(userId, request.getSessionId(), request.getMessage(),
-                response.getReply(), response);
+                response.getReply(), response.toBuilder().approvalToken(null).build());
     }
 
     private ChatResponse toChatResponse(ChatRequest request, Agent.AgentResponse agentResp,
@@ -104,6 +109,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
                 .recommendedProducts(extractProducts(executions))
                 .pendingActions(agentResp.getPendingActions())
+                .approvalToken(agentResp.getApprovalToken())
                 .evidenceLevel(agentResp.getEvidenceLevel())
                 .unsupportedClaims(agentResp.getUnsupportedClaims())
                 .unsupportedStripped(agentResp.isUnsupportedStripped())

@@ -19,8 +19,8 @@ import yumefusaka.envoymart.agent.llm.PlanStep;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
+import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolCall;
-import yumefusaka.envoymart.agent.tool.ToolCallDescription;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
@@ -82,7 +82,7 @@ public class AgentGraph {
 
     private static final String KEY_PLAN = "plan";
     private static final String KEY_STEPS = "steps";
-    private static final String KEY_PENDING = "pendingApproval";
+    private static final String KEY_PENDING = "pendingActions";
     private static final String KEY_ANSWER = "answer";
     private static final String KEY_ROUND = "round";
     private static final String KEY_ROUTE = "route";
@@ -109,13 +109,12 @@ public class AgentGraph {
     // ==================== 对外入口 ====================
 
     public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                           boolean approved, LoopGuard guard, Consumer<String> onChunk) {
+                           LoopGuard guard, Consumer<String> onChunk) {
 
         GraphContext ctx = GraphContext.of(userId,
                 message,
                 systemPrompt == null ? "" : systemPrompt,
                 conversation == null ? List.of() : conversation,
-                approved,
                 guard == null ? new LoopGuard() : guard,
                 onChunk);
 
@@ -126,13 +125,13 @@ public class AgentGraph {
 
         GraphState finalState = invoke(compile(ctx), initial);
 
-        List<String> pending = finalState.get(KEY_PENDING, List.<String>of());
+        List<PendingAction> pending = finalState.get(KEY_PENDING, List.<PendingAction>of());
         return GraphResult.builder()
                 .answer(finalState.get(KEY_ANSWER, null))
                 .plan(finalState.get(KEY_PLAN, List.<PlanStep>of()))
                 .steps(finalState.get(KEY_STEPS, List.<GraphStep>of()))
                 .toolExecutions(ctx.executions())
-                .pendingApproval(pending.isEmpty() ? null : pending)
+                .pendingActions(pending.isEmpty() ? null : pending)
                 .loops(ctx.guard().summary())
                 .build();
     }
@@ -200,7 +199,7 @@ public class AgentGraph {
         List<PlanStep> plan = state.get(KEY_PLAN, List.<PlanStep>of());
         List<GraphStep> steps = new ArrayList<>(state.get(KEY_STEPS, List.<GraphStep>of()));
 
-        List<String> pending = executePlan(plan, state.get(KEY_ROUND, 1), ctx, steps);
+        List<PendingAction> pending = executePlan(plan, state.get(KEY_ROUND, 1), ctx, steps);
 
         return updates(KEY_STEPS, steps, KEY_PENDING, pending,
                 KEY_ROUTE, pending.isEmpty() ? ROUTE_EVALUATE : ROUTE_END);
@@ -244,22 +243,22 @@ public class AgentGraph {
     private Map<String, Object> answerNode(GraphContext ctx, GraphState state) {
         List<GraphStep> steps = state.get(KEY_STEPS, List.<GraphStep>of());
         String answer = steps.isEmpty() ? converse(ctx) : synthesize(ctx, steps);
-        // ReAct 路径的高危拦截：工具循环在执行前拦下了未确认的高危操作，
-        // 把描述写进了 sink。与计划路径同样从这里中断——走到 END 之后，
-        // 调用方看到 pendingApproval 非空，把回答换成确认提示并渲染确认卡片，
-        // 等用户确认后作为新请求重入。少了这一支，被拦的取消订单会变成
-        // 一句「工具执行失败」：把「等你批准」说成了「出错了」，而且永远批不了
-        if (!ctx.pendingApproval().isEmpty()) {
-            return updates(KEY_ANSWER, answer, KEY_PENDING, List.copyOf(ctx.pendingApproval()));
+        // ReAct 路径的高危拦截：工具循环在执行前拦下了高危操作，
+        // 把调用本身写进了 sink。与计划路径同样从这里中断——走到 END 之后，
+        // 调用方看到 pendingActions 非空，把回答换成确认提示、签发确认令牌并渲染确认卡片。
+        // 少了这一支，被拦的取消订单会变成一句「工具执行失败」：
+        // 把「等你批准」说成了「出错了」，而且永远批不了
+        if (!ctx.pendingActions().isEmpty()) {
+            return updates(KEY_ANSWER, answer, KEY_PENDING, List.copyOf(ctx.pendingActions()));
         }
         return updates(KEY_ANSWER, answer);
     }
 
     // ==================== 执行细节 ====================
 
-    /** @return 待用户确认的高危工具；非空表示应中断 */
-    private List<String> executePlan(List<PlanStep> plan, int round, GraphContext ctx,
-                                     List<GraphStep> steps) {
+    /** @return 待用户确认的高危操作；非空表示应中断 */
+    private List<PendingAction> executePlan(List<PlanStep> plan, int round, GraphContext ctx,
+                                            List<GraphStep> steps) {
         boolean[] done = new boolean[plan.size()];
         int finished = 0;
 
@@ -280,17 +279,16 @@ public class AgentGraph {
                 break;
             }
 
-            // 调用工具前的拦截：发生在执行之前，这是 ReAct 结构上做不到的位置
-            if (!ctx.approved()) {
-                List<String> risky = ready.stream()
-                        .map(plan::get)
-                        .filter(this::requiresConfirmation)
-                        .map(AgentGraph::describe)
-                        .distinct()
-                        .toList();
-                if (!risky.isEmpty()) {
-                    return risky;
-                }
+            // 调用工具前的拦截：发生在执行之前，这是 ReAct 结构上做不到的位置。
+            // 没有「已确认就放行」这一支——确认后要执行的东西不再经过图（见 PendingAction）
+            List<PendingAction> risky = ready.stream()
+                    .map(plan::get)
+                    .filter(this::requiresConfirmation)
+                    .map(AgentGraph::pendingAction)
+                    .distinct()
+                    .toList();
+            if (!risky.isEmpty()) {
+                return risky;
             }
 
             invokeBatch(plan, ready, round, ctx, steps);
@@ -353,9 +351,11 @@ public class AgentGraph {
                     .build();
         }
 
-        // 身份从上下文注入，绝不取自模型给的 arguments——模型不知道真实用户是谁，只能编
+        // 身份从上下文注入，绝不取自模型给的 arguments——模型不知道真实用户是谁，只能编。
+        // confirmed 写死 false：图里的每一次执行都是模型驱动的，而高危工具在这一层
+        // 根本走不到这里（上面已经拦下）。用户确认过的那批由 Agent 直接执行，见 PendingAction
         ToolResult result = toolRegistry.execute(new ToolCall(
-                "graph_" + round + "_" + index, step.getTool(), arguments, ctx.approved(), ctx.userId()));
+                "graph_" + round + "_" + index, step.getTool(), arguments, false, ctx.userId()));
 
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
@@ -510,15 +510,14 @@ public class AgentGraph {
     }
 
     private String call(GraphContext ctx, List<ChatMessage> messages) {
-        // 循环护栏、高危确认与调用者身份随工具调用下发，工具循环据此把关。
+        // 循环护栏与调用者身份随工具调用下发，工具循环据此把关。
         // 用可变 Map 而非 Map.of：Map.of 不接受 null，身份缺失时会在构造处直接抛 NPE。
         Map<String, Object> loopContext = new HashMap<>();
         loopContext.put(ToolContextKeys.LOOP_GUARD, ctx.guard());
-        loopContext.put(ToolContextKeys.APPROVED, ctx.approved());
         // 方向相反的一个键：循环把拦下的高危操作写进来，answerNode 读它决定中断
-        // （见 ToolContextKeys#PENDING_APPROVAL——ReAct 无法像计划路径那样提前拦，
+        // （见 ToolContextKeys#PENDING_ACTIONS——ReAct 无法像计划路径那样提前拦，
         // 拦截只能发生在循环内部，这是拦住的结果回到图里的唯一通道）
-        loopContext.put(ToolContextKeys.PENDING_APPROVAL, ctx.pendingApproval());
+        loopContext.put(ToolContextKeys.PENDING_ACTIONS, ctx.pendingActions());
         if (ctx.userId() != null) {
             loopContext.put(ToolContextKeys.USER_ID, ctx.userId());
         }
@@ -582,11 +581,11 @@ public class AgentGraph {
     }
 
     /**
-     * 高危步骤的可读描述。格式与排序约定见 {@link ToolCallDescription}——
-     * 计划路径与 ReAct 路径拼的是同一份契约，前端按固定格式解析它。
+     * 高危步骤 → 待确认操作。<b>留下的是载荷本身（工具名 + 入参），不是一句描述</b>——
+     * 描述可以由它渲染出来，反过来不行。见 {@link PendingAction}。
      */
-    static String describe(PlanStep step) {
-        return ToolCallDescription.of(step.getTool(), step.getArguments());
+    static PendingAction pendingAction(PlanStep step) {
+        return PendingAction.of(step.getTool(), step.getArguments());
     }
 
     private static String abbreviate(String text) {
@@ -611,12 +610,12 @@ public class AgentGraph {
      * {@code NotSerializableException}）。
      */
     private record GraphContext(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                                boolean approved, LoopGuard guard, Consumer<String> onChunk,
-                                List<ToolExecution> executions, List<String> pendingApproval) {
+                                LoopGuard guard, Consumer<String> onChunk,
+                                List<ToolExecution> executions, List<PendingAction> pendingActions) {
 
         static GraphContext of(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               boolean approved, LoopGuard guard, Consumer<String> onChunk) {
-            return new GraphContext(userId, message, systemPrompt, conversation, approved, guard, onChunk,
+                               LoopGuard guard, Consumer<String> onChunk) {
+            return new GraphContext(userId, message, systemPrompt, conversation, guard, onChunk,
                     Collections.synchronizedList(new ArrayList<>()), new ArrayList<>());
         }
     }
@@ -658,10 +657,12 @@ public class AgentGraph {
         /**
          * 非空表示图被中断，等待用户确认这些高危操作。
          * <p>
-         * 每项是 {@link #describe} 拼出的可读描述（{@code order_cancel(orderId=12)}），
-         * <b>不是工具名</b>——调用方原样展示给用户，不要在别处再拼一次。
+         * 每项是<b>结构化的调用载荷</b>（工具名 + 入参），展示用的描述由
+         * {@link PendingAction#describe()} 渲染。给的是载荷而不是描述，
+         * 是因为调用方要拿它去签发确认令牌——用户批准的必须是这次调用本身，
+         * 而不是一句关于它的话。
          */
-        private List<String> pendingApproval;
+        private List<PendingAction> pendingActions;
         /**
          * 本次请求的循环消耗摘要，用于可观测 —— 工具调用与规划轮次都在这一行里
          * （{@code LoopGuard#summary()}）。不要在这里再单列一个「轮次」字段：

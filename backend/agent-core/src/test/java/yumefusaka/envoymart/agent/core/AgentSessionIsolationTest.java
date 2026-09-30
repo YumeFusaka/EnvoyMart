@@ -63,7 +63,7 @@ class AgentSessionIsolationTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               boolean approved, LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk) {
             this.lastConversation = conversation == null ? List.of() : conversation;
             return GraphResult.builder().answer("stub").steps(List.of()).build();
         }
@@ -97,8 +97,8 @@ class AgentSessionIsolationTest {
     void 不同用户使用同一sessionId时读不到彼此的对话() {
         Agent agent = agent();
 
-        agent.chat("u1001", "shared-session", "我最喜欢的颜色是红色", false);
-        agent.chat("u1002", "shared-session", "你好", false);
+        agent.chat("u1001", "shared-session", "我最喜欢的颜色是红色", null);
+        agent.chat("u1002", "shared-session", "你好", null);
 
         assertThat(seenByModel())
                 .as("u1002 用同一个 sessionId 提问时，模型看不到 u1001 说过的话")
@@ -109,8 +109,8 @@ class AgentSessionIsolationTest {
     void 同一用户同一会话的上下文照常累积() {
         Agent agent = agent();
 
-        agent.chat("u1001", "s1", "我最喜欢的颜色是红色", false);
-        agent.chat("u1001", "s1", "那蓝色呢", false);
+        agent.chat("u1001", "s1", "我最喜欢的颜色是红色", null);
+        agent.chat("u1001", "s1", "那蓝色呢", null);
 
         assertThat(seenByModel())
                 .as("加用户维度只是加隔离，同一用户同一会话的上下文必须照常带到模型面前")
@@ -121,8 +121,8 @@ class AgentSessionIsolationTest {
     void 同一用户的不同会话互相独立() {
         Agent agent = agent();
 
-        agent.chat("u1001", "s-a", "甲会话的内容", false);
-        agent.chat("u1001", "s-b", "乙会话的内容", false);
+        agent.chat("u1001", "s-a", "甲会话的内容", null);
+        agent.chat("u1001", "s-b", "乙会话的内容", null);
 
         assertThat(seenByModel())
                 .as("换会话就不该再看到上一个会话的内容")

@@ -26,7 +26,11 @@ import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.KnowledgePrompt;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
+import yumefusaka.envoymart.agent.tool.ApprovalTokens;
+import yumefusaka.envoymart.agent.tool.PendingAction;
+import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
+import yumefusaka.envoymart.agent.tool.ToolResult;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -56,8 +60,21 @@ import java.util.function.Consumer;
 @Slf4j
 public class Agent {
 
+    /**
+     * 确认令牌失效时的答复。
+     * <p>
+     * 必须说清「什么都没执行」：用户点的是一个不可撤销的操作，最坏的结果不是失败，
+     * 而是他以为成功了。也不能退回去让模型猜（那正是这件事原本的失败形态——
+     * 对话历史滑出窗口后，一次点击换来一句「请告诉我要做什么」）。
+     */
+    static final String APPROVAL_EXPIRED_REPLY =
+            "这次确认已失效（超过确认时限，或不是在当前会话里发起的），为安全起见没有执行任何操作。"
+                    + "请重新告诉我你要做什么。";
+
     private final Config config;
     private final ToolRegistry toolRegistry;
+    /** 确认令牌的签发与校验，见 {@link ApprovalTokens}。两处都是它，重入轮才有可核对的一致性 */
+    private final ApprovalTokens approvals;
     private final IntentRouter intentRouter;
     private final AgentGraph agentGraph;
     private final Memory shortTermMemory;
@@ -82,6 +99,7 @@ public class Agent {
                  QueryRewriter queryRewriter) {
         this.config = config;
         this.toolRegistry = toolRegistry;
+        this.approvals = new ApprovalTokens(config.getApprovalSecret());
         this.intentRouter = intentRouter;
         this.agentGraph = agentGraph;
         this.shortTermMemory = shortTermMemory;
@@ -92,34 +110,42 @@ public class Agent {
         this.queryRewriter = queryRewriter;
     }
 
-    public AgentResponse chat(String userId, String sessionId, String message, boolean approved) {
-        return doChat(userId, sessionId, message, approved, null);
+    public AgentResponse chat(String userId, String sessionId, String message, String approvalToken) {
+        return doChat(userId, sessionId, message, approvalToken, null);
     }
 
     /** 流式变体：最终回答逐块推送；工具编排阶段仍是同步的。 */
     public AgentResponse chatStream(String userId, String sessionId, String message,
-                                    boolean approved, Consumer<String> onChunk) {
-        return doChat(userId, sessionId, message, approved, onChunk);
+                                    String approvalToken, Consumer<String> onChunk) {
+        return doChat(userId, sessionId, message, approvalToken, onChunk);
     }
 
+    /**
+     * @param approvalToken 用户确认高危操作时带回的令牌，见 {@link ApprovalTokens}。
+     *                      非空即表示这一轮是「确认轮」——不再经过模型，直接执行签名里的载荷。
+     */
     private AgentResponse doChat(String userId, String sessionId, String message,
-                                 boolean approved, Consumer<String> onChunk) {
-        log.info("[Agent] chat userId={} sessionId={} approved={}", userId, sessionId, approved);
+                                 String approvalToken, Consumer<String> onChunk) {
+        log.info("[Agent] chat userId={} sessionId={} approvalToken={}",
+                userId, sessionId, approvalToken == null ? "-" : "已携带");
 
         String scopedSession = ShortTermMemoryStore.scoped(userId, sessionId);
+
+        // 确认轮走独立出口，**先于指代消解与检索**：这一轮要做的事已经写在令牌里，
+        // 不需要理解用户这句话、不需要召回知识、更不需要模型——那三样每一样都是
+        // 一次真实计费的调用，且都给了模型一次「把执行内容想成别的什么」的机会
+        if (approvalToken != null && !approvalToken.isBlank()) {
+            AgentResponse confirmed = executeApproved(userId, sessionId, message, approvalToken, onChunk);
+            remember(scopedSession, userId, sessionId, message, confirmed);
+            return confirmed;
+        }
 
         // 0. 指代消解：改写必须先于记录本轮消息——喂给它的历史里不能含本轮，
         //    否则「那它呢」的「它」在历史里已经指到了本轮自己
         String retrievalQuery = queryRewriter.rewrite(message, recentConversation(scopedSession));
 
         // 1. 记录用户消息
-        shortTermMemory.add(MemoryItem.builder()
-                .id(UUID.randomUUID().toString())
-                .userId(userId)
-                .sessionId(scopedSession)
-                .content("user: " + message)
-                .type(MemoryItem.Type.MESSAGE)
-                .build());
+        rememberMessage(userId, scopedSession, "user: " + message);
 
         // 2. RAG 检索 + 长期记忆召回 → system prompt
         //    检索用改写句（有历史时），回答侧仍用用户原话——分工的理由见 QueryRewriter
@@ -139,7 +165,7 @@ public class Agent {
 
         AgentResponse response;
         try {
-            response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, knowledge, approved, onChunk);
+            response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, knowledge, onChunk);
             response.setEvidenceLevel(evidence.level());
         } catch (Exception e) {
             log.error("[Agent] chat failed, degrade to fallback reply", e);
@@ -158,18 +184,108 @@ public class Agent {
         response.setRetrievalQuery(retrievalQuery.equals(message) ? null : retrievalQuery);
 
         // 3. 记录回复
-        shortTermMemory.add(MemoryItem.builder()
-                .id(UUID.randomUUID().toString())
-                .userId(userId)
-                .sessionId(scopedSession)
-                .content("assistant: " + response.getReply())
-                .type(MemoryItem.Type.MESSAGE)
-                .build());
+        rememberMessage(userId, scopedSession, "assistant: " + response.getReply());
 
         // 4. 沉淀长期记忆
         consolidateMemory(userId, sessionId);
 
         return response;
+    }
+
+    // ==================== 高危操作确认 ====================
+
+    /**
+     * 确认轮的出口：<b>执行签名载荷里那几条调用，不问模型。</b>
+     * <p>
+     * 这一整条路存在的理由是「用户批准的到底是哪一次调用」必须可核对：
+     * <ul>
+     *   <li>令牌签名对不上、过期、不属于本用户或本会话 → <b>一条都不执行</b>，
+     *       并明确告诉用户这次确认已失效（而不是假装没看见、也不是退回去让模型猜）。</li>
+     *   <li>令牌有效 → 按载荷逐条执行，工具返回什么就说什么。
+     *       结果文案不交给模型转述：确认执行的是不可撤销的操作，
+     *       「模型说已取消，工具其实报了错」是这条链路上唯一不能出的错。</li>
+     * </ul>
+     * 因此确认轮<b>不进执行图</b>：没有规划、没有 ReAct、没有第二个高危调用被顺手放行。
+     * 用户批准一次，就执行这一次。
+     */
+    private AgentResponse executeApproved(String userId, String sessionId, String message,
+                                          String approvalToken, Consumer<String> onChunk) {
+        Optional<List<PendingAction>> actions = approvals.verify(approvalToken, userId, sessionId);
+        if (actions.isEmpty()) {
+            emit(onChunk, APPROVAL_EXPIRED_REPLY);
+            return AgentResponse.builder()
+                    .reply(APPROVAL_EXPIRED_REPLY)
+                    .source("approval")
+                    .build();
+        }
+
+        List<ToolExecution> executions = new ArrayList<>();
+        for (PendingAction action : actions.get()) {
+            executions.add(runApproved(userId, action));
+        }
+        String reply = renderApproved(executions);
+        log.info("[Agent] 确认轮执行完成 userId={} 操作数={} 成功={}", userId, executions.size(),
+                executions.stream().filter(ToolExecution::isSuccess).count());
+        emit(onChunk, reply);
+        return AgentResponse.builder()
+                .reply(reply)
+                .source("approved")
+                .toolExecutions(executions)
+                .build();
+    }
+
+    /**
+     * 执行一条已确认的调用。
+     * <p>
+     * {@code confirmed=true} 是这里唯一的来源——工具注册中心的第二道防线
+     * （{@code requiresConfirmation && !confirmed → 拒绝}）因此有了确定的意义：
+     * 能通过它的，只可能是服务端按签名载荷发起的这一次。
+     */
+    private ToolExecution runApproved(String userId, PendingAction action) {
+        ToolResult result = toolRegistry.execute(new ToolCall(
+                UUID.randomUUID().toString(), action.tool(), action.arguments(), true, userId));
+        String output = result.isSuccess()
+                ? String.valueOf(result.getOutput())
+                : "执行失败：" + result.getErrorMessage();
+        return ToolExecution.builder()
+                .tool(action.tool())
+                .input(String.valueOf(action.arguments()))
+                .output(output)
+                .success(result.isSuccess())
+                .noData(result.isNoData())
+                .latencyMs(result.getLatencyMs())
+                .rawData(result.getRawData())
+                .build();
+    }
+
+    /** 结果逐字来自工具，不做任何润色——这条路径上「好看」是次要的，「与事实一致」才是全部 */
+    private String renderApproved(List<ToolExecution> executions) {
+        long ok = executions.stream().filter(ToolExecution::isSuccess).count();
+        String head = ok == executions.size() ? "已按你的确认执行："
+                : ok == 0 ? "已按你的确认执行，但没能成功：" : "已按你的确认执行，部分成功：";
+        StringBuilder sb = new StringBuilder(head);
+        for (ToolExecution execution : executions) {
+            sb.append("\n- ").append(execution.getOutput());
+        }
+        return sb.toString();
+    }
+
+    /** 记两个角色、沉淀长期记忆 —— 确认轮与普通轮共用的收尾 */
+    private void remember(String scopedSession, String userId, String sessionId,
+                          String message, AgentResponse response) {
+        rememberMessage(userId, scopedSession, "user: " + message);
+        rememberMessage(userId, scopedSession, "assistant: " + response.getReply());
+        consolidateMemory(userId, sessionId);
+    }
+
+    private void rememberMessage(String userId, String scopedSession, String content) {
+        shortTermMemory.add(MemoryItem.builder()
+                .id(UUID.randomUUID().toString())
+                .userId(userId)
+                .sessionId(scopedSession)
+                .content(content)
+                .type(MemoryItem.Type.MESSAGE)
+                .build());
     }
 
     /**
@@ -184,7 +300,7 @@ public class Agent {
      * 能过、执行时抽不到订单号，两者用的是同一句话这个前提就断了。
      */
     private AgentResponse execute(String userId, String sessionId, String message, String retrievalQuery,
-                                  String systemPrompt, List<DocumentChunk> knowledge, boolean approved,
+                                  String systemPrompt, List<DocumentChunk> knowledge,
                                   Consumer<String> onChunk) {
 
         Optional<DeterministicFlow> flowOpt = intentRouter.route(retrievalQuery);
@@ -207,18 +323,19 @@ public class Agent {
         // 循环护栏一次请求一份，同时约束图里的环与框架驱动的工具循环
         LoopGuard guard = new LoopGuard(config.getLoopBudget());
         AgentGraph.GraphResult graphResult = agentGraph.run(
-                userId, message, systemPrompt, recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), approved, guard, onChunk);
+                userId, message, systemPrompt,
+                recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk);
         log.info("[Agent] loops {}", guard.summary());
 
-        // 图的「中断出口」：高危操作未确认，图在此结束，等用户确认后作为新请求重入。
+        // 图的「中断出口」：撞上高危操作，图在此结束，等用户确认后作为新请求重入。
         // 两条路径都会走到这里——计划路径在执行前拦整批计划；ReAct 路径无从预知模型
-        // 要调什么，由工具循环在执行前拦下、经 pendingApproval 交回（见 AgentGraph#answerNode）。
+        // 要调什么，由工具循环在执行前拦下、经 pendingActions 交回（见 AgentGraph#answerNode）。
         //
-        // 重入时前端带 approved=true，图跳过拦截直接执行——注意那是**请求级**开关，
-        // 一旦置位，本轮计划里所有高危步骤都放行。这不是漏洞：列表里每一项都会
-        // 原样展示给用户，他确认的就是这一整批。将来若出现多个高危工具，
-        // 「一次确认放行几条」要重新想，但那时前端展示的仍然是全量。
-        if (graphResult.getPendingApproval() != null && !graphResult.getPendingApproval().isEmpty()) {
+        // <b>出口处交出的是载荷 + 令牌，不是一句描述。</b>用户拿到的卡片由载荷渲染，
+        // 点确认时带回的是同一个载荷的签名——重入轮执行什么由那份签名说了算，
+        // 与「模型这次还记得多少」无关。这是 {@link PendingAction} 存在的全部理由。
+        List<PendingAction> pending = graphResult.getPendingActions();
+        if (pending != null && !pending.isEmpty()) {
             // 句子里刻意不抄一遍 pendingActions：那是形如 order_cancel(orderId=22) 的
             // 机器可读描述，工具名不该出现在给用户看的话里。要确认哪一单由前端渲染的
             // 确认卡片负责（它会翻译成中文标签），卡片就在下面、与本句同时出现。
@@ -230,7 +347,8 @@ public class Agent {
                     .reply(reply)
                     .source("approval")
                     .knowledge(knowledge)
-                    .pendingActions(graphResult.getPendingApproval())
+                    .pendingActions(pending.stream().map(PendingAction::describe).toList())
+                    .approvalToken(approvals.issue(userId, sessionId, pending))
                     // 中断之前已跑完的工具轨迹照常下发：计划路径可能执行过前几层，
                     // ReAct 路径可能已经查过订单才走到取消那一步。丢掉它们，
                     // 用户看到的确认卡片就悬在一段没有任何来路的空白上
@@ -520,8 +638,19 @@ public class Agent {
         private EvidenceGate.Level evidenceLevel;
         /** 本轮实际发生的工具调用轨迹 */
         private List<ToolExecution> toolExecutions;
-        /** 等待用户确认的高危操作 */
+        /**
+         * 等待用户确认的高危操作，形如 {@code order_cancel(orderId=12)}——<b>展示用</b>，
+         * 前端据此渲染确认卡片。执行不认它，认的是 {@link #approvalToken} 里的载荷。
+         */
         private List<String> pendingActions;
+        /**
+         * 待确认操作的签名令牌（{@link ApprovalTokens}）。与 {@link #pendingActions} 同时下发：
+         * 用户点确认时带回它，服务端按签名里的载荷执行。
+         * <p>
+         * <b>它替换了原先那个请求级布尔。</b>布尔只说明「用户点过确认」，说明不了
+         * 「确认的是哪一次调用」——那正是这个字段要回答的问题。
+         */
+        private String approvalToken;
         /**
          * 讲了一条事实却没交代出处、已从 {@link #reply} 中剔除的句子。
          * <p>
@@ -567,5 +696,13 @@ public class Agent {
         /** 单次请求的循环预算 */
         @Builder.Default private LoopBudget loopBudget = LoopBudget.defaults();
         @Builder.Default private String defaultSystemPrompt = "你是一个智能电商助手，帮助用户选购商品、查询订单、解答售后问题。";
+        /**
+         * 高危操作确认令牌的签名密钥（{@code AGENT_APPROVAL_SECRET}）。
+         * <p>
+         * <b>留空不等于关闭校验</b>——留空时 {@link ApprovalTokens} 会生成一枚进程级随机密钥，
+         * 单进程内签发与校验自洽（开发与演示照常可用），多实例部署下则必须显式配置，
+         * 否则各实例互相验不过对方签发的令牌。
+         */
+        private String approvalSecret;
     }
 }

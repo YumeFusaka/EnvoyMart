@@ -10,6 +10,7 @@ import yumefusaka.envoymart.agent.llm.PlanStep;
 import yumefusaka.envoymart.agent.loop.LoopBudget;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
+import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.Tool;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
@@ -25,15 +26,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 高危操作的中断出口：<b>未确认时必须停下来，且要让用户看清停的是什么。</b>
+ * 高危操作的中断出口：<b>撞上就必须停下来，且交出的要是「要执行什么」而不是一句关于它的话。</b>
  * <p>
  * 这条链路原先只有前半截——图确实会中断，但返回给调用方的是工具名 {@code order_cancel}
  * 三个字。用户看不到要取消的是哪一单，这个「确认」就只是走个形式；
  * 前端也无从渲染出一张有内容的确认卡片。
  * <p>
- * 另一半同样要守：<b>确认之后必须真的执行</b>。中断出口如果连确认路径也堵死，
- * 用户就永远取消不掉订单——一个自称支持高危确认、实则不可用的功能，
- * 比没有这个功能更糟。
+ * <b>图里没有「已确认」这个开关</b>，这是这一版最重要的结构变化：确认后要执行的那批调用
+ * 不再重新经过图（模型重规划一遍，执行什么全看它这次想出什么），而是由服务端按签名载荷
+ * 直接执行。所以这里只有「拦住」一种结局，放行那半截的测试在
+ * {@link AgentApprovalTokenTest}——它守的是用户批准的那一次调用与真正执行的那一次是同一个。
  */
 class AgentGraphApprovalTest {
 
@@ -91,41 +93,34 @@ class AgentGraphApprovalTest {
         };
     }
 
-    private AgentGraph.GraphResult run(boolean approved) {
+    private AgentGraph.GraphResult run() {
         ToolRegistry registry = new ToolRegistry();
         registry.register(cancelTool());
         AgentGraph graph = new AgentGraph(new StubProvider(), CONFIG, registry, executor);
-        return graph.run("u1", "帮我取消订单 12", "", List.of(), approved,
+        return graph.run("u1", "帮我取消订单 12", "", List.of(),
                 new LoopGuard(new LoopBudget(8, 2, 2)), null);
     }
 
     @Test
-    void 未确认时中断并给出带参数的操作描述() {
-        AgentGraph.GraphResult result = run(false);
+    void 撞上高危操作即中断并交出带参数的操作载荷() {
+        AgentGraph.GraphResult result = run();
 
-        assertThat(result.getPendingApproval())
+        assertThat(result.getPendingActions())
                 .as("要给的是「取消哪一单」，只回一个工具名等于让用户盲签")
-                .containsExactly("order_cancel(orderId=12)");
+                .hasSize(1);
+        assertThat(result.getPendingActions().get(0).tool()).isEqualTo("order_cancel");
+        assertThat(result.getPendingActions().get(0).arguments())
+                .as("载荷必须带参数：确认要签的是这一次调用本身，签名不能签一个空壳")
+                .containsEntry("orderId", 12);
+        assertThat(result.getPendingActions().get(0).describe())
+                .isEqualTo("order_cancel(orderId=12)");
         assertThat(cancellations.get())
                 .as("中断必须发生在调用工具之前")
                 .isZero();
         assertThat(result.getAnswer())
                 .as("图停在 END，没走 answer 节点 —— 此时没有回答可给，"
-                        + "调用方应当把 pendingApproval 渲染成确认提示")
+                        + "调用方应当把 pendingActions 渲染成确认提示")
                 .isNull();
-    }
-
-    @Test
-    void 确认后高危工具真的执行() {
-        AgentGraph.GraphResult result = run(true);
-
-        assertThat(cancellations.get())
-                .as("确认路径不通的话，用户永远取消不掉订单")
-                .isEqualTo(1);
-        assertThat(result.getPendingApproval())
-                .as("已经执行完，不该再要求一次确认")
-                .isNull();
-        assertThat(result.getSteps()).hasSize(1);
     }
 
     @Test
@@ -135,7 +130,7 @@ class AgentGraphApprovalTest {
                 .arguments(Map.of("orderId", 12, "reason", "用户要求"))
                 .build();
 
-        assertThat(AgentGraph.describe(step))
+        assertThat(AgentGraph.pendingAction(step).describe())
                 .as("顺序不固定的话，同一份计划每次拼出的文本都不同，日志对比与断言都得先做集合比较")
                 .isEqualTo("order_cancel(orderId=12, reason=用户要求)");
     }
@@ -144,25 +139,41 @@ class AgentGraphApprovalTest {
     void 没有参数时退化为工具名() {
         PlanStep bare = PlanStep.builder().tool("order_cancel").build();
 
-        assertThat(AgentGraph.describe(bare)).isEqualTo("order_cancel");
-        assertThat(AgentGraph.describe(PlanStep.builder()
-                .tool("order_cancel").arguments(Map.of()).build()))
+        assertThat(AgentGraph.pendingAction(bare).describe()).isEqualTo("order_cancel");
+        assertThat(AgentGraph.pendingAction(PlanStep.builder()
+                .tool("order_cancel").arguments(Map.of()).build()).describe())
                 .isEqualTo("order_cancel");
     }
 
     /**
-     * ReAct 路径拦下的高危操作，同样要经 {@code pendingApproval} 出口交到调用方手里。
+     * 参数里带 null 是模型给得出来的（JSON 里写个 null 就行）。
+     * <p>
+     * 载荷要进签名，构造期就得容得下它——等到签发那一刻才炸，症状是
+     * 「模型偶尔取消不了订单」，而堆栈指向的地方与真正的原因隔着好几层。
+     */
+    @Test
+    void 参数值为null时载荷照常构造() {
+        Map<String, Object> arguments = new java.util.HashMap<>();
+        arguments.put("orderId", null);
+
+        assertThat(PendingAction.of("order_cancel", arguments).describe())
+                .as("Map.copyOf 在这一步会直接抛，所以构造器必须自己兜住 null 值")
+                .isEqualTo("order_cancel(orderId=null)");
+    }
+
+    /**
+     * ReAct 路径拦下的高危操作，同样要经 {@code pendingActions} 出口交到调用方手里。
      * <p>
      * 计划路径在批次执行前就看得见要拦什么；ReAct 只有等模型把工具要出来才知道，
-     * 拦截发生在工具循环内部，拦下的描述经 toolContext 的 sink 回到图。
-     * 这条测试守的是后半截管道：<b>sink 里的东西必须出现在 GraphResult.pendingApproval 里</b>——
+     * 拦截发生在工具循环内部，拦下的调用经 toolContext 的 sink 回到图。
+     * 这条测试守的是后半截管道：<b>sink 里的东西必须出现在 GraphResult.pendingActions 里</b>——
      * 少了这一支，Agent 层看不到它，用户拿到的是一个没有确认卡的中断，
      * 回复还是那句「抱歉，我没能完成这个请求」，而操作永远批不了。
      */
     @Test
-    void ReAct路径拦下的高危操作也经pendingApproval出口交给调用方() {
+    void ReAct路径拦下的高危操作也经pendingActions出口交给调用方() {
         // 模拟 ReAct 路径：计划为空 → answer 节点 → converse → chatWithTools，
-        // 循环在里面拦住未确认的高危操作（写 sink、这轮没有最终回答）
+        // 循环在里面拦住高危操作（写 sink、这轮没有最终回答）
         LLMProvider reactProvider = new LLMProvider() {
             @Override
             public LLMResponse chat(List<ChatMessage> messages, LLMConfig config) {
@@ -173,8 +184,8 @@ class AgentGraphApprovalTest {
             public LLMResponse chatWithTools(List<ChatMessage> messages, LLMConfig config,
                                              Map<String, Object> toolContext) {
                 @SuppressWarnings("unchecked")
-                List<String> sink = (List<String>) toolContext.get(ToolContextKeys.PENDING_APPROVAL);
-                sink.add("order_cancel(orderId=12)");
+                List<PendingAction> sink = (List<PendingAction>) toolContext.get(ToolContextKeys.PENDING_ACTIONS);
+                sink.add(PendingAction.of("order_cancel", Map.of("orderId", 12)));
                 return LLMResponse.builder().content("").build();
             }
 
@@ -187,12 +198,13 @@ class AgentGraphApprovalTest {
         ToolRegistry registry = new ToolRegistry();
         registry.register(cancelTool());
         AgentGraph graph = new AgentGraph(reactProvider, CONFIG, registry, executor);
-        AgentGraph.GraphResult result = graph.run("u1", "帮我取消订单 12", "", List.of(), false,
+        AgentGraph.GraphResult result = graph.run("u1", "帮我取消订单 12", "", List.of(),
                 new LoopGuard(new LoopBudget(8, 2, 2)), null);
 
-        assertThat(result.getPendingApproval())
+        assertThat(result.getPendingActions())
                 .as("ReAct 拦下的操作必须走到与计划路径同一个出口，否则前端没有确认卡可渲染")
-                .containsExactly("order_cancel(orderId=12)");
+                .hasSize(1);
+        assertThat(result.getPendingActions().get(0).describe()).isEqualTo("order_cancel(orderId=12)");
         assertThat(cancellations.get())
                 .as("拦截发生之后工具仍不该被执行")
                 .isZero();

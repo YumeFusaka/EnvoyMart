@@ -158,7 +158,8 @@ public class GroundingLiveEvalService {
         String sessionId = "grounding-eval-" + fixtureCase.id() + "-" + System.currentTimeMillis();
         long started = System.currentTimeMillis();
         try {
-            Agent.AgentResponse response = agent.chat(userId, sessionId, fixtureCase.question(), false);
+            // 无确认令牌：评测问的都是知识与检索类问题，不碰高危操作
+            Agent.AgentResponse response = agent.chat(userId, sessionId, fixtureCase.question(), null);
             long latency = System.currentTimeMillis() - started;
             List<DocumentChunk> evidence =
                     response.getKnowledge() == null ? List.of() : response.getKnowledge();

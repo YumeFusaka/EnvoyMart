@@ -120,7 +120,7 @@ ck(`准备未支付订单 #${apiOrderId}`, (await orderStatus(apiOrderId)) === '
 const sessionId = `verify-approval-api-${Date.now()}`
 const first = await api('/ai/chat', {
   method: 'POST',
-  body: { sessionId, message: `帮我取消订单 ${apiOrderId}`, approved: false },
+  body: { sessionId, message: `帮我取消订单 ${apiOrderId}` },
 })
 
 ck(
@@ -133,15 +133,46 @@ ck(
   (first.pendingActions ?? []).some((a) => a.includes(`orderId=${apiOrderId}`)),
   `pendingActions=${JSON.stringify(first.pendingActions)}`,
 )
+ck('同时下发确认令牌', typeof first.approvalToken === 'string' && first.approvalToken.length > 0)
 ck(
   '拦截发生在执行之前：订单状态原封不动',
   (await orderStatus(apiOrderId)) === 'CREATED',
   `status=${await orderStatus(apiOrderId)}`,
 )
 
+// 令牌绑定动作：改过的令牌一条都不执行。先试一次被改坏的，再走正常路径——
+// 顺序不能反，正常路径会把订单真的取消掉
+const tampered = await api('/ai/chat', {
+  method: 'POST',
+  body: {
+    sessionId,
+    message: '确认执行',
+    // 改一个字符：签名对不上，服务端必须在执行之前停住
+    approvalToken: (first.approvalToken[0] === 'A' ? 'B' : 'A') + first.approvalToken.slice(1),
+  },
+})
+ck(
+  '被改过一字的令牌一条都不执行',
+  (await orderStatus(apiOrderId)) === 'CREATED' &&
+    (tampered.reply ?? '').includes('没有执行任何操作'),
+  `reply=${(tampered.reply ?? '').slice(0, 80)}，status=${await orderStatus(apiOrderId)}`,
+)
+
+// 换一个会话交回同一张令牌：令牌里签着签发它的会话，此处必须被拒
+const crossSession = await api('/ai/chat', {
+  method: 'POST',
+  body: { sessionId: `${sessionId}-other`, message: '确认执行', approvalToken: first.approvalToken },
+})
+ck(
+  '换个会话交回同一张令牌也不执行',
+  (await orderStatus(apiOrderId)) === 'CREATED' &&
+    (crossSession.reply ?? '').includes('没有执行任何操作'),
+  `reply=${(crossSession.reply ?? '').slice(0, 80)}，status=${await orderStatus(apiOrderId)}`,
+)
+
 const confirmed = await api('/ai/chat', {
   method: 'POST',
-  body: { sessionId, message: '确认执行', approved: true },
+  body: { sessionId, message: '确认执行', approvalToken: first.approvalToken },
 })
 ck(
   '确认之后不再要求二次确认',
