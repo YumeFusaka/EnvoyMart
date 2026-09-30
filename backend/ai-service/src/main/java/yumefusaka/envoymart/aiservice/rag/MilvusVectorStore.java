@@ -73,6 +73,11 @@ public class MilvusVectorStore implements VectorStore {
         delegate.removeAll(metadataKey(META_DOC_ID).isEqualTo(docId));
     }
 
+    @Override
+    public void removeAll() {
+        delegate.removeAll();
+    }
+
     /**
      * 拼元数据 —— <b>溯源信息必须随切片一起入库</b>。
      * <p>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import CitationList from '@/components/ai/CitationList.vue'
+import ConflictList from '@/components/ai/ConflictList.vue'
 import MessageContent from '@/components/ai/MessageContent.vue'
 import PendingApprovalCard from '@/components/ai/PendingApprovalCard.vue'
 import RecommendationCards from '@/components/ai/RecommendationCards.vue'
@@ -48,6 +49,44 @@ async function handleCite(messageId: string, index: number) {
         :citation-count="message.knowledge?.length ?? 0"
         @cite="(index) => handleCite(message.id, index)"
       />
+
+      <!--
+        整篇无依据的声明<b>一直摊开</b>，且排在冲突与逐句说明之前：它改变的是
+        「这段话能不能被当成平台的说法」，用户读第一句时就需要知道，折叠起来等于没说。
+        只在「一个引用都没有、也没有工具执行」时出现——订单、物流那几轮的事实
+        来自工具返回，不该被扣上这顶帽子。
+      -->
+      <p v-if="message.ungrounded" class="ungrounded">
+        以上内容没有平台知识库依据，由模型根据自身知识生成，不代表平台规则。
+      </p>
+
+      <!--
+        另外两块「关于回答本身」的说明，紧贴正文：它们改变的是这段文字该被信几分，
+        摆到依据列表后面就变成脚注了，而用户读第一句时就需要知道。
+      -->
+      <ConflictList
+        v-if="message.conflicts?.length"
+        :conflicts="message.conflicts"
+        :knowledge="message.knowledge"
+      />
+
+      <!--
+        用原生 details 而不是一直摊开：它是给想核对的人看的，不关心的人不该被它挡住。
+        文案分两种，因为两种情形对用户的含义完全不同——「已经替你拿掉了」与
+        「还留在上面，请自己判断」是两件事，用同一句话会把后者说成前者。
+      -->
+      <details v-if="message.unsupportedClaims?.length" class="grounding">
+        <summary>
+          {{
+            message.unsupportedStripped
+              ? `已移除 ${message.unsupportedClaims.length} 句没有知识库依据的内容`
+              : `${message.unsupportedClaims.length} 句内容没有找到知识库依据`
+          }}
+        </summary>
+        <ul class="grounding__list">
+          <li v-for="(claim, i) in message.unsupportedClaims" :key="i">{{ claim }}</li>
+        </ul>
+      </details>
 
       <PendingApprovalCard
         v-if="message.pendingActions?.length"
@@ -112,6 +151,52 @@ async function handleCite(messageId: string, index: number) {
 .message-card header strong {
   font-size: var(--ys-font-sm);
   color: var(--color-text-secondary);
+}
+
+.grounding {
+  margin-top: var(--ys-space-3);
+  padding: var(--ys-space-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--ys-radius-md);
+  background: var(--color-bg-surface-muted);
+}
+
+/*
+  警示而非报错：模型并没有伪装成平台依据（多数时候它自己也会说明），
+  用 danger 色会把它渲染成一次事故。左描边而不是整框，是为了与逐句说明的
+  虚线框区分开——这条说的是整段，那条说的是几句。
+*/
+.ungrounded {
+  margin: var(--ys-space-3) 0 0;
+  padding: var(--ys-space-3) var(--ys-space-4);
+  border-inline-start: 3px solid var(--color-warning);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-warning-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+}
+
+.grounding summary {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  cursor: pointer;
+}
+
+.grounding summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--ys-radius-sm);
+}
+
+.grounding__list {
+  display: grid;
+  gap: var(--ys-space-2);
+  margin: var(--ys-space-2) 0 0;
+  padding-left: var(--ys-space-5);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
 }
 
 .trace {

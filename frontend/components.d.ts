@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AiChatMessageList: typeof import('./src/components/ai/ChatMessageList.vue')['default']
     AiCitationList: typeof import('./src/components/ai/CitationList.vue')['default']
+    AiConflictList: typeof import('./src/components/ai/ConflictList.vue')['default']
     AiMessageContent: typeof import('./src/components/ai/MessageContent.vue')['default']
     AiPendingApprovalCard: typeof import('./src/components/ai/PendingApprovalCard.vue')['default']
     AiQuickPromptBar: typeof import('./src/components/ai/QuickPromptBar.vue')['default']

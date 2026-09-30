@@ -14,7 +14,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -102,10 +106,44 @@ class KnowledgeIndexerStatusTest {
         assertThat(after.result().chunkCount()).isZero();
     }
 
+    /**
+     * 重建要把向量库<b>整份清空</b>，而不是逐篇删当前语料里的 docId。
+     * <p>
+     * 逐篇删只清得掉「这次的语料里有的」那些文档。语料一旦改名或换目录，旧条目就永远
+     * 留在库里——实测有 15 条早期种子数据（docId 形如 {@code after_sale_1}、{@code guide_1}）
+     * 躺了几个月：它们连 title/position 都没有，被检索到时模型引用不了、用户点开无处可去，
+     * 还实打实地挤占 topK 名额——一次「蓝牙耳机怎么连」的问句就把其中一条捞了上来。
+     * <p>
+     * 这条断言本身很弱（一次 mock 验证），但它锁的是一个<b>错了没有任何症状</b>的判断：
+     * 逐篇删同样能让所有测试全绿、让用户拿到正确答案，代价只在几个月后某一次
+     * 「怎么召回了一条没有出处的碎片」里显现。
+     */
+    @Test
+    void 重建整份清空向量库而不是逐篇删() {
+        KnowledgeCorpus corpus = mock(KnowledgeCorpus.class);
+        when(corpus.reload()).thenReturn(List.of(
+                Document.builder().id("KB-0001").title("平台退换货政策总则").content("正文").build()));
+        VectorStore vectorStore = mock(VectorStore.class);
+        TextSplitter splitter = mock(TextSplitter.class);
+        when(splitter.split(any())).thenReturn(List.of());
+        KnowledgeIndexer indexer = newIndexer(corpus, vectorStore, splitter);
+
+        indexer.rebuildAsync();
+        KnowledgeIndexer.Status after = 等待结束(indexer);
+
+        assertThat(after.error()).isNull();
+        verify(vectorStore).removeAll();
+        verify(vectorStore, never()).deleteByDocId(anyString());
+    }
+
     private static KnowledgeIndexer newIndexer(KnowledgeCorpus corpus) {
+        return newIndexer(corpus, mock(VectorStore.class), mock(TextSplitter.class));
+    }
+
+    private static KnowledgeIndexer newIndexer(KnowledgeCorpus corpus, VectorStore vectorStore, TextSplitter splitter) {
         return new KnowledgeIndexer(corpus,
-                mock(VectorStore.class),
-                mock(TextSplitter.class),
+                vectorStore,
+                splitter,
                 mock(HybridRetriever.class),
                 mock(KnowledgeGraphBuilder.class),
                 false);

@@ -55,6 +55,30 @@ class KnowledgePromptTest {
                 .contains("不得编造编号");
     }
 
+    /**
+     * 冲突处理指令必须与抽取端用的是<b>同一个标记</b>。
+     * <p>
+     * 模型按别的写法回（「[冲突]」「（冲突）」），{@link ConflictReporter} 就抽不到——
+     * 表现不是报错，而是冲突悄悄退化成回答末尾一段没人看得懂的纯文本。
+     * <p>
+     * 另外两条锁的是<b>误报的边界</b>：判定标准写宽一格（比如「写法不一致也算」），
+     * 模型就会把「10 微克（折合 400 国际单位）」与「400IU」这种同一数值的不同写法
+     * 当成冲突报上来，用户收到一张并不存在的冲突卡片。抽取端有兜底
+     * （{@link ConflictReporter} 会丢弃自陈一致的段落），但那是最后一道，
+     * 不能拿它当借口把 prompt 写松。
+     */
+    @Test
+    void 证据充分时要求模型按约定标记列出冲突() {
+        var section = render(List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.80)));
+
+        assertThat(section.text())
+                .contains(ConflictReporter.MARKER)
+                .as("判定标准必须锚在「数字、期限或结论不一样」上")
+                .contains("数字、期限或结论不一样")
+                .as("核对下来一致的段落不许写，抽取端会把它丢掉")
+                .contains("确认过一致的事不要写进这个段落");
+    }
+
     @Test
     void 多条证据各自编号且顺序与输入一致() {
         var section = render(List.of(

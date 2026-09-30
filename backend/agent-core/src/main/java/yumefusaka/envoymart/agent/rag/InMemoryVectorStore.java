@@ -184,6 +184,12 @@ public class InMemoryVectorStore implements VectorStore {
         indexed = false;
     }
 
+    @Override
+    public void removeAll() {
+        store.clear();
+        indexed = false;
+    }
+
     private double cosineSimilarity(float[] a, float[] b) {
         if (a == null || b == null || a.length != b.length) return 0;
         double dot = 0, normA = 0, normB = 0;

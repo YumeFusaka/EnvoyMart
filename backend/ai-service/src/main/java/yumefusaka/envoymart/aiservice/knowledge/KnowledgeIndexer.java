@@ -109,10 +109,16 @@ public class KnowledgeIndexer {
                 .flatMap(doc -> splitter.split(doc).stream())
                 .toList();
 
-        // 先按 docId 清旧再写：向量库是持久化的，入库本身没有幂等性。
-        // 少了这一步，每重建一次集合里就多堆一份，重复条目会挤占 topK、
-        // 让同一篇文档在结果里出现多次。
-        documents.forEach(doc -> vectorStore.deleteByDocId(doc.getId()));
+        // 整份清空再写：向量库是持久化的，入库本身没有幂等性。
+        //
+        // 这里曾经是逐篇 deleteByDocId(doc.getId())，只清得掉「这次语料里有的」那些文档。
+        // 语料一旦改名或换目录，旧条目就永远留在库里：实测有 15 条早期种子数据
+        // （docId 形如 after_sale_1、guide_1）躺了几个月，它们连 title/position 都没有，
+        // 被召回时模型引用不了、用户点开无处可去，还实打实地挤占 topK ——
+        // 一次「蓝牙耳机怎么连」的问句就把其中一条捞了上来。
+        // 逐篇删要求「库里的 docId 集合恰好等于历史语料的并集」，这是个没人维护得住的假设；
+        // 整份清空则把「库里恰好等于当前语料」变成重建的性质本身。
+        vectorStore.removeAll();
         vectorStore.indexBatch(chunks);
 
         // BM25 侧整份替换：切分结果一变，片数与编号全变，没有逐篇对齐的可能

@@ -429,19 +429,6 @@ export interface DocumentDetail {
   chunks: ChunkRef[]
 }
 
-/** 切片详情 —— 引用回跳的唯一入口 */
-export interface ChunkDetail extends ChunkRef {
-  content: string
-  docNo: string
-  title: string
-  source: string
-  scope: string
-  version: string
-  status: number
-  /** 所属文档全文，就地高亮用，省掉第二次请求 */
-  documentContent: string
-}
-
 export interface ToolCall {
   tool: string
   input: string
@@ -472,9 +459,50 @@ export interface ChatResponse {
    * 判定规则（重排分与余弦相似度两把尺子、图谱依据豁免）在后端，前端不重算。
    */
   evidenceLevel: EvidenceLevel | null
+  /**
+   * 讲了一条事实却没交代出处、已被后端从 `reply` 里剔除的句子。
+   *
+   * 剔除了却仍然下发：用户该看到回答里少了什么、为什么少。**有内容不等于都被剔了**——
+   * 整篇没有一处有效引用时后端只报告不剔除（那更像「这一轮不在答知识问题」），
+   * 此时这些句子仍在 `reply` 里，靠 `unsupportedStripped` 区分。
+   */
+  unsupportedClaims: string[] | null
+  /** 上面那些句子是否真的已被移出 `reply` */
+  unsupportedStripped: boolean
+  /**
+   * 整篇回答没有任何依据——没有知识库引用，也没有工具执行记录，
+   * 内容由模型凭自身知识生成。
+   *
+   * 与 `unsupportedClaims` 是两级粒度：后者点名「哪几句」，是一条精准的修订；
+   * 它说的是「这一整段」，是一句免责声明。两者互斥——有引用时按句报，
+   * 一个引用也没有、也没有工具执行时才整篇报。
+   *
+   * 判定涉及「本轮有没有执行过工具」，前端只看得到回答正文，所以由后端算好下发。
+   */
+  ungrounded: boolean
+  /**
+   * 本轮证据之间被发现的矛盾。后端不让模型挑一个讲，而是要求它列出来，
+   * 这里拿到的是结构化结果，`refs` 可直接跳回原文核对。
+   */
+  conflicts: KnowledgeConflict[] | null
 }
 
 export type EvidenceLevel = 'SUFFICIENT' | 'WEAK' | 'NONE'
+
+/**
+ * 本轮证据之间被发现的矛盾。
+ *
+ * 同一件事在两份文档里有不同说法时，后端不让模型挑一个讲，而是要求它把矛盾列出来
+ * ——不这么做的结果是一句斩钉截铁的话，而系统手里其实握着一个尚未解决的冲突。
+ *
+ * `refs` 是回答里 `[n]` 的 n，可直接跳回那条原文核对。**可能为空**：
+ * 模型没写清是哪几条在矛盾时就不猜——猜错的跳转会把用户带到一条无关的原文面前，
+ * 而他以为自己核对过了。
+ */
+export interface KnowledgeConflict {
+  refs: number[]
+  detail: string
+}
 
 export interface ChatMessage {
   id: string
@@ -487,6 +515,29 @@ export interface ChatMessage {
   pendingActions?: string[]
   /** 证据门判定，随 `knowledge` 一起透传给引用区，决定标题措辞 */
   evidenceLevel?: EvidenceLevel
+  /**
+   * 讲了一条事实却没交代出处、已被后端从正文里剔除的句子。
+   *
+   * 剔除了却仍然下发：用户该看到回答里少了什么、为什么少。**有内容不等于都被剔了**
+   * ——整篇没有一处有效引用时后端只报告不剔除，此时这些句子仍在 `content` 里。
+   */
+  unsupportedClaims?: string[]
+  /**
+   * 上面那些句子是否已被移出 `content`。
+   *
+   * 必须与列表一起看：**「已经替你拿掉了」和「还留在上面，你自己判断」是两件事**，
+   * 用同一句话去描述会把后者说成前者。
+   */
+  unsupportedStripped?: boolean
+  /**
+   * 整篇回答没有任何依据——没有知识库引用，也没有工具执行记录。
+   *
+   * 与 `unsupportedClaims` 互斥：那是「哪几句有问题」，这是「这一整段都没有平台依据」。
+   * 界面上是两句话，不能合并。
+   */
+  ungrounded?: boolean
+  /** 本轮证据之间被发现的矛盾，由模型判定、后端结构化 */
+  conflicts?: KnowledgeConflict[]
 }
 
 // ==================== 商品域 ====================

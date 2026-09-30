@@ -21,4 +21,15 @@ public interface VectorStore {
     List<DocumentChunk> search(String query, int topK);
 
     void deleteByDocId(String docId);
+
+    /**
+     * 清空整个集合。
+     * <p>
+     * 重建索引用的是它，不是逐篇 {@link #deleteByDocId}：后者只清得掉「这次的语料里有的」
+     * 那些文档，清不掉语料改名、换目录、或早期种子数据留下的孤儿条目——
+     * 它们没有溯源字段，被检索到时模型引用不了、用户点开无处可去，还挤占 topK 的名额。
+     * 整份清空把「库里恰好等于当前语料」变成重建的<b>性质</b>，
+     * 而不是「只要没人动过语料就成立」的假设。
+     */
+    void removeAll();
 }

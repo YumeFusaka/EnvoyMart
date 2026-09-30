@@ -38,6 +38,11 @@ class EpisodicMemoryTest {
             deletedDocIds.add(docId);
             chunks.removeIf(c -> docId.equals(c.getDocId()));
         }
+
+        @Override
+        public void removeAll() {
+            chunks.clear();
+        }
     }
 
     private MemoryItem item(String userId, String content) {

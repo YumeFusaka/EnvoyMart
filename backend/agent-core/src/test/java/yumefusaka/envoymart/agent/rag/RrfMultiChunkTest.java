@@ -40,6 +40,11 @@ class RrfMultiChunkTest {
             public void deleteByDocId(String docId) {
                 // 桩实现不删除
             }
+
+            @Override
+            public void removeAll() {
+                // 桩实现不删除
+            }
         };
     }
 

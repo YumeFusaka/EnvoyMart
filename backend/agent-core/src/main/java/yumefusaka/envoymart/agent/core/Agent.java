@@ -17,6 +17,8 @@ import yumefusaka.envoymart.agent.memory.MemoryItem;
 import yumefusaka.envoymart.agent.memory.ProfileEntry;
 import yumefusaka.envoymart.agent.memory.UserProfile;
 import yumefusaka.envoymart.agent.memory.UserProfileStore;
+import yumefusaka.envoymart.agent.rag.CitationVerifier;
+import yumefusaka.envoymart.agent.rag.ConflictReporter;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.KnowledgePrompt;
@@ -132,6 +134,8 @@ public class Agent {
                     .evidenceLevel(evidence.level())
                     .build();
         }
+        // 两道后置关放在 try 之外：降级回答同样要过——它也是一段要发给用户的话
+        groundResponse(response, knowledge.size());
 
         // 3. 记录回复
         shortTermMemory.add(MemoryItem.builder()
@@ -203,6 +207,58 @@ public class Agent {
                 .knowledge(knowledge)
                 .toolExecutions(graphResult.getToolExecutions())
                 .build();
+    }
+
+    /**
+     * 答案出门前的两道后置关，也是零幻觉三道闸里唯一作用在「生成之后」的两道。
+     * <p>
+     * 挂在这里是因为<b>这是流式与非流式唯一的共同出口</b>：{@code chat} 与
+     * {@code chatStream} 都汇到 {@code doChat} 的这一行，而确定性流程、审批中断、
+     * 执行图结果、降级兜底这四条分支的答案也全部经过它。挂在控制器上要挂两处
+     * （{@code /ai/chat} 与 {@code /ai/chat/stream} 是两个独立出口），挂在图里则拿不到
+     * 本轮的 {@code knowledge} 与证据判定——冲突要对照证据才认得出来。
+     * <p>
+     * <b>两道关的顺序不能反。</b>冲突段的每一句都是「带事实信号、没有引用角标」的话，
+     * 先抽冲突再校验引用，冲突内容才不会被当成无出处的断言剔掉——
+     * 那些细节正是要让用户看到的东西。
+     * <p>
+     * 流式下这里改写的是 done 帧里的完整答案，而 delta 已经推出去了；
+     * 前端会用 done 帧覆盖已渲染文本。原因见 {@link CitationVerifier}。
+     */
+    private void groundResponse(AgentResponse response, int evidenceCount) {
+        if (response == null || response.getReply() == null || response.getReply().isBlank()) {
+            return;
+        }
+        ConflictReporter.Report report = ConflictReporter.extract(response.getReply(), evidenceCount);
+        // 工具依据决定「没有引用」该怎么解读：有依据时无引用是正常的，没有依据时
+        // 整篇就是模型自己写的、无出处的句子必须报出来。
+        //
+        // 判据不能只看 toolExecutions：确定性流程与审批中断这两条分支压根不过执行图，
+        // 结构上没有工具记录，但它们的答案同样不是模型凭空写的——前者由预定义的工具
+        // 序列产出，后者是一句固定的确认提示。漏掉这个特判，售后流程那句
+        // 「退款会在 1~3 个工作日原路退回」会被当成无出处的断言报给用户。
+        boolean toolBacked = "flow".equals(response.getSource()) || "approval".equals(response.getSource());
+        boolean hasToolEvidence = toolBacked
+                || (response.getToolExecutions() != null && !response.getToolExecutions().isEmpty());
+        CitationVerifier.Verdict verdict =
+                CitationVerifier.verify(report.reply(), evidenceCount, hasToolEvidence);
+
+        response.setReply(verdict.reply());
+        response.setUnsupportedClaims(verdict.unsupported().isEmpty() ? null : verdict.unsupported());
+        response.setUnsupportedStripped(verdict.stripped());
+        response.setUngrounded(verdict.ungrounded());
+        response.setConflicts(report.conflicts().isEmpty() ? null : report.conflicts());
+
+        // 只在闸门真的动了手时记一行：这两道关每轮都跑，无条件打点会把日志淹掉，
+        // 而「有没有拦下东西」才是需要被看见的信号
+        if (response.getUnsupportedClaims() != null || response.getConflicts() != null
+                || response.isUngrounded()) {
+            log.info("[Agent] 后置校验 证据={} 句={} 有引用={} 覆盖率={} 剔除={} 无依据={} 冲突={}",
+                    evidenceCount, verdict.sentences(), verdict.cited(),
+                    "%.2f".formatted(verdict.coverage()),
+                    verdict.stripped() ? verdict.unsupported().size() : 0,
+                    verdict.ungrounded(), report.conflicts().size());
+        }
     }
 
     /**
@@ -354,6 +410,33 @@ public class Agent {
         private List<ToolExecution> toolExecutions;
         /** 等待用户确认的高危操作 */
         private List<String> pendingActions;
+        /**
+         * 讲了一条事实却没交代出处、已从 {@link #reply} 中剔除的句子。
+         * <p>
+         * 剔除了却没有让它消失：这些句子会被下发前端单独陈列。用户看到的是
+         * 「回答里少了什么、为什么少」——静默删除才是更坏的选择，
+         * 那既没让用户读到不可靠的内容，也没让他知道系统在替他兜底。
+         * 判定与剔除规则见 {@link CitationVerifier}（整篇没有一处有效引用时不剔除，
+         * 只报告——见该类注释）。
+         */
+        private List<String> unsupportedClaims;
+        /**
+         * {@link #unsupportedClaims} 是否已被移出 {@link #reply}。
+         * <p>
+         * 必须与列表一起下发：<b>「已经替你拿掉了」和「还留在上面，你自己判断」是两件事</b>，
+         * 用同一句话去描述会把后者说成前者，那正是这道闸最不该犯的错。
+         */
+        private boolean unsupportedStripped;
+        /**
+         * 整篇回答是否<b>没有任何依据</b>——没有知识库引用，也没有工具执行记录。
+         * <p>
+         * 与 {@link #unsupportedClaims} 是两级粒度：后者点名「哪几句」讲事实没出处，
+         * 是一条精准的修订；它是「这一整段都没有平台依据」，是一句免责声明。
+         * 两者互斥：有引用时按句报，没有引用也没有工具时才整篇报。
+         */
+        private boolean ungrounded;
+        /** 本轮证据之间被发现的矛盾，由模型判定、{@link ConflictReporter} 抽取 */
+        private List<ConflictReporter.Conflict> conflicts;
     }
 
     @Data

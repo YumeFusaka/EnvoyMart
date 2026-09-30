@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.agent.core.Agent;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
+import yumefusaka.envoymart.agent.rag.ConflictReporter;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.aiservice.model.ChatRequest;
 import yumefusaka.envoymart.aiservice.model.ChatResponse;
@@ -61,7 +62,21 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .recommendedProducts(extractProducts(executions))
                 .pendingActions(agentResp.getPendingActions())
                 .evidenceLevel(agentResp.getEvidenceLevel())
+                .unsupportedClaims(agentResp.getUnsupportedClaims())
+                .unsupportedStripped(agentResp.isUnsupportedStripped())
+                .ungrounded(agentResp.isUngrounded())
+                .conflicts(convertConflicts(agentResp.getConflicts()))
                 .build();
+    }
+
+    /** 冲突的结构化搬运。{@code refs} 原样透传——它就是回答里 {@code [n]} 的 n，前端据此生成跳转 */
+    private List<ChatResponse.Conflict> convertConflicts(List<ConflictReporter.Conflict> conflicts) {
+        if (conflicts == null) {
+            return List.of();
+        }
+        return conflicts.stream()
+                .map(c -> new ChatResponse.Conflict(c.refs(), c.detail()))
+                .toList();
     }
 
     private ToolCallResponse toToolCall(ToolExecution execution) {
