@@ -294,6 +294,7 @@ middleware_up() {
 }
 
 frontend_up() {
+  local mode="${1:-dev}"
   if port_listening 5173; then
     echo "跳过前端（5173 已在监听）"
     return 0
@@ -303,8 +304,21 @@ frontend_up() {
     return 1
   fi
   mkdir -p "$LOG_DIR"
-  echo "启动前端 (端口 5173) → $LOG_DIR/frontend.log"
-  nohup pnpm -C ../frontend dev > "$LOG_DIR/frontend.log" 2>&1 &
+  if [ "$mode" = "prod" ]; then
+    # 演示走生产产物而不是 dev server：dev 模式会注入 Vue DevTools 悬浮面板
+    # （插件没有隐藏开关），投屏演示时它一直飘在页面角落；首屏还要现编译，比静态产物慢。
+    # 前端 API 地址是写死的 http://localhost:8080（本项目不用 vite proxy），preview 无需额外配置
+    echo "构建前端生产产物（约 20 秒）..."
+    if ! pnpm -C ../frontend build > "$LOG_DIR/frontend-build.log" 2>&1; then
+      echo "前端构建失败，看 $LOG_DIR/frontend-build.log" >&2
+      return 1
+    fi
+    echo "启动前端 (端口 5173, 生产产物) → $LOG_DIR/frontend.log"
+    nohup pnpm -C ../frontend preview --port 5173 --strictPort > "$LOG_DIR/frontend.log" 2>&1 &
+  else
+    echo "启动前端 (端口 5173) → $LOG_DIR/frontend.log"
+    nohup pnpm -C ../frontend dev > "$LOG_DIR/frontend.log" 2>&1 &
+  fi
   if wait_ready frontend 60 http_ok http://127.0.0.1:5173/; then
     return 0
   fi
@@ -345,7 +359,7 @@ demo_up() {
   done
   wait_healthy
 
-  frontend_up || exit 1
+  frontend_up prod || exit 1
   print_entries
 }
 
