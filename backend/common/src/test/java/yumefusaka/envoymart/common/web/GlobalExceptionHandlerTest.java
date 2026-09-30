@@ -1,7 +1,10 @@
 package yumefusaka.envoymart.common.web;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,6 +30,24 @@ class GlobalExceptionHandlerTest {
         assertThat(result.getMsg())
                 .as("要把缺的是哪个参数说出来，否则调用方只能去翻服务端日志")
                 .contains("items");
+    }
+
+    /**
+     * 控制器里只要有一条 {@code GET /xx/{id}} 这样的宽路径，敲错的路径也会与它
+     * 「路径匹配、方法不符」，于是拿到的是 method-not-supported 而不是 404。
+     * 它原先落兜底被报成 500：调用方以为服务挂了，日志里还多一条 ERROR 栈。
+     */
+    @Test
+    void 方法不支持回405而不是500() {
+        var result = handler.handleMethodNotSupported(
+                new HttpRequestMethodNotSupportedException("POST", List.of("GET")));
+
+        assertThat(result.getCode())
+                .as("方法写错是客户端问题；报 500 会和真正的服务端故障混在一起")
+                .isEqualTo(405);
+        assertThat(result.getMsg())
+                .as("要说清是哪个方法不被接受")
+                .contains("POST");
     }
 
     @Test

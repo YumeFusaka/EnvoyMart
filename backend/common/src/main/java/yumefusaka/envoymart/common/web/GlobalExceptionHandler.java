@@ -2,6 +2,7 @@ package yumefusaka.envoymart.common.web;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -72,6 +73,23 @@ public class GlobalExceptionHandler {
     public Result<String> handleNotFound(NoResourceFoundException exception) {
         log.warn("No handler for {}", exception.getResourcePath());
         return Result.error(404, "接口不存在");
+    }
+
+    /**
+     * 路径对得上但 HTTP 方法不对（把 GET 写成 POST）。
+     * <p>
+     * 与 404 同族，但比 404 更常见：只要控制器里有一条 {@code GET /xx/{id}} 这样的
+     * 宽路径，任何一节路径段都会与它「路径匹配、方法不符」，所以调用方敲错路径时
+     * 拿到的往往是这个异常而不是 404。原先它落兜底被报成 500，
+     * <b>表现和真正的服务端故障一模一样</b>，还会在日志里刷一条 ERROR 栈把真故障淹没。
+     * 实测于删掉用户侧退款入口后：{@code POST /payments/refunds} 落进了
+     * {@code GET /payments/{orderId}}，回的是「服务暂时不可用」。
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public Result<String> handleMethodNotSupported(HttpRequestMethodNotSupportedException exception) {
+        log.warn("Method not allowed: {}（该路径支持 {}）",
+                exception.getMethod(), exception.getSupportedHttpMethods());
+        return Result.error(405, "请求方法不支持：" + exception.getMethod());
     }
 
     /**
