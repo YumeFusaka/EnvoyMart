@@ -414,9 +414,11 @@ public class AiAgentConfig {
      * 确定性流程注册 —— 业务判定由代码完成，不交给模型自由发挥。
      */
     @Bean
-    public FlowRegistry flowRegistry() {
+    public FlowRegistry flowRegistry(OrderClient orderClient) {
         FlowRegistry registry = new FlowRegistry();
-        registry.registerAll(List.of(new AfterSaleFlow()));
+        // 售后流程只取结论、不自己判：判定权在 order-service 的政策引擎，
+        // 两处各判一次的代价是同一个订单两个答案
+        registry.registerAll(List.of(new AfterSaleFlow(orderClient)));
         return registry;
     }
 

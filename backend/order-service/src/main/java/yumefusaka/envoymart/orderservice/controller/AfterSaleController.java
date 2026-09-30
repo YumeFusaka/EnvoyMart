@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
-import yumefusaka.envoymart.orderservice.model.AfterSalePreview;
+import yumefusaka.envoymart.contract.AfterSalePreview;
 import yumefusaka.envoymart.orderservice.model.AfterSaleResponse;
 import yumefusaka.envoymart.orderservice.model.ApplyAfterSaleRequest;
 import yumefusaka.envoymart.orderservice.service.AfterSaleService;

@@ -1,6 +1,6 @@
 package yumefusaka.envoymart.orderservice.service;
 
-import yumefusaka.envoymart.orderservice.model.AfterSalePreview;
+import yumefusaka.envoymart.contract.AfterSalePreview;
 import yumefusaka.envoymart.orderservice.model.AfterSaleResponse;
 import yumefusaka.envoymart.orderservice.model.ApplyAfterSaleRequest;
 

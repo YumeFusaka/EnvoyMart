@@ -81,8 +81,8 @@ echo "使用 JDK: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1)"
 #
 # 不能改用 `-am` 把依赖拉进 reactor：spring-boot:run 会在每个被选中的模块上执行，
 # 而 common / agent-core 是库、没有 main class，会直接失败。
-echo "同步库模块到本地仓库（改了 common / agent-core 后必须走这一步）..."
-mvn -q -B install -DskipTests -pl common,agent-core || {
+echo "同步库模块到本地仓库（改了 contract / common / agent-core 后必须走这一步）..."
+mvn -q -B install -DskipTests -pl contract,common,agent-core || {
   echo "库模块安装失败，终止启动" >&2
   exit 1
 }

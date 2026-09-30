@@ -16,7 +16,7 @@ import yumefusaka.envoymart.orderservice.mapper.AfterSaleLogMapper;
 import yumefusaka.envoymart.orderservice.mapper.AfterSaleMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderItemMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderMapper;
-import yumefusaka.envoymart.orderservice.model.AfterSalePreview;
+import yumefusaka.envoymart.contract.AfterSalePreview;
 import yumefusaka.envoymart.orderservice.model.AfterSaleResponse;
 import yumefusaka.envoymart.orderservice.model.AfterSaleStatus;
 import yumefusaka.envoymart.orderservice.model.AfterSaleType;
