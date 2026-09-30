@@ -42,8 +42,11 @@ public class LogisticsTool implements Tool {
         try {
             String userId = call.requireUserId();
             Long orderId = Long.valueOf(String.valueOf(call.getArguments().get("orderId")));
-            LogisticsResponse logistics = orderClient.getLogistics(userId, orderId).getData();
+            LogisticsResponse logistics =
+                    Downstream.read("订单服务", () -> orderClient.getLogistics(userId, orderId));
 
+            // 走到这里 null 只可能是「订单里没有这条物流」——下游没做成的那种已经被
+            // Downstream 拦成异常了，不会被当成「没有物流」说出来
             if (logistics == null) {
                 return ToolResult.builder().success(true)
                         .output("没有找到订单 " + orderId + " 的物流信息。")
@@ -84,8 +87,7 @@ public class LogisticsTool implements Tool {
                     .rawData(logistics)
                     .build();
         } catch (Exception e) {
-            log.error("[LogisticsTool] execute failed", e);
-            return ToolResult.builder().success(false).errorMessage(e.getMessage()).build();
+            return Downstream.failure("物流查询", e);
         }
     }
 }

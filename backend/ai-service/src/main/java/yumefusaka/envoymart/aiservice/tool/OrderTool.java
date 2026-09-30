@@ -46,7 +46,7 @@ public class OrderTool implements Tool {
         try {
             String userId = call.requireUserId();
             Long orderId = Long.valueOf(String.valueOf(call.getArguments().get("orderId")));
-            OrderResponse order = orderClient.getOrder(userId, orderId).getData();
+            OrderResponse order = Downstream.read("订单服务", () -> orderClient.getOrder(userId, orderId));
 
             if (order == null) {
                 return ToolResult.builder().success(true)
@@ -88,8 +88,7 @@ public class OrderTool implements Tool {
                     .facts(factsOf(order))
                     .build();
         } catch (Exception e) {
-            log.error("[OrderTool] execute failed", e);
-            return ToolResult.builder().success(false).errorMessage(e.getMessage()).build();
+            return Downstream.failure("订单查询", e);
         }
     }
 

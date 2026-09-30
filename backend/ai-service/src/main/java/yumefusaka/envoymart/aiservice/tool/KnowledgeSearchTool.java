@@ -99,10 +99,7 @@ public class KnowledgeSearchTool implements Tool {
         } catch (Exception e) {
             log.error("[KnowledgeSearch] 检索失败 query={}", query, e);
             // 失败必须让模型知道「这次没查成」，否则它会顺着上文把没查到的部分补全
-            return ToolResult.builder().success(false)
-                    .errorMessage("知识库检索未能完成（" + e.getMessage() + "）。"
-                            + "不要据此说「知识库没有相关内容」，请告知用户暂时查不了或稍后重试。")
-                    .build();
+            return Downstream.failure("知识库检索", e, "知识库没有相关内容");
         }
     }
 

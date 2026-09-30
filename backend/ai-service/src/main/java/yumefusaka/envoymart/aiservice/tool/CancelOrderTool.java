@@ -41,15 +41,18 @@ public class CancelOrderTool implements Tool {
         try {
             String userId = call.requireUserId();
             Long orderId = Long.valueOf(call.getArguments().get("orderId").toString());
-            var order = orderClient.cancelOrder(userId, orderId).getData();
+            // 写操作：下游说「没做成」时绝不重发——应答丢了不代表业务没生效，
+            // 重发就是第二次取消。见 Downstream#mutate
+            var order = Downstream.mutate("订单服务", () -> orderClient.cancelOrder(userId, orderId));
             return ToolResult.builder()
                     .success(true)
                     .output("订单 " + order.getOrderNo() + " 已取消，库存已回补。")
                     .rawData(order)
                     .build();
         } catch (Exception e) {
-            log.error("[CancelOrderTool] execute failed", e);
-            return ToolResult.builder().success(false).errorMessage(e.getMessage()).build();
+            // 「订单已取消，不能重复取消」这类拒绝原先会变成一句 NPE（order 为 null），
+            // 现在原样是下游给用户的那句话
+            return Downstream.failure("订单取消", e);
         }
     }
 }

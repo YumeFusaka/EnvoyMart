@@ -75,8 +75,11 @@ public class ToolRegistry {
         // 「这次到底调没调工具、调的是哪个」——只能靠翻模型侧的 tool_calls 反推。
         // 失败尤其要留：失败返回的是一句给模型看的话，它可能被模型转述、也可能被忽略，
         // 而这一行不会被谁转述走样
-        log.info("[Tool] {} success={} noData={} latencyMs={}{}", call.getToolName(), raw.isSuccess(),
-                raw.isNoData(), latencyMs,
+        // transient= 单列一个字段而不是并进 error 文案里：失败事后要靠日志分清
+        // 「下游当时不可用」（重试/稍后再试有意义）和「这件事本身做不成」（重试无用），
+        // 而两者的 errorMessage 都是一句人话，从文案上分不出来
+        log.info("[Tool] {} success={} noData={} transient={} latencyMs={}{}", call.getToolName(),
+                raw.isSuccess(), raw.isNoData(), raw.isTransientFailure(), latencyMs,
                 raw.isSuccess() || raw.getErrorMessage() == null ? "" : " error=" + raw.getErrorMessage());
         try {
             listener.onToolCall(call.getToolName(),

@@ -82,7 +82,8 @@ public class InteractionCheckTool implements Tool {
         }
 
         try {
-            InteractionReport report = knowledgeClient.interactions(String.join(",", items)).getData();
+            InteractionReport report =
+                    Downstream.read("知识图谱", () -> knowledgeClient.interactions(String.join(",", items)));
             if (report == null) {
                 // 契约反序列化失败之类的静默故障。绝不能顺着往下渲染成「没有风险」
                 return ToolResult.builder().success(false)
@@ -101,11 +102,9 @@ public class InteractionCheckTool implements Tool {
         } catch (Exception e) {
             log.error("[InteractionCheck] 检查失败 items={}", items, e);
             // 失败也要让模型知道**这次没查成**。回一句 errorMessage 之后模型可能仍然
-            // 顺着上文编一个结论，所以文案里直接把「不要说没有冲突」写进去
-            return ToolResult.builder().success(false)
-                    .errorMessage("相互作用检查未能完成（" + e.getMessage() + "）。"
-                            + "不要据此说「没有冲突」，请告知用户暂时查不了。")
-                    .build();
+            // 顺着上文编一个结论，所以文案里直接把「不要说没有冲突」写进去。
+            // 瞬时失败走 Downstream 那句（含「不要据此说没有」），其余异常在这里补上同样的意思
+            return Downstream.failure("相互作用检查", e, "没有冲突");
         }
     }
 

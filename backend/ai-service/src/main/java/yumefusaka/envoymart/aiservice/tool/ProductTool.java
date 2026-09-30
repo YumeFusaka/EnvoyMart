@@ -73,8 +73,11 @@ public class ProductTool implements Tool {
             boolean byKey = spu.matches();
             List<ProductSummary> products = byKey
                     ? lookupByKey(Long.parseLong(spu.group(1)))
-                    : productClient.recommend(query, limit).getData();
+                    : Downstream.read("商品服务", () -> productClient.recommend(query, limit));
 
+            // 这里的 null 只可能是「确实没有这个商品」：下游 5xx 已经被 Downstream
+            // 拦成异常了。原先两者都得到同一个 null，于是下游一抖，工具就说「没有找到」——
+            // 用户以为商品下架了
             if (products == null || products.isEmpty()) {
                 // 空结果也要给出一句明确的话：回空字符串时，模型没有任何可依据的事实，
                 // 生成阶段就只能自己编一条「推荐」出来。
@@ -120,8 +123,7 @@ public class ProductTool implements Tool {
                     .rawData(products)
                     .build();
         } catch (Exception e) {
-            log.error("[ProductTool] execute failed", e);
-            return ToolResult.builder().success(false).errorMessage(e.getMessage()).build();
+            return Downstream.failure("商品检索", e);
         }
     }
 
@@ -136,10 +138,14 @@ public class ProductTool implements Tool {
         return KnowledgeGraphBuilder.key(id);
     }
 
-    /** 按编号精确查一个商品。查不到或服务报错都收敛成空列表，由调用方统一渲染成「没有」 */
+    /**
+     * 按编号精确查一个商品。查不到收敛成空列表，由调用方渲染成「没有」。
+     * <p>
+     * 下游报错不再收敛成空列表：那与「已下架」是同一句话，而它说的是一件没发生过的事。
+     * 现在那条路会抛出，由 {@link Downstream} 翻成「暂时不可用」。
+     */
     private List<ProductSummary> lookupByKey(Long id) {
-        var response = productClient.getProduct(id);
-        ProductSummary product = response == null ? null : response.getData();
+        ProductSummary product = Downstream.read("商品服务", () -> productClient.getProduct(id));
         return product == null ? List.of() : List.of(product);
     }
 
