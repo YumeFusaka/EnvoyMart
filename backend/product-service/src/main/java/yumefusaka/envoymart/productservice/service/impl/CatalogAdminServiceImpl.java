@@ -120,12 +120,16 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
         }
         requireNameFreeUnderParent(parentId, request.getName(), categoryId);
 
-        entity.setName(request.getName().trim());
+        // 改名与否必须在 setName 之前算：setName 之后再和 request 比，两边一定相等，
+        // renamed 恒为 false，下面那段刷新就成了死代码——表现是「类目改名了，
+        // 前台商品详情与搜索里还是旧名字」，而且日志还会打印 renamed=false 把排查带偏
+        String name = request.getName().trim();
+        boolean renamed = !Objects.equals(entity.getName(), name);
+        boolean moved = !Objects.equals(entity.getParentId(), parentId);
+
+        entity.setName(name);
         entity.setSort(request.getSort() == null ? 0 : request.getSort());
         entity.setStatus(normalizeStatus(request.getStatus()));
-
-        boolean renamed = !Objects.equals(entity.getName(), request.getName().trim());
-        boolean moved = !Objects.equals(entity.getParentId(), parentId);
         if (moved) {
             applyMove(entity, parentId);
         }

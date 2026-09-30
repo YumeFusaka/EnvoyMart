@@ -104,6 +104,7 @@ class ProductAdminServiceImplTest {
     @Test
     void 库存增加时写一条入库流水并记下操作人() {
         when(skuMapper.selectById(1L)).thenReturn(sku(1L, 10L, 5));
+        when(skuMapper.updateStockIfUnchanged(1L, 5, 8)).thenReturn(1);
 
         service.adjustStock(1L, stockRequest(8, "供应商到货"), OPERATOR);
 
@@ -116,12 +117,16 @@ class ProductAdminServiceImplTest {
         assertThat(log.getBizId()).as("没有操作人的流水只能证明库存变了，证明不了谁改的")
                 .isEqualTo(OPERATOR);
         assertThat(log.getRemark()).isEqualTo("供应商到货");
-        verify(skuMapper).updateById(any(ProductSkuEntity.class));
+        // 必须是带旧值条件的原子更新，不能是 updateById：整行覆盖会把期间发生的
+        // 下单扣减抹掉，而且从界面上完全看不出来
+        verify(skuMapper).updateStockIfUnchanged(1L, 5, 8);
+        verify(skuMapper, never()).updateById(any(ProductSkuEntity.class));
     }
 
     @Test
     void 库存减少时写一条扣减流水() {
         when(skuMapper.selectById(1L)).thenReturn(sku(1L, 10L, 5));
+        when(skuMapper.updateStockIfUnchanged(1L, 5, 2)).thenReturn(1);
 
         service.adjustStock(1L, stockRequest(2, "盘点修正"), OPERATOR);
 
@@ -130,6 +135,23 @@ class ProductAdminServiceImplTest {
         assertThat(log.getQuantity()).isEqualTo(3);
         assertThat(log.getBeforeStock()).isEqualTo(5);
         assertThat(log.getAfterStock()).isEqualTo(2);
+    }
+
+    /**
+     * 打开库存页到点保存之间，买家下单扣了库存 —— 条件更新会 0 行命中，
+     * 这时必须报冲突让人刷新重来，而不是当成写成功把那次扣减抹掉。
+     */
+    @Test
+    void 库存已被并发修改时应报冲突而不是覆盖() {
+        when(skuMapper.selectById(1L)).thenReturn(sku(1L, 10L, 5));
+        when(skuMapper.updateStockIfUnchanged(1L, 5, 8)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.adjustStock(1L, stockRequest(8, "到货"), OPERATOR))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("已被其他操作变更");
+
+        // 冲突时一条流水都不该写：库存没变，凭什么记一笔"5→8"
+        verify(stockLogMapper, never()).insert(any(StockLogEntity.class));
     }
 
     @Test

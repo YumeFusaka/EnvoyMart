@@ -34,6 +34,25 @@ public interface ProductSkuMapper extends BaseMapper<ProductSkuEntity> {
     int restoreStock(@Param("skuId") Long skuId, @Param("quantity") int quantity);
 
     /**
+     * 按<b>绝对值</b>调整库存，且要求「这段时间里没人动过」。
+     * <p>
+     * 管理端录入的是盘点结果（目标库存），不是增量，所以不能写成 {@code stock = stock + delta}。
+     * 但它同样不能「查出来 → setStock → updateById」——那是读-改-写：商家打开编辑页时看到 10，
+     * 期间买家下单扣掉 1 件，点保存时把 10 原样写回去，那笔扣减就无声地消失了，
+     * 库里比实际在库的多 1 件（等于超卖），流水也对不上账。
+     * <p>
+     * 做法是把读到的旧值放进 WHERE：0 行更新说明期间有人动过，调用方必须报冲突让人刷新重来，
+     * 而不是当成写成功了。
+     *
+     * @param expect 提交前读到的库存值
+     * @return 影响行数，0 表示库存已被并发修改（或 SKU 不存在），调用方必须据此判定失败
+     */
+    @Update("update product_sku set stock = #{target} where id = #{skuId} and stock = #{expect}")
+    int updateStockIfUnchanged(@Param("skuId") Long skuId,
+                               @Param("expect") int expect,
+                               @Param("target") int target);
+
+    /**
      * 记流水用的回读。
      * <p>
      * <b>必须在扣减/回补的同一个事务内调用</b>：上面那条 UPDATE 在 InnoDB 里会对该行

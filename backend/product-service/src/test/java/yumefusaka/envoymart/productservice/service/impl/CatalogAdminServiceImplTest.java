@@ -23,6 +23,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -42,6 +43,7 @@ class CatalogAdminServiceImplTest {
     private CategoryMapper categoryMapper;
     private ProductSpuMapper spuMapper;
     private CategoryService categoryService;
+    private ProductDerivedRefresh derivedRefresh;
     private CatalogAdminServiceImpl service;
 
     @BeforeAll
@@ -60,8 +62,9 @@ class CatalogAdminServiceImplTest {
         spuMapper = mock(ProductSpuMapper.class);
         ProductAttributeMapper attributeMapper = mock(ProductAttributeMapper.class);
         categoryService = mock(CategoryService.class);
+        derivedRefresh = mock(ProductDerivedRefresh.class);
         service = new CatalogAdminServiceImpl(categoryMapper, brandMapper, spuMapper, attributeMapper,
-                new CategoryTreeAssembler(), categoryService, mock(ProductDerivedRefresh.class));
+                new CategoryTreeAssembler(), categoryService, derivedRefresh);
     }
 
     // ==================== 移动类目 ====================
@@ -176,7 +179,47 @@ class CatalogAdminServiceImplTest {
         verify(categoryMapper, never()).deleteById(any(Long.class));
     }
 
+    // ==================== 改名后的连带刷新 ====================
+
+    /**
+     * 类目名冗余在商品详情与搜索索引里（{@code ProductIndex.categoryName}、
+     * {@code ProductDetail.categoryName}），改名必须连带刷新，否则前台还显示旧名字。
+     * <p>
+     * 这条测试钉的是一个「改与没改看起来一样」的顺序错误：先 {@code setName} 再和
+     * 请求参数比，两边必然相等，renamed 恒为 false，刷新分支成了死代码，
+     * 而日志还会打印 {@code renamed=false} 把排查方向带偏。
+     */
+    @Test
+    void 类目改名后应刷新该分类及其子分类下的商品() {
+        when(categoryMapper.selectById(5L)).thenReturn(category(5L, 1L, "维生素D", 2, "1/5"));
+        when(categoryMapper.selectCount(any())).thenReturn(0L);
+        when(categoryService.selfAndDescendantIds(5L)).thenReturn(List.of(5L, 7L));
+        when(spuMapper.selectList(any())).thenReturn(List.of(spu(9001L), spu(9002L)));
+
+        service.updateCategory(5L, categoryRequest(1L, "维生素D3"));
+
+        ArgumentCaptor<List<Long>> captor = ArgumentCaptor.captor();
+        verify(derivedRefresh).afterCommit(captor.capture());
+        assertThat(captor.getValue()).containsExactly(9001L, 9002L);
+    }
+
+    @Test
+    void 类目没改名字时不应触发刷新() {
+        when(categoryMapper.selectById(5L)).thenReturn(category(5L, 1L, "维生素D", 2, "1/5"));
+        when(categoryMapper.selectCount(any())).thenReturn(0L);
+
+        service.updateCategory(5L, categoryRequest(1L, "维生素D"));
+
+        verify(derivedRefresh, never()).afterCommit(anyList());
+    }
+
     // ==================== 夹具 ====================
+
+    private ProductSpuEntity spu(Long id) {
+        ProductSpuEntity entity = new ProductSpuEntity();
+        entity.setId(id);
+        return entity;
+    }
 
     private CategoryEntity category(Long id, Long parentId, String name, int level, String path) {
         CategoryEntity entity = new CategoryEntity();

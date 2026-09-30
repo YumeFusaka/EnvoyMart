@@ -268,8 +268,16 @@ public class ProductAdminServiceImpl implements ProductAdminService {
             return;
         }
 
-        sku.setStock(after);
-        skuMapper.updateById(sku);
+        // 条件更新而不是 updateById：这是「读-改-写」的另一条路径，
+        // 商家看到 10、点保存的瞬间买家买走 1 件，整行覆盖会把那笔扣减抹掉。
+        // 盘库录入的是目标值，所以条件写在「旧值没变过」上，冲突就报出来让人刷新重来
+        if (skuMapper.updateStockIfUnchanged(skuId, before, after) == 0) {
+            // 与下单扣减的「库存不足」区分开：那是库存真不够，这是数字在你看的时候变了。
+            // 提示里必须带「刷新」这个动作，否则运营只会反复点同一个按钮。
+            // 不回显当前值：本事务的快照还停在 before，这里再查一次读到的是旧数字，
+            // 报给运营只会让他更困惑
+            throw new IllegalStateException("库存已被其他操作变更，请刷新后重试");
+        }
         writeStockLog(skuId, after > before ? CHANGE_INBOUND : CHANGE_DEDUCT,
                 Math.abs(after - before), before, after, operatorId, request.getRemark());
         derivedRefresh.afterCommit(sku.getSpuId());
@@ -535,9 +543,21 @@ public class ProductAdminServiceImpl implements ProductAdminService {
                     sku.setSkuCode(request.getSkuCode().trim());
                 }
                 applySkuFields(sku, request);
-                updateSku(sku);
                 int after = sku.getStock();
+
+                // 库存从整行更新里摘出去（置 null 后 updateById 会跳过这一列），改成单独的条件更新。
+                //
+                // 不摘的后果不是「库存改不了」，而是更隐蔽的那种：表单里带着打开页面时读到的库存，
+                // 商家改个价格点保存，就把这期间买家下单扣掉的量原样覆盖回去——他没碰库存，
+                // 库存却变了，而且从界面上完全看不出来。这正是 adjustStock 要防的同一个读-改-写，
+                // 只是入口在编辑页而不是库存页
+                sku.setStock(null);
+                updateSku(sku);
+
                 if (before != after) {
+                    if (skuMapper.updateStockIfUnchanged(sku.getId(), before, after) == 0) {
+                        throw new IllegalStateException("规格库存已被其他操作变更，请刷新后重试");
+                    }
                     writeStockLog(sku.getId(), after > before ? CHANGE_INBOUND : CHANGE_DEDUCT,
                             Math.abs(after - before), before, after, operatorId, "编辑商品时调整");
                 }
