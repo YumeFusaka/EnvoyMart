@@ -195,3 +195,48 @@ create table if not exists after_sale_policy (
     doc_ref varchar(32),
     index idx_after_sale_policy_category (category_id, type)
 );
+
+-- 客服工单。
+-- 状态机是单向往前的：OPEN → PROCESSING → RESOLVED → CLOSED，
+-- 唯一一条回边是 RESOLVED → PROCESSING（用户不满意，重开）。
+-- CLOSED 是终态、**不可重开**：超时自动关闭会制造一批 CLOSED，若还能重开，
+-- 用户半年后回来重开一条上下文早已散尽的工单，客服看到的只有一句"还是不行"。
+-- 新问题走新工单，两条工单之间的联系是后续的事，状态机先保持单向。
+create table if not exists support_ticket (
+    id bigint auto_increment primary key,
+    ticket_no varchar(32) not null,
+    user_id varchar(32) not null,
+    -- 可空：不是所有工单都关于某张订单。非空时必须是**该用户自己的**订单，
+    -- 否则用户 A 的工单里挂着用户 B 的订单号，客服按着它去查，线索整个串掉
+    order_id bigint,
+    order_no varchar(32),
+    -- ORDER / REFUND / PRODUCT / OTHER
+    category varchar(16) not null,
+    title varchar(128) not null,
+    -- OPEN / PROCESSING / RESOLVED / CLOSED
+    status varchar(16) not null,
+    -- USER / ADMIN：最后一条消息是谁发的。列表页要回答"这条现在等谁"，
+    -- 从消息表推是每行一次子查询；它只是在消息插入时同步的一列冗余
+    last_reply_by varchar(16),
+    created_at datetime not null,
+    updated_at datetime not null,
+    resolved_at datetime,
+    closed_at datetime,
+    close_reason varchar(255),
+    unique key uk_support_ticket_no (ticket_no),
+    index idx_support_ticket_user (user_id, updated_at),
+    index idx_support_ticket_status (status, updated_at)
+);
+
+-- 工单消息。工单的上下文全在这张表里，工单本身只存"当前状态"。
+create table if not exists support_ticket_message (
+    id bigint auto_increment primary key,
+    ticket_id bigint not null,
+    -- USER / ADMIN / SYSTEM。SYSTEM 用于"超时自动关闭"这类没有人工的流转：
+    -- 没有它，用户看到状态自己变了，而消息流里没有任何解释
+    sender_type varchar(16) not null,
+    sender_id varchar(32),
+    content varchar(2000) not null,
+    created_at datetime not null,
+    index idx_support_ticket_msg (ticket_id, id)
+);
