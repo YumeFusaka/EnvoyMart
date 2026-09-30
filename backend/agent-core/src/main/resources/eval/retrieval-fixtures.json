@@ -1,0 +1,828 @@
+{
+  "chunkSize" : 256,
+  "chunkOverlap" : 32,
+  "documents" : [ {
+    "id" : "after_sale",
+    "title" : "七天无理由与售后规则",
+    "content" : "除定制类和贴身个护商品外，大部分商品支持七天无理由退货；质量问题支持换新与运费补贴。",
+    "tags" : [ "退货", "售后", "退款" ]
+  }, {
+    "id" : "refund_timeline",
+    "title" : "退款到账时效",
+    "content" : "审核通过后原路退回，支付宝与微信一般 1 到 3 个工作日到账，银行卡最长 7 个工作日。",
+    "tags" : [ "退款", "到账", "时效" ]
+  }, {
+    "id" : "exchange",
+    "title" : "换货流程说明",
+    "content" : "换货需先提交申请，审核通过后寄回原商品，仓库验收后重新发货；换货不收取额外费用。",
+    "tags" : [ "换货", "流程", "寄回" ]
+  }, {
+    "id" : "quality_report",
+    "title" : "商品质量反馈",
+    "content" : "使用中出现质量问题可提交检测报告，核实后按假一赔十处理，运费由平台承担。",
+    "tags" : [ "质量", "检测", "赔付" ]
+  }, {
+    "id" : "fake_goods",
+    "title" : "假一赔十承诺",
+    "content" : "平台承诺正品保障，经鉴定的假冒商品按售价十倍赔付，并退还全部运费与税费。",
+    "tags" : [ "正品", "假货", "赔付" ]
+  }, {
+    "id" : "warranty",
+    "title" : "保修与维修服务",
+    "content" : "数码商品享受一年官方保修，非人为损坏免费维修；人为损坏按官方报价收取零件费。",
+    "tags" : [ "保修", "维修", "零件" ]
+  }, {
+    "id" : "return_shipping",
+    "title" : "退货运费谁来承担",
+    "content" : "无理由退货由买家承担运费；商品质量问题或发错货的，运费由平台承担并补贴 12 元。",
+    "tags" : [ "运费", "退货运费", "补贴" ]
+  }, {
+    "id" : "refund_method",
+    "title" : "退款方式与到账渠道",
+    "content" : "退款一律原路返回，不支持退至其他账户或转为余额；余额支付的订单退回余额。",
+    "tags" : [ "退款", "原路", "渠道" ]
+  }, {
+    "id" : "pickup_service",
+    "title" : "上门取件服务",
+    "content" : "退货可选择上门取件，快递员 24 小时内联系；取件免费但需自行打包，超重部分另计。",
+    "tags" : [ "上门取件", "退货", "快递" ]
+  }, {
+    "id" : "return_packaging",
+    "title" : "退货包装要求",
+    "content" : "退货需保留原包装与配件，缺少配件可能影响退款金额；商品需不影响二次销售。",
+    "tags" : [ "包装", "退货", "配件" ]
+  }, {
+    "id" : "custom_goods_return",
+    "title" : "定制商品退换限制",
+    "content" : "刻字、改尺寸等定制商品不支持七天无理由退货，仅在质量问题时可退换。",
+    "tags" : [ "定制", "退货", "限制" ]
+  }, {
+    "id" : "cross_border_return",
+    "title" : "跨境商品退换说明",
+    "content" : "跨境商品受海关监管，非质量问题不支持退货；退货需承担往返国际运费与税费。",
+    "tags" : [ "跨境", "退货", "海关" ]
+  }, {
+    "id" : "after_sale_entry",
+    "title" : "售后申请入口与时效",
+    "content" : "订单完成后可在订单详情页发起售后，签收后 15 天内可申请，超期需联系客服。",
+    "tags" : [ "售后", "申请", "时效" ]
+  }, {
+    "id" : "repair_process",
+    "title" : "维修送修流程",
+    "content" : "保修期内可申请寄修，平台承担单程运费；维修周期一般 7 到 15 个工作日。",
+    "tags" : [ "维修", "寄修", "周期" ]
+  }, {
+    "id" : "logistics",
+    "title" : "物流说明",
+    "content" : "现货订单通常在 24 小时内出库，华东地区预计 1 到 2 天送达，偏远地区 3 到 5 天。",
+    "tags" : [ "物流", "快递", "配送" ]
+  }, {
+    "id" : "delivery_range",
+    "title" : "配送范围与偏远地区",
+    "content" : "目前支持全国大部分地区配送，港澳台及部分偏远乡镇暂不支持，下单时会提示是否可达。",
+    "tags" : [ "配送", "范围", "偏远" ]
+  }, {
+    "id" : "logistics_damage",
+    "title" : "运输破损处理",
+    "content" : "签收时发现外包装破损应拍照拒收，已签收的可提交破损凭证，核查后补发或退款。",
+    "tags" : [ "破损", "拒收", "补发" ]
+  }, {
+    "id" : "cod",
+    "title" : "货到付款说明",
+    "content" : "货到付款仅支持部分城市，订单金额上限 2000 元，签收时需当面验货并支付现金或刷卡。",
+    "tags" : [ "货到付款", "验货", "现金" ]
+  }, {
+    "id" : "express_choice",
+    "title" : "快递公司可以选吗",
+    "content" : "默认由平台根据仓库与目的地智能选择快递，暂不支持指定；偏远地区可能转邮政。",
+    "tags" : [ "快递", "选择", "邮政" ]
+  }, {
+    "id" : "self_pickup",
+    "title" : "自提点与驿站取件",
+    "content" : "下单时可选择附近自提点，到货后凭取件码自取；自提点保管 3 天，超期退回。",
+    "tags" : [ "自提", "驿站", "取件码" ]
+  }, {
+    "id" : "delivery_appointment",
+    "title" : "配送时间可以预约吗",
+    "content" : "大家电等大件支持预约配送时段，下单后客服会电话确认；普通快递不支持指定时间。",
+    "tags" : [ "预约", "配送", "大件" ]
+  }, {
+    "id" : "logistics_tracking",
+    "title" : "物流轨迹查询",
+    "content" : "订单发货后可在订单详情查看物流轨迹；轨迹超过 48 小时未更新可联系客服催查。",
+    "tags" : [ "物流", "轨迹", "查询" ]
+  }, {
+    "id" : "sign_check",
+    "title" : "签收与验货须知",
+    "content" : "贵重商品建议当面验货再签收；外包装破损可拒收，拒收不产生额外费用。",
+    "tags" : [ "签收", "验货", "拒收" ]
+  }, {
+    "id" : "urgent_delivery",
+    "title" : "加急配送服务",
+    "content" : "部分城市支持次日达加急，需在当日 15 点前下单并支付加急费，节假日不适用。",
+    "tags" : [ "加急", "次日达", "时效" ]
+  }, {
+    "id" : "bulky_delivery",
+    "title" : "大件商品配送",
+    "content" : "家具家电等大件走专线物流，配送含上楼但需确认电梯尺寸；偏远地区可能不上楼。",
+    "tags" : [ "大件", "配送", "上楼" ]
+  }, {
+    "id" : "delivery_fee",
+    "title" : "运费怎么算",
+    "content" : "单笔满 99 元包邮，未满收取 8 元运费；新疆西藏等地区加收 15 元偏远附加费。",
+    "tags" : [ "运费", "包邮", "附加费" ]
+  }, {
+    "id" : "promotion",
+    "title" : "平台满减规则",
+    "content" : "本周数码会场满 199 减 20，满 299 减 40；学生认证用户可叠加 95 折校园券。",
+    "tags" : [ "活动", "满减", "优惠" ]
+  }, {
+    "id" : "coupon",
+    "title" : "优惠券使用说明",
+    "content" : "优惠券可与满减叠加，但同一订单最多使用一张优惠券；过期优惠券不予补发。",
+    "tags" : [ "优惠券", "叠加", "过期" ]
+  }, {
+    "id" : "student_discount",
+    "title" : "学生优惠认证",
+    "content" : "在校学生通过学信网认证后可领取校园券，认证有效期一年，到期需重新提交学籍信息。",
+    "tags" : [ "学生", "认证", "校园券" ]
+  }, {
+    "id" : "group_buy",
+    "title" : "拼团规则",
+    "content" : "拼团需在 24 小时内凑齐成团人数，未成团自动退款；成团后不支持取消单个订单。",
+    "tags" : [ "拼团", "成团", "退款" ]
+  }, {
+    "id" : "flash_sale",
+    "title" : "秒杀活动规则",
+    "content" : "秒杀商品数量有限，下单后 15 分钟内未支付将自动释放库存，同一账号限购一件。",
+    "tags" : [ "秒杀", "限购", "库存" ]
+  }, {
+    "id" : "price_protection",
+    "title" : "价格保护说明",
+    "content" : "商品签收后 15 天内若发生降价，可申请差价补偿；参与秒杀与拼团的订单不适用。",
+    "tags" : [ "价保", "降价", "差价" ]
+  }, {
+    "id" : "presale",
+    "title" : "预售规则",
+    "content" : "预售商品需支付定金，尾款在开售日 24 小时内结清，逾期未付定金不退但可转入余额。",
+    "tags" : [ "预售", "定金", "尾款" ]
+  }, {
+    "id" : "new_user_gift",
+    "title" : "新人礼包领取",
+    "content" : "新注册用户可领三张优惠券，有效期 7 天；同一手机号与设备仅可领取一次。",
+    "tags" : [ "新人", "礼包", "优惠券" ]
+  }, {
+    "id" : "member_day",
+    "title" : "会员日专享活动",
+    "content" : "每月 8 号为会员日，金卡会员额外 95 折，银卡 98 折，与满减可叠加。",
+    "tags" : [ "会员日", "折扣", "专享" ]
+  }, {
+    "id" : "flash_discount",
+    "title" : "限时折扣说明",
+    "content" : "限时折扣商品在活动期内按折后价结算，活动结束后恢复原价，不支持价保。",
+    "tags" : [ "限时", "折扣", "活动" ]
+  }, {
+    "id" : "coupon_expire",
+    "title" : "优惠券过期与补发",
+    "content" : "优惠券过期后不可使用；因平台原因导致无法使用的，可联系客服申请等额补偿。",
+    "tags" : [ "优惠券", "过期", "补发" ]
+  }, {
+    "id" : "gift_item",
+    "title" : "赠品规则",
+    "content" : "赠品随主商品一同发出，主商品退货时需一并退回赠品，赠品缺失按市价扣除。",
+    "tags" : [ "赠品", "退货", "扣除" ]
+  }, {
+    "id" : "points_deduct",
+    "title" : "积分抵现规则",
+    "content" : "结算时可用积分抵扣，100 积分抵 1 元，单笔最多抵扣订单金额的 20%。",
+    "tags" : [ "积分", "抵扣", "上限" ]
+  }, {
+    "id" : "bundle_sale",
+    "title" : "组合套餐优惠",
+    "content" : "组合套餐比单买便宜，套餐内商品不支持单独退换；退货需整单退回并扣除优惠。",
+    "tags" : [ "套餐", "组合", "退货" ]
+  }, {
+    "id" : "payment",
+    "title" : "支付方式与到账时间",
+    "content" : "支持支付宝、微信与银行卡支付；支付成功后立即到账，退款原路返回。",
+    "tags" : [ "支付", "退款", "到账" ]
+  }, {
+    "id" : "installment",
+    "title" : "分期付款说明",
+    "content" : "订单满 500 元可申请 3 到 12 期分期，手续费率随期数递增，提前还款不减免手续费。",
+    "tags" : [ "分期", "手续费", "还款" ]
+  }, {
+    "id" : "invoice",
+    "title" : "发票开具说明",
+    "content" : "订单完成后可在订单详情页申请电子发票，抬头支持个人与企业，开具后发送至预留邮箱。",
+    "tags" : [ "发票", "开票", "抬头" ]
+  }, {
+    "id" : "invoice_type",
+    "title" : "发票类型与税率",
+    "content" : "默认开具电子普通发票，企业可申请增值税专用发票，需提供纳税人识别号与开户信息。",
+    "tags" : [ "专票", "普票", "税率" ]
+  }, {
+    "id" : "payment_fail",
+    "title" : "支付失败怎么办",
+    "content" : "支付失败通常是银行限额或网络问题，款项会在 24 小时内自动退回，可更换方式重试。",
+    "tags" : [ "支付", "失败", "退回" ]
+  }, {
+    "id" : "balance_pay",
+    "title" : "余额支付说明",
+    "content" : "账户余额由退款与充值产生，余额支付可享 99 折，单笔上限 5000 元，不可提现。",
+    "tags" : [ "余额", "支付", "提现" ]
+  }, {
+    "id" : "payment_limit",
+    "title" : "支付限额说明",
+    "content" : "单笔支付限额由支付渠道决定，一般单笔 5 万元、单日 10 万元，超出需分次支付。",
+    "tags" : [ "限额", "支付", "渠道" ]
+  }, {
+    "id" : "refund_original",
+    "title" : "退款为什么是原路返回",
+    "content" : "为防范洗钱与盗刷，退款只能原路返回至付款账户，不支持变更收款账户。",
+    "tags" : [ "退款", "原路", "安全" ]
+  }, {
+    "id" : "tax_fee",
+    "title" : "商品税费说明",
+    "content" : "页面价格已含税，跨境商品另附关税与行邮税，下单时会单独列示。",
+    "tags" : [ "税费", "关税", "跨境" ]
+  }, {
+    "id" : "pay_later",
+    "title" : "先用后付服务",
+    "content" : "符合条件的用户可先用后付，确认收货后 15 天内自动扣款，逾期会影响信用评分。",
+    "tags" : [ "先用后付", "信用", "扣款" ]
+  }, {
+    "id" : "member",
+    "title" : "会员等级与权益",
+    "content" : "普通会员累计消费满 1000 元升级银卡，享受包邮与专属客服；满 5000 元升级金卡。",
+    "tags" : [ "会员", "等级", "权益" ]
+  }, {
+    "id" : "points",
+    "title" : "积分获取与使用",
+    "content" : "每消费 1 元累计 1 积分，积分可在结算时抵扣现金，100 积分抵 1 元，有效期两年。",
+    "tags" : [ "积分", "抵扣", "有效期" ]
+  }, {
+    "id" : "points_expire",
+    "title" : "积分有效期与过期",
+    "content" : "积分自获得起两年内有效，按获得时间先后顺序消耗，过期部分不予补发。",
+    "tags" : [ "积分", "过期", "有效期" ]
+  }, {
+    "id" : "growth_value",
+    "title" : "成长值怎么算",
+    "content" : "成长值按实付金额累计，退款会扣减对应成长值；成长值只升不降，决定会员等级。",
+    "tags" : [ "成长值", "会员", "退款" ]
+  }, {
+    "id" : "member_service",
+    "title" : "专属客服通道",
+    "content" : "银卡及以上会员可在客服页走专属通道，平均响应时间小于 30 秒，7×24 小时在线。",
+    "tags" : [ "会员", "客服", "专属" ]
+  }, {
+    "id" : "member_shipping",
+    "title" : "会员包邮权益",
+    "content" : "银卡及以上会员全站包邮，不受 99 元门槛限制；偏远地区附加费仍需自理。",
+    "tags" : [ "会员", "包邮", "权益" ]
+  }, {
+    "id" : "points_task",
+    "title" : "积分任务",
+    "content" : "每日签到得 5 积分，评价晒图得 20 积分，邀请好友注册双方各得 100 积分。",
+    "tags" : [ "积分", "任务", "签到" ]
+  }, {
+    "id" : "member_upgrade",
+    "title" : "会员升级与降级",
+    "content" : "会员等级按自然年内累计消费判定，次年 1 月 1 日重新计算，不设降级。",
+    "tags" : [ "会员", "升级", "周期" ]
+  }, {
+    "id" : "account_security",
+    "title" : "账号安全说明",
+    "content" : "建议开启登录二次验证，异常登录会触发短信提醒；账号不支持转让与共享。",
+    "tags" : [ "账号", "安全", "验证" ]
+  }, {
+    "id" : "privacy",
+    "title" : "隐私与数据保护",
+    "content" : "平台仅在履约范围内使用个人信息，不会向第三方出售；用户可申请导出或删除数据。",
+    "tags" : [ "隐私", "个人信息", "数据" ]
+  }, {
+    "id" : "real_name",
+    "title" : "实名认证说明",
+    "content" : "购买跨境商品与使用先用后付需完成实名认证，认证信息仅用于合规校验。",
+    "tags" : [ "实名", "认证", "合规" ]
+  }, {
+    "id" : "password_reset",
+    "title" : "密码找回流程",
+    "content" : "忘记密码可通过绑定手机号或邮箱重置，重置链接 30 分钟内有效，仅可使用一次。",
+    "tags" : [ "密码", "找回", "重置" ]
+  }, {
+    "id" : "abnormal_login",
+    "title" : "异地登录提醒",
+    "content" : "检测到异地登录会发送短信并要求二次验证；非本人操作可一键冻结账号。",
+    "tags" : [ "登录", "异常", "冻结" ]
+  }, {
+    "id" : "account_delete",
+    "title" : "注销账号说明",
+    "content" : "账号可申请注销，注销前需结清所有订单与余额；注销后数据不可恢复，7 天冷静期。",
+    "tags" : [ "注销", "账号", "数据" ]
+  }, {
+    "id" : "phone_bind",
+    "title" : "更换绑定手机号",
+    "content" : "更换绑定手机需原手机号验证；原号已停用的可通过人工客服核验身份后更换。",
+    "tags" : [ "手机", "绑定", "更换" ]
+  }, {
+    "id" : "third_party_login",
+    "title" : "第三方账号登录",
+    "content" : "支持微信与支付宝快捷登录，首次登录需绑定手机号；解绑后需重新设置密码。",
+    "tags" : [ "第三方", "登录", "绑定" ]
+  }, {
+    "id" : "guide",
+    "title" : "百元耳机选购建议",
+    "content" : "学生党选择百元耳机时，优先看佩戴舒适度、麦克风通话清晰度和续航，通勤场景重视低延迟和抗风噪。",
+    "tags" : [ "耳机", "学生党", "推荐" ]
+  }, {
+    "id" : "laptop_guide",
+    "title" : "笔记本选购要点",
+    "content" : "日常办公优先看重量与续航，16GB 内存起步；涉及剪辑或建模需独显，散热规格比纸面参数更重要。",
+    "tags" : [ "笔记本", "选购", "配置" ]
+  }, {
+    "id" : "phone_guide",
+    "title" : "手机选购建议",
+    "content" : "选手机先定预算再看影像与续航，中端机芯片够用；注意辨别是否为库存机与演示机。",
+    "tags" : [ "手机", "选购", "预算" ]
+  }, {
+    "id" : "size_chart",
+    "title" : "尺码对照表怎么用",
+    "content" : "服饰类商品提供身高体重对照表，建议结合已有衣物实测数据选择，误差通常在一码以内。",
+    "tags" : [ "尺码", "对照", "服饰" ]
+  }, {
+    "id" : "product_spec",
+    "title" : "商品参数怎么读",
+    "content" : "参数页标注的是实验室条件下数据，实际体验受环境影响；重点关注标注了测试条件的项。",
+    "tags" : [ "参数", "规格", "说明" ]
+  }, {
+    "id" : "stock_status",
+    "title" : "库存状态说明",
+    "content" : "页面显示「现货」表示可当日发出，「预售」需等待到货，「缺货」可订阅到货提醒。",
+    "tags" : [ "库存", "现货", "预售" ]
+  }, {
+    "id" : "product_compare",
+    "title" : "商品对比功能",
+    "content" : "可将最多四件商品加入对比，系统高亮参数差异；同类目商品才支持对比。",
+    "tags" : [ "对比", "参数", "选购" ]
+  }, {
+    "id" : "refurbished",
+    "title" : "翻新机与官翻说明",
+    "content" : "官方翻新机为原厂检测维修后重新销售，享一年保修但价格更低，页面会明确标注。",
+    "tags" : [ "翻新", "保修", "二手" ]
+  }, {
+    "id" : "custom_product",
+    "title" : "定制商品流程",
+    "content" : "定制商品需先与客服确认方案，付款后进入生产，一般 7 到 15 天发货，不支持退换。",
+    "tags" : [ "定制", "流程", "发货" ]
+  }, {
+    "id" : "off_shelf",
+    "title" : "商品下架与缺货",
+    "content" : "商品下架后已支付的订单仍会正常发货；缺货订单可选择等待补货或全额退款。",
+    "tags" : [ "下架", "缺货", "退款" ]
+  }, {
+    "id" : "order_cancel",
+    "title" : "订单取消规则",
+    "content" : "未发货订单可直接取消并全额退款；已发货订单需拒收或签收后申请退货。",
+    "tags" : [ "取消", "退款", "拒收" ]
+  }, {
+    "id" : "address_change",
+    "title" : "收货地址修改",
+    "content" : "订单发货前可自助修改收货地址，已发货的需联系客服拦截，拦截失败则无法更改。",
+    "tags" : [ "地址", "修改", "拦截" ]
+  }, {
+    "id" : "review",
+    "title" : "评价规则",
+    "content" : "确认收货后可对商品评价，支持图文与视频；评价内容需真实，恶意差评将被折叠。",
+    "tags" : [ "评价", "晒图", "差评" ]
+  }, {
+    "id" : "order_merge",
+    "title" : "订单合并支付",
+    "content" : "同一店铺的多个待支付订单可合并结算，合并后优惠券按整单重新计算，可能不再满足门槛。",
+    "tags" : [ "订单", "合并", "支付" ]
+  }, {
+    "id" : "additional_review",
+    "title" : "追评说明",
+    "content" : "确认收货后 30 天内可追加一次评价，追评不可修改；追评内容同样计入商品评分。",
+    "tags" : [ "追评", "评价", "时限" ]
+  }, {
+    "id" : "bad_review",
+    "title" : "差评可以删吗",
+    "content" : "真实差评不支持删除；若评价含人身攻击或泄露隐私，可举报由平台审核处理。",
+    "tags" : [ "差评", "删除", "举报" ]
+  }, {
+    "id" : "order_query",
+    "title" : "订单查询方式",
+    "content" : "可在「我的订单」按状态筛选，支持按商品名与下单时间检索；历史订单保留三年。",
+    "tags" : [ "订单", "查询", "筛选" ]
+  }, {
+    "id" : "price_change",
+    "title" : "订单改价说明",
+    "content" : "商家改价仅适用于议价商品，改价后需在 24 小时内支付；平台自营订单不支持改价。",
+    "tags" : [ "改价", "订单", "议价" ]
+  }, {
+    "id" : "complaint",
+    "title" : "投诉与举报渠道",
+    "content" : "对商家服务不满可在订单页发起投诉，平台 48 小时内介入；举报违规商品有奖励。",
+    "tags" : [ "投诉", "举报", "介入" ]
+  }, {
+    "id" : "service_hours",
+    "title" : "客服服务时间",
+    "content" : "在线客服 9:00 到 22:00，电话客服 9:00 到 18:00；会员专属通道 7×24 小时。",
+    "tags" : [ "客服", "时间", "在线" ]
+  }, {
+    "id" : "human_service",
+    "title" : "怎么转人工客服",
+    "content" : "在线客服页面连续输入两次「转人工」即可接入；高峰期需排队，可留言等待回电。",
+    "tags" : [ "人工", "客服", "排队" ]
+  }, {
+    "id" : "ticket_progress",
+    "title" : "工单进度查询",
+    "content" : "提交售后或投诉后会生成工单号，可在客服中心查看进度，状态变更会短信通知。",
+    "tags" : [ "工单", "进度", "查询" ]
+  }, {
+    "id" : "service_promise",
+    "title" : "服务承诺说明",
+    "content" : "平台承诺 48 小时内响应售后诉求，超时未处理将自动升级至高级客服并补偿优惠券。",
+    "tags" : [ "承诺", "响应", "补偿" ]
+  }, {
+    "id" : "feedback",
+    "title" : "意见反馈渠道",
+    "content" : "产品建议可通过「我的-意见反馈」提交，被采纳的建议会赠送积分，不逐一回复。",
+    "tags" : [ "反馈", "建议", "积分" ]
+  } ],
+  "strata" : [ {
+    "key" : "LEXICAL",
+    "label" : "字面重合",
+    "cases" : [ {
+      "query" : "我想退货，七天无理由怎么操作？",
+      "relevantDocIds" : [ "after_sale" ]
+    }, {
+      "query" : "华东地区多久能送到？",
+      "relevantDocIds" : [ "logistics" ]
+    }, {
+      "query" : "满减活动是怎么算的？",
+      "relevantDocIds" : [ "promotion" ]
+    }, {
+      "query" : "优惠券能和满减一起用吗？",
+      "relevantDocIds" : [ "coupon", "promotion" ]
+    }, {
+      "query" : "退款多久到账？",
+      "relevantDocIds" : [ "refund_timeline", "payment" ]
+    }, {
+      "query" : "怎么开发票？",
+      "relevantDocIds" : [ "invoice" ]
+    }, {
+      "query" : "会员升级有什么权益？",
+      "relevantDocIds" : [ "member" ]
+    }, {
+      "query" : "学生党买耳机有什么推荐？",
+      "relevantDocIds" : [ "guide" ]
+    }, {
+      "query" : "积分怎么抵扣？",
+      "relevantDocIds" : [ "points" ]
+    }, {
+      "query" : "保修期多久？",
+      "relevantDocIds" : [ "warranty" ]
+    }, {
+      "query" : "分期付款手续费怎么算？",
+      "relevantDocIds" : [ "installment" ]
+    }, {
+      "query" : "货到付款支持哪些城市？",
+      "relevantDocIds" : [ "cod" ]
+    }, {
+      "query" : "拼团没成团会退款吗？",
+      "relevantDocIds" : [ "group_buy" ]
+    }, {
+      "query" : "秒杀限购几件？",
+      "relevantDocIds" : [ "flash_sale" ]
+    }, {
+      "query" : "价保怎么申请？",
+      "relevantDocIds" : [ "price_protection" ]
+    }, {
+      "query" : "预售定金能退吗？",
+      "relevantDocIds" : [ "presale" ]
+    }, {
+      "query" : "增值税专用发票怎么开？",
+      "relevantDocIds" : [ "invoice_type" ]
+    }, {
+      "query" : "上门取件收费吗？",
+      "relevantDocIds" : [ "pickup_service" ]
+    }, {
+      "query" : "退货运费谁出？",
+      "relevantDocIds" : [ "return_shipping" ]
+    }, {
+      "query" : "订单怎么取消？",
+      "relevantDocIds" : [ "order_cancel" ]
+    }, {
+      "query" : "收货地址能改吗？",
+      "relevantDocIds" : [ "address_change" ]
+    }, {
+      "query" : "评价可以追评吗？",
+      "relevantDocIds" : [ "additional_review" ]
+    }, {
+      "query" : "怎么投诉商家？",
+      "relevantDocIds" : [ "complaint" ]
+    }, {
+      "query" : "客服几点上班？",
+      "relevantDocIds" : [ "service_hours" ]
+    }, {
+      "query" : "怎么转人工客服？",
+      "relevantDocIds" : [ "human_service" ]
+    }, {
+      "query" : "尺码对照表在哪看？",
+      "relevantDocIds" : [ "size_chart" ]
+    }, {
+      "query" : "自提点怎么取件？",
+      "relevantDocIds" : [ "self_pickup" ]
+    }, {
+      "query" : "大件商品怎么配送？",
+      "relevantDocIds" : [ "bulky_delivery" ]
+    }, {
+      "query" : "运费满多少包邮？",
+      "relevantDocIds" : [ "delivery_fee" ]
+    }, {
+      "query" : "新人礼包在哪领？",
+      "relevantDocIds" : [ "new_user_gift" ]
+    }, {
+      "query" : "积分会过期吗？",
+      "relevantDocIds" : [ "points_expire" ]
+    }, {
+      "query" : "怎么注销账号？",
+      "relevantDocIds" : [ "account_delete" ]
+    }, {
+      "query" : "密码忘了怎么找回？",
+      "relevantDocIds" : [ "password_reset" ]
+    }, {
+      "query" : "实名认证怎么弄？",
+      "relevantDocIds" : [ "real_name" ]
+    }, {
+      "query" : "手机号怎么换绑？",
+      "relevantDocIds" : [ "phone_bind" ]
+    }, {
+      "query" : "翻新机有保修吗？",
+      "relevantDocIds" : [ "refurbished" ]
+    }, {
+      "query" : "商品缺货怎么办？",
+      "relevantDocIds" : [ "off_shelf" ]
+    }, {
+      "query" : "订单怎么合并支付？",
+      "relevantDocIds" : [ "order_merge" ]
+    }, {
+      "query" : "工单进度在哪查？",
+      "relevantDocIds" : [ "ticket_progress" ]
+    }, {
+      "query" : "先用后付怎么扣款？",
+      "relevantDocIds" : [ "pay_later" ]
+    } ]
+  }, {
+    "key" : "PARAPHRASE",
+    "label" : "口语改写",
+    "cases" : [ {
+      "query" : "买的东西坏了能不能换新的",
+      "relevantDocIds" : [ "quality_report", "after_sale" ]
+    }, {
+      "query" : "我的包裹怎么还没到啊",
+      "relevantDocIds" : [ "logistics" ]
+    }, {
+      "query" : "学生有没有便宜点",
+      "relevantDocIds" : [ "student_discount", "promotion" ]
+    }, {
+      "query" : "能开公司抬头的收据吗",
+      "relevantDocIds" : [ "invoice", "invoice_type" ]
+    }, {
+      "query" : "钱什么时候能退回来",
+      "relevantDocIds" : [ "refund_timeline" ]
+    }, {
+      "query" : "这东西是正品吗",
+      "relevantDocIds" : [ "fake_goods" ]
+    }, {
+      "query" : "我不想买了怎么退",
+      "relevantDocIds" : [ "order_cancel" ]
+    }, {
+      "query" : "发货了还能改地方吗",
+      "relevantDocIds" : [ "address_change" ]
+    }, {
+      "query" : "包装压扁了咋整",
+      "relevantDocIds" : [ "logistics_damage" ]
+    }, {
+      "query" : "我想跟客服投诉商家",
+      "relevantDocIds" : [ "complaint" ]
+    }, {
+      "query" : "东西寄回去的邮费谁掏",
+      "relevantDocIds" : [ "return_shipping" ]
+    }, {
+      "query" : "上门来收要花钱不",
+      "relevantDocIds" : [ "pickup_service" ]
+    }, {
+      "query" : "买的衣服尺码不对能换不",
+      "relevantDocIds" : [ "exchange", "size_chart" ]
+    }, {
+      "query" : "修东西要自己出邮费吗",
+      "relevantDocIds" : [ "repair_process" ]
+    }, {
+      "query" : "国外买的东西能退吗",
+      "relevantDocIds" : [ "cross_border_return" ]
+    }, {
+      "query" : "自己刻字的能退不",
+      "relevantDocIds" : [ "custom_goods_return" ]
+    }, {
+      "query" : "原包装扔了还能退吗",
+      "relevantDocIds" : [ "return_packaging" ]
+    }, {
+      "query" : "售后在哪申请",
+      "relevantDocIds" : [ "after_sale_entry" ]
+    }, {
+      "query" : "能指定顺丰吗",
+      "relevantDocIds" : [ "express_choice" ]
+    }, {
+      "query" : "快递放驿站行不行",
+      "relevantDocIds" : [ "self_pickup" ]
+    }, {
+      "query" : "周末能送货吗",
+      "relevantDocIds" : [ "delivery_appointment" ]
+    }, {
+      "query" : "物流一直不动",
+      "relevantDocIds" : [ "logistics_tracking" ]
+    }, {
+      "query" : "能快点送到吗",
+      "relevantDocIds" : [ "urgent_delivery" ]
+    }, {
+      "query" : "寄到新疆要加钱吗",
+      "relevantDocIds" : [ "delivery_fee", "delivery_range" ]
+    }, {
+      "query" : "上次买贵了能补差价吗",
+      "relevantDocIds" : [ "price_protection" ]
+    }, {
+      "query" : "会员日是哪天",
+      "relevantDocIds" : [ "member_day" ]
+    }, {
+      "query" : "打折的东西还会再降吗",
+      "relevantDocIds" : [ "flash_discount" ]
+    }, {
+      "query" : "券过期了能补吗",
+      "relevantDocIds" : [ "coupon_expire" ]
+    }, {
+      "query" : "送的小东西要退回去吗",
+      "relevantDocIds" : [ "gift_item" ]
+    }, {
+      "query" : "买一整套能便宜吗",
+      "relevantDocIds" : [ "bundle_sale" ]
+    }, {
+      "query" : "付款没成功钱扣了",
+      "relevantDocIds" : [ "payment_fail" ]
+    }, {
+      "query" : "账户里的钱能提出来吗",
+      "relevantDocIds" : [ "balance_pay" ]
+    }, {
+      "query" : "一次最多能付多少钱",
+      "relevantDocIds" : [ "payment_limit" ]
+    }, {
+      "query" : "为什么不能退到别的卡",
+      "relevantDocIds" : [ "refund_original" ]
+    }, {
+      "query" : "价格含税吗",
+      "relevantDocIds" : [ "tax_fee" ]
+    }, {
+      "query" : "会员有什么好处",
+      "relevantDocIds" : [ "member", "member_shipping" ]
+    }, {
+      "query" : "积分怎么攒",
+      "relevantDocIds" : [ "points_task" ]
+    }, {
+      "query" : "在别的地方登录了",
+      "relevantDocIds" : [ "abnormal_login" ]
+    }, {
+      "query" : "能用微信直接登吗",
+      "relevantDocIds" : [ "third_party_login" ]
+    }, {
+      "query" : "提点建议有用吗",
+      "relevantDocIds" : [ "feedback" ]
+    } ]
+  }, {
+    "key" : "HARD",
+    "label" : "语义鸿沟",
+    "cases" : [ {
+      "query" : "东西不合适想退掉",
+      "relevantDocIds" : [ "after_sale" ]
+    }, {
+      "query" : "不想要了",
+      "relevantDocIds" : [ "order_cancel" ]
+    }, {
+      "query" : "这个能便宜点吗",
+      "relevantDocIds" : [ "promotion" ]
+    }, {
+      "query" : "太贵了",
+      "relevantDocIds" : [ "price_protection" ]
+    }, {
+      "query" : "什么时候能到",
+      "relevantDocIds" : [ "logistics" ]
+    }, {
+      "query" : "坏了谁负责",
+      "relevantDocIds" : [ "warranty" ]
+    }, {
+      "query" : "怎么联系你们",
+      "relevantDocIds" : [ "complaint" ]
+    }, {
+      "query" : "钱少了一部分",
+      "relevantDocIds" : [ "refund_timeline" ]
+    }, {
+      "query" : "能换个别的颜色吗",
+      "relevantDocIds" : [ "exchange" ]
+    }, {
+      "query" : "会不会泄露我的信息",
+      "relevantDocIds" : [ "privacy" ]
+    }, {
+      "query" : "寄过来是破的",
+      "relevantDocIds" : [ "logistics_damage" ]
+    }, {
+      "query" : "我没收到货",
+      "relevantDocIds" : [ "logistics_tracking" ]
+    }, {
+      "query" : "能不能送到楼下",
+      "relevantDocIds" : [ "bulky_delivery" ]
+    }, {
+      "query" : "先寄到门卫那儿",
+      "relevantDocIds" : [ "self_pickup" ]
+    }, {
+      "query" : "着急用",
+      "relevantDocIds" : [ "urgent_delivery" ]
+    }, {
+      "query" : "会不会再便宜",
+      "relevantDocIds" : [ "flash_discount" ]
+    }, {
+      "query" : "囤着以后用",
+      "relevantDocIds" : [ "presale" ]
+    }, {
+      "query" : "拼单还差人",
+      "relevantDocIds" : [ "group_buy" ]
+    }, {
+      "query" : "抢不到",
+      "relevantDocIds" : [ "flash_sale" ]
+    }, {
+      "query" : "学生证有什么用",
+      "relevantDocIds" : [ "student_discount" ]
+    }, {
+      "query" : "想分期",
+      "relevantDocIds" : [ "installment" ]
+    }, {
+      "query" : "钱不够",
+      "relevantDocIds" : [ "pay_later" ]
+    }, {
+      "query" : "重复付了两次",
+      "relevantDocIds" : [ "payment_fail" ]
+    }, {
+      "query" : "开个公司能报销的",
+      "relevantDocIds" : [ "invoice_type" ]
+    }, {
+      "query" : "这个多少钱来着",
+      "relevantDocIds" : [ "order_query" ]
+    }, {
+      "query" : "买多了",
+      "relevantDocIds" : [ "order_merge" ]
+    }, {
+      "query" : "能不能便宜卖我",
+      "relevantDocIds" : [ "price_change" ]
+    }, {
+      "query" : "想让别人也看看",
+      "relevantDocIds" : [ "review" ]
+    }, {
+      "query" : "说了实话被删了",
+      "relevantDocIds" : [ "bad_review" ]
+    }, {
+      "query" : "忘了用券",
+      "relevantDocIds" : [ "coupon_expire" ]
+    }, {
+      "query" : "发的什么快递",
+      "relevantDocIds" : [ "express_choice" ]
+    }, {
+      "query" : "怎么证明是正品",
+      "relevantDocIds" : [ "fake_goods" ]
+    }, {
+      "query" : "换新的要等多久",
+      "relevantDocIds" : [ "exchange" ]
+    }, {
+      "query" : "钱退到哪儿了",
+      "relevantDocIds" : [ "refund_method" ]
+    }, {
+      "query" : "地址填错了",
+      "relevantDocIds" : [ "address_change" ]
+    }, {
+      "query" : "怎么知道发货了",
+      "relevantDocIds" : [ "logistics_tracking" ]
+    }, {
+      "query" : "等级怎么算的",
+      "relevantDocIds" : [ "growth_value" ]
+    }, {
+      "query" : "怎么证明是我",
+      "relevantDocIds" : [ "real_name" ]
+    }, {
+      "query" : "不想让你们留我数据",
+      "relevantDocIds" : [ "account_delete" ]
+    }, {
+      "query" : "催一下进度",
+      "relevantDocIds" : [ "ticket_progress" ]
+    } ]
+  } ]
+}

@@ -37,7 +37,7 @@ class ChunkingRetrievalComparisonTest {
 
         System.out.printf("%n========== 切分策略 → 向量召回完整性 ==========%n");
         System.out.printf("语料：%d 份长文档（由 90 篇短文聚合），查询：%d 条，topK=%d%n%n",
-                docs.size(), RetrievalFixtures.allCases().size(), TOP_K);
+                docs.size(), EvalFixtures.allCases().size(), TOP_K);
         System.out.printf("%-24s %8s %10s %14s%n", "切分策略", "切片数", "平均片长", "完整召回率");
         System.out.println("-".repeat(62));
 
@@ -89,7 +89,7 @@ class ChunkingRetrievalComparisonTest {
 
         System.out.printf("%n========== 检索粒度 → 完整召回 ==========%n");
         System.out.printf("切分固定为「结构分层 512/40」：%d 份长文档 → %d 个切片；查询 %d 条，topK=%d%n%n",
-                docs.size(), chunks.size(), RetrievalFixtures.allCases().size(), TOP_K);
+                docs.size(), chunks.size(), EvalFixtures.allCases().size(), TOP_K);
 
         report("① 仅向量路", (query, topK) -> store.search(query, topK), sectionTexts);
         report("② 文档级混合（现状）", new HybridRetriever(store, docs), sectionTexts);
@@ -98,7 +98,7 @@ class ChunkingRetrievalComparisonTest {
 
     private void report(String label, Retriever retriever, Map<String, String> sectionTexts) {
         int complete = 0;
-        for (RetrievalEvaluator.EvalCase evalCase : RetrievalFixtures.allCases()) {
+        for (RetrievalEvaluator.EvalCase evalCase : EvalFixtures.allCases()) {
             List<DocumentChunk> hits = retriever.retrieve(evalCase.query(), TOP_K);
             boolean intact = hits.stream().anyMatch(chunk -> {
                 String content = LongDocFixtures.normalize(chunk.getContent());
@@ -111,7 +111,7 @@ class ChunkingRetrievalComparisonTest {
                 complete++;
             }
         }
-        int total = RetrievalFixtures.allCases().size();
+        int total = EvalFixtures.allCases().size();
         System.out.printf("%-26s %6.1f%%   (%d/%d)%n", label, 100.0 * complete / total, complete, total);
     }
 
@@ -136,7 +136,7 @@ class ChunkingRetrievalComparisonTest {
                 .mapToInt(c -> c.getContent().length()).average().orElse(0);
         int complete = 0;
 
-        for (RetrievalEvaluator.EvalCase evalCase : RetrievalFixtures.allCases()) {
+        for (RetrievalEvaluator.EvalCase evalCase : EvalFixtures.allCases()) {
             List<DocumentChunk> hits = store.search(evalCase.query(), TOP_K);
             boolean intact = hits.stream().anyMatch(chunk -> {
                 String content = LongDocFixtures.normalize(chunk.getContent());
@@ -149,6 +149,6 @@ class ChunkingRetrievalComparisonTest {
                 complete++;
             }
         }
-        return new Result(chunkCount, avgLength, complete, RetrievalFixtures.allCases().size());
+        return new Result(chunkCount, avgLength, complete, EvalFixtures.allCases().size());
     }
 }

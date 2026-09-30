@@ -85,17 +85,17 @@ class RagAnswerQualityTest {
 
         // ---- 建三条检索链路，与 RetrievalComparisonTest 完全一致，保证两处结论可对话 ----
         Retriever bm25Only = new HybridRetriever(
-                new InMemoryVectorStore(new SimpleEmbeddingService()), RetrievalFixtures.DOCS);
+                new InMemoryVectorStore(new SimpleEmbeddingService()), EvalFixtures.DOCS);
 
         InMemoryVectorStore vectorStore = new InMemoryVectorStore(
                 new DashScopeEmbeddingService(apiKey, "text-embedding-v4"));
         DashScopeReranker reranker = new DashScopeReranker(
                 apiKey, "gte-rerank-v2", null, java.time.Duration.ofSeconds(30));
-        Retriever hybrid = new HybridRetriever(vectorStore, RetrievalFixtures.DOCS);
-        Retriever hybridWithRerank = new HybridRetriever(vectorStore, RetrievalFixtures.DOCS, reranker);
+        Retriever hybrid = new HybridRetriever(vectorStore, EvalFixtures.DOCS);
+        Retriever hybridWithRerank = new HybridRetriever(vectorStore, EvalFixtures.DOCS, reranker);
         new SimpleRAGEngine(vectorStore, hybrid,
-                RetrievalFixtures.CHUNK_SIZE, RetrievalFixtures.CHUNK_OVERLAP)
-                .ingestBatch(RetrievalFixtures.DOCS);
+                EvalFixtures.CHUNK_SIZE, EvalFixtures.CHUNK_OVERLAP)
+                .ingestBatch(EvalFixtures.DOCS);
 
         List<RetrievalEvaluator.EvalCase> samples = sample();
         System.out.printf("%n========== 端到端回答质量（样本 %d 条，裁判 %s）==========%n", samples.size(), model);
@@ -128,7 +128,7 @@ class RagAnswerQualityTest {
                      List<RetrievalEvaluator.EvalCase> samples) {
         Score score = new Score();
         Map<String, Document> docById = new LinkedHashMap<>();
-        RetrievalFixtures.DOCS.forEach(d -> docById.put(d.getId(), d));
+        EvalFixtures.DOCS.forEach(d -> docById.put(d.getId(), d));
 
         for (RetrievalEvaluator.EvalCase sample : samples) {
             List<DocumentChunk> retrieved = retriever.retrieve(sample.query(), topK);
@@ -203,9 +203,9 @@ class RagAnswerQualityTest {
      */
     private static List<RetrievalEvaluator.EvalCase> sample() {
         List<RetrievalEvaluator.EvalCase> picked = new ArrayList<>();
-        picked.addAll(stride(RetrievalFixtures.LEXICAL_CASES));
-        picked.addAll(stride(RetrievalFixtures.PARAPHRASE_CASES));
-        picked.addAll(stride(RetrievalFixtures.HARD_CASES));
+        picked.addAll(stride(EvalFixtures.LEXICAL_CASES));
+        picked.addAll(stride(EvalFixtures.PARAPHRASE_CASES));
+        picked.addAll(stride(EvalFixtures.HARD_CASES));
         return picked;
     }
 

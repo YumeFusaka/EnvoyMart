@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 切分质量 —— 用长文档语料对比不同切分策略。
  * <p>
  * {@link ChunkingFixtures} 的语料每篇 800~1100 字，远超切分窗口，
- * 因此在它上面能真正区分出策略差异（{@code RetrievalFixtures} 的短文档做不到这件事）。
+ * 因此在它上面能真正区分出策略差异（{@code EvalFixtures} 的短文档做不到这件事）。
  * <p>
  * 两个指标：
  * <ul>

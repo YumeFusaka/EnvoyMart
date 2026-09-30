@@ -47,7 +47,7 @@ class RetrievalComparisonTest {
 
         // 配置一：仅关键词 —— 向量库留空，等价于线上未接向量库的降级态
         Retriever bm25Only = new HybridRetriever(
-                new InMemoryVectorStore(new SimpleEmbeddingService()), RetrievalFixtures.DOCS);
+                new InMemoryVectorStore(new SimpleEmbeddingService()), EvalFixtures.DOCS);
 
         // 配置二与三共用真实向量库。
         // 先建待测检索器，再让引擎用同一条线上摄取路径（SimpleRAGEngine.ingestBatch）灌数据——
@@ -63,18 +63,18 @@ class RetrievalComparisonTest {
         // 返回 null，降级原因看上去"没有原因"，排查时极易被误读成"服务端返回了坏数据"。
         DashScopeReranker reranker = new DashScopeReranker(
                 apiKey, RERANK_MODEL, null, java.time.Duration.ofSeconds(30));
-        Retriever hybrid = new HybridRetriever(vectorStore, RetrievalFixtures.DOCS);
+        Retriever hybrid = new HybridRetriever(vectorStore, EvalFixtures.DOCS);
         Retriever hybridWithRerank = new HybridRetriever(
-                vectorStore, RetrievalFixtures.DOCS, reranker);
+                vectorStore, EvalFixtures.DOCS, reranker);
         new SimpleRAGEngine(vectorStore, hybrid,
-                RetrievalFixtures.CHUNK_SIZE, RetrievalFixtures.CHUNK_OVERLAP)
-                .ingestBatch(RetrievalFixtures.DOCS);
+                EvalFixtures.CHUNK_SIZE, EvalFixtures.CHUNK_OVERLAP)
+                .ingestBatch(EvalFixtures.DOCS);
 
         System.out.println();
-        System.out.println("========== 检索效果对照（语料 " + RetrievalFixtures.DOCS.size()
-                + " 篇，样本 " + RetrievalFixtures.allCases().size() + " 条，topK=" + TOP_K + "）==========");
+        System.out.println("========== 检索效果对照（语料 " + EvalFixtures.DOCS.size()
+                + " 篇，样本 " + EvalFixtures.allCases().size() + " 条，topK=" + TOP_K + "）==========");
         System.out.printf("随机基线 Hit Rate@%d = %.3f%n%n", TOP_K,
-                RetrievalFixtures.randomBaselineHitRate(RetrievalFixtures.DOCS.size(), TOP_K));
+                EvalFixtures.randomBaselineHitRate(EvalFixtures.DOCS.size(), TOP_K));
 
         report("仅关键词(BM25)", bm25Only);
         report("混合(BM25+向量)", hybrid);
@@ -94,8 +94,8 @@ class RetrievalComparisonTest {
         }
 
         // 夹具自检：三档必须等量，否则分档指标不可横向比较
-        assertThat(RetrievalFixtures.LEXICAL_CASES).hasSameSizeAs(RetrievalFixtures.PARAPHRASE_CASES);
-        assertThat(RetrievalFixtures.PARAPHRASE_CASES).hasSameSizeAs(RetrievalFixtures.HARD_CASES);
+        assertThat(EvalFixtures.LEXICAL_CASES).hasSameSizeAs(EvalFixtures.PARAPHRASE_CASES);
+        assertThat(EvalFixtures.PARAPHRASE_CASES).hasSameSizeAs(EvalFixtures.HARD_CASES);
         assertThat(success)
                 .as("全部降级意味着这一档实际是「混合」的副本，不能当作重排结果")
                 .isGreaterThan(0);
@@ -104,10 +104,10 @@ class RetrievalComparisonTest {
     private void report(String name, Retriever retriever) {
         RetrievalEvaluator evaluator = new RetrievalEvaluator();
         System.out.println("--- " + name + " ---");
-        print("字面", evaluator.evaluate(retriever, RetrievalFixtures.LEXICAL_CASES, TOP_K));
-        print("口语", evaluator.evaluate(retriever, RetrievalFixtures.PARAPHRASE_CASES, TOP_K));
-        print("语义", evaluator.evaluate(retriever, RetrievalFixtures.HARD_CASES, TOP_K));
-        print("全量", evaluator.evaluate(retriever, RetrievalFixtures.allCases(), TOP_K));
+        print("字面", evaluator.evaluate(retriever, EvalFixtures.LEXICAL_CASES, TOP_K));
+        print("口语", evaluator.evaluate(retriever, EvalFixtures.PARAPHRASE_CASES, TOP_K));
+        print("语义", evaluator.evaluate(retriever, EvalFixtures.HARD_CASES, TOP_K));
+        print("全量", evaluator.evaluate(retriever, EvalFixtures.allCases(), TOP_K));
         System.out.println();
     }
 

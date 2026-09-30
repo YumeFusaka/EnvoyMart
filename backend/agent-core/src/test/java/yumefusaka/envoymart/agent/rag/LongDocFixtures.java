@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 长文档语料 —— 把 {@link RetrievalFixtures} 的 90 篇短文按主题聚合成 9 份长文档。
+ * 长文档语料 —— 把 {@link EvalFixtures} 的 90 篇短文按主题聚合成 9 份长文档。
  * <p>
  * <b>为什么要做这个聚合</b>：原夹具每篇 40~60 字，短于切分窗口，<b>每篇恰好一片</b>，
  * 于是"切分策略"这个变量在它上面完全失效——换任何策略，检索指标都一模一样。
@@ -29,7 +29,7 @@ final class LongDocFixtures {
     }
 
     /**
-     * 主题分组 —— 按 {@code RetrievalFixtures.DOCS} 的排列顺序划分。
+     * 主题分组 —— 按 {@code EvalFixtures.DOCS} 的排列顺序划分。
      * 数值必须与夹具里的实际排列一致，加起来等于语料总数。
      */
     private static final List<Topic> TOPICS = List.of(
@@ -109,7 +109,7 @@ final class LongDocFixtures {
 
     /** 取 {@code DOCS} 里从 from 开始、count 个元素的 id。 */
     private static List<String> sectionIds(int from, int count) {
-        List<Document> docs = RetrievalFixtures.DOCS;
+        List<Document> docs = EvalFixtures.DOCS;
         List<String> ids = new ArrayList<>(count);
         for (int i = from; i < from + count && i < docs.size(); i++) {
             ids.add(docs.get(i).getId());
@@ -118,9 +118,9 @@ final class LongDocFixtures {
     }
 
     private static Document findSource(String id) {
-        return RetrievalFixtures.DOCS.stream()
+        return EvalFixtures.DOCS.stream()
                 .filter(d -> d.getId().equals(id))
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("RetrievalFixtures 里没有这篇文档：" + id));
+                .orElseThrow(() -> new IllegalStateException("EvalFixtures 里没有这篇文档：" + id));
     }
 }
