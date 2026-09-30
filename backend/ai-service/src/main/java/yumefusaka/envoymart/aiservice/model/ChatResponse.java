@@ -87,4 +87,41 @@ public class ChatResponse {
      */
     public record Conflict(List<Integer> refs, String detail) {
     }
+
+    /**
+     * 本轮对话的模型用量与估算花费。
+     * <p>
+     * <b>为什么要下发到界面。</b>Agent 的每一次「多想一步」都是一次真实计费的调用——
+     * 一次带工具的问题可能是 5 到 8 次模型往返。用户付的是这笔钱，看不见它，
+     * 就无从判断「这个助手值不值」，也无从判断某次回答为什么慢。
+     * <p>
+     * <b>它统计的是整轮，不是最后一次调用。</b>计划、ReAct 的每一圈、收口合成、
+     * 记忆沉淀、检索的向量化与重排，只要在本轮发生就计入——这些是同一笔开销的组成部分，
+     * 只报其中一段会得到一个看着精确、实际偏小几倍的数。
+     * <p>
+     * <b>金额是估价。</b>单价来自配置（见 {@code ModelPricing}），没配单价的模型只计
+     * token 不计钱，且它们的名字会出现在 {@link #unpricedModels} 里——
+     * 缺了哪一部分要说出来，否则「总价」会被当成完整账单。
+     */
+    private Usage usage;
+
+    /**
+     * @param promptTokens     输入 token 合计
+     * @param completionTokens 输出 token 合计
+     * @param totalTokens      两者之和
+     * @param costCny          估算金额（元）；为 {@code null} 表示本轮没有任何模型配了单价
+     * @param unpricedModels   本轮用到但没配单价的模型名；非空时前端要说明金额不完整
+     * @param models           按模型拆开的明细
+     */
+    public record Usage(long promptTokens, long completionTokens, long totalTokens,
+                        Double costCny, List<String> unpricedModels, List<ModelUsage> models) {
+    }
+
+    /**
+     * @param model            模型名
+     * @param promptTokens     输入 token
+     * @param completionTokens 输出 token
+     */
+    public record ModelUsage(String model, long promptTokens, long completionTokens) {
+    }
 }

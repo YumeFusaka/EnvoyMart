@@ -3,6 +3,7 @@ package yumefusaka.envoymart.agent.rag;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
+import yumefusaka.envoymart.agent.llm.TokenLedger;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -81,9 +82,15 @@ public class DashScopeReranker implements Reranker {
                 return degrade(query, candidates, topK, "http " + response.statusCode());
             }
 
-            List<Map<String, Object>> results = MAPPER.readValue(response.body(),
+            Map<String, Object> payload = MAPPER.readValue(response.body(),
                     new TypeReference<Map<String, Object>>() {
-                    })
+                    });
+            // 重排是这一步里最贵的调用之一（query + 全部候选一起进 cross-encoder），
+            // 而它此前完全不在任何成本口径里：账本只覆盖对话模型，检索这条路是另一条链路。
+            // 用量只在响应里报一次，就地入账
+            recordUsage(payload);
+
+            List<Map<String, Object>> results = payload
                     .get("output") instanceof Map<?, ?> output && output.get("results") instanceof List<?> list
                     ? list.stream().filter(Map.class::isInstance).map(item -> (Map<String, Object>) item).toList()
                     : List.of();
@@ -118,8 +125,25 @@ public class DashScopeReranker implements Reranker {
     }
 
     /** 真正生效过的重排次数 */
-    public int successCount() {
-        return successCount.get();
+    /**
+     * 把响应里的用量记进本轮账本。
+     * <p>
+     * 重排的输入是「一句话 + 全部候选」，一次调用几千 token 是常态；它不在对话模型那条
+     * 调用链上，所以账本在别处记多少都不会带上它。字段名按百炼的口径取
+     * {@code usage.total_tokens}——重排没有输出 token 的概念，全部计入输入侧。
+     * 取不到就什么都不记：宁可少一笔，也不编一笔。
+     */
+    private void recordUsage(Map<String, Object> payload) {
+        if (!(payload.get("usage") instanceof Map<?, ?> usage)) {
+            return;
+        }
+        Object total = usage.get("total_tokens");
+        if (total instanceof Number number && number.intValue() > 0) {
+            TokenLedger.record(model, number.intValue(), 0);
+        }
+    }
+
+    public int successCount() {        return successCount.get();
     }
 
     /** 静默降级为"不重排"的次数——结果与没配重排完全一致 */

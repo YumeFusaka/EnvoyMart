@@ -59,6 +59,18 @@ envoymart:
     # Agent 的调用多为分类/规划/合成，不需要深度推理，关掉以降低延迟与成本。
     # 留空表示不发送该参数。
     thinking: ${LLM_THINKING:disabled}
+    # 【高级项】模型单价：[输入单价, 输出单价]，单位元 / 千 token，用来把用量折成金额展示。
+    # 它算的是**估价不是账单**——真实计费还有阶梯价、缓存命中折扣、批处理折扣等差异。
+    # 没配到的模型只显示 token、不显示金额：拿邻近型号的价格顶替会得出一个
+    # 看着精确的错误数字，而少一个数字是可接受的。
+    pricing:
+      deepseek-chat: [ 0.002, 0.008 ]
+      deepseek-flash: [ 0.001, 0.002 ]
+      qwen-plus: [ 0.0008, 0.002 ]
+      qwen-max: [ 0.0024, 0.0096 ]
+      qwen-turbo: [ 0.0003, 0.0006 ]
+      text-embedding-v4: [ 0.0005, 0 ]
+      gte-rerank-v2: [ 0.0008, 0 ]
   embedding:
     api-key: ${EMBEDDING_API_KEY:}
     base-url: ${EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}

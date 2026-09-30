@@ -3,6 +3,8 @@ package yumefusaka.envoymart.aiservice.rag;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.output.Response;
+import yumefusaka.envoymart.agent.llm.TokenLedger;
 import yumefusaka.envoymart.agent.rag.EmbeddingService;
 
 import java.util.List;
@@ -21,7 +23,7 @@ public class LangChain4jEmbeddingService implements EmbeddingService {
 
     @Override
     public float[] embed(String text) {
-        return embeddingModel.embed(text == null ? "" : text).content().vector();
+        return record(embeddingModel.embed(text == null ? "" : text)).vector();
     }
 
     @Override
@@ -32,9 +34,28 @@ public class LangChain4jEmbeddingService implements EmbeddingService {
         List<TextSegment> segments = texts.stream()
                 .map(text -> TextSegment.from(text == null ? "" : text))
                 .toList();
-        return embeddingModel.embedAll(segments).content().stream()
+        return record(embeddingModel.embedAll(segments)).stream()
                 .map(Embedding::vector)
                 .toList();
+    }
+
+    /**
+     * 记一笔向量化的用量，再把内容原样交回。
+     * <p>
+     * 单次提问的向量化只有几十 token，看着可以忽略；但<b>入库那侧不是</b>——
+     * 重建索引要跑完整库，一次几十万 token。同一个适配器两边都在用，
+     * 分开记就成了「检索便宜、入库免费」，而入库才是真正花钱的那一头。
+     * <p>
+     * 用量取不到时返回 {@code totalTokens()} 为 null，此时不记账——
+     * 有些 OpenAI 兼容端点不返回 usage，按字符数估一个数出来会让账本混进假数据，
+     * 而账本是要拿来对账的。
+     */
+    private <T> T record(Response<T> response) {
+        if (response.tokenUsage() != null && response.tokenUsage().totalTokenCount() != null) {
+            String model = embeddingModel.modelName() == null ? "embedding" : embeddingModel.modelName();
+            TokenLedger.record(model, response.tokenUsage().totalTokenCount(), 0);
+        }
+        return response.content();
     }
 
     @Override

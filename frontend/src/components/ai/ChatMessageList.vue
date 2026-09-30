@@ -5,7 +5,15 @@ import MessageContent from '@/components/ai/MessageContent.vue'
 import PendingApprovalCard from '@/components/ai/PendingApprovalCard.vue'
 import RecommendationCards from '@/components/ai/RecommendationCards.vue'
 import type { ChatMessage, ProductSummary } from '@/types/models'
-import { formatMs, outcomeLabel, toolLabel, traceOutcome, traceSummary } from '@/utils/tools'
+import {
+  formatMs,
+  formatTokens,
+  outcomeLabel,
+  toolLabel,
+  traceOutcome,
+  traceSummary,
+  usageSummary,
+} from '@/utils/tools'
 import { nextTick, ref } from 'vue'
 
 defineProps<{
@@ -125,6 +133,38 @@ async function handleCite(messageId: string, index: number) {
         :evidence-level="message.evidenceLevel"
         :active-index="activeCite?.messageId === message.id ? activeCite.index : null"
       />
+
+      <!--
+        用量放在最后：它是「这段回答花了多少」，属于读完之后才关心的事，
+        摆到正文前面会让每一轮对话都从一串数字开始。
+        收起时只给一行，展开才是按模型的明细——多数人不需要明细，
+        需要的人（对成本敏感）会去展开。
+      -->
+      <details v-if="message.usage" class="usage">
+        <summary>{{ usageSummary(message.usage) }}</summary>
+        <dl class="usage__detail">
+          <!--
+            输出为 0 时不写「输出 0」：重排与向量化根本没有输出侧，那不是「这次没输出」。
+            写出来会让读者以为漏统计了。
+          -->
+          <div v-for="model in message.usage.models" :key="model.model" class="usage__row">
+            <dt>{{ model.model }}</dt>
+            <dd>
+              输入 {{ formatTokens(model.promptTokens)
+              }}<template v-if="model.completionTokens > 0">
+                · 输出 {{ formatTokens(model.completionTokens) }}</template>
+            </dd>
+          </div>
+        </dl>
+        <p v-if="message.usage.unpricedModels.length" class="usage__note">
+          {{ message.usage.unpricedModels.join('、') }} 未配置单价，未计入金额。
+        </p>
+        <!--
+          「估算」这件事必须写在明面上。金额是拿配置里的单价乘出来的，
+          真实账单还有阶梯价与缓存折扣；不写这一句，它就会被当成事实引用。
+        -->
+        <p class="usage__note">按配置单价估算，实际费用以服务商账单为准。</p>
+      </details>
 
       <RecommendationCards
         v-if="message.recommendedProducts?.length"
@@ -308,5 +348,57 @@ async function handleCite(messageId: string, index: number) {
 .trace__io span {
   color: var(--color-text-muted);
   font-family: var(--ys-font-sans);
+}
+
+/*
+  用量比轨迹更轻：轨迹是「这一轮发生了什么」（排障要看的），用量是「这一轮花了多少」。
+  用最弱的文字色、不加边框，读不读都不影响对回答的理解。
+*/
+.usage {
+  margin-top: var(--ys-space-3);
+}
+
+.usage summary {
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.usage summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--ys-radius-sm);
+}
+
+.usage__detail {
+  display: grid;
+  gap: var(--ys-space-1);
+  margin: var(--ys-space-2) 0 0;
+  padding-left: var(--ys-space-5);
+  font-size: var(--ys-font-xs);
+}
+
+.usage__row {
+  display: flex;
+  gap: var(--ys-space-2);
+}
+
+.usage__row dt {
+  color: var(--color-text-secondary);
+  font-family: var(--ys-font-mono);
+}
+
+.usage__row dd {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage__note {
+  margin: var(--ys-space-2) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
 }
 </style>

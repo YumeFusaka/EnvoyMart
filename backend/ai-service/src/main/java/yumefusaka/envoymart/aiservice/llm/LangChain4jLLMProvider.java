@@ -21,6 +21,7 @@ import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMProvider;
 import yumefusaka.envoymart.agent.llm.LLMResponse;
 import yumefusaka.envoymart.agent.llm.PlanStep;
+import yumefusaka.envoymart.agent.llm.TokenLedger;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
@@ -183,25 +184,38 @@ public class LangChain4jLLMProvider implements LLMProvider {
         long startedAt = System.nanoTime();
         int rounds = 0;
         int maxRounds = ctx.guard.maxToolCalls() + MAX_ROUND_SLACK;
+        // 跨轮累加：ReAct 每转一圈都是一次真实计费的调用，只报最后一轮等于漏掉前面每一圈。
+        // 而非流式那条（chatWithTools）从一开始就是累加的——同一条循环，两条分支两种口径
+        int promptTokens = 0;
+        int completionTokens = 0;
         while (true) {
             // 同 chatWithTools：护栏耗尽后不再下发工具定义，这是循环的终止判据
             StreamedRound round = streamOneRound(working, config, toolsFor(ctx, specs));
             rounds++;
+            promptTokens += round.promptTokens;
+            completionTokens += round.completionTokens;
 
             if (!round.aiMessage.hasToolExecutionRequests()) {
                 // 最终回答：此时才把这一轮攒下的 chunk 推出去
                 round.chunks.forEach(onChunk);
                 long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
-                log.info("[LLM] stream+tools model={} latencyMs={} rounds={} chars={} toolExecutions={}",
-                        config.getModel(), latencyMs, rounds, round.totalChars(), executions.size());
-                recordLlmMetrics(config.getModel(), true, latencyMs,
-                        round.promptTokens, round.completionTokens);
+                log.info("[LLM] stream+tools model={} latencyMs={} rounds={} chars={} "
+                                + "promptTokens={} completionTokens={} toolExecutions={}",
+                        config.getModel(), latencyMs, rounds, round.totalChars(),
+                        promptTokens, completionTokens, executions.size());
+                recordLlmMetrics(config.getModel(), true, latencyMs, promptTokens, completionTokens);
                 return List.copyOf(executions);
             }
 
             if (rounds >= maxRounds) {
                 log.warn("[LLM] 流式工具循环触到硬性轮次上限 model={} rounds={} {}",
                         config.getModel(), rounds, ctx.guard.summary());
+                // 走到这里说明最后一轮的正文是空的（它整轮都在要工具），一个字都没推过。
+                // 不补一句，前端就是一个空气泡——非流式那条分支有 AgentGraph 兜底把空正文
+                // 换成「抱歉，我没能完成这个请求」，流式这条没有，正文早就推完了
+                onChunk.accept("抱歉，这个问题涉及的操作步骤过多，我没能在限定轮次内完成。请换个说法或拆开再问一次。");
+                recordLlmMetrics(config.getModel(), true,
+                        (System.nanoTime() - startedAt) / 1_000_000, promptTokens, completionTokens);
                 return List.copyOf(executions);
             }
 
@@ -563,6 +577,11 @@ public class LangChain4jLLMProvider implements LLMProvider {
      */
     private void recordLlmMetrics(String model, boolean stream, long latencyMs,
                                   int promptTokens, int completionTokens) {
+        // 账本在指标之前：这里的三个调用点是全部模型调用的唯一汇聚处
+        // （chat / chatWithTools 走 toLLMResponse，两条流式各一处），
+        // 记在这里等于一次覆盖四个入口；指标那边没配 registry 就整段跳过，
+        // 而"这一轮花了多少"不该因为没有监控就查不到
+        TokenLedger.record(model, promptTokens, completionTokens);
         if (meterRegistry == null) {
             return;
         }

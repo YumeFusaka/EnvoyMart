@@ -490,6 +490,8 @@ export interface ChatResponse {
    * 这里拿到的是结构化结果，`refs` 可直接跳回原文核对。
    */
   conflicts: KnowledgeConflict[] | null
+  /** 本轮的模型用量与估算花费；`null` 表示没有任何模型调用发生 */
+  usage: ChatUsage | null
 }
 
 export type EvidenceLevel = 'SUFFICIENT' | 'WEAK' | 'NONE'
@@ -543,6 +545,40 @@ export interface ChatMessage {
   ungrounded?: boolean
   /** 本轮证据之间被发现的矛盾，由模型判定、后端结构化 */
   conflicts?: KnowledgeConflict[]
+  /**
+   * 本轮的模型用量与估算花费。
+   *
+   * 为 `null` 表示这一轮一次模型调用都没发生（或后端没开统计），此时整块不渲染——
+   * 显示「0 tokens」比不显示更糟，它看起来像统计坏了。
+   */
+  usage?: ChatUsage | null
+}
+
+/**
+ * 一轮对话的模型用量。
+ *
+ * **这是整轮的总和**，不是最后一次调用：计划、ReAct 的每一圈、收口合成、
+ * 记忆沉淀、检索的向量化与重排都算在内。Agent 的每一次「多想一步」都是一次真实计费的
+ * 调用，只报其中一段会得到一个看着精确、实际偏小几倍的数。
+ */
+export interface ChatUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  /**
+   * 估算金额（元）。为 `null` 表示本轮用到的模型一个都没配单价——
+   * 那不是「免费」，是「不知道」，界面上不能显示成 ¥0.0000。
+   */
+  costCny: number | null
+  /** 用到但没配单价的模型名。非空时金额是不完整的，必须说明 */
+  unpricedModels: string[]
+  models: UsageByModel[]
+}
+
+export interface UsageByModel {
+  model: string
+  promptTokens: number
+  completionTokens: number
 }
 
 // ==================== 商品域 ====================

@@ -5,7 +5,7 @@
  * 各存一份的话，服务端加个新工具就会一边显示中文、另一边显示 `coupon_query`。
  */
 
-import type { ToolCall } from '@/types/models'
+import type { ChatUsage, ToolCall } from '@/types/models'
 
 const TOOL_LABELS: Record<string, string> = {
   product_search: '商品检索',
@@ -93,4 +93,42 @@ export function traceSummary(calls: ToolCall[]): string {
     empty > 0 ? `${empty} 次无结果` : '',
   ].filter(Boolean)
   return notes.length > 0 ? `共 ${total} · ${notes.join(' · ')}` : `共 ${total}`
+}
+
+/**
+ * token 数的展示化：`12480` → `12.5k`。
+ * <p>
+ * 四位以上的数字在对话流里会抢走对正文的注意力，而这里要传达的只是量级。
+ * <b>不足一千的原样显示</b>——那正是「这一问很便宜」的信息，压成 `0.4k` 反而看不出便宜。
+ */
+export function formatTokens(count: number): string {
+  if (!Number.isFinite(count) || count <= 0) {
+    return '0'
+  }
+  return count < 1000 ? String(count) : `${(count / 1000).toFixed(1)}k`
+}
+
+export function formatCost(cny: number | null | undefined): string {
+  if (cny === null || cny === undefined || !Number.isFinite(cny)) {
+    return '—'
+  }
+  // 一次问答通常在 0.001–0.05 元之间，两位小数会全部显示成 ¥0.00
+  if (cny > 0 && cny < 0.01) {
+    return `¥${cny.toFixed(4)}`
+  }
+  return `¥${cny.toFixed(2)}`
+}
+
+/**
+ * 折叠状态下的用量摘要，形如 `12.5k tokens · ≈¥0.021`。
+ * <p>
+ * 金额一律带「≈」：它是按配置的单价估出来的，不是账单——真实计费还有阶梯价、
+ * 缓存命中折扣这些差异。没有「≈」的金额会被当成事实引用。
+ * <p>
+ * 没有任何模型配单价时只显示 token：显示 `¥0.00` 会被读成「这一轮免费」，
+ * 而真相是「不知道多少钱」。缺了哪些模型的单价由展开后的明细去说。
+ */
+export function usageSummary(usage: ChatUsage): string {
+  const tokens = `${formatTokens(usage.totalTokens)} tokens`
+  return usage.costCny === null ? tokens : `${tokens} · ≈${formatCost(usage.costCny)}`
 }

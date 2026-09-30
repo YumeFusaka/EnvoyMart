@@ -112,6 +112,7 @@ async function sendMessage(message = input.value, approved = false) {
           assistantMessage.unsupportedStripped = response.unsupportedStripped
           assistantMessage.ungrounded = response.ungrounded
           assistantMessage.conflicts = response.conflicts ?? undefined
+          assistantMessage.usage = response.usage
         },
         onError: (msg) => {
           assistantMessage.content = msg
