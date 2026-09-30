@@ -30,8 +30,16 @@ export interface StreamHandlers {
 /**
  * SSE 流式对话。用 fetch 而非 EventSource——后者不支持 POST。
  * 事件：delta 增量文本 / done 完整结果 / error 异常。
+ * <p>
+ * `signal` 用于用户中途停止：abort 会让 `reader.read()` 抛 AbortError 向上传播，
+ * 由调用方区分处理（停止是用户的主动选择，不是故障）。也支持组件卸载时取消，
+ * 避免离开页面后流还在后台跑。
  */
-export async function chatStream(payload: ChatPayload, handlers: StreamHandlers) {
+export async function chatStream(
+  payload: ChatPayload,
+  handlers: StreamHandlers,
+  signal?: AbortSignal
+) {
   const userStore = useUserStore()
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (userStore.token) {
@@ -41,7 +49,8 @@ export async function chatStream(payload: ChatPayload, handlers: StreamHandlers)
   const response = await fetch(`${baseURL}/ai/chat/stream`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal
   })
 
   if (!response.ok || !response.body) {
@@ -52,6 +61,23 @@ export async function chatStream(payload: ChatPayload, handlers: StreamHandlers)
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
+  // 服务端保证每个流都以 done 或 error 收尾。两者都没见到流就断了（网络中断、
+  // 服务端崩溃），此刻界面上的半截回答会被静默当成完整回答 —— 必须显式喊出来。
+  // 副作用是把「重复 done」也挡住了：只有第一次终态事件会传到界面
+  let settled = false
+
+  const dispatch = (event: { name: string; data: string }) => {
+    if (settled) return
+    if (event.name === 'delta') {
+      handlers.onDelta(event.data)
+    } else if (event.name === 'done') {
+      settled = true
+      handlers.onDone(JSON.parse(event.data) as ChatResponse)
+    } else if (event.name === 'error') {
+      settled = true
+      handlers.onError(event.data)
+    }
+  }
 
   while (true) {
     const { done, value } = await reader.read()
@@ -63,15 +89,16 @@ export async function chatStream(payload: ChatPayload, handlers: StreamHandlers)
     buffer = events.pop() ?? ''
     for (const raw of events) {
       const event = parseEvent(raw)
-      if (!event) continue
-      if (event.name === 'delta') {
-        handlers.onDelta(event.data)
-      } else if (event.name === 'done') {
-        handlers.onDone(JSON.parse(event.data) as ChatResponse)
-      } else if (event.name === 'error') {
-        handlers.onError(event.data)
-      }
+      if (event) dispatch(event)
     }
+  }
+
+  // 尾包：服务端收尾时可能不补最后的空行，buffer 里还压着一个完整事件
+  const tail = parseEvent(buffer)
+  if (tail) dispatch(tail)
+
+  if (!settled) {
+    handlers.onError('连接中断，回答可能不完整')
   }
 }
 

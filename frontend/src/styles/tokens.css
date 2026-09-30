@@ -35,24 +35,30 @@
   --ys-teal-500: #1f7a6b;
   --ys-teal-700: #14564b;
 
-  /* 中性色：暖灰。底色偏暖，与陶土橙同属一个色温 */
+  /* 中性色：暖灰。底色偏暖，与陶土橙同属一个色温。
+     warm-500 是后补的：作为文字色时 warm-400 在白底只有 2.5:1（远低于 4.5:1），
+     而直接跳到 warm-600 会让「弱一级的辅助文字」这一层消失 */
   --ys-warm-0: #ffffff;
   --ys-warm-50: #faf7f2;
   --ys-warm-100: #f5f2ea;
   --ys-warm-200: #ece4d6;
   --ys-warm-300: #ddd0bc;
   --ys-warm-400: #b3a08a;
+  --ys-warm-500: #7d6b52;
   --ys-warm-600: #76624b;
   --ys-warm-800: #4a3a29;
   --ys-warm-900: #2f2418;
 
-  /* 状态色 */
+  /* 状态色。500 档用于白底上的文字与图标（≥4.5:1 达标边缘），
+     600 档给「浅色底上的小字」——如 success-subtle / warning-subtle 底上的徽标 */
   --ys-red-50: #fdf0ee;
   --ys-red-500: #c0392b;
   --ys-amber-50: #fdf7ec;
   --ys-amber-500: #b7791f;
+  --ys-amber-600: #92610e;
   --ys-green-50: #eefaf3;
   --ys-green-500: #2f855a;
+  --ys-green-600: #276749;
 
   /* 间距刻度：4 的倍数。不用 5 或 7 这类刻度 —— 档位越多，越没人遵守 */
   --ys-space-1: 4px;
@@ -119,7 +125,7 @@
   /* 文字。正文与背景的对比度 ≥ 4.5:1（WCAG 2.2 AA） */
   --color-text-primary: var(--ys-warm-900);
   --color-text-secondary: var(--ys-warm-600);
-  --color-text-muted: var(--ys-warm-400);
+  --color-text-muted: var(--ys-warm-500);
   --color-text-inverse: var(--ys-warm-0);
   --color-text-on-primary: var(--ys-warm-0);
 
@@ -143,8 +149,12 @@
   /* 状态 */
   --color-success: var(--ys-green-500);
   --color-success-subtle: var(--ys-green-50);
+  /* 深一档的状态色：用在各自 -subtle 浅色底上的小字（如工具轨迹徽标），
+     500 档叠浅底只有 ~4:1，压不过 4.5:1 的线 */
+  --color-success-strong: var(--ys-green-600);
   --color-warning: var(--ys-amber-500);
   --color-warning-subtle: var(--ys-amber-50);
+  --color-warning-strong: var(--ys-amber-600);
   --color-danger: var(--ys-red-500);
   --color-danger-subtle: var(--ys-red-50);
 
@@ -168,5 +178,7 @@
   --control-height: 36px;
   --control-height-sm: 30px;
 
-  --focus-ring: 0 0 0 3px rgba(182, 91, 46, 0.28);
+  /* 0.28 的透明度在白色背景上只有 1.45:1，键盘焦点几乎不可见（WCAG 1.4.11 要求
+     焦点指示 ≥3:1）。0.85 实算约 3.6:1，同时保留原设计里柔和的半透明质感 */
+  --focus-ring: 0 0 0 3px rgba(182, 91, 46, 0.85);
 }

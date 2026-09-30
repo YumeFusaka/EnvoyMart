@@ -35,6 +35,9 @@ const segments = computed(() => splitCitations(props.content, props.citationCoun
   margin: 10px 0 0;
   /* 模型输出里的换行是排版的一部分，不能塌成空格 */
   white-space: pre-wrap;
+  /* 用户可能把不含空格的长串（订单号、URL、UUID）贴进来，模型也可能回抄长 token。
+     pre-wrap 只认空格，不折长串——它会撑破气泡并把整个容器推宽 */
+  overflow-wrap: anywhere;
   line-height: var(--ys-leading-base);
 }
 

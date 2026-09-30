@@ -39,7 +39,6 @@ instance.interceptors.response.use(
   },
   (err) => {
     ElMessage({ message: err.response?.data?.data || err.response?.data?.msg || '服务异常', type: 'error' })
-    console.log(err)
     if (err.response?.status === 401) {
       const userStore = useUserStore()
       userStore.clearSession()

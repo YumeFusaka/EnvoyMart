@@ -98,6 +98,12 @@ watch(activeChunkId, async () => {
   <div class="doc-page">
     <ErrorState v-if="error" :message="error" :on-retry="load" />
 
+    <!--
+      切换文档时也要走这一支：doc 还留着上一篇的内容，直接渲染会让人读到
+      标题已换、正文还是旧的错文档。骨架屏把「正在换」说清楚
+    -->
+    <el-skeleton v-else-if="loading" :rows="8" animated />
+
     <template v-else-if="doc">
       <header class="doc-header">
         <nav class="doc-breadcrumb" aria-label="面包屑">
@@ -135,6 +141,7 @@ watch(activeChunkId, async () => {
               <button
                 type="button"
                 :class="['doc-toc__item', { 'is-active': chunk.chunkId === activeChunkId }]"
+                :aria-current="chunk.chunkId === activeChunkId ? 'true' : undefined"
                 @click="selectChunk(chunk)"
               >
                 <span class="doc-toc__no">{{ chunk.chunkIndex + 1 }}</span>

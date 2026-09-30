@@ -31,7 +31,14 @@ const error = ref('')
 
 /** 当前中心实体。放在 URL 上 —— 刷一下页面回到同一个视角，链接也能直接发给别人 */
 const root = computed(() => (route.query.root as string | undefined) ?? '')
-const depth = computed(() => Number(route.query.depth ?? 2))
+/**
+ * 跳数。URL 是可以被手改的：`?depth=abc` 会把 NaN 传进查询，`?depth=0` 会得到一张空图
+ * 且页面文案会说「没有邻域」——把参数错误说成事实。非法值一律回落默认 2
+ */
+const depth = computed(() => {
+  const parsed = Number(route.query.depth ?? 2)
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 3 ? parsed : 2
+})
 const selectedKey = ref('')
 
 /** 关系类型筛选。默认为空表示「全都要」—— 默认全关的话第一眼是一张空图 */
@@ -61,12 +68,10 @@ const relationsInGraph = computed(() => {
 /**
  * 把查询错误转成一句人话。
  * <p>
- * 拦截器抛的是后端的响应体（不是 Error），所以 `e.message` 取不到东西 ——
- * 而图谱不可用时后端特意给了 503 与一段说明（「这不代表没有查到风险」），
- * 那句话正是这里最该显示的内容，不能丢。
+ * 图谱不可用时后端特意给了 503 与一段说明（「这不代表没有查到风险」），
+ * 拦截器把那句话包成 Error 抛出，它正是这里最该显示的内容，不能丢。
  */
 function reasonOf(e: unknown, fallback: string): string {
-  if (e && typeof e === 'object' && 'msg' in e) return String((e as { msg: unknown }).msg)
   return e instanceof Error ? e.message : fallback
 }
 
@@ -80,6 +85,9 @@ async function load() {
   loading.value = true
   error.value = ''
   selectedKey.value = ''
+  // 切换中心实体必须清掉上一次的检查结论：留着的话，「已检查 3 项，未发现冲突」
+  // 这句安全措辞会挂在一个根本没检查过的实体上——把没查说成没事
+  report.value = null
   try {
     edges.value = await entityNeighborhood(root.value, depth.value)
   } catch (e) {

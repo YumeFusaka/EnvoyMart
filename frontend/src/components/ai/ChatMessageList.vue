@@ -42,7 +42,11 @@ async function handleCite(messageId: string, index: number) {
 </script>
 
 <template>
-  <div class="message-list">
+  <!--
+    role="log"：对话是按时间追加的记录流，读屏用户在助手回答到达时应当被播报，
+    而不是需要手动导航进消息区才知道有新内容（它隐含 aria-live="polite"）
+  -->
+  <div class="message-list" role="log" aria-label="对话记录">
     <article
       v-for="(message, position) in messages"
       :key="message.id"
@@ -297,13 +301,15 @@ async function handleCite(messageId: string, index: number) {
   font-weight: 500;
 }
 
+/* 徽标是 12px 小字叠在各自的浅色底上：500 档叠浅底只有 ~4:1（压不过 4.5:1 的线），
+   所以这里用深一档的 strong 色 —— 颜色语义不变，对比度达标 */
 .trace__badge.is-ok {
-  color: var(--color-success);
+  color: var(--color-success-strong);
   background: var(--color-success-subtle);
 }
 
 .trace__badge.is-empty {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
   background: var(--color-warning-subtle);
 }
 

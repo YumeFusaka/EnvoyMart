@@ -4,7 +4,7 @@ import ChatMessageList from '@/components/ai/ChatMessageList.vue'
 import QuickPromptBar from '@/components/ai/QuickPromptBar.vue'
 import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
@@ -67,9 +67,15 @@ const assistantCount = computed(
  */
 const CONFIRM_PATTERN = /^(确认|确认执行|确定|是|好的|好|yes|ok)[。！!，,]*$/i
 
+/** 当前在飞的流。用户点「停止」或离开页面时用它取消 */
+let abortController: AbortController | null = null
+
 async function sendMessage(message = input.value, approved = false) {
   const content = message.trim()
   if (!content) return
+  // 上一轮还在生成时不接新的发送：两条流会各自往自己的占位消息里写，界面看似正常，
+  // 但 `approved` 是随消息走的——确认词可能被配到错误的那一轮上
+  if (loading.value) return
 
   const latest = messages.value[messages.value.length - 1]
   const confirming =
@@ -82,6 +88,7 @@ async function sendMessage(message = input.value, approved = false) {
   })
   input.value = ''
   loading.value = true
+  abortController = new AbortController()
 
   // 先插入占位的助手消息，随后按流式增量填充
   const assistantMessage = reactive<ChatMessage>({
@@ -118,13 +125,30 @@ async function sendMessage(message = input.value, approved = false) {
           assistantMessage.content = msg
         },
       },
+      abortController.signal,
     )
-  } catch {
-    assistantMessage.content = '智能助手暂时不可用，请稍后再试。'
+  } catch (e) {
+    if (e instanceof Error && e.name === 'AbortError') {
+      // 用户主动停止不是故障：半截回答照留，但必须标出来 ——
+      // 不标的话它看起来像一段说完了的完整回答
+      assistantMessage.content = assistantMessage.content
+        ? `${assistantMessage.content}\n\n（已停止生成）`
+        : '（已停止生成）'
+    } else {
+      assistantMessage.content = '智能助手暂时不可用，请稍后再试。'
+    }
   } finally {
     loading.value = false
+    abortController = null
   }
 }
+
+function handleStop() {
+  abortController?.abort()
+}
+
+// 离开页面就取消在飞的流：不取消的话它会继续读，写进一个已经不在屏幕上的消息里
+onBeforeUnmount(() => abortController?.abort())
 
 /**
  * 推荐卡片点开要进**商品详情**，不是拿商品名去搜索。
@@ -213,7 +237,9 @@ function handleDismiss() {
         />
         <div class="composer-actions">
           <span>Ctrl + Enter 发送</span>
-          <el-button :loading="loading" type="primary" @click="sendMessage()">发送消息</el-button>
+          <!-- 生成中把发送换成停止：按钮同时承担「这一轮还没完」的状态提示 -->
+          <el-button v-if="loading" plain @click="handleStop">停止生成</el-button>
+          <el-button v-else type="primary" @click="sendMessage()">发送消息</el-button>
         </div>
       </div>
     </section>

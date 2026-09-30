@@ -535,8 +535,10 @@ onMounted(() => {
   color: var(--color-text-on-primary);
 }
 
+/* 深色抽屉上不能沿用 --color-text-muted：它按浅底上的对比度定的（warm-500），
+   在 #2f2418 这种深底上会掉到 3:1 以下。用与同级导航一致的白色透明度 */
 .admin-nav--drawer .admin-nav__group {
-  color: var(--color-text-muted);
+  color: rgba(255, 255, 255, 0.55);
 }
 
 @media (max-width: 1024px) {
