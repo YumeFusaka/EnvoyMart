@@ -9,7 +9,6 @@ import yumefusaka.envoymart.paymentservice.entity.PaymentEntity;
 import yumefusaka.envoymart.paymentservice.entity.RefundEntity;
 import yumefusaka.envoymart.paymentservice.mapper.PaymentMapper;
 import yumefusaka.envoymart.paymentservice.mapper.RefundMapper;
-import yumefusaka.envoymart.contract.RefundRequest;
 import yumefusaka.envoymart.contract.RefundResponse;
 import yumefusaka.envoymart.paymentservice.service.RefundService;
 
@@ -31,17 +30,6 @@ public class RefundServiceImpl implements RefundService {
     public RefundServiceImpl(PaymentMapper paymentMapper, RefundMapper refundMapper) {
         this.paymentMapper = paymentMapper;
         this.refundMapper = refundMapper;
-    }
-
-    @Override
-    @Transactional
-    public RefundResponse refund(String userId, RefundRequest request) {
-        PaymentEntity payment = paymentMapper.selectByOrderIdForUpdate(request.getOrderId());
-        // 不区分「不存在」与「不属于你」，避免成为订单号存在性的探测接口
-        if (payment == null || !payment.getUserId().equals(userId)) {
-            throw new IllegalArgumentException("支付记录不存在");
-        }
-        return doRefund(payment, request.getAfterSaleId(), request.getAmount(), request.getReason());
     }
 
     @Override
@@ -85,8 +73,8 @@ public class RefundServiceImpl implements RefundService {
         // 售后侧的重试是运营手点的动作，而「上次其实退成功了、只是响应在路上丢了」正是重试
         // 最常见的触发场景；没有这道检查，第二次会再插一条退款单、再退一笔钱，
         // 而两边的日志都写着「退款完成」，对账时才会发现。
-        // 条件里必须带 payment_id：这个方法还有一条用户侧入口（/payments/refund），
-        // 只按 afterSaleId 查，调用方就能拿别人的售后单号换出别人的退款记录。
+        // 条件里必须带 payment_id：只按 afterSaleId 查的话，一条售后单的 id 就能换出
+        // 别人那张支付单上的退款记录——而售后单 id 是顺序自增的，猜得到。
         // 并发安全由调用方的支付单行锁保证：两个请求在这里被串行化，
         // 后到的那个一定看得见先到的插入。
         if (afterSaleId != null) {

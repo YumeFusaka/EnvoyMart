@@ -27,19 +27,10 @@ export async function mockPay(orderId: number) {
   return response.data.data as Payment
 }
 
-/**
- * 申请退款。不传 amount 表示退剩余全部。
- * 后端会校验：只有支付成功的订单能退，且累计退款不得超过支付金额。
- */
-export async function refund(payload: {
-  orderId: number
-  amount?: number
-  reason: string
-  afterSaleId?: number
-}) {
-  const response = await request.post('/payments/refunds', payload)
-  return response.data.data as Refund
-}
+// 这里原先有一个 refund()，调后端 POST /payments/refunds。
+// 后端那个入口已删除：它绕过了退款唯一的闸门（售后流程的时间窗、比例上限、商家审核），
+// 任何登录用户都能对自己的已支付订单单方面全额退款。要退款的入口只有一个——
+// 提交售后申请，等商家审核通过后由订单服务发起。前端本来也没有视图调用它。
 
 export async function listRefunds(orderId: number) {
   const response = await request.get(`/payments/refunds/${orderId}`)

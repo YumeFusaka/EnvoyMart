@@ -90,18 +90,22 @@ public class PaymentController {
         return Result.success(mockPayService.pay(orderId));
     }
 
-    /** 用户发起的退款（售后场景）。归属由支付单决定，不采信请求体 */
-    @PostMapping("/refunds")
-    public Result<RefundResponse> refund(
-            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @Valid @RequestBody RefundRequest request) {
-        return Result.success(refundService.refund(userId, request));
-    }
+    // 这里原先有一个用户侧退款入口（POST /refunds）：「用户对自己的已支付订单发起退款」。
+    // 已移除，因为它是**绕过退款政策的第二条路**——退款唯一的闸门是售后流程
+    // （7/15 天时间窗、退款比例上限、必须已收货、商家审核），而那个入口只校验支付单归属，
+    // 于是任何登录用户都能对自己的已支付订单单方面全额退款：
+    //   POST /payments/refunds {orderId}  → 钱立刻退出，订单状态没变、售后政策没跑。
+    // 随后他若再走正常售后并被商家批准，售后单调 refundForOrder 时额度已为 0，
+    // 抛出的异常又被售后侧的 catch 吞掉，售后单永远停在 REFUNDING——一笔钱退两次的路径
+    // 被堵住了，但多出一张没人看得懂的僵尸单。
+    //
+    // 前端的 refund() 从来没有视图调用它，删掉不影响任何界面。要退款的场景一律走
+    // 「提交售后 → 商家审核 → 服务间 refundForOrder」，那条路上每一步都有状态机和留痕。
 
     /**
      * 服务间调用的退款入口（售后通过后由订单服务发起）。
      * <p>
-     * 与用户入口的区别是**没有调用方身份** —— 它表达的是「这笔订单的钱要还回去」，
+     * 这是全项目**唯一**的退款写入口。没有调用方身份 —— 它表达的是「这笔订单的钱要还回去」，
      * 不是「某个用户在操作」。网关对该前缀一律 404，只有服务间直连够得着。
      * <p>
      * <b>路径刻意不放在 {@code /refunds/} 下面</b>：那里有
