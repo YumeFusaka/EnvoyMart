@@ -1,7 +1,10 @@
 package yumefusaka.envoymart.agent.rag;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -47,6 +50,14 @@ public final class CitationVerifier {
     private static final Pattern CITATION = Pattern.compile("\\[(\\d+)]");
 
     /**
+     * 书名号形式的出处：{@code 《文档名》}。
+     * <p>
+     * 上限 60 字符：真实文档标题不会有更长的，防止把「《甲》和《乙》之间那段话」
+     * 这类带书名号的叙述整段吞成一个标题。
+     */
+    private static final Pattern TITLE_CITATION = Pattern.compile("《([^》]{1,60})》");
+
+    /**
      * 断句：句末标点或换行，<b>标点跟随前一句</b>。
      * <p>
      * 靠匹配区间而不是「切分后重组」来定位：重组会把连续标点、缩进这类排版细节丢掉，
@@ -70,6 +81,29 @@ public final class CitationVerifier {
      */
     private static final Pattern FACT_SIGNAL = Pattern.compile(
             "\\d|规定|政策|条款|标准|上限|下限|禁止|不得|必须|应当|期限|时效|有效期");
+
+    /**
+     * 复述用户问题的引导句（「你问的是…的规定。」）。
+     * <p>
+     * 它命中了「规定」，长度也够，但这不是一条断言——这句话里唯一的事实就是用户
+     * 刚刚说过的话。没有可标的出处，也<b>不该有</b>：给它标一个引用，
+     * 等于说「用户问的问题」是平台文档规定的。
+     */
+    private static final Pattern ECHO_LEAD = Pattern.compile(
+            "^[\\s>*\\-•#\\d.、)）]*(你|您)(问的|的问题是|想了解的是|咨询的|提到)");
+
+    /**
+     * 陈述「知识库里没有」的句子（「知识库中未检索到…条款」）。
+     * <p>
+     * 这类句子的依据恰恰是<b>检索结果为空</b>这件事本身，没有可标的出处。剔掉它，
+     * 拒答回答里最关键的那句就没了：用户看到规则罗列，却看不到「这些规则都不管你问的事」。
+     * <p>
+     * 判据刻意窄：必须同时出现「缺失」与「规则类名词」。注意词表里<b>没有「不」</b>——
+     * 「本品不适用于孕妇」是一句真断言，不能放它走；「未/没有/无」才是"不存在"。
+     */
+    private static final Pattern ABSENCE_SIGNAL = Pattern.compile(
+            "(未|没有|无|暂无|不存在|查不到|未查到|未见)[^，。！？；\\n]{0,40}"
+                    + "(规定|政策|条款|细则|要求|标准|资料|内容|说明|记录|条目|依据|收录|覆盖|涉及)");
 
     /**
      * 违规句占比超过它就整体放弃剔除。
@@ -111,6 +145,26 @@ public final class CitationVerifier {
      *                        不给这个信号就只能二选一，而两个方向各错一半
      */
     public static Verdict verify(String reply, int evidenceCount, boolean hasToolEvidence) {
+        return verify(reply, evidenceCount, hasToolEvidence, Set.of());
+    }
+
+    /**
+     * 带「可引用标题」的完整版。
+     * <p>
+     * 本项目的出处有两种写法：system prompt 证据用编号角标 {@code [n]}，
+     * 工具返回的知识（{@code interaction_check}、{@code knowledge_search}）用《文档名》——
+     * 后者没有编号可标：它的内容不在 prompt 里，编号空间只属于 prompt 证据。
+     * 不认这种写法，工具检索到的事实句会被当成「讲事实没出处」剔除，
+     * 而这正是 {@link #MAX_VIOLATION_RATIO} 最不该误伤的东西：内容有真出处，
+     * 只是出处不是编号。
+     * <p>
+     * <b>只认「平台声明过的标题」</b>（{@code citableTitles}：证据切片的标题与位置、
+     * 工具输出中「出处：」行里的书名号）。不设这道限，模型随手编一个《XX 规范》
+     * 就能把任何编造句洗成有出处——识别面越宽，闸门越等于没有。
+     * 标题比对忽略空白差异（模型会漏掉「维生素 D3」里的空格），其余逐字。
+     */
+    public static Verdict verify(String reply, int evidenceCount, boolean hasToolEvidence,
+                                 Set<String> citableTitles) {
         if (reply == null || reply.isBlank()) {
             return new Verdict(reply, List.of(), 0, 0, false, false);
         }
@@ -142,7 +196,7 @@ public final class CitationVerifier {
             // 「上限 4000IU [1][7]」摘掉 [7] 仍算有出处，而「上限 4000IU [7]」摘完就是一句无出处的断言
             String sanitized = without(sentence, outOfRange);
 
-            if (hasValidCitation(sanitized, evidenceCount)) {
+            if (hasValidCitation(sanitized, evidenceCount, citableTitles)) {
                 cited++;
                 continue;
             }
@@ -198,7 +252,7 @@ public final class CitationVerifier {
         return result;
     }
 
-    private static boolean hasValidCitation(String sentence, int evidenceCount) {
+    private static boolean hasValidCitation(String sentence, int evidenceCount, Set<String> citableTitles) {
         Matcher refs = CITATION.matcher(sentence);
         while (refs.find()) {
             int no = Integer.parseInt(refs.group(1));
@@ -206,15 +260,156 @@ public final class CitationVerifier {
                 return true;
             }
         }
+        if (citableTitles.isEmpty()) {
+            return false;
+        }
+        Matcher titles = TITLE_CITATION.matcher(sentence);
+        while (titles.find()) {
+            if (citableTitles.contains(normalizeTitle(titles.group(1)))) {
+                return true;
+            }
+        }
         return false;
+    }
+
+    /**
+     * 从证据切片的标题/位置里收集可引用标题 —— 平台自己声明过的出处。
+     * <p>
+     * 位置串形如 {@code 《维生素 D3 说明书》 > 第二章 > 3.2}，标题本身可能不带书名号，
+     * 两种形态都收：模型引用时可能带位置也可能只写文档名。
+     */
+    public static void collectTitles(Set<String> into, String title, String position) {
+        if (title != null && !title.isBlank()) {
+            into.add(normalizeTitle(title));
+        }
+        if (position != null) {
+            Matcher m = TITLE_CITATION.matcher(position);
+            while (m.find()) {
+                into.add(normalizeTitle(m.group(1)));
+            }
+        }
+    }
+
+    /**
+     * 正文里写到的全部《文档名》（已归一化）。
+     * <p>
+     * 只做提取，不判断可信：调用方拿去和 {@link #collectTitles} 收出来的可引用集合取交集
+     * ——「正文提到了哪些书名」与「平台声明过哪些出处」是两件事，混在一起就又回到了
+     * 把语料里任意书名当成出处的老问题。
+     */
+    public static Set<String> titlesIn(String text) {
+        Set<String> titles = new LinkedHashSet<>();
+        if (text == null || text.isBlank()) {
+            return titles;
+        }
+        Matcher m = TITLE_CITATION.matcher(text);
+        while (m.find()) {
+            titles.add(normalizeTitle(m.group(1)));
+        }
+        return titles;
+    }
+
+    /**
+     * 把正文里「有编号可指」的《文档名》换回 {@code [n]}。
+     * <p>
+     * <b>为什么这件事必须由机器做。</b>模型手上有两套出处写法：system prompt 的证据用
+     * {@code [n]}，工具检索回来的内容用《文档名》。同一个文档在两边都出现时，它会按
+     * <b>文档</b>分而不是按<b>来源</b>分，把整篇（包括 prompt 证据）统一写成书名号——
+     * 实测正是如此。而编号是界面上点回原文的唯一入口，书名号渲染不出角标，
+     * 整条溯源链路就断了。两边提示词都已写明「各管各的」，但提示词是请求不是保证：
+     * 查它有没有照做、并把入口还回去，是校验层该干的活。
+     * <p>
+     * <b>同一份文档的多个切片取最靠前的那一条。</b>本项目 16 篇文档切成 132 片，
+     * 多切片是常态。模型写《文档名》时本来就没指明是哪个切片，指向该文档最相关
+     * （即排在前面）的那条，不比一个不能点的书名号更错，而它让用户有得点。
+     * <p>
+     * 不在证据里的《X》原样保留：那是工具输出里平台声明过的另一个出处
+     * （见 {@link #collectToolTitles}），它有出处但没编号，{@link #hasValidCitation} 认它。
+     * <p>
+     * 必须跑在 {@link ConflictReporter#extract} <b>之前</b>：冲突段里的「哪几条对不上」
+     * 只认编号与「条目 n」，先归一化，抽取器才认得出这条冲突指的是哪几条证据。
+     */
+    public static String numberTitles(String reply, List<DocumentChunk> evidence) {
+        if (reply == null || reply.isBlank() || evidence == null || evidence.isEmpty()) {
+            return reply;
+        }
+        Map<String, Integer> byTitle = new HashMap<>();
+        for (int i = 0; i < evidence.size(); i++) {
+            Set<String> titles = new LinkedHashSet<>();
+            DocumentChunk chunk = evidence.get(i);
+            collectTitles(titles, chunk.getTitle(), chunk.getPosition());
+            for (String title : titles) {
+                byTitle.putIfAbsent(title, i + 1);
+            }
+        }
+        if (byTitle.isEmpty()) {
+            return reply;
+        }
+        Matcher m = TITLE_CITATION.matcher(reply);
+        StringBuilder sb = new StringBuilder(reply.length());
+        while (m.find()) {
+            Integer no = byTitle.get(normalizeTitle(m.group(1)));
+            m.appendReplacement(sb, Matcher.quoteReplacement(no == null ? m.group() : "[" + no + "]"));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /**
+     * 从工具输出里收集可引用标题 —— 只认「出处：」行，且只看到引文开始为止。
+     * <p>
+     * 不能全篇扫《…》：检索回来的原文引用里本来就带着《消费者权益保护法》这类书名，
+     * 全篇扫描等于把语料里的任意书名都升级成「平台声明过的出处」。
+     * 「出处：」是工具渲染时自己写的行首标记，只出现在平台声明出处的地方。
+     * <p>
+     * <b>行内还要再切一刀</b>：渲染格式是 {@code 出处：《文档名》｜原文：「引用文本」}，
+     * 引用文本与出处<b>同一行</b>。只按「行含出处」扫描，引文里提到的书名会一起被采信
+     * （实测过：图谱边的 quote 引用《消费者权益保护法》条款，它就被洗成了合法出处）。
+     * 引文一定以左引号开头，所以扫到第一个左引号为止即可，不必枚举「原文／引文／片段」这类标签。
+     */
+    public static void collectToolTitles(Set<String> into, String toolOutput) {
+        if (toolOutput == null || toolOutput.isBlank()) {
+            return;
+        }
+        for (String line : toolOutput.split("\n")) {
+            int marker = line.indexOf("出处：");
+            if (marker < 0) {
+                continue;
+            }
+            String head = line.substring(0, quoteStart(line, marker + "出处：".length()));
+            Matcher m = TITLE_CITATION.matcher(head);
+            while (m.find()) {
+                into.add(normalizeTitle(m.group(1)));
+            }
+        }
+    }
+
+    /** 从 {@code from} 起第一个左引号的下标；没有引号就返回行尾（整行都是出处） */
+    private static int quoteStart(String line, int from) {
+        for (int i = from; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '「' || c == '“' || c == '"') {
+                return i;
+            }
+        }
+        return line.length();
+    }
+
+    /** 标题比对忽略空白：模型会漏掉「维生素 D3」里的空格，其余逐字 */
+    public static String normalizeTitle(String title) {
+        return title.replaceAll("\\s+", "");
     }
 
     /**
      * 这句话是否在陈述一条需要出处的事实。
      * <p>
-     * 两条同时成立才算：够长（不是寒暄）、且带着事实信号（数字或规范性词）。
-     * 这个判据刻意保守——它要放过「好的，我帮你查一下」，也要放过订单号与物流时效，
-     * 那些数字来自工具返回，本来就没有引用可标。
+     * 三条同时成立才算：够长（不是寒暄）、带着事实信号（数字或规范性词）、
+     * 且不是在说「关于对话或检索本身」的元陈述。
+     * <p>
+     * 后一条是两次真实误伤换来的：模型答「知识库中未检索到宠物食品召回条款」时，
+     * 前半句「你问的是…的规定」与后半句「未检索到…」都被判成「讲事实却没出处」，
+     * 一起从回答里删掉了——而这两句恰恰是整段回答的骨架，剩下的规则罗列反而
+     * 读不出结论。判据见 {@link #ECHO_LEAD} 与 {@link #ABSENCE_SIGNAL}。
      */
     private static boolean needsCitation(String sentence) {
         String trimmed = sentence.trim();
@@ -222,6 +417,9 @@ public final class CitationVerifier {
             return false;
         }
         if (trimmed.codePointCount(0, trimmed.length()) < FACT_MIN_LENGTH) {
+            return false;
+        }
+        if (ECHO_LEAD.matcher(trimmed).find() || ABSENCE_SIGNAL.matcher(trimmed).find()) {
             return false;
         }
         return FACT_SIGNAL.matcher(trimmed).find();

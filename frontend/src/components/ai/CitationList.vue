@@ -11,6 +11,13 @@ const props = defineProps<{
   listId: string
   /** 证据门判定。`WEAK` 时这一块不能叫「依据」 */
   evidenceLevel?: EvidenceLevel | null
+  /**
+   * 本轮检索实际使用的查询句，仅在追问被改写时才有。
+   *
+   * 放在这一块而不是工具轨迹里：它解释的正是**这批资料是怎么来的**——
+   * 「依据 0 条」到底是库里没有，还是那句「那它呢」没被读懂，两者在这里分得开。
+   */
+  retrievalQuery?: string | null
 }>()
 
 /**
@@ -25,6 +32,14 @@ const props = defineProps<{
  */
 const weak = computed(() => props.evidenceLevel === 'WEAK')
 const title = computed(() => (weak.value ? '参考' : '依据'))
+/**
+ * 一条都没检回来。
+ *
+ * 这一块仍然要出现：**它解释的正是「为什么什么都没检到」**——改写后的检索句就摆在下面。
+ * 原先整块随命中数一起消失，于是最需要解释的那一次恰好没有解释：
+ * 用户看到「没有找到相关内容」，无从分辨是库里没有，还是他那句「那它呢」没被读懂。
+ */
+const empty = computed(() => props.items.length === 0)
 
 /**
  * 卡片整块就是去原文的链接 —— 不再单放一个「查看原文」按钮。
@@ -42,14 +57,22 @@ function toChunk(item: KnowledgeSnippet) {
 
 <template>
   <section class="citations" :class="{ 'citations--weak': weak }" :aria-label="`${title}资料`">
-    <h4 class="citations__title">
+    <h4 v-if="!empty" class="citations__title">
       <span aria-hidden="true">§</span> {{ title }} {{ items.length }} 条
     </h4>
     <p v-if="weak" class="citations__note">
       检索到这些内容，但相关度不足，<strong>不能作为回答依据</strong>，仅供你自行判断。
     </p>
+    <!--
+      改写过才显示：这一句解释的是「资料按什么检回来的」，与本轮问句不同才有信息量，
+      相同的时候显示它只是把用户刚说的话重复一遍。
+    -->
+    <p v-if="retrievalQuery" class="citations__query">
+      按「<span class="citations__query-text">{{ retrievalQuery }}</span>」检索
+    </p>
+    <p v-if="empty" class="citations__note">没有检索到相关资料。</p>
 
-    <ol class="citations__list">
+    <ol v-if="!empty" class="citations__list">
       <li
         v-for="(item, i) in items"
         :id="`cite-${listId}-${i + 1}`"
@@ -109,6 +132,17 @@ function toChunk(item: KnowledgeSnippet) {
 .citations__note strong {
   color: var(--color-warning);
   font-weight: 600;
+}
+
+/* 检索句：与本块同为「这批资料的来路」，但比标题轻——它是注解，不是内容 */
+.citations__query {
+  margin: calc(var(--ys-space-2) * -1) 0 var(--ys-space-3);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+}
+
+.citations__query-text {
+  color: var(--color-text-secondary);
 }
 
 .citations__list {

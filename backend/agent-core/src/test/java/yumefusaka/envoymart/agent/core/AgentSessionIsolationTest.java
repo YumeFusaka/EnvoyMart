@@ -12,6 +12,7 @@ import yumefusaka.envoymart.agent.memory.ShortTermMemory;
 import yumefusaka.envoymart.agent.memory.UserProfileStore;
 import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
+import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
@@ -83,7 +84,9 @@ class AgentSessionIsolationTest {
                 new EpisodicMemory(),
                 new UserProfileStore(),
                 NO_KNOWLEDGE,
-                null);
+                null,
+                // Mock 不支持推理，改写会自动退回原句——本用例守的是会话隔离，不测改写
+                new QueryRewriter(llm, llmConfig));
     }
 
     private List<String> seenByModel() {

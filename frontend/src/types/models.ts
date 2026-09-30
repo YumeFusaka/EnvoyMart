@@ -487,6 +487,13 @@ export interface ChatResponse {
    */
   evidenceLevel: EvidenceLevel | null
   /**
+   * 本轮检索**实际使用的查询句**，仅在发生指代消解改写、且与用户原话不同时下发。
+   *
+   * 追问句「那它呢」原样去检索什么都召不回。有这一句，用户才能看懂这批资料是拿什么
+   * 检回来的——「依据 0 条」到底是库里没有，还是那句追问没被读懂，两者在这里分得开。
+   */
+  retrievalQuery?: string | null
+  /**
    * 讲了一条事实却没交代出处、已被后端从 `reply` 里剔除的句子。
    *
    * 剔除了却仍然下发：用户该看到回答里少了什么、为什么少。**有内容不等于都被剔了**——
@@ -546,6 +553,8 @@ export interface ChatMessage {
   pendingActions?: string[]
   /** 证据门判定，随 `knowledge` 一起透传给引用区，决定标题措辞 */
   evidenceLevel?: EvidenceLevel
+  /** 本轮检索实际使用的查询句（发生过指代消解改写时才有），透传给引用区标明来路 */
+  retrievalQuery?: string
   /**
    * 讲了一条事实却没交代出处、已被后端从正文里剔除的句子。
    *

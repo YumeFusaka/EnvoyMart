@@ -99,6 +99,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .requestId(RequestId.current())
                 .sessionId(request.getSessionId())
                 .reply(agentResp.getReply())
+                .retrievalQuery(agentResp.getRetrievalQuery())
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
                 .recommendedProducts(extractProducts(executions))

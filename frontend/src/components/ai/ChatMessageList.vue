@@ -182,11 +182,17 @@ async function handleCopy(message: ChatMessage) {
         </div>
       </details>
 
+      <!--
+        零命中也要渲染：这时它唯一的内容是「按『…』检索」那一行，
+        而那一行恰恰是「为什么没查到」的答案。只在确定没有改写时（既不命中、又没改写句）
+        才整块省略 —— 那种情况下这一块没有任何可说的东西。
+      -->
       <CitationList
-        v-if="message.knowledge?.length"
-        :items="message.knowledge"
+        v-if="message.knowledge?.length || message.retrievalQuery"
+        :items="message.knowledge ?? []"
         :list-id="message.id"
         :evidence-level="message.evidenceLevel"
+        :retrieval-query="message.retrievalQuery"
         :active-index="activeCite?.messageId === message.id ? activeCite.index : null"
       />
 

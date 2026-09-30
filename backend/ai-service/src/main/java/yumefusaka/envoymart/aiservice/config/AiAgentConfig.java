@@ -44,6 +44,7 @@ import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.llm.LangChain4jLLMProvider;
 import yumefusaka.envoymart.aiservice.tool.CancelOrderTool;
 import yumefusaka.envoymart.aiservice.tool.InteractionCheckTool;
+import yumefusaka.envoymart.aiservice.tool.KnowledgeSearchTool;
 import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
@@ -190,6 +191,7 @@ public class AiAgentConfig {
     @Bean
     public ToolRegistry toolRegistry(OrderClient orderClient, ProductClient productClient,
                                      KnowledgeClient knowledgeClient,
+                                     SimpleRAGEngine ragEngine,
                                      MeterRegistry meterRegistry) {
         ToolRegistry registry = new ToolRegistry(new MicrometerToolCallListener(meterRegistry));
         registry.registerAll(List.of(
@@ -197,7 +199,10 @@ public class AiAgentConfig {
                 new LogisticsTool(orderClient),
                 new ProductTool(productClient),
                 new CancelOrderTool(orderClient),
-                new InteractionCheckTool(knowledgeClient)
+                new InteractionCheckTool(knowledgeClient),
+                // 再检索把开头那一次的单次机会变成 ReAct 途中的按需机会，
+                // 检索句质量由 QueryRewriter 的指代消解兜底（两者是同一条链路的两个时刻）
+                new KnowledgeSearchTool(ragEngine)
         ));
         return registry;
     }
@@ -491,6 +496,16 @@ public class AiAgentConfig {
         return new AgentGraph(llmProvider, llmConfig, toolRegistry, agentExecutor);
     }
 
+    /**
+     * 检索查询改写器 —— 指代消解进检索侧（RAG 检索 / 记忆召回 / 意图路由三处共用一次改写）。
+     * <p>
+     * 无 Key 的 Mock 路径由 {@code supportsReasoning()} 自动短路，不产生调用。
+     */
+    @Bean
+    public QueryRewriter queryRewriter(LLMProvider llmProvider, LLMConfig llmConfig) {
+        return new QueryRewriter(llmProvider, llmConfig);
+    }
+
     @Bean
     public Agent agent(ToolRegistry toolRegistry,
                        IntentRouter intentRouter,
@@ -499,13 +514,14 @@ public class AiAgentConfig {
                        EpisodicMemory episodicMemory,
                        UserProfileStore userProfileStore,
                        SimpleRAGEngine ragEngine,
-                       MemoryConsolidator memoryConsolidator) {
+                       MemoryConsolidator memoryConsolidator,
+                       QueryRewriter queryRewriter) {
         return new Agent(
                 Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3)
                         .consolidationEveryTurns(3).build(),
                 toolRegistry, intentRouter, agentGraph,
                 shortTermMemory, episodicMemory, userProfileStore, ragEngine,
-                memoryConsolidator
+                memoryConsolidator, queryRewriter
         );
     }
 }

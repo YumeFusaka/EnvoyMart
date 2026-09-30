@@ -74,7 +74,7 @@ public class AiController {
         streamExecutor.submit(RequestId.inherit(() -> {
             try {
                 ChatResponse response = aiAssistantService.chatStream(userId, request, chunk -> send(emitter, "delta", chunk));
-                emitter.send(SseEmitter.event().name("done").data(response, MediaType.APPLICATION_JSON));
+                sendFinal(emitter, response);
                 emitter.complete();
             } catch (Exception e) {
                 log.error("[SSE] chat stream failed", e);
@@ -91,6 +91,21 @@ public class AiController {
         } catch (IOException | IllegalStateException e) {
             // 客户端提前断开属正常情况，不需要向上抛
             log.debug("[SSE] client disconnected: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 终态事件的发送。
+     * <p>
+     * 客户端在这一刻断开（关页面、切会话、点停止）是常态而非故障，所以不能让它冒泡成
+     * ERROR + 堆栈——但也不能像 {@code delta} 那样只记 debug：增量的丢失是「少看了半句」，
+     * 终态的丢失意味着**引用、工具轨迹、用量全部没到用户手上**，整轮白跑，必须留痕。
+     */
+    private void sendFinal(SseEmitter emitter, ChatResponse response) {
+        try {
+            emitter.send(SseEmitter.event().name("done").data(response, MediaType.APPLICATION_JSON));
+        } catch (IOException | IllegalStateException e) {
+            log.warn("[SSE] 终态未送达，本轮结果用户不可见：{}", e.getMessage());
         }
     }
 

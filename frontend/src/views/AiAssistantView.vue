@@ -103,6 +103,7 @@ function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[
       ? response.recommendedProducts
       : undefined,
     evidenceLevel: response?.evidenceLevel ?? undefined,
+    retrievalQuery: response?.retrievalQuery ?? undefined,
     unsupportedClaims: response?.unsupportedClaims?.length ? response.unsupportedClaims : undefined,
     unsupportedStripped: response?.unsupportedStripped,
     ungrounded: response?.ungrounded,
@@ -331,6 +332,7 @@ async function sendMessage(message = input.value, approved = false) {
           // 非空即本轮被中断：回复是确认提示，没有任何工具真正执行过
           assistantMessage.pendingActions = response.pendingActions ?? undefined
           assistantMessage.evidenceLevel = response.evidenceLevel ?? undefined
+          assistantMessage.retrievalQuery = response.retrievalQuery ?? undefined
           // 后置校验的两项结果。流式下 delta 已经渲染过了，`content` 的赋值在上面
           // ——它会把没有出处的句子擦掉，用户看到的最终文本与校验结果是一致的
           assistantMessage.unsupportedClaims = response.unsupportedClaims ?? undefined

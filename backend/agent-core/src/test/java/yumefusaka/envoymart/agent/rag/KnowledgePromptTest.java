@@ -121,6 +121,42 @@ class KnowledgePromptTest {
     }
 
     /**
+     * 证据不足的两个分支要给「先换词再查一次」这条出路 —— <b>但只在工具真的在册时</b>。
+     * <p>
+     * 不给这条出路时，WEAK / NONE 对模型是一份自洽的行动方案（不下结论、如实说没查到），
+     * 它照着办就很合理：实测工具在册却一轮都没被调用过。给了不存在的能力则更糟——
+     * 模型会去调一个没有的工具，日志上只表现为「没有调用任何工具」。
+     */
+    @Test
+    void 再检索工具在册时给出换词再查的出路() {
+        var weak = KnowledgePrompt.render(
+                List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.12)),
+                EvidenceGate.evaluate(List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.12)), T),
+                true);
+        var none = KnowledgePrompt.render(List.of(), EvidenceGate.evaluate(List.of(), T), true);
+
+        assertThat(weak.text())
+                .contains(KnowledgePrompt.SEARCH_TOOL_NAME)
+                .as("要说清换成什么词，否则模型会把同一句问话原样再查一遍")
+                .contains("不要原样重复问句")
+                .as("给了出路也不能松掉拒答底线")
+                .contains("不得作为结论依据");
+        assertThat(none.text()).contains(KnowledgePrompt.SEARCH_TOOL_NAME).contains("没有找到相关依据");
+    }
+
+    @Test
+    void 工具不在册时两个分支都不提再检索() {
+        var weak = render(List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.12)));
+        var none = render(List.of());
+
+        assertThat(weak.text()).doesNotContain(KnowledgePrompt.SEARCH_TOOL_NAME);
+        assertThat(none.text()).doesNotContain(KnowledgePrompt.SEARCH_TOOL_NAME);
+        assertThat(render(List.of(chunk("d1", "《维生素 D3 软胶囊说明书》 > 第二章", 0.78))).text())
+                .as("证据充分时没有理由再查一次，这条出路不该出现")
+                .doesNotContain(KnowledgePrompt.SEARCH_TOOL_NAME);
+    }
+
+    /**
      * 证据不足时<b>不下发「低于可信阈值」这句内部判断</b>。
      * <p>
      * 曾经这里写着「相关度 0.12 低于可信阈值」，模型就照着念给用户听

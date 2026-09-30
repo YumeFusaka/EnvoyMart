@@ -2,6 +2,8 @@ package yumefusaka.envoymart.agent.rag;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -203,5 +205,205 @@ class CitationVerifierTest {
         assertThat(CitationVerifier.verify("", 1, false).coverage())
                 .as("无话可说时不该报出 0 覆盖率")
                 .isEqualTo(1.0);
+    }
+
+    // ==================== 工具检索链路的《文档名》出处 ====================
+
+    /**
+     * 工具检索到的知识用《文档名》标出处，必须被认成有效引用。
+     * <p>
+     * 这些句子带数字、够长，长得和「编造的断言」一模一样——不认《》写法，
+     * 它们会被逐句剔除，而内容其实有真出处，只是出处不是编号。
+     */
+    @Test
+    void 平台声明过的标题作为出处被采信() {
+        var titles = java.util.Set.of("深海鱼油说明书");
+        var verdict = CitationVerifier.verify(
+                "深海鱼油与华法林合用可能增加出血风险（《深海鱼油说明书》）。上限为 2000IU [1]。",
+                1, true, titles);
+
+        assertThat(verdict.cited()).isEqualTo(2);
+        assertThat(verdict.unsupported()).isEmpty();
+        assertThat(verdict.stripped()).isFalse();
+    }
+
+    /** 反例：模型编的《XX 规范》不在平台声明过的标题里，采信它就等于给编造句洗出处 */
+    @Test
+    void 未声明过的标题不算出处() {
+        var titles = java.util.Set.of("深海鱼油说明书");
+        var verdict = CitationVerifier.verify(
+                "依据《平台营养补充剂管理规范》，每日摄入不得超过 5000IU。上限为 2000IU [1]。",
+                1, true, titles);
+
+        assertThat(verdict.unsupported()).containsExactly("依据《平台营养补充剂管理规范》，每日摄入不得超过 5000IU。");
+        assertThat(verdict.stripped()).isTrue();
+    }
+
+    /**
+     * 旧的三参调用不认《》——没传标题集合时识别面为零，行为与改造前逐字一致。
+     * <p>
+     * 用例句必须自带事实信号（数字或规范性词），否则它本来就进不了判据，
+     * 测出来的「未剔除」是假通过：证明不了《》被忽略，只证明了这句话没被当成断言。
+     */
+    @Test
+    void 不传标题集合时书名号不被识别() {
+        var verdict = CitationVerifier.verify(
+                "《深海鱼油说明书》规定每日不得超过 3000mg。上限为 2000IU [1]。", 1, true);
+
+        assertThat(verdict.unsupported())
+                .containsExactly("《深海鱼油说明书》规定每日不得超过 3000mg。");
+    }
+
+    /** 标题比对忽略空白：模型会漏掉「维生素 D3」里的空格 */
+    @Test
+    void 标题比对忽略空白差异() {
+        var titles = new java.util.LinkedHashSet<String>();
+        CitationVerifier.collectTitles(titles, "维生素 D3 说明书", "《维生素 D3 说明书》 > 第二章");
+
+        var verdict = CitationVerifier.verify(
+                "每日上限为 4000IU（《维生素D3说明书》）。", 0, true, titles);
+
+        assertThat(verdict.unsupported()).isEmpty();
+    }
+
+    /**
+     * 工具输出的标题只从「出处：」段采信。
+     * <p>
+     * 全篇扫描会把检索回来的原文引用里任意书名（如法条名）都升级成平台出处——
+     * 而正文里引用一段提到《消费者权益保护法》的资料，不等于平台声明了该法为出处。
+     * <p>
+     * <b>两组夹具都要在</b>：出处与引文<b>同行</b>是真实渲染格式（见
+     * InteractionCheckTool#riskLine），只按「行含出处」扫描时它才是漏网的那一种；
+     * 分行只是同一条规则的另一种排版。
+     */
+    @Test
+    void 工具输出只从出处段采信标题() {
+        var sameLine = new java.util.LinkedHashSet<String>();
+        CitationVerifier.collectToolTitles(sameLine,
+                "  ⚠ 慎用：与「华法林」 —— 增加出血风险\n"
+                        + "      出处：《深海鱼油说明书》｜原文：「本品与《中国居民膳食指南》的建议不同。」\n");
+
+        var wrapped = new java.util.LinkedHashSet<String>();
+        CitationVerifier.collectToolTitles(wrapped,
+                "[片段 1] 出处：《深海鱼油说明书》 > 第三章\n"
+                        + "原文：本品的服用请参照《中国居民膳食指南》相关建议。\n");
+
+        assertThat(sameLine).as("引文里的书名不能跟着同行出处一起被采信").containsExactly("深海鱼油说明书");
+        assertThat(wrapped).containsExactly("深海鱼油说明书");
+    }
+
+    /** 切片标题本身不带书名号时也要收——位置串里带《》的形态同样收 */
+    @Test
+    void 证据标题与位置串两种形态都收集() {
+        var titles = new java.util.LinkedHashSet<String>();
+        CitationVerifier.collectTitles(titles, "深海鱼油说明书", null);
+        CitationVerifier.collectTitles(titles, null, "《维生素 D3 说明书》 > 第二章 > 3.2");
+
+        assertThat(titles).containsExactlyInAnyOrder("深海鱼油说明书", "维生素D3说明书");
+    }
+
+    /**
+     * 拒答回答的两句骨架不该被当成「讲事实却没出处」。
+     * <p>
+     * 实测样本（问知识库里没有的类目时的真实回答）：模型先说「你问的是…的规定」，
+     * 再说「知识库中未检索到…条款」——两句都被判违规并删掉，剩下的规则罗列
+     * 反而读不出结论。它们的依据分别是「用户刚说过的话」和「检索结果为空」，
+     * 两者都没有可标的出处，也不该有。
+     */
+    @Test
+    void 复述问题与说明检索为空的句子不要求引用() {
+        String reply = "你问的是平台对宠物食品召回政策的规定。当前知识库中未检索到相关条款。"
+                + "平台退换货政策总则适用于食品类商品 [1]。";
+
+        var verdict = CitationVerifier.verify(reply, 1, false);
+
+        assertThat(verdict.unsupported()).isEmpty();
+        assertThat(verdict.reply()).as("两句骨架原样保留").isEqualTo(reply);
+    }
+
+    /**
+     * 上一条的反向边界：豁免必须窄到只放过「不存在」。
+     * <p>
+     * 「不」是否定谓词，句子的命题仍然是一条事实——「本品不适用于孕妇」若被豁免，
+     * 模型写「本品不适用于孕妇，每日摄入不得超过 1000IU」就再没人拦了。
+     */
+    @Test
+    void 否定谓词的事实断言仍然要求引用() {
+        var verdict = CitationVerifier.verify(
+                "本品不适用于孕妇，每日摄入不得超过 1000IU。每日推荐摄入量为 400IU [1]。", 1, false);
+
+        assertThat(verdict.unsupported()).containsExactly("本品不适用于孕妇，每日摄入不得超过 1000IU。");
+    }
+
+    /**
+     * 剔除会留下「孤儿标题」：标题行本身不含断言，永远不违规，但它唯一的正文被抠掉了，
+     * 用户看到的是一个标题下面直接跟着另一个标题。留着它比留着那句没出处的话更糟——
+     * 读者会以为平台"确实有这么一段注意事项"，只是内容没渲染出来。
+     */
+    @Test
+    void 剔除之后不留下面空着的标题() {
+        String reply = "平台规则如下 [1]。\n\n⚠️ 注意：\n"
+                + "- 平台规定宠物食品保质期不得少于 12 个月。\n\n✅ 建议：\n- 查看商品页标注的保质期。";
+
+        var verdict = CitationVerifier.verify(reply, 1, false);
+
+        assertThat(verdict.stripped()).isTrue();
+        assertThat(verdict.reply())
+                .doesNotContain("⚠️ 注意")
+                .as("下面有内容的标题不能跟着一起被删")
+                .contains("✅ 建议：")
+                .contains("查看商品页标注的保质期");
+    }
+
+    // ==================== 《文档名》→[n] 归一化 ====================
+    // 模型手上有两套出处写法，而它按文档分、不按来源分：同一个文档在 prompt 证据与
+    // 工具结果里都出现时，它会把整篇统一写成书名号。编号是界面上点回原文的唯一入口，
+    // 提示词两侧都写了「各管各的」，但提示词是请求不是保证——这里是那个保证。
+
+    @Test
+    void 指得出证据的文档名被换回编号() {
+        String reply = CitationVerifier.numberTitles(
+                "每日上限为 2000IU（《维生素 D3 说明书》）。与华法林同服需谨慎（《药物相互作用手册》）。",
+                List.of(chunk("维生素D3说明书", "《维生素 D3 说明书》 > 第二章 > 3.2"),
+                        chunk("药物相互作用手册", null)));
+
+        assertThat(reply)
+                .as("标题只在空白上不同也要认；位置串里的标题与标题字段是同一个出处")
+                .isEqualTo("每日上限为 2000IU（[1]）。与华法林同服需谨慎（[2]）。");
+    }
+
+    @Test
+    void 不在证据里的文档名原样保留() {
+        String reply = CitationVerifier.numberTitles(
+                "平台对宠物食品的规定见（《宠物用品类目管理规范》）。", List.of(chunk("维生素D3说明书", null)));
+
+        assertThat(reply)
+                .as("平台从没声明过的书名不是证据，不能凭空给它一个编号")
+                .isEqualTo("平台对宠物食品的规定见（《宠物用品类目管理规范》）。");
+    }
+
+    /**
+     * 同一份文档切成多片是常态（本项目 16 篇 / 132 片）。
+     * <p>
+     * 取最靠前的那条：模型写《文档名》时本来就没指明是哪个切片，指向该文档最相关
+     * ——即排在前面——的那条，不比一个不能点的书名号更错，而它让用户有得点。
+     */
+    @Test
+    void 同一文档多切片指向最靠前的那一条() {
+        String reply = CitationVerifier.numberTitles(
+                "上限为 2000IU（《维生素D3说明书》）。",
+                List.of(chunk("其他文档", null),
+                        chunk("维生素D3说明书", null),
+                        chunk("维生素D3说明书", null)));
+
+        assertThat(reply).isEqualTo("上限为 2000IU（[2]）。");
+    }
+
+    private static DocumentChunk chunk(String title, String position) {
+        return DocumentChunk.builder()
+                .chunkId(title + "#" + position)
+                .title(title)
+                .position(position)
+                .build();
     }
 }

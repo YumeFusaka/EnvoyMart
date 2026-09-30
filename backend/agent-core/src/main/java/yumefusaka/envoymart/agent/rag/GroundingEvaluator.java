@@ -181,7 +181,15 @@ public final class GroundingEvaluator {
     private static CaseOutcome evaluateCase(Sample sample) {
         int evidenceCount = sample.evidence() == null ? 0 : sample.evidence().size();
         String answer = sample.answer() == null ? "" : sample.answer();
-        CitationVerifier.Verdict verdict = CitationVerifier.verify(answer, evidenceCount, sample.toolEvidence());
+        Set<String> citableTitles = citableTitlesOf(sample);
+        // 与生产同口径（见 Agent#groundResponse）：不认《文档名》，工具检索出来的切片
+        // 一旦被标了出处，评测侧照样判它「未支撑」，幻觉率就会比线上真实表现高——
+        // 而这一批的提示词正把回答推向工具检索，两把尺子的差只会越拉越大。
+        //
+        // 仍然保留的唯一不对称：工具输出里「出处：」行声明的标题。离线样本不存工具输出，
+        // 收不到；线上收得到。它只可能让线上比评测更宽，不会让评测比线上更松。
+        CitationVerifier.Verdict verdict =
+                CitationVerifier.verify(answer, evidenceCount, sample.toolEvidence(), citableTitles);
 
         boolean answerable = sample.kind() != GroundingFixtures.Kind.UNANSWERABLE;
         boolean gateRefused = sample.evidenceLevel() != EvidenceGate.Level.SUFFICIENT;
@@ -189,7 +197,7 @@ public final class GroundingEvaluator {
         int outOfRange = countOutOfRange(answer, evidenceCount);
         boolean multiHopHit = sample.kind() == GroundingFixtures.Kind.MULTI_HOP
                 && anchorsMissingFromAnswer(sample).isEmpty()
-                && distinctCitedDocs(sample, evidenceCount) >= 2;
+                && distinctCitedDocs(sample, evidenceCount, citableTitles) >= 2;
 
         // 不该答的用例只看一件事：门判得对不对。它答了什么不进另外三项的账——
         // 那些账的分母是"该答的题"，把拒答的产出混进来会两头失真
@@ -429,16 +437,58 @@ public final class GroundingEvaluator {
     }
 
     /** 答案实际引用到的不同文档数 —— 多跳的"跨文档"这一半判据 */
-    private static int distinctCitedDocs(Sample sample, int evidenceCount) {
+    private static int distinctCitedDocs(Sample sample, int evidenceCount, Set<String> citableTitles) {
         Set<String> docs = new LinkedHashSet<>();
-        Matcher matcher = CITATION.matcher(sample.answer() == null ? "" : sample.answer());
+        String answer = sample.answer() == null ? "" : sample.answer();
+        Matcher matcher = CITATION.matcher(answer);
         while (matcher.find()) {
             int no = Integer.parseInt(matcher.group(1));
             if (no >= 1 && no <= evidenceCount && sample.evidence().get(no - 1) != null) {
                 docs.add(String.valueOf(sample.evidence().get(no - 1).getDocId()));
             }
         }
+        // 工具检索出来的切片没有角标可标，出处只能写成《文档名》。同一篇文档两种写法
+        // 要归一到同一个身份——否则「用 [1] 引了 A、又用《A》引了一次」会被数成两篇，
+        // 多跳命中率就成了自己给自己发的好成绩
+        for (String title : titlesCitedIn(answer, citableTitles)) {
+            String docId = docIdOfTitle(sample, title);
+            docs.add(docId != null ? docId : "《" + title + "》");
+        }
         return docs.size();
+    }
+
+    /** 样本证据里出现过的标题，用于把《文档名》引用还原成文档身份 */
+    private static Set<String> citableTitlesOf(Sample sample) {
+        Set<String> titles = new LinkedHashSet<>();
+        if (sample.evidence() != null) {
+            for (DocumentChunk chunk : sample.evidence()) {
+                CitationVerifier.collectTitles(titles, chunk.getTitle(), chunk.getPosition());
+            }
+        }
+        return titles;
+    }
+
+    /** 正文里引到的、且平台声明过的标题 */
+    private static Set<String> titlesCitedIn(String answer, Set<String> citableTitles) {
+        Set<String> cited = new LinkedHashSet<>();
+        for (String title : CitationVerifier.titlesIn(answer)) {
+            if (citableTitles.contains(title)) {
+                cited.add(title);
+            }
+        }
+        return cited;
+    }
+
+    private static String docIdOfTitle(Sample sample, String title) {
+        if (sample.evidence() == null) {
+            return null;
+        }
+        for (DocumentChunk chunk : sample.evidence()) {
+            if (title.equals(CitationVerifier.normalizeTitle(chunk.getTitle()))) {
+                return chunk.getDocId();
+            }
+        }
+        return null;
     }
 
     /**

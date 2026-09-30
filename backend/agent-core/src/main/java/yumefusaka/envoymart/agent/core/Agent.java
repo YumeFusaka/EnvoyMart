@@ -24,12 +24,16 @@ import yumefusaka.envoymart.agent.rag.ConflictReporter;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.KnowledgePrompt;
+import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -61,6 +65,7 @@ public class Agent {
     private final UserProfileStore profileStore;
     private final RAGEngine ragEngine;
     private final MemoryConsolidator consolidator;
+    private final QueryRewriter queryRewriter;
 
     /** 各会话的对话轮次计数，用于按间隔触发记忆抽取 */
     private final Map<String, Integer> turnCounters = new ConcurrentHashMap<>();
@@ -73,7 +78,8 @@ public class Agent {
                  Memory episodicMemory,
                  UserProfileStore profileStore,
                  RAGEngine ragEngine,
-                 MemoryConsolidator consolidator) {
+                 MemoryConsolidator consolidator,
+                 QueryRewriter queryRewriter) {
         this.config = config;
         this.toolRegistry = toolRegistry;
         this.intentRouter = intentRouter;
@@ -83,6 +89,7 @@ public class Agent {
         this.profileStore = profileStore;
         this.ragEngine = ragEngine;
         this.consolidator = consolidator;
+        this.queryRewriter = queryRewriter;
     }
 
     public AgentResponse chat(String userId, String sessionId, String message, boolean approved) {
@@ -99,17 +106,24 @@ public class Agent {
                                  boolean approved, Consumer<String> onChunk) {
         log.info("[Agent] chat userId={} sessionId={} approved={}", userId, sessionId, approved);
 
+        String scopedSession = ShortTermMemoryStore.scoped(userId, sessionId);
+
+        // 0. 指代消解：改写必须先于记录本轮消息——喂给它的历史里不能含本轮，
+        //    否则「那它呢」的「它」在历史里已经指到了本轮自己
+        String retrievalQuery = queryRewriter.rewrite(message, recentConversation(scopedSession));
+
         // 1. 记录用户消息
         shortTermMemory.add(MemoryItem.builder()
                 .id(UUID.randomUUID().toString())
                 .userId(userId)
-                .sessionId(ShortTermMemoryStore.scoped(userId, sessionId))
+                .sessionId(scopedSession)
                 .content("user: " + message)
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
 
         // 2. RAG 检索 + 长期记忆召回 → system prompt
-        List<DocumentChunk> knowledge = ragEngine.retrieve(message, config.getRagTopK());
+        //    检索用改写句（有历史时），回答侧仍用用户原话——分工的理由见 QueryRewriter
+        List<DocumentChunk> knowledge = ragEngine.retrieve(retrievalQuery, config.getRagTopK());
         // 证据门判定在这里算一次，同时喂给 prompt 和响应体。
         //
         // 为什么必须共用同一个判定：prompt 里 WEAK 分支明说「不得作为结论依据」，
@@ -119,13 +133,13 @@ public class Agent {
         // 这套规则复制出第二份，两边迟早不一致
         EvidenceGate.Decision evidence = EvidenceGate.evaluate(knowledge, config.getRagGateThresholds());
         // 召回必须带 userId：记忆是"对这个用户成立的事实"，不带用户维度的检索会召回别人的人生
-        List<MemoryItem> episodes = episodicMemory.recall(userId, message, config.getLongTermRecallTopK());
+        List<MemoryItem> episodes = episodicMemory.recall(userId, retrievalQuery, config.getLongTermRecallTopK());
         UserProfile profile = profileStore.get(userId);
         String systemPrompt = buildSystemPrompt(profile, episodes, knowledge, evidence);
 
         AgentResponse response;
         try {
-            response = execute(userId, sessionId, message, systemPrompt, knowledge, approved, onChunk);
+            response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, knowledge, approved, onChunk);
             response.setEvidenceLevel(evidence.level());
         } catch (Exception e) {
             log.error("[Agent] chat failed, degrade to fallback reply", e);
@@ -137,13 +151,17 @@ public class Agent {
                     .build();
         }
         // 两道后置关放在 try 之外：降级回答同样要过——它也是一段要发给用户的话
-        groundResponse(response, knowledge.size());
+        groundResponse(response, knowledge);
+
+        // 只在真的改写过时下发：检索用了什么句，是「回答为什么对/为什么没查到」的
+        // 第一手证据（日志里也有一份），不为没改写的情况塞一个与 message 相同的值
+        response.setRetrievalQuery(retrievalQuery.equals(message) ? null : retrievalQuery);
 
         // 3. 记录回复
         shortTermMemory.add(MemoryItem.builder()
                 .id(UUID.randomUUID().toString())
                 .userId(userId)
-                .sessionId(ShortTermMemoryStore.scoped(userId, sessionId))
+                .sessionId(scopedSession)
                 .content("assistant: " + response.getReply())
                 .type(MemoryItem.Type.MESSAGE)
                 .build());
@@ -154,16 +172,27 @@ public class Agent {
         return response;
     }
 
-    /** 入口守卫 → 确定性流程 或 执行图。 */
-    private AgentResponse execute(String userId, String sessionId, String message, String systemPrompt,
-                                  List<DocumentChunk> knowledge, boolean approved, Consumer<String> onChunk) {
+    /**
+     * 入口守卫 → 确定性流程 或 执行图。
+     * <p>
+     * {@code message} 与 {@code retrievalQuery} 的分工：<b>路由、流程执行与检索用改写句，
+     * 回答生成用原话</b>。改写句是「同一句话把省略的主语补回来」，指代追问靠它才落得到
+     * 具体对象上；而回答那一步手上有完整对话历史，用原话是为了留住用户自己的措辞。
+     * <p>
+     * 流程必须吃改写句，因为它<b>先拿这句话做参数校验、再拿同一句话抽参数</b>
+     * （见 {@link DeterministicFlow#matches}）：喂原话进去，「那个订单我要退掉」校验时
+     * 能过、执行时抽不到订单号，两者用的是同一句话这个前提就断了。
+     */
+    private AgentResponse execute(String userId, String sessionId, String message, String retrievalQuery,
+                                  String systemPrompt, List<DocumentChunk> knowledge, boolean approved,
+                                  Consumer<String> onChunk) {
 
-        Optional<DeterministicFlow> flowOpt = intentRouter.route(message);
+        Optional<DeterministicFlow> flowOpt = intentRouter.route(retrievalQuery);
         if (flowOpt.isPresent()) {
             DeterministicFlow flow = flowOpt.get();
             log.debug("[Agent] routed to deterministic flow: {}", flow.getName());
             FlowResult result = flow.execute(FlowContext.builder()
-                    .userId(userId).sessionId(sessionId).userMessage(message)
+                    .userId(userId).sessionId(sessionId).userMessage(retrievalQuery)
                     .toolRegistry(toolRegistry)
                     .build());
             emit(onChunk, result.getOutput());
@@ -233,11 +262,24 @@ public class Agent {
      * 流式下这里改写的是 done 帧里的完整答案，而 delta 已经推出去了；
      * 前端会用 done 帧覆盖已渲染文本。原因见 {@link CitationVerifier}。
      */
-    private void groundResponse(AgentResponse response, int evidenceCount) {
+    private void groundResponse(AgentResponse response, List<DocumentChunk> knowledge) {
         if (response == null || response.getReply() == null || response.getReply().isBlank()) {
             return;
         }
-        ConflictReporter.Report report = ConflictReporter.extract(response.getReply(), evidenceCount);
+        // 本轮证据 = 入口检索 + 工具中途检索到的切片，后者接在入口之后编号：
+        // 先到的编号一个不动，提示词里 [1..k] 的含义不受影响。
+        //
+        // 接进来是为了一件事：让工具查到的切片也能被引用。它们此前只以《文档名》的形式
+        // 存在于工具输出文本里，既不在知识依据列表里、也不占用编号——模型引用了它们，
+        // 界面上却没有角标可点，溯源链路断在最后一米。切片本来就以结构化形态挂在
+        // ToolExecution.rawData 上（见 KnowledgeSearchTool），不需要从文本反解
+        List<DocumentChunk> evidence = withToolChunks(knowledge, response.getToolExecutions());
+        response.setKnowledge(evidence);
+        int evidenceCount = evidence.size();
+
+        // 《文档名》→[n] 必须先于冲突抽取：冲突段里的「哪几条对不上」只认编号与「条目 n」
+        String numbered = CitationVerifier.numberTitles(response.getReply(), evidence);
+        ConflictReporter.Report report = ConflictReporter.extract(numbered, evidenceCount);
         // 工具依据决定「没有引用」该怎么解读：有依据时无引用是正常的，没有依据时
         // 整篇就是模型自己写的、无出处的句子必须报出来。
         //
@@ -248,8 +290,21 @@ public class Agent {
         boolean toolBacked = "flow".equals(response.getSource()) || "approval".equals(response.getSource());
         boolean hasToolEvidence = toolBacked
                 || (response.getToolExecutions() != null && !response.getToolExecutions().isEmpty());
+
+        // 可引用标题 = 本轮证据切片的标题/位置 + 工具输出中「出处：」行里的书名号。
+        // 集合只装平台自己声明过的出处：模型写的《XX 规范》若不在其中，引用校验不认它
+        Set<String> citableTitles = new LinkedHashSet<>();
+        for (DocumentChunk chunk : evidence) {
+            CitationVerifier.collectTitles(citableTitles, chunk.getTitle(), chunk.getPosition());
+        }
+        if (response.getToolExecutions() != null) {
+            for (ToolExecution execution : response.getToolExecutions()) {
+                CitationVerifier.collectToolTitles(citableTitles, execution.getOutput());
+            }
+        }
+
         CitationVerifier.Verdict verdict =
-                CitationVerifier.verify(report.reply(), evidenceCount, hasToolEvidence);
+                CitationVerifier.verify(report.reply(), evidenceCount, hasToolEvidence, citableTitles);
 
         response.setReply(verdict.reply());
         response.setUnsupportedClaims(verdict.unsupported().isEmpty() ? null : verdict.unsupported());
@@ -267,6 +322,50 @@ public class Agent {
                     verdict.stripped() ? verdict.unsupported().size() : 0,
                     verdict.ungrounded(), report.conflicts().size());
         }
+    }
+
+    /**
+     * 入口证据 + 工具检索到的切片，按 {@code chunkId} 去重。
+     * <p>
+     * 用 {@code chunkId} 而不是内容或标题做键：同一个查询两次命中同一片是常态
+     * （模型换个说法再查一次，排前面的还是那几条），按标题去重会把同一份文档的
+     * <b>不同</b>切片也压成一条——而多切片正是本项目的常态（16 篇 / 132 片）。
+     * <p>
+     * {@code rawData} 不是切片列表的工具（订单、物流、图谱关系）直接跳过：
+     * 它们的事实来自业务系统而非知识库文档，没有「出处」这回事。
+     */
+    private static List<DocumentChunk> withToolChunks(List<DocumentChunk> knowledge,
+                                                      List<ToolExecution> executions) {
+        if (executions == null || executions.isEmpty()) {
+            return knowledge;
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (DocumentChunk chunk : knowledge) {
+            seen.add(chunkKey(chunk));
+        }
+        List<DocumentChunk> all = null;
+        for (ToolExecution execution : executions) {
+            if (!(execution.getRawData() instanceof List<?> raw)) {
+                continue;
+            }
+            for (Object item : raw) {
+                if (!(item instanceof DocumentChunk chunk) || !seen.add(chunkKey(chunk))) {
+                    continue;
+                }
+                if (all == null) {
+                    all = new ArrayList<>(knowledge);
+                }
+                all.add(chunk);
+            }
+        }
+        return all == null ? knowledge : all;
+    }
+
+    private static String chunkKey(DocumentChunk chunk) {
+        if (chunk.getChunkId() != null && !chunk.getChunkId().isBlank()) {
+            return chunk.getChunkId();
+        }
+        return chunk.getDocId() + "#" + chunk.getChunkIndex();
     }
 
     // 作用域键的拼法统一在 ShortTermMemoryStore.scoped()，这里不再自持一份 ——
@@ -325,7 +424,10 @@ public class Agent {
 
         // 知识段永远渲染 —— 哪怕是空的。空空如也的 prompt 会让模型默认「没有限制、随便答」，
         // 而拒答指令必须显式在场，否则它不会主动承认自己不知道。
-        KnowledgePrompt.Section section = KnowledgePrompt.render(knowledge, evidence);
+        // 再检索工具在册时才在 prompt 里给出「先换词再查」这条出路：证据不足的两个分支
+        // 本已是一份自洽的行动方案（不下结论、如实说没查到），不额外指路，模型没有理由去调工具
+        boolean canSearchAgain = toolRegistry.get(KnowledgePrompt.SEARCH_TOOL_NAME).isPresent();
+        KnowledgePrompt.Section section = KnowledgePrompt.render(knowledge, evidence, canSearchAgain);
         sb.append(section.text());
         log.debug("[Agent] 证据门 {} —— {}", evidence.level(), evidence.reason());
 
@@ -399,6 +501,14 @@ public class Agent {
         private String reply;
         /** flow / plan / react / approval / fallback */
         private String source;
+        /**
+         * 本轮检索实际使用的查询句——仅在发生指代消解改写、且改写结果与用户原话不同时下发。
+         * <p>
+         * 它是「回答为什么对、为什么没查到」的第一手证据：追问句「那它呢」原样去检索
+         * 什么都召不回，看到改写句（「维生素D3 与钙同服注意事项」）才能解释这一轮
+         * 凭什么给出了那样的证据与回答。改写规则见 {@link QueryRewriter}。
+         */
+        private String retrievalQuery;
         private List<DocumentChunk> knowledge;
         /**
          * 本轮证据门的判定，随 {@link #knowledge} 一同下发。
