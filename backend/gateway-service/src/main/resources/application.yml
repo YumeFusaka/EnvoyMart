@@ -31,6 +31,13 @@ spring:
               uri: lb://auth-service
               predicates:
                 - Path=/auth/**
+            # 搜索联想与热门词：**必须排在 /products/** 前面**（网关按声明顺序取第一条命中的路由）。
+            # 它们是按键触发的，调用频率天然比一次搜索高一个数量级，单独一个限流桶 ——
+            # 与商品浏览共用配额时，几个人同时打字就能把别人的翻页请求挤掉
+            - id: product-service-search-assist
+              uri: lb://product-service
+              predicates:
+                - Path=/products/suggest,/products/hot-keywords
             - id: product-service
               uri: lb://product-service
               predicates:

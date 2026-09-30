@@ -12,9 +12,11 @@ import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.productservice.model.ProductQuery;
+import yumefusaka.envoymart.productservice.model.SuggestItem;
 import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.contract.SkuSnapshot;
 import yumefusaka.envoymart.contract.StockChangeRequest;
+import yumefusaka.envoymart.productservice.search.HotKeywordService;
 import yumefusaka.envoymart.productservice.search.ProductSearchService;
 import yumefusaka.envoymart.productservice.service.ProductService;
 import yumefusaka.envoymart.productservice.service.StockService;
@@ -28,13 +30,16 @@ public class ProductController {
     private final ProductService productService;
     private final ProductSearchService searchService;
     private final StockService stockService;
+    private final HotKeywordService hotKeywordService;
 
     public ProductController(ProductService productService,
                              ProductSearchService searchService,
-                             StockService stockService) {
+                             StockService stockService,
+                             HotKeywordService hotKeywordService) {
         this.productService = productService;
         this.searchService = searchService;
         this.stockService = stockService;
+        this.hotKeywordService = hotKeywordService;
     }
 
     /**
@@ -57,6 +62,24 @@ public class ProductController {
     @GetMapping("/search")
     public Result<PageResult<ProductSummary>> search(ProductQuery query) {
         return Result.success(searchService.search(query));
+    }
+
+    /**
+     * 搜索联想。输入两个字就要出候选，所以走 ES 的前缀查询（见 {@link ProductSearchService#suggest}）。
+     * <p>
+     * 这也是这条链路上唯一会被「每敲一个字」调用的接口，网关给它单配了一个限流桶：
+     * 与商品浏览共用配额时，几个人同时打字就能把翻页请求挤掉。
+     */
+    @GetMapping("/suggest")
+    public Result<List<SuggestItem>> suggest(@RequestParam("q") String q,
+                                             @RequestParam(value = "limit", defaultValue = "8") int limit) {
+        return Result.success(searchService.suggest(q, limit));
+    }
+
+    /** 热门搜索词。来自真实搜索行为的排行（Redis ZSET），冷启动回落到种子词 */
+    @GetMapping("/hot-keywords")
+    public Result<List<String>> hotKeywords(@RequestParam(value = "limit", defaultValue = "8") int limit) {
+        return Result.success(hotKeywordService.top(limit));
     }
 
     @GetMapping("/{id}")

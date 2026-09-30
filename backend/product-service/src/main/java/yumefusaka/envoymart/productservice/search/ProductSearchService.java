@@ -5,6 +5,7 @@ import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
 import co.elastic.clients.json.JsonData;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
@@ -16,11 +17,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.productservice.model.ProductQuery;
+import yumefusaka.envoymart.productservice.model.SuggestItem;
 import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.productservice.service.CategoryService;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 @Slf4j
 @Service
@@ -31,13 +37,22 @@ public class ProductSearchService {
     private static final int MAX_PAGE_SIZE = 100;
     private static final int STATUS_ON = 1;
 
+    /** 联想条数上限。候选是给眼睛扫的，超过一屏就没有意义了 */
+    private static final int MAX_SUGGEST = 20;
+
+    /** 超过这个长度的输入不是联想，是往参数里灌东西 */
+    private static final int MAX_SUGGEST_QUERY_LENGTH = 64;
+
     private final ElasticsearchOperations elasticsearchOperations;
     private final CategoryService categoryService;
+    private final HotKeywordService hotKeywordService;
 
     public ProductSearchService(ElasticsearchOperations elasticsearchOperations,
-                                CategoryService categoryService) {
+                                CategoryService categoryService,
+                                HotKeywordService hotKeywordService) {
         this.elasticsearchOperations = elasticsearchOperations;
         this.categoryService = categoryService;
+        this.hotKeywordService = hotKeywordService;
     }
 
     /**
@@ -112,12 +127,92 @@ public class ProductSearchService {
         log.debug("ES 搜索: keyword={}, categoryId={}, brandId={}, hits={}",
                 query.getKeyword(), query.getCategoryId(), query.getBrandId(), hits.getTotalHits());
 
+        // 只记第一页：翻页请求带的是同一个词，跟着记会把词频变成「这个人翻了多少页」
+        if (page == 0 && StringUtils.hasText(query.getKeyword())) {
+            hotKeywordService.record(query.getKeyword());
+        }
+
         return PageResult.<ProductSummary>builder()
                 .records(records)
                 .total(hits.getTotalHits())
                 .page(page)
                 .size(size)
                 .build();
+    }
+
+    /**
+     * 搜索联想：把输入当作**前缀**去找，而不是当作完整词去搜。
+     * <p>
+     * 用 {@code bool_prefix} 而不是普通 {@code multi_match}：后者要求倒排表里有完整的分词
+     * 才命中，输入「乳清蛋」时词表里只有「乳清」「清蛋」这类二元组，完整词查不到东西——
+     * 而联想恰恰发生在用户还没打完的时候。
+     * <p>
+     * 候选从命中的商品里**就地取材**：商品名进 PRODUCT，品牌名与类目名进 BRAND / CATEGORY。
+     * 后两者要求文本本身包含输入（{@code contains}）才收录——只按「命中了这条商品」就把它的
+     * 品牌一并推出去，会让搜「钙片」的人看到一堆无关品牌。
+     * <p>
+     * 排序不指定，即按 ES 相关性得分——这里要的是「像不像用户在找的」，不是销量。
+     */
+    public List<SuggestItem> suggest(String rawQuery, int limit) {
+        if (!StringUtils.hasText(rawQuery)) {
+            return List.of();
+        }
+        String keyword = rawQuery.trim();
+        if (keyword.length() > MAX_SUGGEST_QUERY_LENGTH) {
+            keyword = keyword.substring(0, MAX_SUGGEST_QUERY_LENGTH);
+        }
+        int size = Math.max(1, Math.min(limit, MAX_SUGGEST));
+
+        BoolQuery.Builder bool = new BoolQuery.Builder();
+        bool.filter(Query.of(q -> q.term(t -> t.field("status").value(STATUS_ON))));
+        String query = keyword;
+        bool.must(Query.of(q -> q.multiMatch(m -> m
+                .fields("name^3", "subtitle", "brandName", "categoryName")
+                .query(query)
+                .type(TextQueryType.BoolPrefix))));
+
+        NativeQueryBuilder builder = new NativeQueryBuilder()
+                .withQuery(bool.build()._toQuery())
+                // 多取几倍：一条商品最多贡献三条候选，去重与品牌/类目行会吃掉名额
+                .withPageable(PageRequest.of(0, size * 3));
+
+        SearchHits<ProductIndex> hits = elasticsearchOperations.search(builder.build(), ProductIndex.class);
+
+        List<SuggestItem> items = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        String lower = keyword.toLowerCase(Locale.ROOT);
+        for (SearchHit<ProductIndex> hit : hits) {
+            ProductIndex product = hit.getContent();
+            add(items, seen, SuggestItem.Kind.PRODUCT, product.getName(), product.getId(), size);
+            if (containsIgnoreCase(product.getBrandName(), lower)) {
+                add(items, seen, SuggestItem.Kind.BRAND, product.getBrandName(), product.getBrandId(), size);
+            }
+            if (containsIgnoreCase(product.getCategoryName(), lower)) {
+                add(items, seen, SuggestItem.Kind.CATEGORY,
+                        product.getCategoryName(), product.getCategoryId(), size);
+            }
+            if (items.size() >= size) {
+                break;
+            }
+        }
+
+        log.debug("ES 联想: q={}, 候选={}", keyword, items.size());
+        return items;
+    }
+
+    /** 去重按「类型 + 文本」：不同品牌下的同名商品是两条候选，同名商品与品牌也是两条 */
+    private void add(List<SuggestItem> items, Set<String> seen, SuggestItem.Kind kind,
+                     String text, Long id, int limit) {
+        if (text == null || text.isBlank() || id == null || items.size() >= limit) {
+            return;
+        }
+        if (seen.add(kind + ":" + text)) {
+            items.add(new SuggestItem(text, kind, id));
+        }
+    }
+
+    private boolean containsIgnoreCase(String text, String lowerKeyword) {
+        return text != null && text.toLowerCase(Locale.ROOT).contains(lowerKeyword);
     }
 
     private void validatePaging(int page, int size) {

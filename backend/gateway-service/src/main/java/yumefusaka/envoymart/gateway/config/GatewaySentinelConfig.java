@@ -61,6 +61,9 @@ public class GatewaySentinelConfig {
         rules.add(route("review-service", 50));
         rules.add(route("product-service", 100));
         rules.add(route("product-service-catalog", 100));
+        // 联想与热门词：一次输入会打出好几个请求，桶要宽；但必须**独立**成桶——
+        // 主搜索桶是给翻页与筛选用的，被按键流量挤掉的表现是「搜索时快时慢」
+        rules.add(route("product-service-search-assist", 80));
         // 收藏夹是登录用户的写+私有读，单表读写、代价低，但不与公开商品读共用配额：
         // 一个用户狂点收藏不该让别人的商品列表变慢
         rules.add(route("product-service-favorites", 50));
