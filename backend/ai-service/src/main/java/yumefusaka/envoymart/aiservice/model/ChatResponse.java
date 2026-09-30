@@ -106,6 +106,21 @@ public class ChatResponse {
     private boolean ungrounded;
 
     /**
+     * 与工具当场返回的事实对不上、已从 {@link #reply} 中剔除的说明。
+     * <p>
+     * 与 {@link #unsupportedClaims} 是两种病：那些句子是「没有出处」，这些是「有出处但说错了」——
+     * 工具明明返回「应付金额 ¥128.00」，回答里写成别的数。订单类问题走的是工具而不是知识库，
+     * 这两句在引用上完全站得住，只有拿工具的返回值去对才看得出来。
+     * <p>
+     * 剔除规则见 {@code ToolFactVerifier}，它的类注释里写着这道闸刻意留的漏检口子——
+     * 类注释同时说明了为什么标签必须无歧义：误删一句正确的话，比漏检严重得多。
+     */
+    private List<String> factMismatches;
+
+    /** {@link #factMismatches} 是否已被移出 {@link #reply}，语义同 {@link #unsupportedStripped} */
+    private boolean factStripped;
+
+    /**
      * 本轮证据之间被发现的矛盾——同一件事在不同文档里有不同说法。
      * <p>
      * 后端不让模型自己挑一个讲，而是要求它把矛盾列出来；这里把那段文字抽成结构化字段，

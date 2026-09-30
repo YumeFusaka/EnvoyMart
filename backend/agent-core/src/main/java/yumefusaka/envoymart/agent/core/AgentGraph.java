@@ -371,6 +371,7 @@ public class AgentGraph {
                 .noData(result.isNoData())
                 .latencyMs(result.getLatencyMs())
                 .rawData(result.getRawData())
+                .facts(result.getFacts())
                 .build());
 
         return GraphStep.builder()

@@ -67,6 +67,22 @@ export function traceOutcome(call: ToolCall): TraceOutcome {
   return call.noData ? 'empty' : 'ok'
 }
 
+/**
+ * 这次调用确立的事实，摊成可直接渲染的 `[标签, 取值]` 列表。
+ * <p>
+ * 排序而不按对象键序：`Map.of` 出来的顺序在 Java 侧本来就是随机的，
+ * 两次同样的查询摆出两个不同次序，看起来像数据变了。
+ */
+export function factEntries(call: ToolCall): [string, string][] {
+  const facts = call.facts
+  if (!facts) {
+    return []
+  }
+  return Object.entries(facts)
+    .filter(([label, value]) => label && value)
+    .sort(([a], [b]) => a.localeCompare(b, 'zh'))
+}
+
 const OUTCOME_LABELS: Record<TraceOutcome, string> = {
   ok: '成功',
   empty: '无结果',

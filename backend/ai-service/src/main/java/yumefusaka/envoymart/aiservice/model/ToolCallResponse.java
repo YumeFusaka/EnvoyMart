@@ -27,4 +27,16 @@ public class ToolCallResponse {
     private boolean noData;
     /** 墙钟耗时（毫秒） */
     private long latencyMs;
+
+    /**
+     * 这次调用<b>确立的业务事实</b>，形如 {@code 订单状态 → 已支付}、{@code 应付金额 → ¥128.00}。
+     * <p>
+     * <b>它下发给界面是为了让「核对过了」这件事看得见。</b>回答里那个金额和后端握着的
+     * 事实一致——这个结论此前只存在于日志里，用户和面试官都只能选择相信。摆在这一栏，
+     * 「机器可核对」就从一句话变成一眼能对上的两列。
+     * <p>
+     * 为空表示这次工具没有声明可机器比对的事实（知识检索、物流轨迹这类本来就没有），
+     * 不代表核对失败。
+     */
+    private java.util.Map<String, String> facts;
 }

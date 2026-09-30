@@ -332,6 +332,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
                     .noData(result.isNoData())
                     .latencyMs(result.getLatencyMs())
                     .rawData(result.getRawData())
+                    .facts(result.getFacts())
                     .build());
 
             log.debug("[Tool] {} success={} output={}", request.name(), result.isSuccess(), output);

@@ -44,15 +44,6 @@ function ck(name, condition, detail = '') {
   }
 }
 
-async function poll(fn, predicate, timeoutMs = 90000) {
-  let last
-  for (let waited = 0; waited <= timeoutMs; waited += 500) {
-    last = await fn()
-    if (predicate(last)) return last
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  return last
-}
 
 const session = await (async () => {
   const res = await fetch(`${GW}/auth/login`, {

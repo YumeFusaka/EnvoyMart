@@ -26,6 +26,7 @@ import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.KnowledgePrompt;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
+import yumefusaka.envoymart.agent.rag.ToolFactVerifier;
 import yumefusaka.envoymart.agent.tool.ApprovalTokens;
 import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolCall;
@@ -255,6 +256,7 @@ public class Agent {
                 .noData(result.isNoData())
                 .latencyMs(result.getLatencyMs())
                 .rawData(result.getRawData())
+                .facts(result.getFacts())
                 .build();
     }
 
@@ -424,21 +426,31 @@ public class Agent {
         CitationVerifier.Verdict verdict =
                 CitationVerifier.verify(report.reply(), evidenceCount, hasToolEvidence, citableTitles);
 
-        response.setReply(verdict.reply());
+        // 事实核对排在最后一道：它比的是「工具当时返回了什么」，而引用校验会改文本，
+        // 放在它前面才核对的是用户真正看到的那一版。
+        //
+        // 与引用校验是两件事：引用管「这句话有没有出处」，这里管「这句话说的是不是真的」。
+        // 订单金额写错时，那句话在引用上完全站得住——出处就是工具本身。
+        ToolFactVerifier.Verdict facts =
+                ToolFactVerifier.verify(verdict.reply(), response.getToolExecutions());
+
+        response.setReply(facts.reply());
         response.setUnsupportedClaims(verdict.unsupported().isEmpty() ? null : verdict.unsupported());
         response.setUnsupportedStripped(verdict.stripped());
         response.setUngrounded(verdict.ungrounded());
         response.setConflicts(report.conflicts().isEmpty() ? null : report.conflicts());
+        response.setFactMismatches(facts.mismatches().isEmpty() ? null : facts.mismatches());
+        response.setFactStripped(facts.stripped());
 
-        // 只在闸门真的动了手时记一行：这两道关每轮都跑，无条件打点会把日志淹掉，
+        // 只在闸门真的动了手时记一行：这三道关每轮都跑，无条件打点会把日志淹掉，
         // 而「有没有拦下东西」才是需要被看见的信号
         if (response.getUnsupportedClaims() != null || response.getConflicts() != null
-                || response.isUngrounded()) {
-            log.info("[Agent] 后置校验 证据={} 句={} 有引用={} 覆盖率={} 剔除={} 无依据={} 冲突={}",
+                || response.isUngrounded() || response.getFactMismatches() != null) {
+            log.info("[Agent] 后置校验 证据={} 句={} 有引用={} 覆盖率={} 剔除={} 无依据={} 冲突={} 事实不符={}",
                     evidenceCount, verdict.sentences(), verdict.cited(),
                     "%.2f".formatted(verdict.coverage()),
                     verdict.stripped() ? verdict.unsupported().size() : 0,
-                    verdict.ungrounded(), report.conflicts().size());
+                    verdict.ungrounded(), report.conflicts().size(), facts.mismatches().size());
         }
     }
 
@@ -676,6 +688,18 @@ public class Agent {
          * 两者互斥：有引用时按句报，没有引用也没有工具时才整篇报。
          */
         private boolean ungrounded;
+        /**
+         * 讲了业务事实、但与工具当场返回的事实对不上、已从 {@link #reply} 中剔除的说明。
+         * <p>
+         * 与 {@link #unsupportedClaims} 是两种病：那些句子是「没有出处」，这些是「有出处
+         * 但说错了」——订单金额写成另一个数、状态说成另一个状态。工具的返回值就是唯一事实，
+         * 没有第二种解读，所以这里比引用校验更硬：不留「你自己判断」的余地，剔掉。
+         * <p>
+         * 判定规则见 {@code ToolFactVerifier}，它的类注释里写着这道闸刻意留的漏检口子。
+         */
+        private List<String> factMismatches;
+        /** {@link #factMismatches} 是否已被移出 {@link #reply}，语义同 {@link #unsupportedStripped} */
+        private boolean factStripped;
         /** 本轮证据之间被发现的矛盾，由模型判定、{@link ConflictReporter} 抽取 */
         private List<ConflictReporter.Conflict> conflicts;
     }

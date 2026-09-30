@@ -8,6 +8,7 @@ import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
 import { formatClock } from '@/utils/format'
 import {
+  factEntries,
   formatMs,
   formatTokens,
   outcomeLabel,
@@ -152,6 +153,20 @@ async function handleCopy(message: ChatMessage) {
         </ul>
       </details>
 
+      <!--
+        事实不符单独一条，不与「没有依据」合并：没有依据是「这话没人背书」，
+        与工具事实不符是「这话与订单实际数字冲突」——后者用户是照着去付款、去对账的，
+        说得轻了等于没提醒。这里没有「仍留在上面」的分支：事实只有一种，对不上就一定是错的。
+      -->
+      <details v-if="message.factMismatches?.length" class="grounding grounding--fact">
+        <summary>
+          已更正 {{ message.factMismatches.length }} 处与订单实际数据不符的说法
+        </summary>
+        <ul class="grounding__list">
+          <li v-for="(mismatch, i) in message.factMismatches" :key="i">{{ mismatch }}</li>
+        </ul>
+      </details>
+
       <PendingApprovalCard
         v-if="message.pendingActions?.length"
         :actions="message.pendingActions"
@@ -179,6 +194,20 @@ async function handleCopy(message: ChatMessage) {
           </p>
           <p class="trace__io"><span>入参</span>{{ call.input }}</p>
           <p class="trace__io trace__io--output"><span>返回</span>{{ call.output }}</p>
+          <!--
+            工具当场确立的事实，单独一栏并标出「已核对」。回答里凡是提到这些字段的地方，
+            后端都拿这一栏的值逐条比过，对不上的句子会被删掉。摆出来是为了让这件事可验：
+            用户不用相信平台的自我评价，扫一眼就能自己比。
+          -->
+          <div v-if="factEntries(call).length" class="trace__facts">
+            <dl class="trace__facts-list">
+              <template v-for="[label, value] in factEntries(call)" :key="label">
+                <dt>{{ label }}</dt>
+                <dd>{{ value }}</dd>
+              </template>
+            </dl>
+            <p class="trace__facts-note">回答中涉及以上字段的说法已与这里的取值逐条核对。</p>
+          </div>
         </div>
       </details>
 
@@ -417,6 +446,22 @@ async function handleCopy(message: ChatMessage) {
   border-radius: var(--ys-radius-sm);
 }
 
+/*
+  实线而不是虚线：虚线的两条都在说「这些内容不可靠，你自己看」，
+  这条说的是「平台已经替你改过一个实实在在的数字」。边框从 neutral 提到 warning，
+  但不用 danger——它不是系统故障，是模型说错了一句话、已被拦住。
+  必须排在 .grounding 与 .grounding summary 之后：同特异度下后写的赢。
+*/
+.grounding--fact {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
+}
+
+.grounding--fact summary {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
 .grounding__list {
   display: grid;
   gap: var(--ys-space-2);
@@ -529,6 +574,44 @@ async function handleCopy(message: ChatMessage) {
 .trace__io span {
   color: var(--color-text-muted);
   font-family: var(--ys-font-sans);
+}
+
+/*
+  事实栏与「返回」原文分开：原文是模型看过的原始文本，这一栏是机器据此认下来的结论。
+  两列对齐而不是写成一句话，是为了让「回答里的数字」和「这里的数字」能竖着扫一眼对上。
+*/
+.trace__facts {
+  margin: var(--ys-space-2) 0 0;
+  padding: var(--ys-space-2) var(--ys-space-3);
+  border-inline-start: 2px solid var(--color-border-strong);
+  background: var(--color-bg-surface-muted);
+  border-radius: var(--ys-radius-sm);
+}
+
+.trace__facts-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--ys-space-1) var(--ys-space-3);
+  margin: 0;
+  font-size: var(--ys-font-xs);
+}
+
+.trace__facts-list dt {
+  color: var(--color-text-muted);
+}
+
+.trace__facts-list dd {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-family: var(--ys-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.trace__facts-note {
+  margin: var(--ys-space-2) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
 }
 
 /*

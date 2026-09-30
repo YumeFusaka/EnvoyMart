@@ -56,7 +56,9 @@ public class OrderTool implements Tool {
 
             StringBuilder sb = new StringBuilder();
             sb.append("订单 ").append(order.getOrderNo())
-                    .append("，状态：").append(text(order.getStatusText(), order.getStatus())).append("\n");
+                    // 写「订单状态」而不是「状态」：模型复述输出，标签跟着一起过去，
+                    // 事实核对才找得到锚点（「状态」会撞上「物流状态」）
+                    .append("，订单状态：").append(text(order.getStatusText(), order.getStatus())).append("\n");
             sb.append("应付金额：").append(Money.yuan(order.getPayAmount())).append("\n");
 
             List<OrderItemResponse> items = order.getItems();
@@ -83,11 +85,29 @@ public class OrderTool implements Tool {
                     .success(true)
                     .output(sb.toString())
                     .rawData(order)
+                    .facts(factsOf(order))
                     .build();
         } catch (Exception e) {
             log.error("[OrderTool] execute failed", e);
             return ToolResult.builder().success(false).errorMessage(e.getMessage()).build();
         }
+    }
+
+    /**
+     * 这次查询确立的两条事实，交给 {@code ToolFactVerifier} 拿回答逐条核对。
+     * <p>
+     * <b>标签挑的是「只可能指这一个字段」的说法。</b>写「状态」会撞上「物流状态」
+     * 「支付状态」——校验器看到标签就认为模型在下断言，撞一次就把一句正确的话判成矛盾。
+     * 写「订单状态」就只可能是这一单的状态。
+     * <p>
+     * 标签必须与模型答话时用的词对得上，否则核对器永远不触发、看着像通过。
+     * 所以这里挑的是最自然的书面说法（也就是 {@link #getDefinition()} 的描述里用的词），
+     * 而不是输出行里的简写。
+     */
+    private Map<String, String> factsOf(OrderResponse order) {
+        return Map.of(
+                "订单状态", text(order.getStatusText(), order.getStatus()),
+                "应付金额", Money.yuan(order.getPayAmount()));
     }
 
     private String text(String statusText, String status) {

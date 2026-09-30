@@ -114,6 +114,8 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .unsupportedClaims(agentResp.getUnsupportedClaims())
                 .unsupportedStripped(agentResp.isUnsupportedStripped())
                 .ungrounded(agentResp.isUngrounded())
+                .factMismatches(agentResp.getFactMismatches())
+                .factStripped(agentResp.isFactStripped())
                 .conflicts(convertConflicts(agentResp.getConflicts()))
                 .build();
     }
@@ -163,6 +165,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .success(execution.isSuccess())
                 .noData(execution.isNoData())
                 .latencyMs(execution.getLatencyMs())
+                .facts(execution.getFacts())
                 .build();
     }
 

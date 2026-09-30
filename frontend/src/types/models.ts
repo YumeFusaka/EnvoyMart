@@ -460,6 +460,13 @@ export interface ToolCall {
   noData: boolean
   /** 墙钟耗时（毫秒） */
   latencyMs: number
+  /**
+   * 这次调用确立的业务事实，形如 `{ 订单状态: '已支付', 应付金额: '¥128.00' }`。
+   *
+   * 下发给界面是为了让「核对过了」看得见：回答里的金额与这一栏一致，用户不用相信，
+   * 扫一眼就能对上。为空表示这次工具没有可机器比对的事实（知识检索、物流轨迹本来就没有）。
+   */
+  facts?: Record<string, string> | null
 }
 
 export interface ChatResponse {
@@ -521,6 +528,18 @@ export interface ChatResponse {
    * 判定涉及「本轮有没有执行过工具」，前端只看得到回答正文，所以由后端算好下发。
    */
   ungrounded: boolean
+  /**
+   * 与工具当场返回的事实对不上、已被后端从 `reply` 里剔除的说明。
+   *
+   * 与 `unsupportedClaims` 是两种病：那些是「没有出处」，这些是「有出处但说错了」——
+   * 工具明明返回「应付金额 ¥128.00」，回答里写成别的数。订单类问题走工具而不走知识库，
+   * 这两句在引用上完全站得住，只有拿工具的返回值去对才看得出来。
+   *
+   * **它没有「仍留在上面」的分支**：事实只有一种，对不上就一定是错的，所以一定会被剔除。
+   */
+  factMismatches: string[] | null
+  /** 上面那些说明是否真的已被移出 `reply`（当前恒为 `true`，保留字段以与 `unsupportedStripped` 对称） */
+  factStripped: boolean
   /**
    * 本轮证据之间被发现的矛盾。后端不让模型挑一个讲，而是要求它列出来，
    * 这里拿到的是结构化结果，`refs` 可直接跳回原文核对。
@@ -585,6 +604,15 @@ export interface ChatMessage {
    * 界面上是两句话，不能合并。
    */
   ungrounded?: boolean
+  /**
+   * 与工具当场返回的事实对不上、已被后端从正文里剔除的说明。
+   *
+   * 与 `unsupportedClaims` 分开存：那边是「没有出处」，这边是「与订单实际数据冲突」。
+   * 后者用户是照着去付款、去对账的，说得轻了等于没提醒。
+   */
+  factMismatches?: string[]
+  /** 上面那些说明是否已被移出 `content`；当前后端恒为剔除 */
+  factStripped?: boolean
   /** 本轮证据之间被发现的矛盾，由模型判定、后端结构化 */
   conflicts?: KnowledgeConflict[]
   /**

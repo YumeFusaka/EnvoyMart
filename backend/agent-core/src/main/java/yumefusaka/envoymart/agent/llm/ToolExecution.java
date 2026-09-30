@@ -31,4 +31,12 @@ public class ToolExecution implements java.io.Serializable {
     private long latencyMs;
     /** 结构化结果，便于上层做二次加工（如抽取推荐商品） */
     private Object rawData;
+    /**
+     * 这次调用<b>确立的业务事实</b>，形如 {@code 状态 → 已支付}、{@code 应付金额 → ¥128.00}。
+     * <p>
+     * 由工具自己声明，不由上层从 {@link #output} 反解——输出文案是给人看的，
+     * 改一个字就会让解析它的正则悄悄失效，而失效的校验看起来和通过一模一样。
+     * 声明出来的事实供 {@code ToolFactVerifier} 拿回答逐条核对。
+     */
+    private java.util.Map<String, String> facts;
 }

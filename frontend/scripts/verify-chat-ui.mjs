@@ -132,7 +132,13 @@ ck('新对话展示空态引导', await page.locator('.chat-empty').isVisible())
 ck('空态没有任何消息卡片', (await page.locator('.message-card').count()) === 0)
 ck('空态给出快捷提问', (await page.locator('.quick-prompts button').count()) > 0)
 
-const question = '平台的满减活动规则是什么？请用 Markdown 列表说明，并标注依据编号'
+/**
+ * 每次跑都换一个后缀。会话标题取自首条用户消息，而标题是会重复的——
+ * 第二轮跑的时候，侧栏里还躺着上一轮的「你好…」，按标题删就会删错一条，
+ * 而「删掉之后这一条不见了」这个断言在重复标题下永远为假。
+ */
+const RUN_TAG = Date.now().toString(36)
+const question = `平台的满减活动规则是什么？请用 Markdown 列表说明，并标注依据编号（${RUN_TAG}）`
 await page.locator('.composer textarea').fill(question)
 await page.getByRole('button', { name: '发送消息' }).click()
 ck('用户消息是独立气泡', (await page.locator('.message-card.user').count()) === 1)
@@ -209,7 +215,8 @@ ck('标题取自首条用户消息', firstTitle.startsWith('平台的满减'), `
 
 await page.getByRole('button', { name: /新对话/ }).click()
 ck('新对话回到空态', await page.locator('.chat-empty').isVisible())
-await page.locator('.composer textarea').fill('你好，请用一句话说明你能做什么')
+const secondQuestion = `你好，请用一句话说明你能做什么（${RUN_TAG}）`
+await page.locator('.composer textarea').fill(secondQuestion)
 await page.getByRole('button', { name: '发送消息' }).click()
 await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'detached', timeout: 120000 })
 const titles2 = await poll(
@@ -246,37 +253,44 @@ ck('刷新后引用卡片仍在', (await page.locator('.citation').count()) > 0)
 // ─────────── 五、删除会话（界面 + 接口双向对账） ───────────
 console.log('\n五、删除会话')
 const sessionsBefore = await apiSessions()
-const victim = sessionsBefore.find((s) => s.title.startsWith('你好'))
-ck('接口里能找到第二段会话', Boolean(victim), `当前会话：${sessionsBefore.map((s) => s.title).join(' / ')}`)
-if (victim) {
-  const row = page.locator('.session-list__item').filter({ hasText: '你好' }).first()
+// 认本轮创建的那一条：标题是本轮首条用户消息，带着本轮后缀。
+// 单靠「你好」开头会认到上一轮留下的同名会话——标题就是用户说的第一句话，跨轮必然重复，
+// 删错一条之后「这条不见了」那个断言就永远为假。
+const victim = sessionsBefore.find((s) => (s.title ?? '').includes(RUN_TAG))
+ck(
+  '接口里能找到第二段会话',
+  Boolean(victim),
+  `后缀=${RUN_TAG}；当前会话：${sessionsBefore.map((s) => s.title).join(' / ')}`,
+)
+const rows = page.locator('.session-list__item').filter({ hasText: RUN_TAG })
+// 后缀必须只认出一行。第一段会话的提问里也有后缀，但它落在标题截断（24 字）之后；
+// 哪天有人把那个问题改短到这个位置以内，这里会先炸，而不是让下面删错一行。
+const rowCount = await poll(() => rows.count(), (c) => c === 1, 15000)
+ck('侧栏里带本轮后缀的只有一行', rowCount === 1, `匹配到 ${rowCount} 行`)
+if (victim && rowCount === 1) {
+  const row = rows.first()
   await row.hover()
   await row.locator('.session-list__remove').click()
   // exact 限定到确认框那个「删除」：会话行自己的删除按钮 aria-label 里也含"删除"
   await page.getByRole('button', { name: '删除', exact: true }).click()
-  await poll(
-    () =>
-      page
-        .locator('.session-list__item')
-        .filter({ hasText: '你好' })
-        .count(),
-    (c) => c === 0,
-    10000,
-  )
-  ck(
-    '删除后侧栏不再有该会话',
-    (await page.locator('.session-list__item').filter({ hasText: '你好' }).count()) === 0,
-  )
+  await poll(() => rows.count(), (c) => c === 0, 10000)
+  ck('删除后侧栏不再有该会话', (await rows.count()) === 0)
   const sessionsAfter = await apiSessions()
   ck(
     '接口对账：服务端也删掉了',
     !sessionsAfter.some((s) => s.sessionId === victim.sessionId),
     `删除的 id=${victim.sessionId}，接口里${sessionsAfter.some((s) => s.sessionId === victim.sessionId) ? '仍在' : '已不在'}`,
   )
+  // 会话列表有 50 条上限（ChatSessionController.SESSION_LIST_LIMIT）。攒满之后
+  // 删一条、更早的一条立刻补位，总数仍是 50——「总数少了 1」在上限处恒不成立。
+  // 所以不数总数，逐条点名：删之前在场的那些（除被删的那条）必须都还在。
+  const missing = sessionsBefore
+    .filter((s) => s.sessionId !== victim.sessionId)
+    .filter((s) => !sessionsAfter.some((a) => a.sessionId === s.sessionId))
   ck(
-    '其余会话不受影响',
-    sessionsAfter.length === sessionsBefore.length - 1,
-    `删除前 ${sessionsBefore.length} 条，删除后 ${sessionsAfter.length} 条`,
+    '其余会话一条没少',
+    missing.length === 0,
+    `少了 ${missing.length} 条：${missing.map((s) => s.title).join(' / ')}`,
   )
 }
 
@@ -285,11 +299,15 @@ console.log('\n六、生成中删除（墓碑）')
 // 删除与生成撞车是实测复现过的缺陷：SSE 断开不打断服务端那一轮，
 // 用户删掉的会话会在几十秒后带着新内容重新出现在侧栏 —— 删除语义等于失效
 await page.getByRole('button', { name: /新对话/ }).click()
-await page.locator('.composer textarea').fill('平台的退换货政策有哪些？请分点说明')
+// 后缀紧跟在开头之后：标题只留前 24 字，放在句尾会被截掉，而认错会话会让
+// 下面那条「没有还魂」的断言变成一句空话（删的是别人的 id，当然不会还魂）
+await page.locator('.composer textarea').fill(`平台的退换货政策有哪些？（${RUN_TAG}）请分点说明`)
 await page.getByRole('button', { name: '发送消息' }).click()
 // 第一轮跑完会话才进侧栏（空会话不落号），随后才有东西可删
 await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'detached', timeout: 180000 })
-const doomed = (await apiSessions()).find((s) => s.title.startsWith('平台的退换货'))
+const doomed = (await apiSessions()).find(
+  (s) => (s.title ?? '').includes(RUN_TAG) && (s.title ?? '').startsWith('平台的退换货'),
+)
 ck('新会话已进入侧栏', Boolean(doomed), `当前：${(await apiSessions()).map((s) => s.title).join(' / ')}`)
 if (doomed) {
   // 第二轮故意长：趁它还在跑的时候删。**走接口删而不是点界面**——

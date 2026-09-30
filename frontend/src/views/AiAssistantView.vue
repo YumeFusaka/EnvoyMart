@@ -107,6 +107,8 @@ function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[
     unsupportedClaims: response?.unsupportedClaims?.length ? response.unsupportedClaims : undefined,
     unsupportedStripped: response?.unsupportedStripped,
     ungrounded: response?.ungrounded,
+    factMismatches: response?.factMismatches?.length ? response.factMismatches : undefined,
+    factStripped: response?.factStripped,
     conflicts: response?.conflicts?.length ? response.conflicts : undefined,
     usage: response?.usage ?? undefined,
   }
@@ -346,6 +348,9 @@ async function sendMessage(message = input.value, approvalToken?: string) {
           assistantMessage.unsupportedClaims = response.unsupportedClaims ?? undefined
           assistantMessage.unsupportedStripped = response.unsupportedStripped
           assistantMessage.ungrounded = response.ungrounded
+          // 事实核对是最后一道关，它删掉的句子同样已经在 `content` 里没了
+          assistantMessage.factMismatches = response.factMismatches ?? undefined
+          assistantMessage.factStripped = response.factStripped
           assistantMessage.conflicts = response.conflicts ?? undefined
           assistantMessage.usage = response.usage
           followIfPinned()
