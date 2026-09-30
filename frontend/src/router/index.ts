@@ -120,6 +120,15 @@ const router = createRouter({
           meta: { public: true, title: '关系图谱' },
         },
         {
+          // 评测报告同上公开：质量数字要让任何人能自己核对。
+          // 「重新运行」按钮只对管理员显示，但真正拦得住的是网关 /admin 段
+          // 与下游 @RequireAdmin 两层 —— 前端隐藏只拦误点，拦不住改地址栏
+          path: 'knowledge/eval',
+          name: 'knowledge-eval',
+          component: () => import('@/views/KnowledgeEvalView.vue'),
+          meta: { public: true, title: '检索评测' },
+        },
+        {
           // 静态段排在动态段前面只是好读，不是必需：vue-router 按具体度打分，
           // `knowledge/graph` 本来就会赢过 `knowledge/:docNo`，不会被当成一个文档编号
           path: 'knowledge/:docNo',

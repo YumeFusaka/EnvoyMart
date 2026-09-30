@@ -51,16 +51,28 @@ onMounted(load)
       </p>
 
       <!--
-        图谱与文档是同一个知识库的两种读法：文档按「一篇」看，图谱按「一条关系」看。
-        所以入口在这里而不是塞进主导航 —— 它是知识库内部的一种视图，不是一个新板块
+        图谱、评测与文档是同一个知识库的三种读法：文档按「一篇」看，图谱按「一条关系」看，
+        评测按「多少分」看。所以入口都在这里而不是塞进主导航 —— 它们是知识库内部的视图，
+        不是一个新板块
       -->
-      <RouterLink to="/knowledge/graph" class="kb-graph-entry">
-        <span class="kb-graph-entry__title">成分与相互作用图谱</span>
-        <span class="kb-graph-entry__desc">
-          换个读法：按「成分 → 营养素 → 药物」看这些文档之间的关系，每条线都点得回原文。
-        </span>
-        <span class="kb-graph-entry__arrow" aria-hidden="true">→</span>
-      </RouterLink>
+      <div class="kb-entries">
+        <RouterLink to="/knowledge/graph" class="kb-entry">
+          <span class="kb-entry__title">成分与相互作用图谱</span>
+          <span class="kb-entry__desc">
+            换个读法：按「成分 → 营养素 → 药物」看这些文档之间的关系，每条线都点得回原文。
+          </span>
+          <span class="kb-entry__arrow" aria-hidden="true">→</span>
+        </RouterLink>
+
+        <RouterLink to="/knowledge/eval" class="kb-entry kb-entry--accent">
+          <span class="kb-entry__title">检索质量评测</span>
+          <span class="kb-entry__desc">
+            第三种读法：120 条标注查询按三档难度算出的命中率与排序指标，对照随机基线；
+            失败样本逐条列出，可现场重跑。
+          </span>
+          <span class="kb-entry__arrow" aria-hidden="true">→</span>
+        </RouterLink>
+      </div>
     </header>
 
     <section class="kb-filters" aria-label="筛选">
@@ -127,13 +139,19 @@ onMounted(load)
   gap: var(--ys-space-6);
 }
 
-/* 图谱入口。做成一整条可点的横条而不是一个按钮：
-   它要说明「图谱是什么」，光写「查看图谱」四个字没人点得明白 */
-.kb-graph-entry {
+/* 入口条。做成一整条可点的横条而不是一个按钮：
+   它要说明「这是什么」，光写「查看图谱」四个字没人点得明白。
+   两种色调（主色 / 强调色）让两条入口同屏时能被一眼分开 */
+.kb-entries {
+  display: grid;
+  gap: var(--ys-space-3);
+  margin-top: var(--ys-space-5);
+}
+
+.kb-entry {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--ys-space-1) var(--ys-space-4);
-  margin-top: var(--ys-space-5);
   padding: var(--ys-space-4) var(--ys-space-5);
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-md);
@@ -144,28 +162,37 @@ onMounted(load)
     transform var(--ys-duration-fast) var(--ys-ease-out);
 }
 
-.kb-graph-entry:hover {
+.kb-entry:hover {
   border-color: var(--color-primary);
 }
 
-.kb-graph-entry:focus-visible {
+.kb-entry:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
 
-.kb-graph-entry__title {
+.kb-entry--accent {
+  border-color: var(--color-border);
+  background: linear-gradient(90deg, var(--color-accent-subtle), var(--color-bg-surface) 72%);
+}
+
+.kb-entry--accent:hover {
+  border-color: var(--color-accent);
+}
+
+.kb-entry__title {
   font-size: var(--ys-font-md);
   font-weight: 600;
 }
 
-.kb-graph-entry__desc {
+.kb-entry__desc {
   grid-column: 1;
   color: var(--color-text-secondary);
   font-size: var(--ys-font-sm);
   line-height: var(--ys-leading-base);
 }
 
-.kb-graph-entry__arrow {
+.kb-entry__arrow {
   grid-row: 1 / span 2;
   grid-column: 2;
   align-self: center;
@@ -174,7 +201,11 @@ onMounted(load)
   transition: transform var(--ys-duration-fast) var(--ys-ease-out);
 }
 
-.kb-graph-entry:hover .kb-graph-entry__arrow {
+.kb-entry--accent .kb-entry__arrow {
+  color: var(--color-accent);
+}
+
+.kb-entry:hover .kb-entry__arrow {
   transform: translateX(4px);
 }
 
