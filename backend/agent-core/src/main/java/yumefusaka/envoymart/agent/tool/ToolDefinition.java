@@ -25,8 +25,19 @@ public class ToolDefinition {
     @Data
     @Builder
     public static class ParameterSpec {
-        private String type;         // string / integer / number / boolean
+        private String type;         // string / integer / number / boolean / array
         private String description;
         private boolean required;
+
+        /**
+         * 数组元素类型，仅 {@code type="array"} 时有意义；缺省 string。
+         * <p>
+         * <b>不含它生成的 schema 是「array 但没有 items」</b>——有的模型直接拒收这个 schema，
+         * 有的会自己猜元素类型。猜错的代价不在调用那一刻暴露：参数校验只看必填项在不在，
+         * 形状不对的参数会一路走到工具内部才炸，而那时的报错已经离原因很远了。
+         * <p>
+         * 元素目前只用到 string（一串「属性名:属性值」），所以不做成嵌套的 Schema。
+         */
+        private String items;
     }
 }

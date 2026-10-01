@@ -6,7 +6,9 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.output.TokenUsage;
@@ -705,6 +707,12 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 case "integer" -> schema.addIntegerProperty(name, description);
                 case "number" -> schema.addNumberProperty(name, description);
                 case "boolean" -> schema.addBooleanProperty(name, description);
+                // 数组必须带 items：只写 type=array 的 schema 有的模型直接拒收，
+                // 有的会猜元素类型，而猜错要一路走到工具内部才炸
+                case "array" -> schema.addProperty(name, JsonArraySchema.builder()
+                        .description(description)
+                        .items(JsonStringSchema.builder().build())
+                        .build());
                 default -> schema.addStringProperty(name, description);
             }
             if (spec.isRequired()) {

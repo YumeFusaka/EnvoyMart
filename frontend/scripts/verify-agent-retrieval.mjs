@@ -184,8 +184,24 @@ for (const t of sample.toolCalls ?? []) {
   console.log(`   ↳ ${t.tool} success=${t.success} noData=${t.noData} → ${String(t.output ?? '').slice(0, 120).replace(/\n/g, ' ⏎ ')}`)
 }
 
-ck('证据不足时模型会主动再检索一次', withSearch.length > 0,
-  `三次都没调用 knowledge_search（门=${answers.map((d) => d.evidenceLevel).join('/')}）——`
+// **这是对随机量的测量，不是对确定性行为的断言**：一次问题里模型是否调工具，
+// 取决于它这一轮怎么读提示词，同一份代码上实测过 0/3、也实测过 2/2（直接探针）。
+// 被测对象是「提示词里那条出路还在不在」（它真退化时是 2/6 → 0 这种<b>系统性</b>的掉法），
+// 而它没退化时偶尔会连空三轮。所以第一轮空就把样本再来一轮——真退化了，两轮都空；
+// 只是运气差，第二轮会照常触发。判据不变（>0），变的是别拿一次抽样当结论。
+let 触发 = withSearch.length
+if (触发 === 0) {
+  console.log('  第一轮三问都没触发，再来一轮（被测的是「出路在不在」，不是这一次的措辞）')
+  for (const q of probeQuestions) {
+    const d = await chat(`${s2}-again-${Date.now()}`, q)
+    console.log(`  [补] 门=${d.evidenceLevel} 工具=${JSON.stringify(toolsOf(d))}`)
+    if (toolsOf(d).includes('knowledge_search')) {
+      触发 += 1
+    }
+  }
+}
+ck('证据不足时模型会主动再检索一次', 触发 > 0,
+  `两轮共 ${answers.length + 3} 次都没调用 knowledge_search（门=${answers.map((d) => d.evidenceLevel).join('/')}）——`
     + 'WEAK/NONE 分支给出的只是「如实说没查到」这份自洽方案，模型没有理由去调工具')
 
 // 说查过 ≠ 真查过（实测踩到过：模型答「我已尝试用更具体的检索词再次查询」，轨迹为空）
@@ -210,10 +226,17 @@ console.log('\n五、工具链路的《文档名》引用')
 ck('没有平台声明过的《文档名》被当成无出处剔除', strippedWithTitle.length === 0,
   strippedWithTitle.map((d) => (d.unsupportedClaims ?? []).join(' / ')).join(' ｜ '))
 
-// 剔除按句做、结构按块长：某标题下唯一的正文被抠掉后，正文里会留下一个空壳标题
-const orphans = all.map((d) => orphanHeading(d.reply)).filter(Boolean)
+// 剔除按句做、结构按块长：某标题下唯一的正文被抠掉后，正文里会留下一个空壳标题。
+//
+// **只查「真剔除过」的那几条**。没剔除时也可能出现一句以冒号收尾的引子
+// （模型自己写的排版），那不是剔除留下的残骸，把它算进来就是把模型的文风
+// 记在这一层的账上——实测同一句话换个说法就会红一条，而红的原因与被测的东西无关。
+// 断言要锚在「谁造成的」上，否则它会训练人忽略红灯（13b 的教训）。
+const orphans = all.filter((d) => d.unsupportedStripped === true)
+  .map((d) => orphanHeading(d.reply)).filter(Boolean)
 ck('剔除之后正文里没有留下空标题', orphans.length === 0,
-  `孤儿标题：${orphans.join(' ｜ ')}——用户会以为平台确实有这么一段内容，只是没渲染出来`)
+  `孤儿标题：${orphans.join(' ｜ ')}——用户会以为平台确实有这么一段内容，只是没渲染出来`
+    + `（真剔除过的是 ${all.filter((d) => d.unsupportedStripped === true).length}/${all.length} 条）`)
 
 // 「整篇无依据」只该落在「没有引用、也没有工具记录」的回答上（判据见 CitationVerifier）
 const mislabeled = all.filter(

@@ -173,19 +173,19 @@ const searchCall = (data) => (data.toolCalls ?? []).find((t) => t.tool === 'prod
 
 // 先把真实应答抓下来：桩要回放它，才谈得上「重试拿到了和真服务一样的数据」
 const captured = await fetch(
-  `${PRODUCT}/products/recommendations?query=${encodeURIComponent(CAPTURE_QUERY)}&limit=3`,
+  `${PRODUCT}/products/search?keyword=${encodeURIComponent(CAPTURE_QUERY)}&size=3`,
 ).then((r) => r.json())
 ck(
   '下游此刻可用，抓到了真实商品数据（桩回放用）',
-  captured?.code === 200 && (captured.data ?? []).length > 0,
-  `GET /products/recommendations 回的是 ${JSON.stringify(captured).slice(0, 200)}`,
+  captured?.code === 200 && (captured.data?.records ?? []).length > 0,
+  `GET /products/search 回的是 ${JSON.stringify(captured).slice(0, 200)}`,
 )
-if (captured?.code !== 200 || !(captured.data ?? []).length) {
+if (captured?.code !== 200 || !(captured.data?.records ?? []).length) {
   console.error('FATAL: 拿不到真实数据，无法构造回放；先确认 product-service 正常')
   process.exit(1)
 }
-const productNames = captured.data.map((p) => p.name).filter(Boolean)
-const productKeys = captured.data.map((p) => `SPU${p.id}`)
+const productNames = captured.data.records.map((p) => p.name).filter(Boolean)
+const productKeys = captured.data.records.map((p) => `SPU${p.id}`)
 console.log(`  回放素材：${productNames.join(' / ')}`)
 
 // ─────────── 换桩 ───────────
@@ -199,7 +199,7 @@ const stub = createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify(body))
   }
-  if (url.pathname === '/products/recommendations') {
+  if (url.pathname === '/products/search') {
     searchHits += 1
     const failThis = mode === 'down' || searchHits === 1
     console.log(`  [桩] 第 ${searchHits} 次 ${url.searchParams.get('query')} → ${failThis ? '500' : '200（回放真实数据）'}`)
@@ -282,8 +282,16 @@ try {
   ck('重试拿回来的是真数据（工具输出里带着真实商品的 SPU 编号）',
     productKeys.some((k) => String(callA?.output ?? '').includes(k)),
     `桩回放的是 ${productKeys.join('/')}，工具输出=${String(callA?.output ?? '').slice(0, 200)}`)
-  ck('回答没有把这次抖动说成「没有这个商品」', !ABSENCE.test(replyA),
-    `回答里出现了「${replyA.match(ABSENCE)?.[0]}」——下游只是抖了一下`)
+  // 这一条**不能拿「没有」这种措辞判罪**。它与场景 B 的守卫长得像，但前提不同：
+  // B 里工具确实没查成，任何「没有」都是把失败读成了否定；A 里重试把它救回来了
+  // （上面两条断言已经钉死），模型拿到的是**真实数据**，于是它说「这三条里没有
+  // 同时满足条件的」是如实转述数据，不是编事实。实测同一份代码上它时而说这句、
+  // 时而说「暂无完全匹配的商品」，两次的产品行为一模一样 —— 拿措辞判罪，
+  // 红的就只是模型这一轮怎么遣词（13b 的教训：假红灯会训练人忽略红灯）。
+  // **判据锚在「谁造成的」上**：这一轮该守的是「救回来了就不许说这次没查成」。
+  const 说系统坏了 = replyA.match(/暂时不可用|服务不可用|查询失败|检索失败|系统异常|服务异常/)
+  ck('重试救回来之后，回答没有反过来说「这次没查成」', !说系统坏了,
+    `回答里出现了「${说系统坏了?.[0]}」——工具有数据、返回 success=true，这句是凭空来的`)
 
   if (log) {
     const since = log.since(markA)
@@ -338,7 +346,7 @@ try {
 const back = await waitFor(
   async () => {
     try {
-      const r = await fetch(`${PRODUCT}/products/recommendations?query=${encodeURIComponent(CAPTURE_QUERY)}&limit=1`)
+      const r = await fetch(`${PRODUCT}/products/search?keyword=${encodeURIComponent(CAPTURE_QUERY)}&size=1`)
       return (await r.json())?.code === 200
     } catch {
       return false

@@ -7,13 +7,16 @@
  *       不走模型：表格包了滚动容器吗？代码块有复制按钮吗？角标越界时退化成原文吗？
  *       模型输出里的 `<script>`/`onerror` 真的被挡住吗？这些用真模型没法稳定复现，
  *       而它们恰恰是安全边界与渲染正确性所在。
+ *       这一步要的是源码模块，而演示链路自 13a 起跑的是生产产物（`vite preview` 只发 dist），
+ *       所以它自己起一个临时 dev server —— 见下面第一节的注释。
  *   二、会话链路的**持久化真相** —— 切换会话看到的引用卡片与用量明细，
  *       必须来自 Redis 里存下的整轮响应，而不是内存残留。判据：切走再切回、
  *       刷新页面之后，`.citation` 与 `details.usage` 仍在。
  *   三、删除是**真删** —— 界面移除之后，再用接口拉一次列表对账，确认服务端也没了。
  *   四、流式态与滚动锚定 —— 生成中要有流式标记；用户上翻之后不能被自动滚动拽回底部。
  *
- * 前置条件：后端服务 + 前端 dev server 已启动。会真实调用 2 次模型对话，约 1–2 分钟。
+ * 前置条件：后端服务 + 前端已启动（dev server 或生产产物都行）。
+ * 会真实调用 2 次模型对话，约 1–2 分钟。
  *
  * 用法：
  *   node scripts/verify-chat-ui.mjs
@@ -22,6 +25,8 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
+// 只为第一节（markdown 渲染管线）起一个临时 dev server：那一段要的是源码模块
+import { createServer } from 'vite'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = resolve(HERE, '../.screenshots')
@@ -92,7 +97,28 @@ await page.goto(`${BASE}/#/assistant`, { waitUntil: 'networkidle', timeout: 3000
 
 // ─────────── 一、Markdown 渲染管线（确定性，不经过模型） ───────────
 console.log('\n一、Markdown 渲染管线（直接断言 renderMarkdown 的输出）')
-const mdChecks = await page.evaluate(async () => {
+// 这一段要的是**源码模块**：断言的对象必须是应用运行时那一份 renderMarkdown，
+// 而不是测试里另抄一遍的渲染逻辑。可 `${BASE}` 上是生产产物（13a 起演示链路
+// 改跑 `vite build` + `preview`），preview 只发 dist —— 按路径 import 会拿到
+// index.html，浏览器报的是「Failed to fetch dynamically imported module」，
+// 看着像模块路径写错了，其实产物里根本没有这个路径。
+//
+// 所以这一段自带一个临时 dev server：源码可达，且与演示产物共用同一份 renderer
+// （差别只在打包与否）。**不改断言去迁就环境**——那会把这层测试改成测别的东西。
+const devServer = await createServer({
+  root: resolve(HERE, '..'),
+  logLevel: 'silent',
+  server: { port: 5174, open: false },
+})
+await devServer.listen()
+const devUrl = devServer.resolvedUrls?.local?.[0]
+if (!devUrl) throw new Error('临时 dev server 没报出地址（markdown 那一段需要源码模块）')
+const devPage = await context.newPage()
+await devPage.goto(devUrl, { waitUntil: 'domcontentloaded', timeout: 60000 })
+
+let mdChecks
+try {
+  mdChecks = await devPage.evaluate(async () => {
   // dev server 直接提供 TS 模块，这里用的就是应用运行时同一份代码
   const { renderMarkdown } = await import('/src/utils/markdown.ts')
   const out = {}
@@ -114,7 +140,11 @@ const mdChecks = await page.evaluate(async () => {
   const link = renderMarkdown('[官网](https://example.com)', 0)
   out.linkSafe = link.includes('target="_blank"') && link.includes('noopener')
   return out
-})
+  })
+} finally {
+  await devPage.close()
+  await devServer.close()
+}
 ck('表格包进横向滚动容器', mdChecks.tableWrapped)
 ck('代码块带复制按钮', mdChecks.codeWrapped)
 ck('有序/无序列表渲染成列表', mdChecks.listRendered)

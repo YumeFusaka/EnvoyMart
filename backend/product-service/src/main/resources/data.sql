@@ -15,6 +15,11 @@
 --
 -- 幂等是必须的：`spring.sql.init.mode=always` 让这个脚本**每次启动都跑一遍**，
 -- 不幂等的写法会让商品每重启一次就翻一倍。
+--
+-- <b>与守卫配套的另一半：守卫写在自然键上时，代理键就不该写死。</b>
+-- 这两件事是一起出事的：守卫按自然键放行，而写死的 id 属于上一版的行序，
+-- 于是插进去撞 PRIMARY。id 有人引用（别的表拿它当外键）时才写死，那是数据的一部分；
+-- 没人引用的 id 一律交给自增。
 
 -- ==================== 类目 ====================
 -- path 存祖级路径，查子树走前缀匹配。一级类目的 path 就是自己的 id
@@ -35,6 +40,12 @@ select * from (
     union all select 13, 0, '中老年健康', 1, '13', 4, 1
     union all select 14, 13, '骨骼关节', 2, '13/14', 1, 1
     union all select 15, 13, '心脑血管', 2, '13/15', 2, 1
+    -- 以下四类是为「多条件检索」补的：原来只有 15 个商品、覆盖面窄到举不出一个像样的
+    -- 三条件场景（价格 + 正向 + 否定筛完只剩一条或一条不剩），演示时看不出筛选真的在起作用
+    union all select 16, 1, '睡眠助眠', 2, '1/16', 6, 1
+    union all select 17, 1, '护眼明目', 2, '1/17', 7, 1
+    union all select 18, 1, '免疫提升', 2, '1/18', 8, 1
+    union all select 19, 1, '体重管理', 2, '1/19', 9, 1
 ) as seed
 where not exists (select 1 from category where id = seed.id);
 
@@ -111,6 +122,42 @@ select * from (
     union all select 15, 'SPU015', '儿童多种维生素软糖', '3 岁以上适用，天然水果味', 12, 2,
            'https://picsum.photos/seed/spu15/600', 'https://picsum.photos/seed/spu15a/800', '儿童',
            '<h2>产品说明</h2><p>软糖剂型，儿童易接受。</p>', 1, now(), now()
+    union all select 16, 'SPU016', '褪黑素缓释片', '每片 3mg，缓释 8 小时', 16, 2,
+           'https://picsum.photos/seed/spu16/600', 'https://picsum.photos/seed/spu16a/800', '睡眠',
+           '<h2>产品说明</h2><p>褪黑素是松果体分泌的激素，参与调节睡眠节律，适用于倒时差与作息紊乱的人群。</p><h2>注意事项</h2><p>不建议长期连续服用；服用后请勿驾驶。</p>', 1, now(), now()
+    union all select 17, 'SPU017', 'γ-氨基丁酸软糖', '每粒 100mg，睡前半小时', 16, 6,
+           'https://picsum.photos/seed/spu17/600', 'https://picsum.photos/seed/spu17a/800', '睡眠,情绪',
+           '<h2>产品说明</h2><p>γ-氨基丁酸是中枢神经系统中的抑制性神经递质。</p>', 1, now(), now()
+    union all select 18, 'SPU018', '叶黄素酯软胶囊', '每粒叶黄素酯 10mg，搭配玉米黄质', 17, 5,
+           'https://picsum.photos/seed/spu18/600', 'https://picsum.photos/seed/spu18a/800', '护眼',
+           '<h2>产品说明</h2><p>叶黄素酯是叶黄素的稳定前体，在体内转化为叶黄素后集中于视网膜黄斑区。</p>', 1, now(), now()
+    union all select 19, 'SPU019', '越橘叶黄素片', '北欧越橘提取物与叶黄素复合配方', 17, 6,
+           'https://picsum.photos/seed/spu19/600', 'https://picsum.photos/seed/spu19a/800', '护眼',
+           '<h2>产品说明</h2><p>越橘提取物富含花青素，适合长时间用眼的人群。</p>', 1, now(), now()
+    union all select 20, 'SPU020', '维生素 C 咀嚼片', '每片 500mg，橙味', 18, 2,
+           'https://picsum.photos/seed/spu20/600', 'https://picsum.photos/seed/spu20a/800', '免疫',
+           '<h2>产品说明</h2><p>维生素 C 参与胶原蛋白合成，咀嚼片剂型无需吞服。</p>', 1, now(), now()
+    union all select 21, 'SPU021', '锌硒宝片', '锌 10mg 与硒 50μg 复合配方', 18, 2,
+           'https://picsum.photos/seed/spu21/600', 'https://picsum.photos/seed/spu21a/800', '免疫',
+           '<h2>产品说明</h2><p>锌与硒是人体必需的微量元素。</p>', 1, now(), now()
+    union all select 22, 'SPU022', '共轭亚油酸软胶囊', '每粒 1000mg CLA', 19, 3,
+           'https://picsum.photos/seed/spu22/600', 'https://picsum.photos/seed/spu22a/800', '体重管理,运动',
+           '<h2>产品说明</h2><p>共轭亚油酸来源于红花籽油，通常与规律运动配合使用。</p>', 1, now(), now()
+    union all select 23, 'SPU023', '白芸豆膳食纤维片', '餐前一片，含白芸豆提取物', 19, 6,
+           'https://picsum.photos/seed/spu23/600', 'https://picsum.photos/seed/spu23a/800', '体重管理',
+           '<h2>产品说明</h2><p>白芸豆提取物含 α-淀粉酶抑制蛋白，配合膳食纤维使用。</p>', 1, now(), now()
+    union all select 24, 'SPU024', '氨糖软骨素钙片', '氨糖 750mg、软骨素 250mg 与钙 200mg', 14, 4,
+           'https://picsum.photos/seed/spu24/600', 'https://picsum.photos/seed/spu24a/800', '关节,骨骼健康',
+           '<h2>产品说明</h2><p>氨基葡萄糖与硫酸软骨素是关节软骨的组成成分。</p><h2>注意事项</h2><p>对甲壳类过敏者慎用。</p>', 1, now(), now()
+    union all select 25, 'SPU025', '孕妇钙片', '柠檬酸钙 500mg 与维生素 D3 400IU，孕期哺乳期适用', 14, 4,
+           'https://picsum.photos/seed/spu25/600', 'https://picsum.photos/seed/spu25a/800', '孕期,骨骼健康',
+           '<h2>产品说明</h2><p>柠檬酸钙对胃酸依赖小，孕期胃部不适时也可随餐或空腹服用。</p><h2>注意事项</h2><p>请按医师或营养师建议的剂量服用。</p>', 1, now(), now()
+    union all select 26, 'SPU026', '儿童钙软糖', '3 岁以上适用，每粒含钙 100mg', 12, 2,
+           'https://picsum.photos/seed/spu26/600', 'https://picsum.photos/seed/spu26a/800', '儿童,骨骼健康',
+           '<h2>产品说明</h2><p>软糖剂型，含维生素 D 帮助钙吸收。</p>', 1, now(), now()
+    union all select 27, 'SPU027', '孕期 DHA 藻油软胶囊', '每粒 DHA 200mg，藻油来源', 11, 4,
+           'https://picsum.photos/seed/spu27/600', 'https://picsum.photos/seed/spu27a/800', '孕期',
+           '<h2>产品说明</h2><p>DHA 藻油来源，适合孕期与哺乳期补充。</p>', 1, now(), now()
 ) as seed
 -- product_spu 的唯一键是 spu_code：运营改过商品编号之后，id 守卫会放行、spu_code 撞车
 where not exists (select 1 from product_spu where spu_code = seed.spu_code);
@@ -140,6 +187,18 @@ select * from (
     union all select -13, -13, 13, 180, now()
     union all select -14, -14, 14, 810, now()
     union all select -15, -15, 15, 1180, now()
+    union all select -16, -16, 16, 940, now()
+    union all select -17, -17, 17, 460, now()
+    union all select -18, -18, 18, 720, now()
+    union all select -19, -19, 19, 530, now()
+    union all select -20, -20, 20, 2340, now()
+    union all select -21, -21, 21, 680, now()
+    union all select -22, -22, 22, 410, now()
+    union all select -23, -23, 23, 590, now()
+    union all select -24, -24, 24, 860, now()
+    union all select -25, -25, 25, 1320, now()
+    union all select -26, -26, 26, 1480, now()
+    union all select -27, -27, 27, 640, now()
 ) as seed
 where not exists (select 1 from product_sales_ledger where order_item_id = seed.order_item_id);
 
@@ -217,6 +276,18 @@ select * from (
     union all select 22, 14, 'SKU022', 18800, 22800, 190, 'https://picsum.photos/seed/sku22/400', 1
     union all select 23, 15, 'SKU023', 7900, 9900, 420, 'https://picsum.photos/seed/sku23/400', 1
     union all select 24, 15, 'SKU024', 7900, 9900, 380, 'https://picsum.photos/seed/sku24/400', 1
+    union all select 25, 16, 'SKU025', 9900, 12900, 260, 'https://picsum.photos/seed/sku25/400', 1
+    union all select 26, 17, 'SKU026', 11800, 14800, 300, 'https://picsum.photos/seed/sku26/400', 1
+    union all select 27, 18, 'SKU027', 15800, 19800, 220, 'https://picsum.photos/seed/sku27/400', 1
+    union all select 28, 19, 'SKU028', 13800, 16800, 240, 'https://picsum.photos/seed/sku28/400', 1
+    union all select 29, 20, 'SKU029', 4900, 6900, 500, 'https://picsum.photos/seed/sku29/400', 1
+    union all select 30, 21, 'SKU030', 8900, 10800, 280, 'https://picsum.photos/seed/sku30/400', 1
+    union all select 31, 22, 'SKU031', 19800, 24800, 170, 'https://picsum.photos/seed/sku31/400', 1
+    union all select 32, 23, 'SKU032', 12800, 15800, 210, 'https://picsum.photos/seed/sku32/400', 1
+    union all select 33, 24, 'SKU033', 16800, 20800, 190, 'https://picsum.photos/seed/sku33/400', 1
+    union all select 34, 25, 'SKU034', 12900, 15900, 230, 'https://picsum.photos/seed/sku34/400', 1
+    union all select 35, 26, 'SKU035', 8900, 10900, 340, 'https://picsum.photos/seed/sku35/400', 1
+    union all select 36, 27, 'SKU036', 21800, 26800, 150, 'https://picsum.photos/seed/sku36/400', 1
 ) as seed
 -- product_sku 的唯一键是 sku_code。**这一条是最容易踩的**：规格组合重算会删掉旧 SKU、
 -- 按新 id 建回来（这正是 `verify-sku-regen.mjs` 盯着的那条路径），
@@ -258,7 +329,12 @@ where not exists (
 );
 
 -- ==================== 商品参数 ====================
--- 属性定义挂类目，取值挂商品
+-- 属性定义挂类目，取值挂商品。
+--
+-- **「适用人群」在每个类目下各有一行**（id 2 / 9 / 11 / 12 / 15 / 17 / 19 / 21），不是重复：
+-- 属性定义是**按类目**维护的（管理端按类目列出可填参数，见 CatalogAdminServiceImpl），
+-- 而「适用人群」这类横跨全部品类的参数，本来就该在每棵子树里各挂一次。
+-- 检索侧只看名字与取值、不看它挂在哪个类目，所以筛选一行代码都不用改。
 insert into product_attribute (id, category_id, name, input_type, unit, sort)
 select * from (
     select 1 as id, 2 as category_id, '剂型' as name, 'SELECT' as input_type, null as unit, 1 as sort
@@ -269,28 +345,99 @@ select * from (
     union all select 6, 4, '储存条件', 'SELECT', null, 2
     union all select 7, 14, '钙含量', 'TEXT', 'mg/片', 1
     union all select 8, 5, '适用场景', 'TEXT', null, 1
+    union all select 9, 14, '适用人群', 'MULTI_SELECT', null, 2
+    -- 「是否含乳糖」是**结构化**回答「乳糖不耐受能不能吃」的那一个。
+    -- 靠文本排除答不了这个问题：写着「不含乳糖」的商品里也含「乳糖」两个字，
+    -- 按字面排除会把它一起排掉——**恰好排掉的是唯一能吃的那个**
+    union all select 10, 14, '是否含乳糖', 'SELECT', null, 3
+    union all select 11, 11, '适用人群', 'MULTI_SELECT', null, 1
+    union all select 12, 12, '适用人群', 'MULTI_SELECT', null, 1
+    union all select 13, 12, '剂型', 'SELECT', null, 2
+    union all select 14, 16, '剂型', 'SELECT', null, 1
+    union all select 15, 16, '适用人群', 'MULTI_SELECT', null, 2
+    union all select 16, 17, '剂型', 'SELECT', null, 1
+    union all select 17, 17, '适用人群', 'MULTI_SELECT', null, 2
+    union all select 18, 18, '剂型', 'SELECT', null, 1
+    union all select 19, 18, '适用人群', 'MULTI_SELECT', null, 2
+    union all select 20, 19, '剂型', 'SELECT', null, 1
+    union all select 21, 19, '适用人群', 'MULTI_SELECT', null, 2
+    union all select 22, 14, '剂型', 'SELECT', null, 4
+    union all select 23, 11, '剂型', 'SELECT', null, 2
 ) as seed
 where not exists (select 1 from product_attribute where id = seed.id);
 
-insert into spu_attribute_value (id, spu_id, attribute_id, attr_value)
+-- SPU 的参数原先**一律挂在维生素类目（id=2）的定义上**，因为那时只有那一套定义。
+-- 现在母婴、骨骼这些类目各自有了自己的「适用人群」，把这几行迁到本类目的定义上：
+-- 管理端是按类目列出可填参数的，挂在别人类目下会变成一条「编辑器认不出来」的取值。
+--
+-- **位置必须在下面那条 insert 之前**，而且下面的 insert 要直接写新的 attribute_id。
+-- 反过来（先 insert 后迁移）在第二次启动时会炸：迁移走的那一行不再存在，
+-- insert 的 (spu_id, attribute_id) 守卫于是放行、把它插回来，接着迁移又把它改成
+-- 那个已经被占用的 id —— 撞唯一键，**服务起不来**。文件开头那条「守卫要对着真正管唯一性的列写」
+-- 讲的是同一类事故。
+update spu_attribute_value set attribute_id = 9 where spu_id = 10 and attribute_id = 2;
+update spu_attribute_value set attribute_id = 9 where spu_id = 11 and attribute_id = 2;
+update spu_attribute_value set attribute_id = 11 where spu_id = 12 and attribute_id = 2;
+update spu_attribute_value set attribute_id = 12 where spu_id = 15 and attribute_id = 2;
+
+-- 上面几张表都把 id 写死在种子行里（它们的 id 被别的表引用着，是数据的一部分），
+-- **只有这一张不写**：它的 id 没有任何地方引用，纯粹是代理键，而种子行会随品类扩充
+-- 整体前移/后移。写死 id 的后果不是多插一行，是**服务起不来**——老库上这些行的 id
+-- 还是上一版的行序，守卫挡的是自然键（放行），而它要占的那个 id 已经被别人占了：
+-- `Duplicate entry '28' for key 'spu_attribute_value.PRIMARY'`，报错里那个 28
+-- 在种子文件里只是「第 28 行」，照着它排查会一头雾水。交给自增，行序怎么变都不会撞。
+insert into spu_attribute_value (spu_id, attribute_id, attr_value)
 select * from (
-    select 1 as id, 1 as spu_id, 1 as attribute_id, '软胶囊' as attr_value
-    union all select 2, 1, 2, '成人,老年人'
-    union all select 3, 1, 3, '400IU/粒'
-    union all select 4, 2, 1, '片剂'
-    union all select 5, 2, 2, '成人'
-    union all select 6, 3, 4, '80'
-    union all select 7, 4, 4, '72'
-    union all select 8, 5, 5, '100亿'
-    union all select 9, 5, 6, '阴凉干燥处'
-    union all select 10, 9, 2, '成人'
-    union all select 11, 10, 7, '600'
-    union all select 12, 10, 2, '成人,老年人'
-    union all select 13, 11, 7, '315'
-    union all select 14, 11, 2, '成人,老年人,乳糖不耐受人群'
-    union all select 15, 12, 2, '孕妇'
-    union all select 16, 13, 8, '进食受限人群的营养补充'
-    union all select 17, 15, 2, '儿童'
+    select 1 as spu_id, 1 as attribute_id, '软胶囊' as attr_value
+    union all select 1, 2, '成人,老年人'
+    union all select 1, 3, '400IU/粒'
+    union all select 2, 1, '片剂'
+    union all select 2, 2, '成人'
+    union all select 3, 4, '80'
+    union all select 4, 4, '72'
+    union all select 5, 5, '100亿'
+    union all select 5, 6, '阴凉干燥处'
+    union all select 9, 2, '成人'
+    union all select 10, 7, '600'
+    union all select 10, 9, '成人,老年人'
+    union all select 11, 7, '315'
+    union all select 11, 9, '成人,老年人,乳糖不耐受人群'
+    union all select 12, 11, '孕妇'
+    union all select 13, 8, '进食受限人群的营养补充'
+    union all select 15, 12, '儿童'
+    union all select 16, 14, '片剂'
+    union all select 16, 15, '成人'
+    union all select 17, 14, '软糖'
+    union all select 17, 15, '成人'
+    union all select 18, 16, '软胶囊'
+    union all select 18, 17, '成人,老年人'
+    union all select 19, 16, '片剂'
+    union all select 19, 17, '成人,老年人'
+    union all select 20, 18, '片剂'
+    union all select 20, 19, '成人,儿童'
+    union all select 21, 18, '片剂'
+    union all select 21, 19, '成人'
+    union all select 22, 20, '软胶囊'
+    union all select 22, 21, '成人'
+    union all select 23, 20, '片剂'
+    union all select 23, 21, '成人'
+    union all select 24, 9, '成人,老年人'
+    union all select 24, 10, '不含'
+    union all select 24, 22, '片剂'
+    union all select 25, 9, '孕妇'
+    union all select 25, 10, '不含'
+    union all select 25, 22, '片剂'
+    union all select 25, 7, '500'
+    union all select 26, 12, '儿童'
+    union all select 26, 13, '软糖'
+    union all select 27, 11, '孕妇'
+    union all select 27, 23, '软胶囊'
+    union all select 10, 10, '含'
+    union all select 10, 22, '片剂'
+    union all select 11, 10, '不含'
+    union all select 11, 22, '胶囊'
+    union all select 15, 13, '软糖'
+    union all select 9, 1, '软胶囊'
 ) as seed
 -- 唯一键是 uk_spu_attribute(spu_id, attribute_id)：同一个商品的同一个参数只该有一行
 where not exists (

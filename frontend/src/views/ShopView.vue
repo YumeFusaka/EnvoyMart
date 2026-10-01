@@ -11,7 +11,7 @@ const route = useRoute()
 const router = useRouter()
 
 const PAGE_SIZE = 12
-const SORTS = ['sales', 'price_asc', 'price_desc', 'newest']
+const SORTS = ['relevance', 'sales', 'price_asc', 'price_desc', 'newest']
 
 const categories = ref<CategoryNode[]>([])
 const brands = ref<BrandView[]>([])
@@ -23,6 +23,7 @@ const loadError = ref('')
 let loadSeq = 0
 
 const sortOptions = [
+  { value: 'relevance', label: '综合排序' },
   { value: 'sales', label: '销量优先' },
   { value: 'price_asc', label: '价格从低到高' },
   { value: 'price_desc', label: '价格从高到低' },
@@ -59,7 +60,7 @@ const filters = computed(() => {
     brandId: num('brandId'),
     minPrice: yuan('minPrice'),
     maxPrice: yuan('maxPrice'),
-    sort: sort && SORTS.includes(sort) ? sort : 'sales',
+    sort: sort && SORTS.includes(sort) ? sort : 'relevance',
     /** URL 上的页码从 1 开始（人看的东西按人的习惯写），接口那边再减 1 */
     page: Math.max(1, Math.trunc(Number(raw('page')) || 1)),
   }
@@ -88,7 +89,7 @@ function pushQuery(patch: Partial<Filters>, options: { keepPage?: boolean } = {}
   if (next.minPrice) query.minPrice = toYuan(next.minPrice)!
   if (next.maxPrice) query.maxPrice = toYuan(next.maxPrice)!
   // 默认排序与第一页都不写进 URL：链接短一点，也让「有没有筛过」一眼可辨
-  if (next.sort !== 'sales') query.sort = next.sort
+  if (next.sort !== 'relevance') query.sort = next.sort
   const page = options.keepPage ? next.page : 1
   if (page > 1) query.page = String(page)
   // push 而不是 replace：浏览器后退要能退回上一个筛选，这是电商列表页的默认预期
@@ -257,7 +258,7 @@ function clearAll() {
     brandId: undefined,
     minPrice: undefined,
     maxPrice: undefined,
-    sort: 'sales',
+    sort: 'relevance',
   })
 }
 

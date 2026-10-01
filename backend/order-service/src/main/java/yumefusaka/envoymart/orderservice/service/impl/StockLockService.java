@@ -49,8 +49,9 @@ public class StockLockService {
         this.redissonClient = redissonClient;
     }
 
-    public RLock getStockLock(Long productId) {
-        return redissonClient.getLock(STOCK_LOCK_PREFIX + productId);
+    /** 锁粒度是 <b>SKU</b> 而不是 SPU：可售与库存都记在 SKU 上，同一个 SPU 的两个规格本来就不该互相排队 */
+    public RLock getStockLock(Long skuId) {
+        return redissonClient.getLock(STOCK_LOCK_PREFIX + skuId);
     }
 
     /**
@@ -61,8 +62,8 @@ public class StockLockService {
      * 和「暂时抢不到锁」混成同一件事，调用方据此提示用户"稍后再试"，
      * 实际上是该中止的操作被当成了业务繁忙。
      */
-    public boolean tryLock(Long productId) {
-        RLock lock = getStockLock(productId);
+    public boolean tryLock(Long skuId) {
+        RLock lock = getStockLock(skuId);
         try {
             return lock.tryLock(lockWaitSeconds, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
@@ -71,8 +72,8 @@ public class StockLockService {
         }
     }
 
-    public void unlock(Long productId) {
-        RLock lock = getStockLock(productId);
+    public void unlock(Long skuId) {
+        RLock lock = getStockLock(skuId);
         if (lock.isHeldByCurrentThread()) {
             lock.unlock();
         }

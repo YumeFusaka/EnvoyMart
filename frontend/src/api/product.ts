@@ -16,7 +16,7 @@ export interface ProductQueryParams {
   /** 单位「分」，与后端一致 */
   minPrice?: number
   maxPrice?: number
-  /** sales / price_asc / price_desc / newest，其它值后端回落到 sales */
+  /** relevance（综合，默认）/ sales / price_asc / price_desc / newest，其它值后端回落到综合 */
   sort?: string
   page?: number
   size?: number

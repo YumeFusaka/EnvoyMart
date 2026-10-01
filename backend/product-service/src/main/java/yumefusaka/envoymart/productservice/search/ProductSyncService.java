@@ -16,6 +16,8 @@ import yumefusaka.envoymart.productservice.mapper.SpuAttributeValueMapper;
 import yumefusaka.envoymart.productservice.service.CategoryService;
 
 import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -117,24 +119,30 @@ public class ProductSyncService {
                 spus.stream().map(ProductSpuEntity::getCategoryId).toList());
         Map<Long, String> brandNames = categoryService.brandNames(
                 spus.stream().map(ProductSpuEntity::getBrandId).toList());
-        Map<Long, String> attributeTexts = buildAttributeTexts(spuIds);
+        Map<Long, List<String>> attributes = buildAttributes(spuIds);
 
         return spus.stream()
                 .map(spu -> toIndex(spu,
                         skusBySpu.getOrDefault(spu.getId(), List.of()),
                         categoryNames,
                         brandNames,
-                        attributeTexts.getOrDefault(spu.getId(), "")))
+                        attributes.getOrDefault(spu.getId(), List.of())))
                 .toList();
     }
 
     /**
-     * 把商品参数拼成一段文本（"剂型:胶囊 适用人群:成人 每份含量:400IU"）。
+     * 商品参数的两种表示一次算出来：全文检索用的文本，与筛选用的 {@code 属性名:属性值} 列表。
      * <p>
      * 参数是结构化数据、默认不进全文索引，于是「胶囊」这类词搜不到任何商品 ——
-     * 而用户确实会这么搜。拼成文本入索引是最省事的解法，比建一堆字段简单得多。
+     * 而用户确实会这么搜。拼成文本入索引解决的是这一半。
+     * <p>
+     * 另一半是筛选：用户说「孕妇能吃的」，要判断的是「适用人群里有孕妇」，
+     * 而这在拼好的文本上做不了——用短语匹配 {@code 适用人群:孕妇} 时，
+     * 同一字段里写着 {@code 适用人群:成人,老年人} 的商品会因为中间隔了别的字而不命中，
+     * 但「适用人群:成人」又会命中。**同一件事对不同的值给出相反答案**，
+     * 所以筛选走结构化那份。两处出自同一次遍历，不会各说各话。
      */
-    private Map<Long, String> buildAttributeTexts(List<Long> spuIds) {
+    private Map<Long, List<String>> buildAttributes(List<Long> spuIds) {
         List<SpuAttributeValueEntity> values = spuAttributeValueMapper.selectList(
                 new LambdaQueryWrapper<SpuAttributeValueEntity>()
                         .in(SpuAttributeValueEntity::getSpuId, spuIds));
@@ -148,28 +156,58 @@ public class ProductSyncService {
                 .stream()
                 .collect(Collectors.toMap(ProductAttributeEntity::getId, attribute -> attribute));
 
-        Map<Long, StringBuilder> buffers = new HashMap<>();
+        Map<Long, List<String>> result = new HashMap<>();
         for (SpuAttributeValueEntity value : values) {
             ProductAttributeEntity attribute = attributes.get(value.getAttributeId());
             if (attribute == null) {
                 continue;
             }
-            buffers.computeIfAbsent(value.getSpuId(), key -> new StringBuilder())
-                    .append(attribute.getName())
-                    .append(':')
-                    .append(value.getAttrValue())
-                    .append(' ');
+            List<String> items = result.computeIfAbsent(value.getSpuId(), key -> new ArrayList<>());
+            for (String single : splitValues(attribute, value.getAttrValue())) {
+                items.add(attribute.getName() + ":" + single);
+            }
         }
+        return result;
+    }
 
-        return buffers.entrySet().stream()
-                .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().toString().trim()));
+    /**
+     * 拆多选属性的取值。**只有 MULTI_SELECT 拆**：TEXT 类型里逗号是正文的一部分，
+     * 拆开就成了两个不存在的取值（「进食受限人群，需医师指导」会被拆成两条）。
+     * 中英文逗号都认：运营在两个输入框里都可能打出来。
+     */
+    private List<String> splitValues(ProductAttributeEntity attribute, String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        if (!"MULTI_SELECT".equals(attribute.getInputType())) {
+            return List.of(raw.trim());
+        }
+        return Arrays.stream(raw.split("[,，]"))
+                .map(String::trim)
+                .filter(single -> !single.isEmpty())
+                .toList();
+    }
+
+    /**
+     * 单字通道的文本 = 参与检索的那些字段拼在一起。
+     * <p>
+     * 逐字切分会把标点与空白当分隔符丢掉，所以这里用什么分隔符不影响词元；
+     * 用空格只是为了让索引里这份文本还读得懂（排查时要人去翻 {@code _source}）。
+     * <p>
+     * <b>空值必须先滤掉</b>：{@code String.join} 遇到 null 会把它写成字面量 "null"，
+     * 那四个字母会变成一个真实词元——搜「null」能搜到商品，而没人会想到是这里来的。
+     */
+    private String unigramSource(String... texts) {
+        return Arrays.stream(texts)
+                .filter(text -> text != null && !text.isBlank())
+                .collect(Collectors.joining(" "));
     }
 
     private ProductIndex toIndex(ProductSpuEntity spu,
                                  List<ProductSkuEntity> skus,
                                  Map<Long, String> categoryNames,
                                  Map<Long, String> brandNames,
-                                 String attributeText) {
+                                 List<String> attributes) {
         Long minPrice = null;
         Long maxPrice = null;
         int totalStock = 0;
@@ -179,14 +217,19 @@ public class ProductSyncService {
             totalStock = skus.stream().mapToInt(ProductSkuEntity::getStock).sum();
         }
 
+        String detailText = stripHtml(spu.getDetailHtml());
+        String attributeText = String.join(" ", attributes);
+        String categoryName = categoryNames.get(spu.getCategoryId());
+        String brandName = brandNames.get(spu.getBrandId());
+
         return ProductIndex.builder()
                 .id(spu.getId())
                 .name(spu.getName())
                 .subtitle(spu.getSubtitle())
                 .categoryId(spu.getCategoryId())
-                .categoryName(categoryNames.get(spu.getCategoryId()))
+                .categoryName(categoryName)
                 .brandId(spu.getBrandId())
-                .brandName(brandNames.get(spu.getBrandId()))
+                .brandName(brandName)
                 .tags(spu.getTags())
                 .minPrice(minPrice)
                 .maxPrice(maxPrice)
@@ -196,8 +239,13 @@ public class ProductSyncService {
                 .reviewCount(spu.getReviewCount())
                 .status(spu.getStatus())
                 .mainImage(spu.getMainImage())
-                .detailText(stripHtml(spu.getDetailHtml()))
+                .detailText(detailText)
                 .attributeText(attributeText)
+                .attributes(attributes)
+                // 与 ProductSearchService 的 MATCH_FIELDS 是同一组字段：两个通道要能覆盖同样的范围，
+                // 否则会出现「二元组那条能搜到的、单字这条搜不到」，而排查时只会看到「有时候好使」
+                .unigramText(unigramSource(spu.getName(), spu.getSubtitle(), spu.getTags(),
+                        categoryName, brandName, attributeText, detailText))
                 .createdAt(spu.getCreatedAt() == null ? null
                         : spu.getCreatedAt().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli())
                 .build();

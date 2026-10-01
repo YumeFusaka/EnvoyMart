@@ -43,10 +43,16 @@ public class ProductController {
     }
 
     /**
-     * 按条件浏览。走 MySQL 的库内查询。
+     * 按条件浏览。默认走 MySQL 的库内查询。
      * <p>
      * 与 {@code /products/search} 的分工：这条适合「点类目、翻页」这类结构化浏览，
      * 条件都能落到索引上；那条走 ES 全文索引，适合带关键词的搜索。
+     * <p>
+     * <b>但库内查询认不全这套条件</b>：属性筛选与否定条件只有 ES 那条路实现得了。
+     * 所以带这两者时在这里改道，而不是让它们<b>静默失效</b>——
+     * 静默失效的样子是「筛了等于没筛」：结果多出一批明确被排除的商品，
+     * 接口不报错、日志里也没有异常，只有对着需求一条条数才发现不对。
+     * 分流判据在 {@link ProductQuery#needsFullTextIndex()}，两个入口共用同一个问题。
      * <p>
      * 参数直接用 {@link ProductQuery} 对象绑定，而不是一长串 {@code @RequestParam}：
      * 后者要依赖编译期的 {@code -parameters} 才能从字节码里读出参数名，
@@ -55,7 +61,9 @@ public class ProductController {
      */
     @GetMapping
     public Result<PageResult<ProductSummary>> list(ProductQuery query) {
-        return Result.success(productService.list(query));
+        return Result.success(query.needsFullTextIndex()
+                ? searchService.search(query)
+                : productService.list(query));
     }
 
     /** 全文检索。索引是 SPU 粒度，返回的商品价格是一个区间 */
@@ -108,12 +116,6 @@ public class ProductController {
     @GetMapping("/skus")
     public Result<List<SkuSnapshot>> skus(@RequestParam("ids") List<Long> ids) {
         return Result.success(productService.skus(ids));
-    }
-
-    @GetMapping("/recommendations")
-    public Result<List<ProductSummary>> recommend(@RequestParam("query") String query,
-                                                  @RequestParam(value = "limit", defaultValue = "3") int limit) {
-        return Result.success(productService.recommend(query, limit));
     }
 
     /**

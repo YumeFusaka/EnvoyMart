@@ -189,9 +189,13 @@ public class McpServerConfig {
         Map<String, Object> properties = new LinkedHashMap<>();
         List<String> required = new ArrayList<>();
         definition.getParameters().forEach((name, spec) -> {
+            String type = spec.getType() == null ? "string" : spec.getType();
             Map<String, Object> property = new LinkedHashMap<>();
-            property.put("type", spec.getType() == null ? "string" : spec.getType());
+            property.put("type", type);
             property.put("description", spec.getDescription() == null ? "" : spec.getDescription());
+            if ("array".equals(type)) {
+                property.put("items", Map.of("type", spec.getItems() == null ? "string" : spec.getItems()));
+            }
             properties.put(name, property);
             if (spec.isRequired()) {
                 required.add(name);

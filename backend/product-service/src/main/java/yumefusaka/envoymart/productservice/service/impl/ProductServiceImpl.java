@@ -204,15 +204,6 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public List<ProductSummary> recommend(String query, int limit) {
-        ProductQuery productQuery = new ProductQuery();
-        productQuery.setKeyword(query);
-        productQuery.setSort("sales");
-        productQuery.setSize(limit);
-        return list(productQuery).getRecords();
-    }
-
-    @Override
     public List<ProductSummary> catalog() {
         ProductQuery productQuery = new ProductQuery();
         // 分页上限是 100，而这里要的是「全部」。目录规模是几十条，一次拿完；

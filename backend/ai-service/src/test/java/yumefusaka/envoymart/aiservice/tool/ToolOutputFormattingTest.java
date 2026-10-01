@@ -5,6 +5,7 @@ import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 import yumefusaka.envoymart.aiservice.client.OrderClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
+import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.contract.OrderItemResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
@@ -15,9 +16,11 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -45,17 +48,30 @@ class ToolOutputFormattingTest {
         return new ToolCall("t1", tool, args, false, USER);
     }
 
+    /** 下游检索的应答。工具链路上搜到的商品都从这里来 */
+    private static Result<PageResult<ProductSummary>> hits(ProductSummary... products) {
+        List<ProductSummary> list = List.of(products);
+        return Result.success(PageResult.<ProductSummary>builder()
+                .records(list).total((long) list.size()).page(0).size(20).build());
+    }
+
+    /** 下游说「一条都没有」——与「下游挂了」是两回事，工具对它们的说法必须不同 */
+    private static Result<PageResult<ProductSummary>> empty() {
+        return Result.success(PageResult.<ProductSummary>builder()
+                .records(List.of()).total(0L).page(0).size(20).build());
+    }
+
     // ==================== 商品工具 ====================
 
     @Test
     void 商品工具把分转成元且不出现_null() {
         ProductClient client = mock(ProductClient.class);
-        when(client.recommend(anyString(), anyInt())).thenReturn(Result.success(List.of(
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt())).thenReturn(hits(
                 ProductSummary.builder()
                         .id(7L).name("维生素 D3 软胶囊").subtitle("400IU 每日一粒")
                         .minPrice(4900L).maxPrice(8900L)
                         .totalStock(120).sales(58).ratingAvg(new BigDecimal("4.8"))
-                        .build())));
+                        .build()));
 
         ToolResult result = new ProductTool(client).execute(call("product_search", Map.of("query", "维生素")));
 
@@ -84,7 +100,7 @@ class ToolOutputFormattingTest {
                             + "拿编号当关键词永远搜不到，而那会被模型读成「这个商品不存在」", written)
                     .contains("鱼油软胶囊").contains("SPU7");
         }
-        verify(client, never()).recommend(anyString(), anyInt());
+        verify(client, never()).search(anyString(), any(), any(), any(), any(), anyInt());
     }
 
     @Test
@@ -102,9 +118,9 @@ class ToolOutputFormattingTest {
     @Test
     void 商品工具价格区间相等时只回一个价格() {
         ProductClient client = mock(ProductClient.class);
-        when(client.recommend(anyString(), anyInt())).thenReturn(Result.success(List.of(
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt())).thenReturn(hits(
                 ProductSummary.builder().id(1L).name("蛋白粉")
-                        .minPrice(19900L).maxPrice(19900L).totalStock(5).build())));
+                        .minPrice(19900L).maxPrice(19900L).totalStock(5).build()));
 
         String output = new ProductTool(client).execute(call("product_search", Map.of("query", "蛋白粉"))).getOutput();
 
@@ -112,9 +128,140 @@ class ToolOutputFormattingTest {
     }
 
     @Test
+    void 商品工具把约束拆进各自参数而不是拼进关键词() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(hits(ProductSummary.builder().id(9L).name("柠檬酸钙").build()));
+
+        new ProductTool(client).execute(call("product_search", Map.of(
+                "query", "钙片", "minPrice", 100, "maxPrice", "300", "excludeKeywords", "乳糖")));
+
+        // 元 → 分在这里完成。让模型自己乘 100 是给它埋一个必然出错的换算
+        verify(client).search("钙片", 10000L, 30000L, "乳糖", null, 3);
+    }
+
+    @Test
+    void 商品工具把属性条件原样传给下游() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(hits(ProductSummary.builder().id(12L).name("孕期复合营养包").build()));
+
+        new ProductTool(client).execute(call("product_search", Map.of(
+                "query", "营养包", "attributes", List.of("适用人群:孕妇"))));
+
+        // 原样：中间任何一次「顺手」的大小写归一或去空格，都会把一个能筛到的值
+        // 改成筛不到，而两边都看不出发生了什么——下游只会安安静静地回一个空集
+        verify(client).search("营养包", null, null, null, List.of("适用人群:孕妇"), 3);
+    }
+
+    @Test
+    void 模型把属性写成字符串时也认() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(hits(ProductSummary.builder().id(11L).name("柠檬酸钙胶囊").build()));
+
+        // schema 声明是数组，但模型给单个字符串是常见的退让；不认的话这个条件会被当作
+        // 没给，而模型以为筛过了——两边都以为对方做了自己该做的事
+        new ProductTool(client).execute(call("product_search", Map.of(
+                "query", "钙片", "attributes", "适用人群:老年人")));
+
+        verify(client).search("钙片", null, null, null, List.of("适用人群:老年人"), 3);
+    }
+
+    @Test
+    void 属性筛空时指出是它把候选清空的() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt())).thenReturn(empty());
+        when(client.search(anyString(), any(), any(), any(), isNull(), anyInt()))
+                .thenReturn(hits(ProductSummary.builder().id(11L).name("柠檬酸钙胶囊").build()));
+
+        String output = new ProductTool(client)
+                .execute(call("product_search", Map.of("query", "钙片", "attributes", List.of("适用人群:孕妇"))))
+                .getOutput();
+
+        assertThat(output)
+                .as("属性值是精确匹配，写错或平台上确实没有时结果为空。"
+                        + "不指出是属性筛的，模型分不清「没有孕妇能吃的钙片」和「这个属性值我写错了」")
+                .contains("没有找到")
+                .contains("去掉属性筛选后能找到商品");
+    }
+
+    @Test
+    void 商品工具把筛选条件复述给模型() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(hits(ProductSummary.builder().id(9L).name("柠檬酸钙").build()));
+
+        String output = new ProductTool(client)
+                .execute(call("product_search", Map.of("query", "钙片", "maxPrice", 200, "excludeKeywords", "乳糖")))
+                .getOutput();
+
+        assertThat(output)
+                .as("模型据此向用户复述「我按什么筛的」；让它自己重述就可能重述错，而用户分不出真假")
+                .contains("价格不高于 200.00 元")
+                .contains("排除含「乳糖」的");
+    }
+
+    @Test
+    void 只给了排除条件时提示去掉它能找到商品() {
+        ProductClient client = mock(ProductClient.class);
+        // 第一次（带排除词）空，第二次（去掉排除词）有 —— 这就是"排除条件把候选清空了"
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(Result.success(PageResult.<ProductSummary>builder()
+                        .records(List.of()).total(0L).page(0).size(20).build()));
+        when(client.search(anyString(), any(), any(), isNull(), any(), anyInt()))
+                .thenReturn(hits(ProductSummary.builder().id(9L).name("碳酸钙 D3 咀嚼片").build()));
+
+        String output = new ProductTool(client)
+                .execute(call("product_search", Map.of("query", "钙片", "excludeKeywords", "乳糖")))
+                .getOutput();
+
+        assertThat(output)
+                .as("光说「没找到」模型只能猜是哪个条件太严，猜错就给用户一个没用的建议")
+                .contains("没有找到")
+                .contains("去掉排除条件「乳糖」后能找到商品");
+    }
+
+    @Test
+    void 排除词探针自己失败不影响结论() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(Result.success(PageResult.<ProductSummary>builder()
+                        .records(List.of()).total(0L).page(0).size(20).build()));
+        // 探针那次（去掉排除词）一直 500：Downstream 重试到底后抛出
+        when(client.search(anyString(), any(), any(), isNull(), any(), anyInt()))
+                .thenReturn(Result.error(500, "stub：下游抖了一下"));
+
+        ToolResult result = new ProductTool(client)
+                .execute(call("product_search", Map.of("query", "钙片", "excludeKeywords", "乳糖")));
+
+        assertThat(result.isSuccess())
+                .as("「没有结果」已经查实了，不能因为一次额外的核实失败把它降级成「下游不可用」")
+                .isTrue();
+        assertThat(result.getOutput()).contains("没有找到").doesNotContain("后能找到商品");
+    }
+
+    @Test
+    void 价格解析不出来时说明已忽略而不是悄悄丢掉() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(hits(ProductSummary.builder().id(9L).name("柠檬酸钙").build()));
+
+        String output = new ProductTool(client)
+                .execute(call("product_search", Map.of("query", "钙片", "maxPrice", "三百")))
+                .getOutput();
+
+        assertThat(output)
+                .as("静默丢掉条件会让模型以为自己传的价格生效了，然后向用户宣称按价格筛过")
+                .contains("价格上限未能识别，已忽略");
+    }
+
+    @Test
     void 商品工具空结果给出明确说法而不是空串() {
         ProductClient client = mock(ProductClient.class);
-        when(client.recommend(anyString(), anyInt())).thenReturn(Result.success(List.of()));
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(Result.success(PageResult.<ProductSummary>builder()
+                        .records(List.of()).total(0L).page(0).size(20).build()));
 
         ToolResult result = new ProductTool(client).execute(call("product_search", Map.of("query", "不存在的东西")));
 

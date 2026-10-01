@@ -148,6 +148,13 @@ public final class Downstream {
         try {
             return call.get();
         } catch (RuntimeException e) {
+            // 走进来的不只是「连不上」：Feign 解不开应答体也抛在这里（DecodeException），
+            // 而那一次调用其实连上了、对方也答了 200。所以这里必须打堆栈 ——
+            // 真正的原因（哪个字段解不开、读超时还是连接被拒）全在 cause 链里，
+            // 而下面那句给用户看的措辞只有类名。缺了这条日志，现场就只剩
+            // 「商品服务连不上（DecodeException）」，排查的第一步（区分连不上与答非所问）
+            // 就无从下手。实测踩到过：接口 200、应答是合法 JSON，工具却报「连不上」。
+            log.warn("[下游失败] {} 调用异常（{}）", service, e.getClass().getSimpleName(), e);
             // 走到这里的是连接没建立、超时这类**传输层**失败——Feign 那边已经按安全判据重试过，
             // 到这里说明它也没辙了。包装成同一种异常，工具层不必认识两种失败
             throw new DownstreamException(-1, service + "连不上（" + e.getClass().getSimpleName()

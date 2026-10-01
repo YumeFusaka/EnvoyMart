@@ -4,6 +4,7 @@ import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.Operator;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
 import co.elastic.clients.json.JsonData;
@@ -43,6 +44,34 @@ public class ProductSearchService {
     /** 超过这个长度的输入不是联想，是往参数里灌东西 */
     private static final int MAX_SUGGEST_QUERY_LENGTH = 64;
 
+    /**
+     * 参与匹配的字段与权重。
+     * <p>
+     * 抽成常量是因为它有两个使用者——命中（{@code must}）与排除（{@code mustNot}）。
+     * 各写一份的话，「搜得到却排除不掉」这类不对称会悄悄出现，而且不报任何错。
+     */
+    private static final List<String> MATCH_FIELDS = List.of(
+            "name^3", "subtitle^2", "tags^2",
+            "categoryName", "brandName", "attributeText", "detailText");
+
+    /**
+     * 逐字通道的字段名。与 {@link #MATCH_FIELDS} 是同一组内容的两种切法：
+     * 那边字段多、权重细、走二元组；这边合成一段、逐字切、要求全字命中。
+     * <p>
+     * 两条通道只能二选一地起作用——不是「哪个更好」，而是各自的盲区不一样：
+     * 二元组认得「维生素」（词元 {@code 维生}/{@code 生素} 都在），逐字那条要多切一层；
+     * 「钙片」反过来。所以查询侧把它们放进同一个 {@code bool.should}，
+     * 命中任意一条即算命中（见 {@code search}）。
+     */
+    private static final String UNIGRAM_FIELD = "unigramText";
+
+    /**
+     * 联想比检索少几段：{@code detailText} / {@code attributeText} 不参与——它们是「详情里提到过」，
+     * 而联想要在用户打到一半时给**像商品名或品牌名**的东西，把详情正文拉进来只会推出无关条目。
+     */
+    private static final List<String> SUGGEST_FIELDS =
+            List.of("name^3", "subtitle", "brandName", "categoryName");
+
     private final ElasticsearchOperations elasticsearchOperations;
     private final CategoryService categoryService;
     private final HotKeywordService hotKeywordService;
@@ -77,10 +106,32 @@ public class ProductSearchService {
 
         if (StringUtils.hasText(query.getKeyword())) {
             String keyword = query.getKeyword().trim();
-            bool.must(Query.of(q -> q.multiMatch(m -> m
-                    .fields("name^3", "subtitle^2", "tags^2",
-                            "categoryName", "brandName", "attributeText", "detailText")
+            // 通道一：二元组。精确、打分细，是主力
+            bool.should(Query.of(q -> q.multiMatch(m -> m
+                    .fields(MATCH_FIELDS)
                     .query(keyword))));
+            // 通道二：逐字，且要求**查询里的每个字都命中**。兜的是二元组的盲区
+            // （「钙片」在「碳酸钙 … 咀嚼片」里没有对应词元，见 ProductIndex 的说明）。
+            // 用 AND 而不是默认的 OR：「钙片」OR 起来会变成「含钙就行」或「含片就行」，
+            // 那会把「复合维生素矿物质片」也算成钙片——多发几条看着无害，
+            // 但用户搜的是钙片，返回一堆不是钙片的东西，比返回空更糟
+            bool.should(Query.of(q -> q.match(m -> m
+                    .field(UNIGRAM_FIELD)
+                    .query(keyword)
+                    .operator(Operator.And))));
+            // **这句不能省**：bool 里只要还有 filter（上面那条 status），should 的默认
+            // minimum_should_match 就是 0 —— 两条通道会双双退化成「可有可无的加分项」，
+            // 而 status 的 filter 足以让**所有在架商品**全部命中。症状是搜索看起来完全正常，
+            // 只是搜什么都返回全部商品
+            bool.minimumShouldMatch("1");
+        }
+
+        // 否定条件与命中条件**必须用同一组字段**：两边字段集一旦不同，就会出现
+        // 「按这个名字搜得到、却按这个名字排除不掉」的不对称，而这种不对称不会报错
+        if (StringUtils.hasText(query.getExcludeKeywords())) {
+            bool.mustNot(Query.of(q -> q.multiMatch(m -> m
+                    .fields(MATCH_FIELDS)
+                    .query(query.getExcludeKeywords().trim()))));
         }
 
         if (query.getCategoryId() != null) {
@@ -111,6 +162,18 @@ public class ProductSearchService {
             bool.filter(Query.of(q -> q.range(r -> r.untyped(u -> u
                     .field("minPrice")
                     .lte(JsonData.of(query.getMaxPrice()))))));
+        }
+
+        // 属性逐项各占一个 filter：要的是「同时满足全部」，不是「满足任意一个」。
+        // 把多项收进一个 terms 查询就是把 AND 写成了 OR —— 症状是筛「孕妇能吃 + 片剂」时
+        // 返回了孕妇能吃但**不是片剂**的商品，结果看着完全正常、没有任何报错
+        if (query.getAttributes() != null) {
+            for (String attribute : query.getAttributes()) {
+                if (StringUtils.hasText(attribute)) {
+                    String expected = attribute.trim();
+                    bool.filter(Query.of(q -> q.term(t -> t.field("attributes").value(expected))));
+                }
+            }
         }
 
         NativeQueryBuilder builder = new NativeQueryBuilder()
@@ -166,10 +229,19 @@ public class ProductSearchService {
         BoolQuery.Builder bool = new BoolQuery.Builder();
         bool.filter(Query.of(q -> q.term(t -> t.field("status").value(STATUS_ON))));
         String query = keyword;
-        bool.must(Query.of(q -> q.multiMatch(m -> m
-                .fields("name^3", "subtitle", "brandName", "categoryName")
+        bool.should(Query.of(q -> q.multiMatch(m -> m
+                .fields(SUGGEST_FIELDS)
                 .query(query)
                 .type(TextQueryType.BoolPrefix))));
+        // 与服务端检索同一个盲区、同一个修法：输入「钙片」时二元组一条候选都出不来，
+        // 联想框是空的 —— 而用户正是靠着联想确认「平台上有这个东西」才继续打字的。
+        // 这里同样要求全字命中，打到「钙」出钙类、打到「钙片」收窄成钙片，
+        // 中途多打一个不存在的字就该收敛到空，而不是继续给一批无关候选
+        bool.should(Query.of(q -> q.match(m -> m
+                .field(UNIGRAM_FIELD)
+                .query(query)
+                .operator(Operator.And))));
+        bool.minimumShouldMatch("1");
 
         NativeQueryBuilder builder = new NativeQueryBuilder()
                 .withQuery(bool.build()._toQuery())
@@ -227,15 +299,35 @@ public class ProductSearchService {
         }
     }
 
-    /** 排序走白名单，未知值回落到销量降序 —— 排序参数写错不该让整个搜索打不开 */
-    private SortOptions sortOf(String sort) {
-        String field = switch (sort == null ? "" : sort) {
-            case "price_asc" -> "minPrice";
-            case "price_desc" -> "minPrice";
-            case "newest" -> "createdAt";
-            default -> "sales";
+    /**
+     * 排序走白名单，未知值与缺省都回落到<b>综合排序</b>——排序参数写错不该让整个搜索打不开。
+     * <p>
+     * <b>综合排序必须把相关性排在第一位。</b>这里原先只有一个字段排序，缺省是销量降序——
+     * 而<b>按字段排序时 ES 根本不算分</b>，于是「相关」这个维度被整个丢掉了：
+     * 实测搜「乳清蛋白粉」，排在第一位的是<b>维生素 C 咀嚼片</b>（它详情里提到过「蛋白」），
+     * 真正叫这个名字的商品排第二。用户和模型都只能看见一串「搜了等于没搜」的结果，
+     * 而接口 200、日志正常、没有任何地方报错。
+     * <p>
+     * <b>为什么不是「把 sales 换成 _score」</b>：销量本身是有效信号（爆款优先是电商的常态），
+     * 该丢的是「用销量<b>替代</b>相关性」而不是销量本身。所以综合排序是两级：
+     * {@code _score} 降序，同分的再看销量。
+     * <p>
+     * 无关键词时（纯按类目/属性筛）所有文档得分相同，第二级销量自然接管——
+     * 与改动前的行为一致，不需要为这种情况另写一条分支。
+     */
+    private List<SortOptions> sortOf(String sort) {
+        return switch (sort == null ? "" : sort) {
+            case "sales" -> List.of(fieldSort("sales", SortOrder.Desc));
+            case "price_asc" -> List.of(fieldSort("minPrice", SortOrder.Asc));
+            case "price_desc" -> List.of(fieldSort("minPrice", SortOrder.Desc));
+            case "newest" -> List.of(fieldSort("createdAt", SortOrder.Desc));
+            default -> List.of(
+                    SortOptions.of(s -> s.score(score -> score.order(SortOrder.Desc))),
+                    fieldSort("sales", SortOrder.Desc));
         };
-        SortOrder order = "price_asc".equals(sort) ? SortOrder.Asc : SortOrder.Desc;
+    }
+
+    private SortOptions fieldSort(String field, SortOrder order) {
         return SortOptions.of(s -> s.field(f -> f.field(field).order(order)));
     }
 

@@ -60,7 +60,7 @@ public class ChatSessionController {
     @GetMapping("/{sessionId}/messages")
     public Result<List<ChatHistoryStore.StoredMessage>> messages(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @PathVariable String sessionId) {
+            @PathVariable("sessionId") String sessionId) {
         if (!SESSION_ID.matcher(sessionId).matches()) {
             return Result.error(400, "会话标识不合法");
         }
@@ -70,11 +70,21 @@ public class ChatSessionController {
     /**
      * 删除会话。删不到必须如实报 404 而不是回成功 ——
      * 回成功的话，用户刷新后看到会话还在，会以为界面在骗他（而确实是）。
+     * <p>
+     * 上面两处 {@code @PathVariable} 都<b>显式写了名字</b>，不是啰嗦：省略名字时
+     * Spring 只能反射字节码里的参数名，而那个名字来自编译器的 {@code -parameters} 标志 ——
+     * 它只由某一条构建路径提供。同一个 {@code target/classes} 目录里可能同时有两个
+     * 构建器（命令行 Maven 带该标志，IDE 的自动构建不带），谁最后写谁说了算：
+     * 表现是**接口整条失效**且与请求无关 —— 报「Name for argument of type
+     * [java.lang.String] not specified」，而这句话听着像参数写错了，实际是
+     * 那个类文件里根本没有名字。这个类是全仓最后两处省略名字的地方（其余全部显式命名），
+     * 收掉之后运行期不再依赖任何编译标志。判据在构建产物里就能看见：
+     * {@code javap -v} 出来还有没有 {@code MethodParameters}。
      */
     @DeleteMapping("/{sessionId}")
     public Result<Void> delete(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @PathVariable String sessionId) {
+            @PathVariable("sessionId") String sessionId) {
         if (!SESSION_ID.matcher(sessionId).matches()) {
             return Result.error(400, "会话标识不合法");
         }

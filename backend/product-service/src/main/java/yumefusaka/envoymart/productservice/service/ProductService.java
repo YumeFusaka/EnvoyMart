@@ -15,9 +15,6 @@ public interface ProductService {
     /** 详情。商品不存在时抛 {@code IllegalArgumentException} */
     ProductDetail detail(Long spuId);
 
-    /** 按关键词宽松召回、按销量排序，供智能助手的商品推荐工具使用 */
-    List<ProductSummary> recommend(String query, int limit);
-
     /**
      * 全量在售商品，供 ai-service 建知识图谱时做实体链接（文档里的「本品」要落到具体商品）。
      * <p>
