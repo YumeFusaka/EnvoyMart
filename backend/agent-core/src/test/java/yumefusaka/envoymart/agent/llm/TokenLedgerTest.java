@@ -131,4 +131,56 @@ class TokenLedgerTest {
             pool.shutdownNow();
         }
     }
+
+    /**
+     * 上面那条管的是「没包装就不汇」，这条管的是「<b>包装了就得汇</b>」——
+     * agent 的并行计划步骤（agentExecutor）走的就是这条路：检索与查询扩写都在
+     * 那条虚拟线程上发生，不显式带账本过去，它们就静默不计入（实测漏过约 1900 tokens/问）。
+     */
+    @Test
+    void 包装过的任务把账本带进另一个线程() throws Exception {
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try (TokenLedger.Scope scope = TokenLedger.begin()) {
+            TokenLedger.record("qwen-plus", 100, 0);
+
+            CountDownLatch done = new CountDownLatch(1);
+            pool.submit(TokenLedger.inheriting(() -> {
+                TokenLedger.record("gte-rerank-v2", 500, 0);
+                done.countDown();
+            }));
+            assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(scope.snapshot().totalTokens())
+                    .as("包装过的任务记的账没有汇回来 —— 并行步骤里的模型调用会静默漏账")
+                    .isEqualTo(600);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /**
+     * 目标线程可能正拿着自己那一轮的账（池化线程在任务之间复用）。
+     * 外来任务把账本带进来执行完，必须<b>还原</b>而不是清掉——
+     * 顶掉与留下同样糟：这个线程上原本那一轮的账会断在这里。
+     */
+    @Test
+    void 包装执行完还原目标线程原有账本() throws Exception {
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            // 目标线程先给自己开一个账并一直持着，模拟「这个线程正在处理别的对话」
+            TokenLedger.Scope own = pool.submit(TokenLedger::begin).get();
+
+            try (TokenLedger.Scope outer = TokenLedger.begin()) {
+                TokenLedger.record("qwen-plus", 100, 0);
+                pool.submit(TokenLedger.inheriting(() -> TokenLedger.record("qwen-plus", 50, 0))).get();
+                assertThat(outer.snapshot().totalTokens()).isEqualTo(150);
+            }
+
+            assertThat(pool.submit(own::snapshot).get().totalTokens())
+                    .as("外来任务把目标线程自己的账本顶掉了 —— 这个线程上原本那一轮的账断在这里")
+                    .isZero();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
 }

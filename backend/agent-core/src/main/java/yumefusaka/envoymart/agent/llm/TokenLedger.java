@@ -146,4 +146,37 @@ public final class TokenLedger {
     public static Optional<TokenLedger> current() {
         return Optional.ofNullable(CURRENT.get());
     }
+
+    /**
+     * 把当前账本显式带进另一个线程执行——与 {@code RequestId.inherit} 是同一件事的两个上下文：
+     * 那边带的是日志标识，这边带的是这本账。
+     * <p>
+     * <b>为什么需要它。</b>账本按线程绑，而 agent 的并行计划步骤跑在
+     * {@code agentExecutor} 的虚拟线程上（见 AiAgentConfig#agentExecutor）：检索与查询扩写
+     * 都在那一步里发生，不显式带过去，这些调用就会<b>静默漏账</b>——数字偏小、不报错。
+     * 实测漏过一次检索段的全部调用（约 1900 tokens/问），端到端对账断言当场抓住。
+     * <p>
+     * 执行完<b>还原目标线程原来的账本</b>而不是清掉：池化线程在任务之间复用，
+     * 它可能正拿着自己那一轮的账——顶掉与留下同样糟。
+     */
+    public static Runnable inheriting(Runnable task) {
+        TokenLedger captured = CURRENT.get();
+        return () -> {
+            TokenLedger previous = CURRENT.get();
+            if (captured == null) {
+                CURRENT.remove();
+            } else {
+                CURRENT.set(captured);
+            }
+            try {
+                task.run();
+            } finally {
+                if (previous == null) {
+                    CURRENT.remove();
+                } else {
+                    CURRENT.set(previous);
+                }
+            }
+        };
+    }
 }
