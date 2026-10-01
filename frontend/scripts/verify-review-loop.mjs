@@ -16,10 +16,12 @@
  *   - 库内事实走直连 SQL（销量台账、点赞去重表），这两张表没有也不该有公开接口
  *   - 前端事实走真浏览器（商品卡评分行、订单详情的「评价 → 已评价」切换）
  *
- * 数据影响（终态不还原，与 verify-logistics 同一口径：这些表本来就是只增不减的流水）：
- *   - 每轮**新注册一个验收用户**，它名下会留下 1 笔订单 + 5 条评价
- *   - 商品 1 的均分与条数、销量 +3 因此变化（评价与销量都是流水，不还原）
- *   - 其中一条评价会被管理端隐藏后再恢复
+ * 数据影响：
+ *   - 每轮**新注册一个验收用户**，它名下会留下 1 笔订单（订单流水只增不减，不还原）
+ *   - 每轮销量 +3（台账是流水，不还原）
+ *   - 商品 1 上本轮提交的评价在**收尾自净**里被管理端隐藏——评价挂在商品公开页上，
+ *     是商品的公共资产，不能像订单流水那样留着（历轮累积到 23 条时，演示页面上
+ *     全是「verify-review-loop 差评」；顺带把均分断言推出了可见精度，见脚本尾部注释）
  * 之所以每轮换用户：每日上限按用户按天算，固定账号跑第二遍就会被上一轮的额度挡住，
  * 而且会往演示账号名下堆测试数据。夹具注入的那 2 条评价是为**每日上限**服务的——
  * 不注入就得真下 5 笔订单收货再评价，代价远大于收益，
@@ -307,10 +309,25 @@ ck(
   Number(statsNow.average).toFixed(1) === expectedAvg,
   `期望 ${expectedAvg}，实得 ${statsNow.average}`,
 )
+/**
+ * 均分的「可见精度」陷阱：statistics 的 average 只回一位小数，而商品 1 的评价池
+ * 经过历轮积累已是几十条——新 3 条（1/5/4 ≈ 3.33）推均分一把只有 0.03 上下，
+ * 一位小数上表现为 3.7 → 3.7，`<` 退化成相等、红得莫名其妙（实测踩到）。
+ * 聚合本身没有错（上一条断言已按手工重算逐位核对），错的是拿一位小数
+ * 去判一个精度以下的变化——池子越大，"看不见的变化"越多。
+ * distribution 是五格全整数的星级分布（下标 0 是 1 星），
+ * 加权和 / 总数 = 全精度均分，池子再大也判得动。
+ */
+const fullAvg = (stats) => {
+  const buckets = stats.distribution ?? []
+  const total = buckets.reduce((sum, n) => sum + Number(n), 0)
+  const weighted = buckets.reduce((sum, n, i) => sum + Number(n) * (i + 1), 0)
+  return total === 0 ? 0 : weighted / total
+}
 ck(
   '一条 1 星评价把均分拉下来了',
-  Number(statsNow.average) < Number(beforeStats.average || ratingA.ratingAvg),
-  `提交前 ${beforeStats.average}，现在 ${statsNow.average}`,
+  fullAvg(statsNow) < Number(beforeStats.average || ratingA.ratingAvg),
+  `提交前 ${Number(beforeStats.average).toFixed(3)}，现在 ${fullAvg(statsNow).toFixed(3)}`,
 )
 
 // ════ 四、搜索卡片同步（ES） ════
@@ -429,10 +446,12 @@ ck(
   Number(statsAfterHide.total) === (await detail(SPU)).reviewCount,
   `评价侧 ${statsAfterHide.total}，商品侧 ${(await detail(SPU)).reviewCount}`,
 )
+// 与上面「1 星把均分拉下来」同一个精度问题：这条现在绿是运气（真实值恰好跨过了
+// 四舍五入的界），池子再滚两轮同样会红。判据一律走 fullAvg
 ck(
   '隐藏一条差评后均分回升',
-  Number(statsAfterHide.average) > Number(statsNow.average),
-  `${statsNow.average} → ${statsAfterHide.average}`,
+  fullAvg(statsAfterHide) > fullAvg(statsNow),
+  `${fullAvg(statsNow).toFixed(3)} → ${fullAvg(statsAfterHide).toFixed(3)}`,
 )
 
 const publicList = await listReviews(SPU, 'size=50')
@@ -512,7 +531,11 @@ ck(
 )
 
 await page.goto(`${BASE}/#/shop?keyword=${encodeURIComponent(keyword)}`, { waitUntil: 'networkidle' })
-const card = page.locator('.product-card', { hasText: String(itemA.spuName).slice(0, 6) }).first()
+// 定位必须用**完整** spuName：前缀「维生素 D3」会撞上别的商品的副标题——
+// 碳酸钙 D3 咀嚼片的 subtitle 是「含钙 600mg，添加维生素 D3」，副标题渲染在卡片上，
+// `hasText` 一命中，`.first()` 就稳定选中了它（卡片文本 4.7 / 3 条评价），
+// 断言却拿 SPU 1 的 24 条去比，红得莫名其妙
+const card = page.locator('.product-card', { hasText: String(itemA.spuName) }).first()
 // 商品卡的评分行来自接口返回的冗余列，`networkidle` 之后才由 Vue 挂上去；
 // `count()` 不自动等待（`innerText()` 会），抢在渲染前问一次会得到 0 —— 那测的是网速，不是功能
 const cardRating = card.locator('.product-card__rating')
@@ -549,9 +572,47 @@ ck('不再有可点的「评价」按钮', (await page.locator('.goods__actions 
 await browser.close()
 ck('前端控制台没有报错', pageErrors.length === 0, pageErrors.join(' | '))
 
+// ════ 收尾：把脚本留在商品页上的评价藏起来（自净） ════
+// 评价与订单不同——订单流水只增不减是业务事实，而「verify-review-loop 差评」挂在
+// 商品 1 的公开展示页上是污染：每跑一轮 +3 条，实测已积了 23 条，
+// 演示时点开详情页满眼测试文案。「每轮新注册用户」挡的是「我的评价」穿帮，
+// 挡不住商品页——评价是商品的公共资产，不是测试用户的私有数据。
+// 走管理端隐藏而不是 SQL update：状态变更要经过重聚合（商品侧均分与 ES 同步），
+// 直接改库会留下一份没人重算的统计。隐藏而非删除：被隐藏的测试评价在库里的
+// 形态与真实审核场景一致，不必为了洁癖再造一条删除通道。
+// 清理失败不判红（断言已在上面全部结算），但要吵——留下的是演示污染，得让人看见。
+const junkIds = sql(
+  `select id from envoymart_review.review
+    where spu_id = ${SPU} and status = 'PUBLISHED' and content like 'verify-review-loop%'
+    order by id`,
+)
+  .split('\n')
+  .map((line) => line.trim())
+  .filter(Boolean)
+for (const id of junkIds) {
+  const r = await call(`/reviews/admin/reviews/${id}/status`, {
+    method: 'PUT',
+    token: A,
+    body: { status: 'HIDDEN', reason: 'verify-review-loop：验收脚本收尾自净' },
+  })
+  if (r.code !== 200) {
+    console.log(`\x1b[31m警告：评价 ${id} 没藏成功（${r.msg}）——商品 ${SPU} 页面上会残留测试评价\x1b[0m`)
+  }
+}
+// 藏完再数一遍库：过程返回值只是过程，「干净没有」要看落库结果
+const leftover = sql(
+  `select count(*) from envoymart_review.review
+    where spu_id = ${SPU} and status = 'PUBLISHED' and content like 'verify-review-loop%'`,
+)
+if (leftover !== '0') {
+  console.log(`\x1b[31m警告：商品 ${SPU} 上仍有 ${leftover} 条测试评价未藏干净\x1b[0m`)
+} else {
+  console.log(`收尾自净：${junkIds.length} 条测试评价已隐藏（商品页恢复干净）`)
+}
+
 // ════ 汇总 ════
 console.log(`\n${'='.repeat(52)}`)
 console.log(`通过 ${pass}，失败 ${fail}`)
-console.log(`本条链路的数据影响：订单 ${order.orderNo}、商品 ${SPU} 现有 ${expectedTotal} 条评价、销量 +${SKUS.length}`)
+console.log(`本条链路的数据影响：订单 ${order.orderNo}（流水不还原）、销量 +${SKUS.length}；测试评价已收尾自净`)
 console.log('='.repeat(52))
 process.exit(fail === 0 ? 0 : 1)

@@ -45,11 +45,29 @@ function ck(name, condition, detail = '') {
 }
 
 
+/**
+ * 每轮**新注册一个用户**，不用 admin。
+ * <p>
+ * 「推荐几款乳清蛋白粉」这条断言的前提是**这个用户没有历史**：一旦账号上挂着画像
+ * （实测 admin 就被 verify-memory 灌出「预算 200 元以内 / 乳糖不耐受」），
+ * 记忆个性化会把这句话翻译成带 maxPrice 与属性的检索，商品被筛空、trace 标成 noData，
+ * 本脚本就报「查到了却标无结果」——**红的不是产品，是账号上的历史**。
+ * 画像与长期记忆是跨会话生效的产品行为，验收用的是它就要给每个人一个干净的用户。
+ */
 const session = await (async () => {
+  const username = `trc${Date.now().toString().slice(-9)}`
+  const registered = await fetch(`${GW}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password: 'verify12345', nickname: '轨迹验收用户' }),
+  }).then((r) => r.json())
+  if (registered.code !== 200) {
+    throw new Error(`注册轨迹验收用户失败：${registered.msg}`)
+  }
   const res = await fetch(`${GW}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: '123456' }),
+    body: JSON.stringify({ username, password: 'verify12345' }),
   })
   const body = await res.json()
   if (body.code !== 200) throw new Error(`登录失败：${body.msg}（后端起了吗）`)
@@ -70,7 +88,15 @@ async function askApi(message) {
 
 // ─────────── 一、接口契约 ───────────
 console.log('\n一、接口契约')
-const hit = await askApi('帮我推荐几款乳清蛋白粉')
+// 模型对「推荐几款 XX」有时会先追问偏好（预算？口味？）而不是直接调工具——实测同一句话
+// 单跑绿、全量回归里红就是它：追问轮一个工具都没有，契约字段无从谈起（假红灯，
+// 不是产品缺陷——追问是合理行为，只是本段的前置步骤没达成）。顺着它回一句明确指令再验，
+// 被验对象（真的发生检索时的契约字段）不变；两次都不调工具才会失败。
+let hit = await askApi('帮我推荐几款乳清蛋白粉')
+if (!(hit.toolCalls ?? []).length) {
+  console.log('  （第一问被模型追回了偏好，回一句明确指令继续）')
+  hit = await askApi('没有特别要求，直接帮我搜几款乳清蛋白粉')
+}
 const hitCall = (hit.toolCalls ?? [])[0]
 ck('命中的检索带回了轨迹', Boolean(hitCall), JSON.stringify(hit.toolCalls))
 ck('带 success 字段且为 true', hitCall?.success === true, JSON.stringify(hitCall))
@@ -151,7 +177,11 @@ await page.goto(`${BASE}/#/assistant`, { waitUntil: 'networkidle', timeout: 3000
 
 // ─────────── 二、查得到 ───────────
 console.log('\n二、查得到的那一轮')
-const okCard = await ask('帮我推荐几款乳清蛋白粉')
+let okCard = await ask('帮我推荐几款乳清蛋白粉')
+if ((await okCard.locator('details.trace').count()) === 0) {
+  console.log('  （这一轮被模型追回了偏好，回一句明确指令继续——同「一、接口契约」的说明）')
+  okCard = await ask('没有特别要求，直接帮我搜几款乳清蛋白粉')
+}
 const okTrace = await traceOf(okCard)
 ck('渲染出工具轨迹', okTrace !== null, '卡片里没有 details.trace')
 if (okTrace) {

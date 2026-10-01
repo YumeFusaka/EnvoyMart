@@ -203,7 +203,10 @@ await page.addInitScript(
 await page.goto(`${BASE}/#/assistant`, { waitUntil: 'networkidle' })
 await page.reload({ waitUntil: 'networkidle' })
 
-await page.locator('textarea, input[type="text"]').first().fill(`帮我取消订单 ${uiOrderId}`)
+// 定位必须是聊天输入框本身：顶栏改造后页面上多了一个排在前面的全局搜索框
+// （`input.search-box__input`），`'textarea, input[type="text"]'` 的 `.first()` 会稳定地
+// 填进搜索框——聊天框仍空，按钮因 `!input.trim()` 保持 disabled，看起来像前端坏了
+await page.locator('.composer textarea').fill(`帮我取消订单 ${uiOrderId}`)
 await page.getByRole('button', { name: '发送消息' }).click()
 
 // 流式回答 + 两次真实模型调用，给足时间；等的是确认卡片出现

@@ -385,8 +385,16 @@ await section('评价隐藏与恢复', async () => {
   }
   const read = async () => (await api(`/reviews/admin/reviews/${review.id}`)).review
 
+  // 定位不能依赖「行恰好在第一页」。默认列表混全部状态、按时间倒序，而验收夹具
+  // （脚本自己隐藏掉的评价）会一轮轮堆在列表最前面——候选行昨天还在第 6 行，
+  // 今天前面已积了 40 条夹具，掉到第 3 页，「等行出现」等成超时（实测踩到）。
+  // 改走页面自己的关键词搜索把列表收窄到一条，行排在第几就无关紧要
   const open = async () => {
-    const row = await openRow(page, '/reviews', review.content)
+    await openAdmin(page, '/reviews')
+    await page.locator('#review-keyword').fill(review.content)
+    await page.getByRole('button', { name: '查询' }).click()
+    const row = page.locator('.admin-table tbody tr', { hasText: review.content }).first()
+    await row.waitFor({ state: 'visible', timeout: 15000 })
     return openDrawer(page, row, '处理')
   }
 

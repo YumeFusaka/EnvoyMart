@@ -52,6 +52,27 @@ const CAPTURE_QUERY = '乳清蛋白粉'
  */
 const ABSENCE = /没有找到|未找到|找不到|没有搜到|查无|不存在|暂无[^，。；]{0,6}(商品|结果)|已下架|没有相关/
 
+/**
+ * ABSENCE 是子串匹配，会误伤**假设句**——实测模型写过「若暂未找到明确标注『分离乳清蛋白』
+ * 且价格≤200元的商品，也可从半勺开始试用」：那是在给用户建议，不是在替平台下结论
+ * （同一段里另有一句明确说了搜索服务不可用）。判据落到句子级：命中词所在的那一句里、
+ * 它之前出现假设连词的，不算「说成没有」。
+ */
+function absenceClaim(text) {
+  for (const m of text.matchAll(new RegExp(ABSENCE.source, 'g'))) {
+    const cut = Math.max(
+      text.lastIndexOf('。', m.index),
+      text.lastIndexOf('！', m.index),
+      text.lastIndexOf('？', m.index),
+      text.lastIndexOf('\n', m.index),
+    )
+    if (!/(若|如果|要是|万一|假如|倘若)/.test(text.slice(cut + 1, m.index))) {
+      return m[0]
+    }
+  }
+  return null
+}
+
 let pass = 0
 let fail = 0
 function ck(name, condition, detail = '') {
@@ -145,11 +166,25 @@ function startProductService() {
 
 // ─────────── 前置 ───────────
 console.log('\n零、前置')
+// 用一次性用户而不是 admin：这句话会被记忆个性化——admin 账号上曾挂着
+// 「预算 200 以内 / 乳糖不耐受」的画像（verify-memory 早期版本留下的），
+// 于是模型给检索补上了用户没说的条件。两个场景验的是「下游抖动时怎么应答」，
+// 带一份别人的画像进来，回答里就会混进与本场景无关的筛选描述（实测踩到）。
 const login = await (async () => {
+  const username = `dwr${Date.now().toString().slice(-9)}`
+  const registered = await fetch(`${GW}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password: 'verify12345', nickname: '重试验收用户' }),
+  }).then((r) => r.json())
+  if (registered.code !== 200) {
+    console.error(`FATAL: 注册重试验收用户失败：${registered.msg}`)
+    process.exit(1)
+  }
   const res = await fetch(`${GW}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: '123456' }),
+    body: JSON.stringify({ username, password: 'verify12345' }),
   })
   return (await res.json()).data
 })()
@@ -268,7 +303,15 @@ try {
   // ─────────── 场景 A：抖一下 ───────────
   console.log('\n二、场景 A：下游第一次回 500，之后正常')
   const markA = log ? log.mark() : 0
-  const a = await chat(`verify-retry-glitch-${Date.now()}`, QUESTION)
+  // 模型有时会先追问偏好而不是直接检索（详见 verify-tool-trace 里的同款说明）——
+  // 两个场景要验的是「工具失败/重试时怎么应答」，追问轮只是前置步骤没达成：
+  // 在原会话里回一句明确指令，接着验那一轮
+  const sessionA = `verify-retry-glitch-${Date.now()}`
+  let a = await chat(sessionA, QUESTION)
+  if (!searchCall(a)) {
+    console.log('  （第一问被模型追回了偏好，回一句明确指令继续）')
+    a = await chat(sessionA, '没有特别要求，直接帮我搜吧')
+  }
   const callA = searchCall(a)
   const replyA = String(a.reply ?? '')
   console.log(`  工具=${(a.toolCalls ?? []).map((t) => `${t.tool}(success=${t.success})`).join(', ')}`)
@@ -310,7 +353,12 @@ try {
   mode = 'down'
   searchHits = 0
   const markB = log ? log.mark() : 0
-  const b = await chat(`verify-retry-down-${Date.now()}`, QUESTION)
+  const sessionB = `verify-retry-down-${Date.now()}`
+  let b = await chat(sessionB, QUESTION)
+  if (!searchCall(b)) {
+    console.log('  （第一问被模型追回了偏好，回一句明确指令继续）')
+    b = await chat(sessionB, '没有特别要求，直接帮我搜吧')
+  }
   const callB = searchCall(b)
   console.log(`  工具=${(b.toolCalls ?? []).map((t) => `${t.tool}(success=${t.success})`).join(', ')}`)
   console.log(`  回答全文=\n${String(b.reply ?? '')}\n  ──`)
@@ -320,9 +368,9 @@ try {
     `工具回的是 success=${callB?.success}——下游一直 500，成功就等于在编事实`)
 
   const reply = String(b.reply ?? '')
-  const absence = reply.match(ABSENCE)
+  const absence = absenceClaim(reply)
   ck('回答没有把「查不成」说成「没有」', !absence,
-    `回答里出现了「${absence?.[0]}」——下游只是暂时不可用，商品并没有下架`)
+    `回答里出现了「${absence}」——下游只是暂时不可用，商品并没有下架`)
 
   const HONEST = /暂时|稍后再试|稍后重试|稍等|不可用|无法(查询|完成|获取|检索)|服务.{0,6}(异常|故障|不可用)/
   ck('回答明确说了这次没查成、稍后再试', HONEST.test(reply),

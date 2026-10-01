@@ -132,7 +132,10 @@ await page.addInitScript(
 // ─────────── 一、订单详情页发起工单 ───────────
 console.log('\n一、订单详情页：就地发起工单并带上这一单')
 // `/orders` 直接回数组（它不分页，见 OrderController），`/tickets` 才是 PageResult
-const orders = (await api('/orders')).data
+// `/orders` 自批次 13f 起也回 PageResult（订单页签收口把分页加了进去），
+// 不再直接回数组——脚本创建于 13e，此处当时是对的，13e 之后没再跑过全量回归，
+// 漏掉了这个跨批接缝：接口换形态，脚本也是消费方
+const orders = (await api('/orders')).data?.records ?? []
 if (!orders.length) throw new Error('alice 名下没有订单，无法从订单详情发起工单')
 const order = orders[0]
 

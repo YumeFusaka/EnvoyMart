@@ -31,11 +31,30 @@ function ck(name, condition, detail = '') {
   }
 }
 
+/**
+ * 每轮**新注册一个用户**来喂记忆，而不是用 admin。
+ * <p>
+ * 这个脚本说的每句话都是「长期特征」（学生党 / 预算 200 / 乳糖不耐受）——它们会被抽取成
+ * 画像与长期记忆，**在之后的每一次对话里生效**。挂在共用账号上（原先就是 admin）等于给
+ * 后续所有用该账号的脚本与演示注入一份「该用户乳糖不耐受、预算 200」的背景，
+ * 实测已经打红过 verify-tool-trace：一句「推荐几款乳清蛋白粉」被个性化成了
+ * 「≤200 元 + 不含乳糖」，商品全被筛空、trace 标成 noData。
+ * **验收夹具的可见面不只在本轮**——记忆是跨会话的，用户就必须是未污染的。
+ */
 const session = await (async () => {
+  const username = `mem${Date.now().toString().slice(-9)}`
+  const registered = await fetch(`${GW}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password: 'verify12345', nickname: '记忆验收用户' }),
+  }).then((r) => r.json())
+  if (registered.code !== 200) {
+    throw new Error(`注册记忆验收用户失败：${registered.msg}`)
+  }
   const res = await fetch(`${GW}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: '123456' }),
+    body: JSON.stringify({ username, password: 'verify12345' }),
   })
   const body = await res.json()
   if (body.code !== 200) throw new Error(`登录失败：${body.msg}（后端起了吗）`)
@@ -43,7 +62,11 @@ const session = await (async () => {
 })()
 
 /** 这一批条目的归属。网关把登录用户注入请求头，记忆按它隔离 */
-const userId = session.userId ?? session.user?.id ?? 'u1003'
+const userId = String(session.user?.id ?? '')
+if (!userId) {
+  console.error(`FATAL: 登录响应里没有用户主键，没法按 docId 过滤记忆条目：${JSON.stringify(session.user)}`)
+  process.exit(1)
+}
 const sessionId = `verify-memory-${Date.now()}`
 
 async function chat(message) {
@@ -123,12 +146,15 @@ ck('每条都带着类型', missingType.length === 0,
 ck('每条都带着写入时间', missingTime.length === 0,
   `${missingTime.length} 条没有 timestamp（读回来会被当成「此刻」）`)
 
-// 窗口取一天：这条要抓的是单位错（秒 / 微秒）与跑飞的时钟，不是「有多新」，
-// 卡到一小时只会让隔夜留下的条目无端失败
+// 下界取项目纪元（2026-01-01）而不是「最近一天」：这条要抓的是单位错（秒 / 微秒，
+// 差 3 个数量级）与跑飞的时钟（未来时刻），不是「有多新」——记忆本来就跨天保留，
+// 拿 24 小时窗口去卡，隔夜留下的条目会全部被误判成坏值（实测踩到：09-29 的条目
+// 在 10-01 的回归里报红，看起来像时间戳坏了，其实是断言把「历史」当成了「异常」）
 const now = Date.now()
+const EPOCH = Date.UTC(2026, 0, 1)
 const badTime = stored.filter((row) => {
   const t = Number(row.meta.timestamp)
-  return !Number.isFinite(t) || t > now + 60_000 || t < now - 86_400_000
+  return !Number.isFinite(t) || t > now + 60_000 || t < EPOCH
 })
 ck('时间戳是合理的毫秒时刻', badTime.length === 0,
   badTime.map((r) => r.meta.timestamp).join('/'))

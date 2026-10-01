@@ -45,3 +45,5 @@ backend/HELP.md
 
 # 界面截图（scripts/screenshot.mjs 的产物，本地比对用）
 /frontend/.screenshots/
+# 从 scripts/ 目录里跑脚本时相对路径落在这里的同一批产物
+/frontend/scripts/.screenshots/
