@@ -23,7 +23,7 @@ EnvoyMart 是基于 Spring Cloud Alibaba + LangChain4j + Vue 3 的智能电商�
 
 **工程重点不在于"接了个大模型"，而在于让 Agent 可观测、可评测、可降级。**
 
-- **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），9 个 Maven 模块
+- **微服务底座**：Spring Cloud Alibaba（Nacos + Sentinel + Gateway），12 个 Maven 模块（9 个服务 + 3 个库）
 - **网关限流**：Sentinel 按路由分档限流（AI 接口 5rps ~ 商品接口 100rps），阈值按「一次请求的代价」定，超限返回 429 与可读提示
 - **Agent 编排层**：自研 `agent-core`（入口守卫 / LangGraph4j 执行图 / 循环护栏 / 工具注册 / 记忆 / RAG）
 - **模型接入层**：LangChain4j `ChatModel` / `StreamingChatModel`，OpenAI 兼容协议；**对话走 DeepSeek V4.1 Flash、向量化与重排走百炼**（DeepSeek 无 embeddings 端点，故按能力拆供应商）
@@ -62,9 +62,13 @@ EnvoyMart 是基于 Spring Cloud Alibaba + LangChain4j + Vue 3 的智能电商�
           └────────────┘                 └────────────┘ └──────┬──────┘
                                                                │
           ┌────────────────────────────────────────────────────▼──────┐
-          │  基础设施：Nacos · Redis · RabbitMQ · ES 9 · MySQL · Milvus │
+          │ 基础设施：Nacos · Redis · RabbitMQ · ES 9 · MySQL · Milvus   │
+          │            · Neo4j（知识图谱）                               │
           └───────────────────────────────────────────────────────────┘
 ```
+
+> 图里画的是主路径。另有 `review` 9006、`promotion` 9007（券）、`knowledge` 9008（知识库与图谱）
+> 三个服务走同一条网关入口，完整清单见下方模块表。
 
 ## 模块清单
 
@@ -77,7 +81,10 @@ EnvoyMart 是基于 Spring Cloud Alibaba + LangChain4j + Vue 3 的智能电商�
 | `ai-service` | 9004 | Agent 编排、RAG、记忆、MCP Server |
 | `payment-service` | 9005 | 支付创建/回调 |
 | `review-service` | 9006 | 商品评价 |
+| `promotion-service` | 9007 | 优惠券与促销（含类目作用域） |
+| `knowledge-service` | 9008 | 知识库事实源：文档 / 切片 / 图谱 / 检索评测 |
 | `agent-core` | — | 自研 Agent 编排层（纯 Java 库，无 Spring 依赖） |
+| `contract` | — | 跨服务 DTO 与共享判据（`SkuSnapshot` 等），只定义一次 |
 | `common` | — | 公共模块（Result / JWT / 异常处理 / 上下文透传 / MQ 生产端确认 / Feign 内部凭证） |
 
 ## Agent 执行链路
@@ -112,7 +119,7 @@ flowchart TD
 
 **工具循环落在哪**：**在 `LangChain4jLLMProvider` 自己的代码里**——LangChain4j 的 `ChatModel.chat()` 不执行工具，官方要求调用方自己跑往返，所以循环、护栏、结果回填都在一处。`LLMProvider` 分了两条路径：`chat()` 单次（规划/分类/抽取，本就不该有工具）与 `chatWithTools()` 完整循环（ReAct）。
 
-> （历史注记：本项目原用 Spring AI 2.0，它把工具执行循环收进 `ChatClient` 的 `ToolCallingAdvisor`——直接调 `ChatModel.call()` 时模型返回的 tool_call **不会被执行，也不报错**。那个静默失效的坑记在下面「踩过的坑」里。迁到 LangChain4j 后循环归调用方，"以为框架会执行"的误解空间从根上消失了。）
+> （历史注记：本项目原用 Spring AI 2.0，它把工具执行循环收进 `ChatClient` 的 `ToolCallingAdvisor`——直接调 `ChatModel.call()` 时模型返回的 tool_call **不会被执行，也不报错**。那个静默失效的坑记在 [docs/项目总览.md](docs/项目总览.md) 的「踩过的坑」里。迁到 LangChain4j 后循环归调用方，"以为框架会执行"的误解空间从根上消失了。）
 
 **ACT 的并发**：计划里带 `dependsOn`，同层步骤并发执行、有依赖的等前置完成。这是 ReAct 结构上做不到的——它每步都要看上一步结果，天然串行。批内单步有 15s 超时，超时按步骤失败处理，不会把整轮对话挂住。
 
@@ -186,8 +193,11 @@ flowchart TD
 两套语料：`ChunkingFixtures`（5 份平台规则 / 活动细则，800~1100 字，含 18 条完整性用例）与
 `LongDocFixtures`（把 90 篇短文按主题聚合为 9 份长文档，复用现有 120 条标注）。
 
-> **切分只在长文档上才是变量**：生产知识库的 15 篇文档每篇 40~50 字，短于窗口，每篇恰好一片——
-> **结构分层与定长在这个语料上等价，线上当前收益为零**。这是为长文档场景做的准备，不是当下提速。
+> **切分只在长文档上才是变量**。改造当时线上是 15 篇短文档（每篇 40~50 字，短于窗口、每篇恰好一片），
+> **结构分层与定长在那个语料上等价，收益为零——切过去只为把链路统一**。
+> 2026-09-30 语料换代后线上是 **16 篇成篇文档 / 132 个切片（每篇 4~23 片）**，
+> 多切片形态真实存在、切片级融合真实生效。**但要如实说边界：+11.7pp 来自夹具（90 篇短文档），
+> 线上没有做过"切片级 vs 文档级"的 A/B**，而且那套夹具与线上语料的形态已经脱节。
 >
 > 另一个发现：**文档级混合检索在长文档上比纯向量还差**（77.5% vs 81.7%）——BM25 以整篇文档算分、
 > RRF 按 docId 归一，一篇长文档只占一个候选位，保留的切片也不保证含答案。所以检索侧也加了
@@ -370,7 +380,7 @@ push 到 main
 | 检索 | BM25 + 向量混合召回、RRF 融合、gte-rerank 精排、Hit Rate/MRR/NDCG 评测 |
 | 向量库 | Milvus（生产）/ 内存 IVF 索引（本地降级） |
 | 记忆 | LLM 事实抽取 + 向量语义召回，知识与记忆分库隔离；**会话窗口落 Redis**（跨重启、跨实例） |
-| 可观测 | **SkyWalking 10.2**（javaagent，覆盖全部 7 个服务）+ Micrometer Tracing + OTLP + Prometheus |
+| 可观测 | **SkyWalking 10.2**（javaagent，覆盖全部 9 个服务）+ Micrometer Tracing + OTLP + Prometheus |
 | 熔断降级 | Sentinel `DegradeRule`（慢调用比例 + 异常比例）；扣库存被熔断后**快速失败**，不降级为成功 |
 | 分布式事务 | Seata 2.5 AT（`@GlobalTransactional`）提供崩溃可恢复的跨服务回滚；另有手写 Saga（显式记账 + 反序补偿）。两者的取舍见 `docker-compose.yml` 的注释 |
 | 数据库 | MySQL 8.4 / H2（本地） |
@@ -395,13 +405,17 @@ EnvoyMart/
 ├── backend/
 │   ├── pom.xml                 # 聚合 POM（Boot 4.1.1 + LangChain4j 1.20.0）
 │   ├── Dockerfile              # 一份构建所有服务（--build-arg SERVICE=xxx）
+│   ├── run-local.sh            # 本地一键启动（demo / stop / 单服务）
 │   ├── common/                 # Result / JWT / 异常处理 / 身份透传
+│   ├── contract/               # 跨服务 DTO 与共享判据（SkuSnapshot / OrderResponse…）
 │   ├── gateway-service/
 │   ├── auth-service/
 │   ├── product-service/
 │   ├── order-service/
 │   ├── payment-service/
 │   ├── review-service/
+│   ├── promotion-service/      # 优惠券与促销
+│   ├── knowledge-service/      # 知识库事实源：文档 / 切片 / Neo4j 图谱 / 检索评测
 │   ├── agent-core/             # 自研 Agent 编排层
 │   │   └── src/main/java/.../agent/
 │   │       ├── core/           # Agent(入口守卫) / AgentGraph(执行图)
@@ -413,9 +427,13 @@ EnvoyMart/
 │   │       └── tool/           # Tool / ToolRegistry / MCP 适配
 │   └── ai-service/             # Agent 装配、LangChain4j 接入、MCP Server、记忆与 RAG 实现
 ├── frontend/
-│   └── src/                    # 页面 / 组件 / API / 状态管理
+│   ├── src/                    # 页面 / 组件 / API / 状态管理
+│   └── scripts/
+│       ├── verify-all.mjs      # 全链路端到端验收总入口（一条命令跑完 25 个脚本）
+│       └── verify-*.mjs        # 各链路验收脚本（真浏览器 + 纯 HTTP 两类）
 └── docs/
-    └── 项目总览.md              # 技术栈 · 结构 · 设计 · 亮点 · 实现顺序
+    ├── 项目总览.md              # 技术栈 · 结构 · 设计 · 亮点 · 踩坑
+    └── 平台改造规划.md          # 分批改造计划与每批的验收证据
 ```
 
 ## License
