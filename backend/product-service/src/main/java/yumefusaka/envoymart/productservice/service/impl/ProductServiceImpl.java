@@ -21,6 +21,7 @@ import yumefusaka.envoymart.contract.SkuView;
 import yumefusaka.envoymart.productservice.service.CategoryService;
 import yumefusaka.envoymart.productservice.service.ProductService;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -318,20 +319,26 @@ public class ProductServiceImpl implements ProductService {
      * 那个位置放不了 {@code #{}}。之所以没有注入风险，是因为<b>两个值都是 Long</b>：
      * 类型决定了它们不可能携带 SQL 片段。将来若要支持「价格区间带单位」（如 "2k"），
      * 解析必须在这一层之外完成，不能把原始字符串放进来。
+     * <p>
+     * <b>语义必须与 ES 那条路一致</b>（{@code ProductSearchService} 的 range 查询）：
+     * SPU 的价格本身就是个区间 {@code [min(price), max(price)]}，只要它与查询区间<b>沾边</b>就命中。
+     * 这里曾经写的是「存在某个 SKU 落在区间内」，两者在一个 SKU 卖 59、另一个卖 299 的 SPU 上
+     * 筛 100~200 时给出<b>相反</b>的答案：带关键词（走 ES）搜得到，点类目浏览（走这里）搜不到。
+     * 两条路看起来只是同一份数据的两种取法，结果不一致时没人会怀疑到语义上。
      */
     private String priceSubQuery(ProductQuery query) {
         if (query.getMinPrice() == null && query.getMaxPrice() == null) {
             return null;
         }
-        StringBuilder sql = new StringBuilder(
-                "select distinct spu_id from product_sku where status = " + STATUS_ON);
+        List<String> ranges = new ArrayList<>(2);
         if (query.getMinPrice() != null) {
-            sql.append(" and price >= ").append(query.getMinPrice());
+            ranges.add("max(price) >= " + query.getMinPrice());
         }
         if (query.getMaxPrice() != null) {
-            sql.append(" and price <= ").append(query.getMaxPrice());
+            ranges.add("min(price) <= " + query.getMaxPrice());
         }
-        return sql.toString();
+        return "select spu_id from product_sku where status = " + STATUS_ON
+                + " group by spu_id having " + String.join(" and ", ranges);
     }
 
     // ==================== 组装 ====================
