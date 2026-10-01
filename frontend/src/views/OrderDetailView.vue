@@ -9,6 +9,7 @@ import { listMyReviews } from '@/api/review'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import AfterSaleDialog from '@/components/order/AfterSaleDialog.vue'
 import ReviewDialog from '@/components/order/ReviewDialog.vue'
+import CreateTicketDialog from '@/components/ticket/CreateTicketDialog.vue'
 import type { Logistics, Order, OrderItem } from '@/types/models'
 
 const route = useRoute()
@@ -24,6 +25,8 @@ const receiving = ref(false)
 const activeItem = ref<OrderItem | null>(null)
 const afterSaleOpen = ref(false)
 const reviewOpen = ref(false)
+/** 「联系客服」入口。发起时带上这一单，客服打开工单就能看到订单号 */
+const ticketOpen = ref(false)
 
 /**
  * 这一单里已经评过的订单行 → 打的分。
@@ -354,6 +357,9 @@ onMounted(load)
       <footer class="surface bar">
         <span class="bar__hint">{{ barHint }}</span>
         <div class="bar__actions">
+          <!-- 售后（退款诉求，要审批动钱）之外的疑问走工单。摆在最左边：
+               它是这一排里唯一「不改变订单状态」的动作，不该和取消/收货混在一起找 -->
+          <el-button @click="ticketOpen = true">联系客服</el-button>
           <el-button v-if="cancellable" @click="handleCancel">
             {{ order.status === 'REFUNDING' ? '重试退款' : order.status === 'PAID' ? '取消并退款' : '取消订单' }}
           </el-button>
@@ -373,6 +379,12 @@ onMounted(load)
         @applied="load"
       />
       <ReviewDialog v-model="reviewOpen" :order-id="order.id" :item="activeItem" @submitted="load" />
+      <CreateTicketDialog
+        v-model="ticketOpen"
+        :order-id="order.id"
+        :order-no="order.orderNo"
+        @created="(id: number) => router.push(`/tickets/${id}`)"
+      />
     </template>
   </div>
 </template>

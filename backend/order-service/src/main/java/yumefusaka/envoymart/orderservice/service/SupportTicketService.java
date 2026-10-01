@@ -4,6 +4,7 @@ import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.orderservice.model.CreateTicketRequest;
 import yumefusaka.envoymart.orderservice.model.TicketDetailResponse;
 import yumefusaka.envoymart.orderservice.model.TicketResponse;
+import yumefusaka.envoymart.orderservice.model.TicketSummary;
 
 /**
  * 用户侧的客服工单。
@@ -19,6 +20,9 @@ public interface SupportTicketService {
 
     /** 我的工单列表，可按状态筛选，按最近活跃排序 */
     PageResult<TicketResponse> listMine(String userId, String status, Integer page, Integer size);
+
+    /** 我的工单计数：页签与顶栏角标共用。口径见 {@link TicketSummary#getAwaitingMe()} */
+    TicketSummary summary(String userId);
 
     TicketDetailResponse detail(String userId, Long ticketId);
 

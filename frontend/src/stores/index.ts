@@ -17,3 +17,5 @@ export * from './modules/cart.ts'
 export * from './modules/favorite.ts'
 // 管理台的待办计数同样不持久化：待办是「现在有多少」，存下来的一律是过去的
 export * from './modules/admin.ts'
+// C 端工单的「待我回应」计数，与上面的理由相同
+export * from './modules/ticket.ts'

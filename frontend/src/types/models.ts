@@ -832,3 +832,64 @@ export interface ProductDetail {
   skus: SkuView[]
   attributes: AttributeView[]
 }
+
+// ==================== 客服工单 ====================
+
+export type TicketStatus = 'OPEN' | 'PROCESSING' | 'RESOLVED' | 'CLOSED'
+
+/**
+ * 最后一条消息的发送方，也是工单的「球权」。
+ * <p>
+ * SYSTEM 是平台自动写入的（例如超时关闭的通知），它**不抢球权**——
+ * 判「等谁说话」看的是人和人之间谁最后开口。
+ */
+export type TicketSenderType = 'USER' | 'ADMIN' | 'SYSTEM'
+
+export type TicketCategory = 'ORDER' | 'REFUND' | 'PRODUCT' | 'OTHER'
+
+/** 一条工单消息。客服侧保留 senderId，用户侧该字段为 null（内部账号不发给用户） */
+export interface TicketMessageView {
+  id: number
+  senderType: TicketSenderType
+  senderId: string | null
+  content: string
+  createdAt: string
+}
+
+/** 我的工单列表项。**不含 userId**：每一条都是自己的，服务端不下发这一列 */
+export interface Ticket {
+  id: number
+  ticketNo: string
+  category: TicketCategory
+  /** 中文分类。由服务端给出，前端不自己维护字典 */
+  categoryText: string
+  title: string
+  status: TicketStatus
+  statusText: string
+  orderId: number | null
+  orderNo: string | null
+  /** 球权：最后一条人工消息是谁发的 */
+  lastReplyBy: TicketSenderType | null
+  createdAt: string
+  updatedAt: string
+  resolvedAt: string | null
+  closedAt: string | null
+  closeReason: string | null
+}
+
+export interface TicketDetail {
+  ticket: Ticket
+  /** 全部消息，时间正序。工单是对话，不分页——中间缺一段就读不懂 */
+  messages: TicketMessageView[]
+}
+
+/** 工单计数：页签与顶栏角标共用一份数字 */
+export interface TicketSummary {
+  total: number
+  open: number
+  processing: number
+  resolved: number
+  closed: number
+  /** 等你回应：未关闭且客服已回过话（或已标记解决） */
+  awaitingMe: number
+}

@@ -109,6 +109,21 @@ const router = createRouter({
           meta: { title: '退款/售后' },
         },
         {
+          // 工单与售后是两条不同的路：售后是**对某件商品的退款诉求**（走审批、动钱），
+          // 工单是**对平台说的话**（不涉及金额，客服回话）。合并成一条只会让
+          // 「我的退款到哪了」和「这个成分孕妇能吃吗」挤进同一个列表
+          path: 'tickets',
+          name: 'my-tickets',
+          component: () => import('@/views/TicketListView.vue'),
+          meta: { title: '我的工单' },
+        },
+        {
+          path: 'tickets/:id',
+          name: 'ticket-detail',
+          component: () => import('@/views/TicketDetailView.vue'),
+          meta: { title: '工单详情' },
+        },
+        {
           path: 'payment',
           name: 'payment',
           component: () => import('@/views/PaymentView.vue'),

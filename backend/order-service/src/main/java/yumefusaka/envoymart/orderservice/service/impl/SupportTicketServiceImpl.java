@@ -16,6 +16,7 @@ import yumefusaka.envoymart.orderservice.model.TicketDetailResponse;
 import yumefusaka.envoymart.orderservice.model.TicketResponse;
 import yumefusaka.envoymart.orderservice.model.TicketSenderType;
 import yumefusaka.envoymart.orderservice.model.TicketStatus;
+import yumefusaka.envoymart.orderservice.model.TicketSummary;
 import yumefusaka.envoymart.orderservice.service.SupportTicketService;
 import yumefusaka.envoymart.orderservice.service.TicketDomainService;
 
@@ -98,6 +99,14 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                 .page(zeroBasedPage)
                 .size(safeSize)
                 .build();
+    }
+
+    @Override
+    public TicketSummary summary(String userId) {
+        // 一条工单都没有时聚合 SQL 仍返回一行（count(*) = 0），不会是 null；
+        // 真为 null 只可能是映射出了问题，返回一个全零比把 NPE 甩给用户好
+        TicketSummary summary = ticketMapper.countByUser(userId);
+        return summary == null ? new TicketSummary() : summary;
     }
 
     @Override

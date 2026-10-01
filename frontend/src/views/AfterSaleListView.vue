@@ -6,6 +6,7 @@ import { cancelAfterSale, getAfterSale, listAfterSales, shipBackAfterSale } from
 import { formatPrice } from '@/api/product'
 import { formatDate } from '@/utils/format'
 import ErrorState from '@/components/ui/ErrorState.vue'
+import CreateTicketDialog from '@/components/ticket/CreateTicketDialog.vue'
 import type { AfterSale, AfterSaleDetail } from '@/types/models'
 
 const router = useRouter()
@@ -13,6 +14,21 @@ const router = useRouter()
 const records = ref<AfterSale[]>([])
 const loading = ref(false)
 const failed = ref(false)
+
+/**
+ * 「联系客服」的目标。对话框只有一份，开在哪条记录上由它决定 ——
+ * 每条记录各挂一个对话框，展开的那条会把别的都渲染一遍。
+ *
+ * 带上这一单的 id/no 而不是留空：用户是在**看着某条售后**时说这句话的，
+ * 不带订单的工单会让客服先去问"哪一笔"，多一个来回，还可能问错单
+ */
+const ticketTarget = ref<AfterSale | null>(null)
+const ticketOpen = ref(false)
+
+function openTicket(record: AfterSale) {
+  ticketTarget.value = record
+  ticketOpen.value = true
+}
 
 /** 终态：不会再变，不提供撤销入口 */
 const TERMINAL = ['FINISHED', 'REJECTED', 'CANCELLED']
@@ -216,6 +232,7 @@ onMounted(load)
             {{ expandedId === record.id ? '收起进度' : '查看进度' }}
           </el-button>
           <el-button link @click="router.push(`/orders/${record.orderId}`)">查看订单</el-button>
+          <el-button link @click="openTicket(record)">联系客服</el-button>
           <el-button
             v-if="record.status === 'APPROVED' && NEEDS_RETURN.includes(record.type)"
             link
@@ -235,6 +252,15 @@ onMounted(load)
         </footer>
       </article>
     </div>
+
+    <!-- 常驻渲染（不加 v-if）：对话框关闭时要走完自己的退场动画，
+         中途被卸载会留下一层没擦掉的遮罩 -->
+    <CreateTicketDialog
+      v-model="ticketOpen"
+      :order-id="ticketTarget?.orderId"
+      :order-no="ticketTarget?.orderNo"
+      @created="(id: number) => router.push(`/tickets/${id}`)"
+    />
 
     <el-dialog v-model="shipBackVisible" title="登记寄回物流" width="440px">
       <p v-if="shipBackTarget" class="shipback__tip">

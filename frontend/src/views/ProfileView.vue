@@ -9,10 +9,11 @@ import {
   updateAddress,
   type AddressPayload,
 } from '@/api/address'
-import { useUserStore } from '@/stores'
+import { useTicketStore, useUserStore } from '@/stores'
 import type { UserAddress } from '@/types/models'
 
 const userStore = useUserStore()
+const ticketStore = useTicketStore()
 const profile = computed(() => userStore.profile)
 
 const addresses = ref<UserAddress[]>([])
@@ -132,7 +133,11 @@ async function handleDelete(item: UserAddress) {
   await loadAddresses()
 }
 
-onMounted(loadAddresses)
+onMounted(() => {
+  loadAddresses()
+  // 「我的服务」里的工单角标。拉失败只是不显示数字（store 内部已吞掉异常）
+  ticketStore.refresh()
+})
 </script>
 
 <template>
@@ -154,6 +159,24 @@ onMounted(loadAddresses)
         <el-descriptions-item label="手机号">{{ profile?.phone || '未绑定' }}</el-descriptions-item>
         <el-descriptions-item label="邮箱">{{ profile?.email || '未绑定' }}</el-descriptions-item>
       </el-descriptions>
+    </section>
+
+    <section class="surface">
+      <h2 class="section-title">我的服务</h2>
+      <nav class="links" aria-label="常用入口">
+        <RouterLink to="/orders" class="link">我的订单</RouterLink>
+        <RouterLink to="/after-sales" class="link">退款/售后</RouterLink>
+        <RouterLink to="/reviews" class="link">我的评价</RouterLink>
+        <RouterLink to="/tickets" class="link">
+          我的工单
+          <!-- 只在确实有「等你回应」时才显示数字：一个恒为 0 的红点等于没有红点 -->
+          <span v-if="ticketStore.awaitingMe" class="link__badge">
+            {{ ticketStore.awaitingMe > 99 ? '99+' : ticketStore.awaitingMe }}
+          </span>
+        </RouterLink>
+        <RouterLink to="/coupons/mine" class="link">我的优惠券</RouterLink>
+        <RouterLink to="/favorites" class="link">我的收藏</RouterLink>
+      </nav>
     </section>
 
     <section class="surface">
@@ -266,6 +289,51 @@ onMounted(loadAddresses)
 
 .section-head .section-title {
   margin-bottom: 0;
+}
+
+/* 「我的服务」：自适应列宽，窄窗口下自动从三列掉到两列、一列，不用断点 */
+.links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: var(--ys-space-2);
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: var(--ys-space-2);
+  padding: var(--ys-space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-md);
+  color: var(--color-text-primary);
+  font-size: var(--ys-font-sm);
+  text-decoration: none;
+  transition:
+    border-color var(--ys-duration-fast) var(--ys-ease-out),
+    background var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.link:hover {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-subtle);
+}
+
+.link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.link__badge {
+  min-width: 20px;
+  margin-inline-start: auto;
+  padding: 0 6px;
+  border-radius: var(--ys-radius-full);
+  background: var(--color-danger);
+  color: var(--color-text-inverse);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  line-height: 18px;
 }
 
 .surface > .section-title {

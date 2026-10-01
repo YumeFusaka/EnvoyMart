@@ -17,6 +17,7 @@ import yumefusaka.envoymart.orderservice.model.TicketDetailResponse;
 import yumefusaka.envoymart.orderservice.model.TicketMessageRequest;
 import yumefusaka.envoymart.orderservice.model.TicketReopenRequest;
 import yumefusaka.envoymart.orderservice.model.TicketResponse;
+import yumefusaka.envoymart.orderservice.model.TicketSummary;
 import yumefusaka.envoymart.orderservice.service.SupportTicketService;
 
 /**
@@ -55,6 +56,18 @@ public class SupportTicketController {
             @RequestParam(value = "page", required = false) Integer page,
             @RequestParam(value = "size", required = false) Integer size) {
         return Result.success(ticketService.listMine(userId, status, page, size));
+    }
+
+    /**
+     * 计数摘要：列表页的筛选页签与顶栏角标共用。
+     * <p>
+     * 放在 {@code /{id}} 之前只是为了让读的人先看到它——<b>能不能命中不靠声明顺序</b>，
+     * Spring 的路径匹配里字面量段本来就优先于模板段（{@code /reviews/mine} 也是这么活下来的）。
+     */
+    @GetMapping("/summary")
+    public Result<TicketSummary> summary(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId) {
+        return Result.success(ticketService.summary(userId));
     }
 
     @GetMapping("/{id}")

@@ -338,13 +338,20 @@ await section('商品上下架', async () => {
   const down = await poll(statusOf, (v) => v === 0)
   ck(`商品 ${spu.spuCode} 下架后库里 status=0`, down === 0, `实际 status=${down}`)
 
-  // 列表没做状态过滤，行不该消失；按钮换成了「上架」才说明这一行真的刷新过
-  const row = page.locator('.admin-table tbody tr', { hasText: spu.spuCode }).first()
-  const labels = await row.locator('button').allInnerTexts()
+  // 列表没做状态过滤，行不该消失；按钮换成了「上架」才说明这一行真的刷新过。
+  // 这里轮询 DOM 而不是读一次：接口改完到表格重渲染之间还有「回包 → load() 重拉 →
+  // 重新挂载行」几跳，读一次会拿到改动前的行 —— 一次假失败比不测更费时间
+  const labels = await poll(
+    async () => {
+      const row = page.locator('.admin-table tbody tr', { hasText: spu.spuCode }).first()
+      return (await row.locator('button').allInnerTexts()).map((t) => t.trim())
+    },
+    (texts) => texts.includes('上架'),
+  )
   ck(
     '下架后行内的按钮变成「上架」（说明列表确实刷新了）',
-    labels.some((t) => t.trim() === '上架'),
-    `行内按钮：${labels.map((t) => t.trim()).filter(Boolean).join(' / ')}`,
+    labels.includes('上架'),
+    `行内按钮：${labels.filter(Boolean).join(' / ')}`,
   )
 
   restores.push(async () => {
@@ -356,14 +363,25 @@ await section('商品上下架', async () => {
 
 // ── 3.3 评价隐藏与恢复 ──
 await section('评价隐藏与恢复', async () => {
-  // 行里没有 id 列，只能按内容定位 —— 先挑一条**内容在列表里唯一**的，
-  // 否则「定位到的那一行」和「准备核对的那条记录」可能不是同一条
+  // 行里没有 id 列，只能按内容定位 —— 内容必须**在全库唯一**，而不只是在「已发布」
+  // 那一页里唯一：列表默认展示全部状态，一条已隐藏的评价完全可能与它同内容（自动化
+  // 夹具的孪生数据），那时 `.first()` 选中的是隐藏的那条，抽屉里的按钮是「恢复发布」，
+  // 于是等「隐藏」等到超时 —— 看起来像功能坏了，其实是定位错了行。
+  // 用 keyword 反查全库命中数，只有命中唯一的那条才拿来定位
   const list = await api('/reviews/admin/reviews?page=0&size=50&status=PUBLISHED')
-  const review = list.records.find(
-    (r) => r.content && list.records.filter((o) => o.content === r.content).length === 1,
-  )
+  let review = null
+  for (const candidate of list.records) {
+    if (!candidate.content) continue
+    const hits = await api(
+      `/reviews/admin/reviews?page=0&size=5&keyword=${encodeURIComponent(candidate.content)}`,
+    )
+    if (hits.total === 1 && hits.records[0]?.id === candidate.id) {
+      review = candidate
+      break
+    }
+  }
   if (!review) {
-    throw new Error('没有内容唯一的已发布评价可用来定位')
+    throw new Error('没有内容全库唯一的已发布评价可用来定位')
   }
   const read = async () => (await api(`/reviews/admin/reviews/${review.id}`)).review
 

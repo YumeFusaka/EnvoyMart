@@ -10,6 +10,7 @@ import {
   List,
   Reading,
   RefreshLeft,
+  Service,
   Setting,
   ShoppingCart,
   Star,
@@ -17,12 +18,13 @@ import {
   User,
 } from '@element-plus/icons-vue'
 import SearchBox, { type SearchIntent } from '@/components/shop/SearchBox.vue'
-import { useCartStore, useUserStore } from '@/stores'
+import { useCartStore, useTicketStore, useUserStore } from '@/stores'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const cart = useCartStore()
+const ticketStore = useTicketStore()
 
 /**
  * 顶栏搜索框里的文字。
@@ -74,11 +76,15 @@ const navItems = [
   { to: '/orders', label: '我的订单', icon: List },
   { to: '/favorites', label: '我的收藏', icon: Star },
   { to: '/after-sales', label: '退款/售后', icon: RefreshLeft },
+  { to: '/tickets', label: '我的工单', icon: Service },
   { to: '/coupons', label: '领券中心', icon: Discount },
   { to: '/assistant', label: '智能助手', icon: ChatDotRound },
   // 知识库对外公开（引用要让任何人能自己核对），所以它也是**未登录**时唯一能用的入口
   { to: '/knowledge', label: '知识库', icon: Reading },
 ]
+
+/** 工单入口上的「等你回应」角标。`null`（还没拉到）当作不显示，见 `useTicketStore` */
+const awaitingMe = computed(() => ticketStore.awaitingMe ?? 0)
 
 /**
  * 未登录时只留公开入口，而不是把整条导航渲染成一片点了就跳登录页的死链。
@@ -118,6 +124,9 @@ onMounted(() => {
   // 未登录不发这一枪：公开页（知识库）上它必然 401，白白在控制台留一条红字
   if (userStore.token) {
     cart.load().catch(() => undefined)
+    // 工单角标同理。刷新时机是「挂着待办数字的那一屏出现时」，
+    // 回复/关闭/建单之后由那几个页面显式再拉一次，不做轮询
+    ticketStore.refresh()
   }
 })
 </script>
@@ -152,6 +161,12 @@ onMounted(() => {
                 <el-dropdown-menu>
                   <el-dropdown-item @click="router.push('/profile')">个人中心</el-dropdown-item>
                   <el-dropdown-item @click="router.push('/reviews')">我的评价</el-dropdown-item>
+                  <el-dropdown-item @click="router.push('/tickets')">
+                    我的工单
+                    <span v-if="awaitingMe" class="app-nav__badge">
+                      {{ awaitingMe > 99 ? '99+' : awaitingMe }}
+                    </span>
+                  </el-dropdown-item>
                   <el-dropdown-item v-if="isAdmin" @click="router.push('/admin')"
                     >管理台</el-dropdown-item
                   >
@@ -189,6 +204,12 @@ onMounted(() => {
           >
             <el-icon><component :is="item.icon" /></el-icon>
             <span>{{ item.label }}</span>
+            <!-- 角标只挂在工单这一项上：其余入口没有「等你回应」这种待办语义。
+                 用文字角标而不是压在图标上的 el-badge —— 导航项的图标只有 14px，
+                 浮层角标会把图标整个盖住（购物车那里图标大，压得住） -->
+            <span v-if="item.to === '/tickets' && awaitingMe" class="app-nav__badge">
+              {{ awaitingMe > 99 ? '99+' : awaitingMe }}
+            </span>
           </RouterLink>
         </nav>
       </div>
@@ -209,6 +230,9 @@ onMounted(() => {
         >
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.label }}</span>
+          <span v-if="item.to === '/tickets' && awaitingMe" class="app-nav__badge">
+            {{ awaitingMe > 99 ? '99+' : awaitingMe }}
+          </span>
         </RouterLink>
         <RouterLink v-if="userStore.token" to="/profile" class="app-nav__link" @click="closeDrawer">
           <el-icon><User /></el-icon>
@@ -334,6 +358,20 @@ onMounted(() => {
 
 .app-nav__link.is-active {
   font-weight: 600;
+}
+
+/* 「等你回应」角标：排在导航文字后面的一块小计数，三处（顶栏 / 抽屉 / 账号菜单）共用 */
+.app-nav__badge {
+  margin-inline-start: auto;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: var(--ys-radius-full);
+  background: var(--color-danger);
+  color: var(--color-text-inverse);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  line-height: 18px;
 }
 
 .app-header__actions {

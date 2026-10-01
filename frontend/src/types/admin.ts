@@ -15,6 +15,9 @@ import type {
   Logistics,
   Order as OrderResponse,
   SpecGroup,
+  TicketMessageView,
+  TicketSenderType,
+  TicketStatus,
 } from '@/types/models'
 
 /** 状态流水。订单与售后共用，后端也是同一个 `StatusLogView` */
@@ -343,8 +346,14 @@ export interface AdminUserDetail {
 
 // ==================== 客服工单 ====================
 
-export type TicketStatus = 'OPEN' | 'PROCESSING' | 'RESOLVED' | 'CLOSED'
-export type TicketSenderType = 'USER' | 'ADMIN' | 'SYSTEM'
+/**
+ * 三个工单类型定义在 `models.ts`，这里只做转出。
+ * <p>
+ * 它们描述的是**同一份后端契约**（`TicketMessageView` 在两侧是同一个 DTO），
+ * 在两处各写一遍的结果是改一侧漏一侧，而 TS 的 structural typing 不会报错。
+ * 留在这一行是为了不打断既有的 `import { TicketStatus } from '@/types/admin'`。
+ */
+export type { TicketMessageView, TicketSenderType, TicketStatus } from '@/types/models'
 
 export interface AdminTicketQuery {
   keyword?: string
@@ -376,14 +385,6 @@ export interface AdminTicketSummary {
   updatedAt: string
   resolvedAt: string | null
   closedAt: string | null
-}
-
-export interface TicketMessageView {
-  id: number
-  senderType: TicketSenderType
-  senderId: string | null
-  content: string
-  createdAt: string
 }
 
 export interface AdminTicketDetail {
