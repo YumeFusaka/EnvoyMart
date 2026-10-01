@@ -45,6 +45,24 @@ export interface EvalCase {
   hitRank: number
 }
 
+/**
+ * 查询扩写的对照读数：同一批样本、同一条关键词路，再跑一遍带扩写的。
+ *
+ * 三个字段（capturedAt / model / recordedQueries）不是装饰 —— 扩写数据是**预录夹具**，
+ * 是某一时刻某个模型的真实输出，不是"现在的表现"。不把它们显示出来，
+ * 这一栏数字就会被读成实时结果。
+ *
+ * 它只体现「角度改写」那一半的收益（换个说法重问，词法路才捞得到）；
+ * 假想答案（HyDE）那条路要靠真实向量服务，这里是伪随机向量，测不出效果。
+ */
+export interface EvalExpansion {
+  capturedAt: string
+  model: string
+  recordedQueries: number
+  overallAt3: EvalMetrics
+  strata: EvalStratum[]
+}
+
 export interface EvalRun {
   generatedAt: string
   /** STARTUP = 服务启动时自动生成；MANUAL = 管理台手动重跑 */
@@ -55,6 +73,7 @@ export interface EvalRun {
   baseline: EvalBaseline
   strata: EvalStratum[]
   cases: EvalCase[]
+  expansion: EvalExpansion
 }
 
 /** 最近一次评测快照（服务启动时生成；启动失败则本次现场补跑）。公开可读 */

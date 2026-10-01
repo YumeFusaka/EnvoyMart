@@ -123,6 +123,59 @@ ck(
   JSON.stringify(barLabels),
 )
 
+// ---- 查询扩写对照：这一栏是「扩写到底有没有用」的现场证据，不是装饰 ----
+const expansion = anon.locator('.expansion-panel')
+ck('扩写对照栏存在', (await expansion.count()) === 1)
+
+const expansionRows = anon.locator('.expansion-row')
+ck('扩写对照三档齐备', (await expansionRows.count()) === 3, `count=${await expansionRows.count()}`)
+
+const expansionText = (await expansion.textContent()) ?? ''
+ck('全量扩写前 63.3%', expansionText.includes('63.3'))
+ck('全量扩写后 75.8%', expansionText.includes('75.8'))
+ck('口语档扩写前 70.0%', expansionText.includes('70.0'))
+ck('口语档扩写后 85.0%', expansionText.includes('85.0'))
+ck('语义档扩写前 22.5%', expansionText.includes('22.5'))
+ck('语义档扩写后 45.0%', expansionText.includes('45.0'))
+
+const expansionBars = anon.locator('.expansion-row__bar')
+const expansionLabels = await expansionBars.evaluateAll((nodes) =>
+  nodes.map((n) => n.getAttribute('aria-label')),
+)
+ck(
+  '扩写对照的双条都带可访问名称',
+  expansionLabels.length === 6 && expansionLabels.every((label) => label?.includes('%')),
+  JSON.stringify(expansionLabels),
+)
+
+// 夹具元信息必须在页面上：这栏数字是预录的，不标出来就会被读成实时结果
+ck(
+  '标注了扩写的采集时间与模型',
+  (expansionText.includes('采集') || expansionText.includes('预录')) &&
+    /qwen|deepseek|gpt|glm/i.test(expansionText),
+)
+ck(
+  '写明该栏只体现角度改写、不含 HyDE',
+  expansionText.includes('HyDE'),
+  expansionText.replace(/\s+/g, ' ').slice(0, 160),
+)
+
+const deltas = await anon
+  .locator('.expansion-delta')
+  .evaluateAll((nodes) => nodes.map((n) => n.textContent?.trim()))
+// 零增益那个徽标刻意写成 `0.0pp` 而不是 `+0.0pp`——字面档是 97.5 → 97.5，
+// 给它加个加号会让「没有变化」读起来像「涨了一点」。所以这里断言的是
+// 「增益带 +、零增益不带符号」，而不是「每个都带符号」。
+const deltaPattern = /^[+-]?\d+\.\d+pp$/
+ck(
+  '增益徽标：正增益带 +，零增益如实显示 0.0pp',
+  deltas.length === 4 &&
+    deltas.every((text) => deltaPattern.test(text ?? '')) &&
+    deltas.some((text) => (text ?? '').startsWith('+')) &&
+    deltas.some((text) => (text ?? '').startsWith('0.0')),
+  JSON.stringify(deltas),
+)
+
 const rows = anon.locator('.case-row')
 ck('逐条明细 120 条全列', (await rows.count()) === 120, `count=${await rows.count()}`)
 const missRows = anon.locator('.case-row.is-miss')

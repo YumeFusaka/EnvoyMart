@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.aiservice.config;
 
 import dev.langchain4j.model.chat.ChatModel;
+import lombok.extern.slf4j.Slf4j;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -14,6 +15,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import yumefusaka.envoymart.agent.core.Agent;
@@ -69,6 +71,7 @@ import java.util.concurrent.TimeUnit;
  * 一是本项目只需要核心库（它零 Spring 依赖），二是装配方式与本文件既有的手工风格一致，
  * 三是避开了 starter 当前所处的 beta 线与其 POM 里 pin 的 Spring Boot 版本。
  */
+@Slf4j
 @Configuration
 public class AiAgentConfig {
 
@@ -388,17 +391,68 @@ public class AiAgentConfig {
      * 而不是靠一段架构描述让人相信它有用。
      */
     @Bean
-    public HybridRetriever retriever(@Qualifier("knowledgeVectorStore") VectorStore vectorStore,
-                                     Reranker reranker,
-                                     TextSplitter textSplitter,
-                                     KnowledgeCorpus corpus,
-                                     KnowledgeClient knowledgeClient,
-                                     @Value("${envoymart.rag.graph-recall.enabled:true}") boolean graphRecall) {
+    public HybridRetriever hybridRetriever(@Qualifier("knowledgeVectorStore") VectorStore vectorStore,
+                                           Reranker reranker,
+                                           TextSplitter textSplitter,
+                                           KnowledgeCorpus corpus,
+                                           KnowledgeClient knowledgeClient,
+                                           @Value("${envoymart.rag.graph-recall.enabled:true}") boolean graphRecall) {
         List<DocumentChunk> chunks = corpus.documents().stream()
                 .flatMap(doc -> textSplitter.split(doc).stream())
                 .toList();
         return HybridRetriever.overChunks(vectorStore, chunks, reranker,
                 graphRecall ? new GraphEvidenceRetriever(knowledgeClient) : null);
+    }
+
+    /**
+     * 检索入口 —— 在这里决定要不要给检索加上「查询扩写」。
+     * <p>
+     * <b>为什么包在这一层：</b>检索有两个入口（Agent 主链路的 RAG 与
+     * {@code KnowledgeSearchTool} 的 ReAct 再检索），包在这里两条都自动带上。
+     * 包在任一入口里，另一个就成了分叉：同一个知识库，主链路走扩写、
+     * 工具再检索走原句，两条路的召回口径从此不同。
+     * <p>
+     * <b>为什么是一个开关而不是直接改检索器：</b>同一份代码要能当场演示
+     * 「同一句话，开与关各答一次」——这是本项目的既有做法（图谱路同样有开关）。
+     * 关掉时返回的就是那个 {@link HybridRetriever} 实例本身，不是它的一个
+     * 「什么都不做」的副本，因此关掉的路径与改造前<b>是同一份对象、逐位相同</b>。
+     */
+    @Bean
+    @Primary
+    public Retriever retriever(HybridRetriever hybridRetriever,
+                               QueryExpander queryExpander,
+                               @Value("${envoymart.rag.query-expansion.enabled:true}") boolean expansionEnabled) {
+        if (!expansionEnabled) {
+            log.info("[RAG] 查询扩写已关闭，检索按原句进行");
+            return hybridRetriever;
+        }
+        log.info("[RAG] 查询扩写已开启：HyDE 假想答案走语义路，角度改写走词法路");
+        return new MultiQueryRetriever(hybridRetriever, queryExpander);
+    }
+
+    /**
+     * 查询扩写器。无 Key 的 Mock 路径由 {@code supportsReasoning()} 自动短路，
+     * 不产生调用、不产生延迟——与 {@link #queryRewriter} 同一个降级约定。
+     * <p>
+     * <b>{@code @Lazy} 不是绕路，这条环是真的。</b>把扩写器接进检索之后，
+     * 装配图上出现了一个圈：{@code toolRegistry → ragEngine → retriever →
+     * queryExpander → langChain4jLLMProvider → toolRegistry}。它能成圈是因为
+     * 模型要拿着工具表才能开会话，而工具表里有一个「按需再检索」的工具，
+     * 那个工具又要检索——<b>三件事各自都合理，接起来才是环</b>。
+     * <p>
+     * 断在这一条边上，是因为它是**唯一一条构造期根本用不到**的：
+     * 扩写器只在 {@code expand()} 里碰模型，而 {@code expand()} 最早也要等
+     * 第一个用户请求才会被调到，那时整个上下文早已就绪。
+     * 换句话说这里注入的代理不是"提前拿一个还没建好的东西"，
+     * 而是"把取件时间挪到真正取件的那一刻"。
+     * <p>
+     * 另一条路是把 {@code ToolRegistry} 从 provider 的构造参数挪成按需获取——
+     * 那会为了让装配图好看，把装配期的问题写进运行时代码里。这里选了改动更小、
+     * 且不污染运行时代码的那一侧。
+     */
+    @Bean
+    public QueryExpander queryExpander(@Lazy LLMProvider llmProvider, LLMConfig llmConfig) {
+        return new LlmQueryExpander(llmProvider, llmConfig);
     }
 
     /**

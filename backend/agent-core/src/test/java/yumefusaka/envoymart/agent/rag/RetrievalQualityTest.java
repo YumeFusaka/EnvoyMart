@@ -2,7 +2,9 @@ package yumefusaka.envoymart.agent.rag;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -16,6 +18,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RetrievalQualityTest {
 
     private static final int TOP_K = 3;
+
+    /**
+     * 各档的召回增益下限（条数），40 条样本一档。
+     * <p>
+     * 实测（预录夹具、关键词路）：口语改写 28 → 34（+6），语义鸿沟 9 → 18（+9），
+     * 字面重合 39 → 39（±0）。线画在实测值下方留 1~3 条余量，因为关键词路全程确定性，
+     * 没有需要容忍的抖动——余量只为"提示词微调后重采夹具"这类可接受的正常变化留一点空间。
+     * <p>
+     * <b>这两条线是整批改动存在与否的判据。</b>角度改写一旦没进到词法路，指标会整段
+     * 退回"没有扩写"的那一档，正是它们要拦的事。
+     */
+    private static final int PARAPHRASE_MIN_GAIN = 5;
+
+    /** 语义鸿沟档的增益下限。这一档原来是 0.225，是所有检索改进里最难动的一块 */
+    private static final int HARD_MIN_GAIN = 6;
 
     @Test
     void 关键词检索在字面重合的查询上表现稳定() {
@@ -70,6 +87,75 @@ class RetrievalQualityTest {
         assertThat(report.hitRate()).isGreaterThanOrEqualTo(0.58);
         assertThat(report.mrr()).isGreaterThanOrEqualTo(0.52);
         assertThat(report.ndcg()).isGreaterThanOrEqualTo(0.52);
+    }
+
+    /**
+     * 查询扩写的回归门禁 —— <b>把"扩写是有用的"这句话钉成一条会失败的断言</b>。
+     * <p>
+     * 用预录夹具（{@link RecordedQueryExpander}）而非现场调模型：CI 无 Key、不该有网络、
+     * 更不该计费，而且真实模型有随机性，同一份代码两次跑出不同数字的断言不是门禁。
+     * 夹具是真实模型输出，只是冻结在某一时刻。
+     * <p>
+     * <b>这里测的是纯词法侧的增益，测不出 HyDE 的。</b>CI 的向量库是伪随机实现
+     * （{@code SimpleEmbeddingService} 按 hashCode 播种），假想答案送进去只是一段
+     * 无语义的噪声——它真正的收益要连真实向量服务才看得见，那在
+     * {@link RetrievalComparisonTest} 里。这条线守的是另一半：<b>换个说法重问一次，
+     * 词法路能不能捞到原句捞不到的文档。</b>
+     * <p>
+     * 顺带说明为什么这一半值得单独守：<b>语义鸿沟档的提升可以完全由词法侧拿到。</b>
+     * 用户说「太贵了」，文档写「定价依据」——这不是向量才能跨的鸿沟，把口语翻译成
+     * 文档用词就够了，而翻译恰好是模型的强项。真实对照里再叠上向量与重排，两条路各补各的。
+     */
+    @Test
+    void 预录扩写在词法路上带来可复现的召回增益() {
+        HybridRetriever base = new HybridRetriever(
+                new InMemoryVectorStore(new SimpleEmbeddingService()), EvalFixtures.DOCS);
+        MultiQueryRetriever expandedRetriever =
+                new MultiQueryRetriever(base, new RecordedQueryExpander());
+        RetrievalEvaluator evaluator = new RetrievalEvaluator();
+
+        System.out.println("[扩写门禁] 夹具采集于 " + RecordedQueryExpander.CAPTURED_AT
+                + "（模型 " + RecordedQueryExpander.MODEL + "），"
+                + "覆盖 " + RecordedQueryExpander.recordedCount() + " 条查询");
+
+        Map<String, Integer> gains = new LinkedHashMap<>();
+        for (EvalFixtures.Stratum stratum : EvalFixtures.strata()) {
+            RetrievalEvaluator.EvalReport before = evaluator.evaluate(base, stratum.cases(), TOP_K);
+            RetrievalEvaluator.EvalReport after = evaluator.evaluate(expandedRetriever, stratum.cases(), TOP_K);
+            // 命中条数直接数，不从比率反算——比率是浮点数，反算出来的"条数"会随舍入漂移
+            int hitBefore = countHits(evaluator.evaluateEach(base, stratum.cases(), TOP_K));
+            int hitAfter = countHits(evaluator.evaluateEach(expandedRetriever, stratum.cases(), TOP_K));
+            gains.put(stratum.key(), hitAfter - hitBefore);
+            System.out.printf("[扩写门禁] %-6s 扩写前 %.3f → 扩写后 %.3f  （命中 %d → %d，%+d）%n",
+                    stratum.label(), before.hitRate(), after.hitRate(),
+                    hitBefore, hitAfter, hitAfter - hitBefore);
+        }
+
+        // 夹具与样本必须一一对应。样本增删后忘了重新采集，缺的那条会静默地"按原句检索"——
+        // 数字只是偏低，看不出任何异常，门禁就在测一个越来越小的子集。
+        // 这条断言把"夹具过期"从沉默变成红灯，代价是改样本后要重采一次（本来也该重采）。
+        assertThat(EvalFixtures.allCases())
+                .as("扩写夹具与评测样本已经对不上，重新采集："
+                        + "RUN_EXPANSION_CAPTURE=true mvn -pl agent-core test -Dtest=ExpansionCaptureTest")
+                .allMatch(evalCase -> RecordedQueryExpander.covers(evalCase.query()));
+
+        // 门槛按 90 篇语料 / 120 条样本的实测值下留余量设定。这一组的价值全在"有没有增益"——
+        // 断言写成恒真（比如只断言不为空）就等于没有门禁。
+        assertThat(gains.get("PARAPHRASE"))
+                .as("口语改写档是角度改写的用武之地——用户换个说法，文档里就有句子能对上字面。"
+                        + "这条线断了意味着角度没进词法路，那正是这块门禁存在的理由")
+                .isGreaterThanOrEqualTo(PARAPHRASE_MIN_GAIN);
+        assertThat(gains.get("HARD"))
+                .as("语义鸿沟档是这批改动最该动的一块：原来的 0.225 说明关键词路几乎捞不动它，"
+                        + "而换个说法重问能把「用户的口语」翻译成「文档的用词」")
+                .isGreaterThanOrEqualTo(HARD_MIN_GAIN);
+        assertThat(gains.get("LEXICAL"))
+                .as("字面档本来就近乎满分，扩写不该把它弄坏——这是「多了几路候选」的代价上限")
+                .isGreaterThanOrEqualTo(-1);
+    }
+
+    private static int countHits(List<RetrievalEvaluator.CaseOutcome> outcomes) {
+        return (int) outcomes.stream().filter(RetrievalEvaluator.CaseOutcome::hit).count();
     }
 
     @Test

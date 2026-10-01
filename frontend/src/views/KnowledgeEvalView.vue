@@ -96,6 +96,47 @@ const missCount = computed(() => report.value?.cases.filter((item) => !item.hit)
 
 const stratumLabel = (key: string) =>
   report.value?.strata.find((stratum) => stratum.key === key)?.label ?? key
+
+/**
+ * 扩写对照的每一行：同一个档位，扩写前与扩写后并排。
+ *
+ * 以「扩写前」那一份为主表遍历，扩写后按 key 取同档 —— 两边都来自同一次运行、
+ * 同一批样本，档位集合一致；取不到时按 0 显示而不是崩掉，页面上少一个数字
+ * 总好过整页打不开。
+ */
+const expansionRows = computed(() => {
+  const run = report.value
+  if (!run?.expansion) {
+    return []
+  }
+  const after = new Map(run.expansion.strata.map((stratum) => [stratum.key, stratum.metrics]))
+  return run.strata.map((stratum) => {
+    const beforeRate = stratum.metrics.hitRate
+    const afterRate = after.get(stratum.key)?.hitRate ?? 0
+    return {
+      key: stratum.key,
+      label: stratum.label,
+      before: beforeRate,
+      after: afterRate,
+      deltaPp: (afterRate - beforeRate) * 100,
+    }
+  })
+})
+
+/** 全量那一行的百分点差 —— 页面顶上的主数字，与分档表同一个算法 */
+const expansionOverallDelta = computed(() => {
+  const run = report.value
+  if (!run?.expansion) {
+    return 0
+  }
+  return (run.expansion.overallAt3.hitRate - run.overallAt3.hitRate) * 100
+})
+
+/** 百分点差带符号显示。0 也要显式写成 0.0 —— 空着会被读成"没测" */
+const signedPp = (delta: number) => `${delta > 0 ? '+' : ''}${delta.toFixed(1)}pp`
+
+const deltaClass = (delta: number) =>
+  delta > 0.05 ? 'is-up' : delta < -0.05 ? 'is-down' : 'is-flat'
 </script>
 
 <template>
@@ -213,6 +254,80 @@ const stratumLabel = (key: string) =>
         </div>
       </section>
 
+      <!--
+        扩写对照。位置在分档与逐条明细之间：读者刚看完"分数掉在哪一档"，
+        紧接着就能看到"扩写把哪一档抬起来了多少"——这是同一件事的下半句。
+      -->
+      <section v-if="report.expansion" class="expansion-panel" aria-label="查询扩写对照">
+        <header class="section-head">
+          <h2>查询扩写对照</h2>
+          <p>
+            同一批 {{ report.corpus.cases }} 条查询、同一条关键词路，唯一变量是检索前
+            先让模型把问题换个说法重问一遍。用户说「东西还没到」，文档写「配送时效」——
+            一个词都对不上，换个说法，字面才有可能撞上。
+          </p>
+        </header>
+
+        <div class="expansion-hero">
+          <div>
+            <p class="expansion-hero__label">全量 Hit Rate@3</p>
+            <p class="expansion-hero__pair">
+              <span class="expansion-hero__value">{{ pct(report.overallAt3.hitRate) }}%</span>
+              <span class="expansion-hero__arrow" aria-hidden="true">→</span>
+              <span class="expansion-hero__value expansion-hero__value--after"
+                >{{ pct(report.expansion.overallAt3.hitRate) }}%</span
+              >
+            </p>
+          </div>
+          <span class="expansion-delta" :class="deltaClass(expansionOverallDelta)">
+            {{ signedPp(expansionOverallDelta) }}
+          </span>
+        </div>
+
+        <ul class="expansion-list">
+          <li
+            v-for="row in expansionRows"
+            :key="row.key"
+            class="expansion-row"
+            :style="{ '--stratum-color': STRATUM_META[row.key]?.color ?? 'var(--color-primary)' }"
+          >
+            <span class="expansion-row__label">{{ row.label }}</span>
+            <div class="expansion-row__bars">
+              <div
+                class="expansion-row__bar"
+                role="img"
+                :aria-label="`扩写前 ${pct(row.before)}%`"
+              >
+                <div class="expansion-row__fill" :style="{ width: `${pct(row.before)}%` }" />
+              </div>
+              <div
+                class="expansion-row__bar expansion-row__bar--after"
+                role="img"
+                :aria-label="`扩写后 ${pct(row.after)}%`"
+              >
+                <div class="expansion-row__fill" :style="{ width: `${pct(row.after)}%` }" />
+              </div>
+            </div>
+            <span class="expansion-row__numbers">
+              <b>{{ pct(row.before) }}%</b>
+              <span class="expansion-row__arrow" aria-hidden="true">→</span>
+              <b>{{ pct(row.after) }}%</b>
+            </span>
+            <span class="expansion-delta" :class="deltaClass(row.deltaPp)">
+              {{ signedPp(row.deltaPp) }}
+            </span>
+          </li>
+        </ul>
+
+        <p class="expansion-note">
+          扩写数据是<b>预录夹具</b>：{{ report.expansion.recordedQueries }} 条查询，
+          由 <b>{{ report.expansion.model }}</b> 于
+          {{ formatDateTime(report.expansion.capturedAt) }} 采集，现场重跑读的是同一份快照。
+          这一栏只体现<b>角度改写</b>那一半的收益 —— 假想答案（HyDE）补的是语义路的词汇鸿沟，
+          要连真实向量服务才看得见，见下方「读这些数字的前提」。
+        </p>
+      </section>
+
       <!-- 逐条明细：失败样本不做任何隐藏 -->
       <section class="cases-panel" aria-label="逐条明细">
         <header class="section-head section-head--row">
@@ -291,6 +406,12 @@ const stratumLabel = (key: string) =>
             <b>现场重跑只覆盖关键词路的底线</b>
             （确定性、可复现、毫秒级）；接入真实向量与重排后的对照数字需要模型调用，
             非确定性且要外部密钥，只能作为历史记录展示，不能现场重跑。
+          </li>
+          <li>
+            <b>扩写对照同样只走关键词路，且扩写数据是预录的。</b>
+            也就是说这两条数字里<b>没有 HyDE 的功劳</b> —— 假想答案要送进真实向量才算数，
+            这里的向量库是确定性替身。扩写栏真正的贡献是「换个说法重问」那一条路，
+            以及一个可以反复复现的对照。
           </li>
         </ul>
       </section>
@@ -417,6 +538,7 @@ const stratumLabel = (key: string) =>
 
 /* 分层面板 */
 .strata-panel,
+.expansion-panel,
 .cases-panel,
 .caveats {
   padding: var(--card-padding);
@@ -507,6 +629,154 @@ const stratumLabel = (key: string) =>
   color: var(--color-text-primary);
   font-family: var(--ys-font-mono);
   font-weight: 600;
+}
+
+/* 扩写对照 */
+.expansion-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ys-space-3);
+  margin-bottom: var(--ys-space-4);
+  padding: var(--ys-space-4);
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--ys-radius-md);
+  background: linear-gradient(120deg, var(--color-primary-subtle), var(--color-bg-surface) 70%);
+}
+
+.expansion-hero__label {
+  margin: 0 0 var(--ys-space-1);
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.expansion-hero__pair {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ys-space-3);
+  margin: 0;
+  font-family: var(--ys-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.expansion-hero__value {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xl);
+  font-weight: 600;
+}
+
+.expansion-hero__value--after {
+  color: var(--color-primary);
+  font-size: var(--ys-font-3xl);
+}
+
+.expansion-hero__arrow {
+  color: var(--color-text-muted);
+}
+
+.expansion-list {
+  display: grid;
+  gap: var(--ys-space-3);
+  margin: 0 0 var(--ys-space-4);
+  padding: 0;
+  list-style: none;
+}
+
+/* 四列：档位名 / 双条 / 数字 / 增益。窄屏塌成两行，见下方媒体查询 */
+.expansion-row {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) 9.5rem 4.5rem;
+  align-items: center;
+  gap: var(--ys-space-3);
+}
+
+.expansion-row__label {
+  color: var(--color-text-primary);
+  font-size: var(--ys-font-sm);
+  font-weight: 600;
+}
+
+.expansion-row__bars {
+  display: grid;
+  gap: 3px;
+}
+
+.expansion-row__bar {
+  height: 8px;
+  border-radius: var(--ys-radius-full);
+  background: var(--color-bg-sunken);
+  overflow: hidden;
+}
+
+.expansion-row__bar .expansion-row__fill {
+  height: 100%;
+  border-radius: var(--ys-radius-full);
+  background: var(--color-text-muted);
+  transition: width var(--ys-duration-slow) var(--ys-ease-out);
+}
+
+/* 扩写后那条用档位自己的颜色：一眼能看出"变长的是哪一条" */
+.expansion-row__bar--after .expansion-row__fill {
+  background: var(--stratum-color);
+}
+
+.expansion-row__numbers {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.expansion-row__numbers b {
+  color: var(--color-text-primary);
+  font-family: var(--ys-font-mono);
+  font-weight: 600;
+}
+
+.expansion-row__arrow {
+  margin: 0 var(--ys-space-1);
+  color: var(--color-text-muted);
+}
+
+/* 增益徽标。三个状态各有颜色 —— 掉了要看得出来，这是"代价上限"的可见形式 */
+.expansion-delta {
+  justify-self: start;
+  padding: 2px var(--ys-space-2);
+  border-radius: var(--ys-radius-full);
+  font-family: var(--ys-font-mono);
+  font-size: var(--ys-font-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.expansion-delta.is-up {
+  color: var(--color-success);
+  background: var(--color-success-subtle);
+}
+
+.expansion-delta.is-down {
+  color: var(--color-danger);
+  background: var(--color-danger-subtle);
+}
+
+.expansion-delta.is-flat {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-sunken);
+}
+
+.expansion-note {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+}
+
+.expansion-note b {
+  color: var(--color-text-primary);
 }
 
 .stratum__desc {
@@ -654,6 +924,19 @@ const stratumLabel = (key: string) =>
   .strata-list {
     grid-template-columns: 1fr;
   }
+
+  /* 双条太窄就读不出长短了。把数字与增益挪到第二行，条占满整行 */
+  .expansion-row {
+    grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+  }
+
+  .expansion-row__bars {
+    grid-column: 2 / -1;
+  }
+
+  .expansion-row__numbers {
+    grid-column: 2;
+  }
 }
 
 @media (max-width: 640px) {
@@ -672,6 +955,11 @@ const stratumLabel = (key: string) =>
   .case-row__stratum {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .expansion-hero {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>

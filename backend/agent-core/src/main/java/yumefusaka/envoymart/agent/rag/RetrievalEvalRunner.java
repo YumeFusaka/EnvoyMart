@@ -19,6 +19,10 @@ import java.util.Map;
  * <p>
  * 全程本地计算、无外部依赖，一次 <b>120 条 × 90 篇</b>的评测是毫秒级——
  * 所以启动时可以放心跑一次作为基线快照，不必持久化任何东西。
+ * <p>
+ * 同一批样本还会再跑一遍<b>带查询扩写</b>的（{@link Expansion}），让"扩写到底有没有用"
+ * 在页面上是一个可点击复现的对照，而不是一句结论。两次都走关键词路、都用预录夹具，
+ * 因此两次都是确定性的。
  */
 public class RetrievalEvalRunner {
 
@@ -46,15 +50,32 @@ public class RetrievalEvalRunner {
                              List<String> retrievedDocIds, boolean hit, int hitRank) {
     }
 
+    /**
+     * 查询扩写的对照读数。
+     * <p>
+     * <b>它只体现「角度改写」那一半的收益，不体现 HyDE。</b>这里跑的是关键词路
+     * （向量库是伪随机实现，见类注释），假想答案那条路要连真实向量服务才有效果，
+     * 那类数字来自 {@code RetrievalComparisonTest}，属于历史记录，不能现场重跑。
+     * 报告页必须把这句话说出来，否则这两个数字会被读成「扩写的全部收益」。
+     * <p>
+     * 扩写数据是<b>预录夹具</b>（{@link RecordedQueryExpander}），所以这一栏同样是确定性的——
+     * 点「重新运行」两次读数一样，这是它敢和 CI 数字并排的前提。
+     */
+    public record Expansion(String capturedAt, String model, int recordedQueries,
+                            Metrics overallAt3, List<StratumReport> strata) {
+    }
+
     public record EvalRun(String generatedAt, String trigger, Corpus corpus,
                           Metrics overallAt3, Metrics overallAt5, Baseline baseline,
-                          List<StratumReport> strata, List<CaseReport> cases) {
+                          List<StratumReport> strata, List<CaseReport> cases,
+                          Expansion expansion) {
     }
 
     public EvalRun run(String trigger) {
-        Retriever retriever = new HybridRetriever(
+        HybridRetriever base = new HybridRetriever(
                 new InMemoryVectorStore(new SimpleEmbeddingService()),
                 EvalFixtures.DOCS);
+        Retriever expanded = new MultiQueryRetriever(base, new RecordedQueryExpander());
         RetrievalEvaluator evaluator = new RetrievalEvaluator();
 
         // 全量逐条只检索一遍（topK=3），分层聚合从同一份逐条结果切分——
@@ -66,7 +87,9 @@ public class RetrievalEvalRunner {
             }
         }
         List<RetrievalEvaluator.CaseOutcome> outcomes =
-                evaluator.evaluateEach(retriever, EvalFixtures.allCases(), TOP_K);
+                evaluator.evaluateEach(base, EvalFixtures.allCases(), TOP_K);
+        List<RetrievalEvaluator.CaseOutcome> expandedOutcomes =
+                evaluator.evaluateEach(expanded, EvalFixtures.allCases(), TOP_K);
 
         List<CaseReport> cases = new ArrayList<>(outcomes.size());
         for (RetrievalEvaluator.CaseOutcome outcome : outcomes) {
@@ -75,16 +98,7 @@ public class RetrievalEvalRunner {
                     outcome.hit(), outcome.hitRank()));
         }
 
-        List<StratumReport> strata = new ArrayList<>();
-        for (EvalFixtures.Stratum stratum : EvalFixtures.strata()) {
-            List<RetrievalEvaluator.CaseOutcome> slice = outcomes.stream()
-                    .filter(outcome -> stratum.key().equals(stratumOf.get(outcome.query())))
-                    .toList();
-            strata.add(new StratumReport(stratum.key(), stratum.label(),
-                    toMetrics(RetrievalEvaluator.summarize(slice, TOP_K))));
-        }
-
-        RetrievalEvaluator.EvalReport at5 = evaluator.evaluate(retriever, EvalFixtures.allCases(), 5);
+        RetrievalEvaluator.EvalReport at5 = evaluator.evaluate(base, EvalFixtures.allCases(), 5);
 
         return new EvalRun(
                 OffsetDateTime.now().toString(),
@@ -96,8 +110,27 @@ public class RetrievalEvalRunner {
                 new Baseline(
                         EvalFixtures.randomBaselineHitRate(EvalFixtures.DOCS.size(), 3),
                         EvalFixtures.randomBaselineHitRate(EvalFixtures.DOCS.size(), 5)),
-                strata,
-                cases);
+                strata(outcomes, stratumOf),
+                cases,
+                new Expansion(
+                        RecordedQueryExpander.CAPTURED_AT,
+                        RecordedQueryExpander.MODEL,
+                        RecordedQueryExpander.recordedCount(),
+                        toMetrics(RetrievalEvaluator.summarize(expandedOutcomes, TOP_K)),
+                        strata(expandedOutcomes, stratumOf)));
+    }
+
+    private static List<StratumReport> strata(List<RetrievalEvaluator.CaseOutcome> outcomes,
+                                              Map<String, String> stratumOf) {
+        List<StratumReport> strata = new ArrayList<>();
+        for (EvalFixtures.Stratum stratum : EvalFixtures.strata()) {
+            List<RetrievalEvaluator.CaseOutcome> slice = outcomes.stream()
+                    .filter(outcome -> stratum.key().equals(stratumOf.get(outcome.query())))
+                    .toList();
+            strata.add(new StratumReport(stratum.key(), stratum.label(),
+                    toMetrics(RetrievalEvaluator.summarize(slice, TOP_K))));
+        }
+        return strata;
     }
 
     private static Metrics toMetrics(RetrievalEvaluator.EvalReport report) {

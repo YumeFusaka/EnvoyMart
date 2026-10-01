@@ -89,6 +89,44 @@ class RetrievalEvalRunnerTest {
         assertThat(run.corpus().chunkSize()).isEqualTo(EvalFixtures.CHUNK_SIZE);
     }
 
+    /**
+     * 扩写对照栏与 CI 门禁必须是同一件事。
+     * <p>
+     * 报告页上写着"页面上的数字与 CI 逐位一致"，扩写栏既然上了页面，这条承诺就同样适用。
+     * 这里现场按 CI 门禁的构造重算一遍（关键词路 + 预录扩写），与运行器给出的数字比对——
+     * 两边哪天分了叉（比如运行器改了融合参数而门禁没跟上），这条会红。
+     */
+    @Test
+    void 扩写对照栏与CI门禁算出同一组数字() {
+        RetrievalEvalRunner.EvalRun run = runner.run(RetrievalEvalRunner.TRIGGER_MANUAL);
+
+        assertThat(run.expansion()).isNotNull();
+        assertThat(run.expansion().capturedAt())
+                .as("夹具的采集时间要能一路传到页面上——没有它，这栏数字会被读成「现在的表现」")
+                .isEqualTo(RecordedQueryExpander.CAPTURED_AT)
+                .startsWith("20");
+        assertThat(run.expansion().model()).isEqualTo(RecordedQueryExpander.MODEL);
+        assertThat(run.expansion().recordedQueries()).isEqualTo(RecordedQueryExpander.recordedCount());
+
+        Retriever expanded = new MultiQueryRetriever(new HybridRetriever(
+                new InMemoryVectorStore(new SimpleEmbeddingService()), EvalFixtures.DOCS),
+                new RecordedQueryExpander());
+        RetrievalEvaluator evaluator = new RetrievalEvaluator();
+        RetrievalEvaluator.EvalReport direct =
+                evaluator.evaluate(expanded, EvalFixtures.allCases(), 3);
+        assertThat(run.expansion().overallAt3().hitRate()).isEqualTo(direct.hitRate());
+
+        assertThat(run.expansion().strata()).hasSize(3);
+        for (RetrievalEvalRunner.StratumReport stratum : run.expansion().strata()) {
+            assertThat(stratum.metrics().caseCount()).isEqualTo(40);
+        }
+
+        // 扩写栏的存在理由是「能看出增益」，所以增益本身要成立——
+        // 一栏 0.633 → 0.633 的对照挂在页面上，比不挂更糟
+        assertThat(run.expansion().overallAt3().hitRate())
+                .isGreaterThan(run.overallAt3().hitRate());
+    }
+
     @Test
     void 字面档应显著高于难例档_三档梯度是夹具的设计而不是偶然() {
         RetrievalEvalRunner.EvalRun run = runner.run(RetrievalEvalRunner.TRIGGER_MANUAL);

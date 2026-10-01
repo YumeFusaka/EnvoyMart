@@ -64,11 +64,18 @@ class RetrievalComparisonTest {
         DashScopeReranker reranker = new DashScopeReranker(
                 apiKey, RERANK_MODEL, null, java.time.Duration.ofSeconds(30));
         Retriever hybrid = new HybridRetriever(vectorStore, EvalFixtures.DOCS);
-        Retriever hybridWithRerank = new HybridRetriever(
+        HybridRetriever hybridWithRerank = new HybridRetriever(
                 vectorStore, EvalFixtures.DOCS, reranker);
         new SimpleRAGEngine(vectorStore, hybrid,
                 EvalFixtures.CHUNK_SIZE, EvalFixtures.CHUNK_OVERLAP)
                 .ingestBatch(EvalFixtures.DOCS);
+
+        // 扩写配置用**预录夹具**而非现场调模型：现场调的话，120 条查询要 3.5 分钟，
+        // 而且每次都得到不同的扩写——那样这一行数字就不可复现，"提升了多少"也就无从对照。
+        // 预录夹具是真实模型输出，只是冻结在某一时刻（采集时间与模型打在下方的表头里）。
+        RecordedQueryExpander expander = new RecordedQueryExpander();
+        String capturedAt = RecordedQueryExpander.CAPTURED_AT;
+        String expandModel = RecordedQueryExpander.MODEL;
 
         System.out.println();
         System.out.println("========== 检索效果对照（语料 " + EvalFixtures.DOCS.size()
@@ -79,6 +86,13 @@ class RetrievalComparisonTest {
         report("仅关键词(BM25)", bm25Only);
         report("混合(BM25+向量)", hybrid);
         report("混合+重排", hybridWithRerank);
+        // 归因配置：只喂角度、不喂假想答案。生产行为是两者都喂，
+        // 但"提升了多少"与"是哪一半提升的"是两个问题，后者当场答不出来最容易被追问到崩
+        report("混合+重排+角度改写", new MultiQueryRetriever(hybridWithRerank,
+                new AnglesOnlyExpander(expander)));
+        report("混合+重排+扩写(生产配置)", new MultiQueryRetriever(hybridWithRerank, expander));
+        System.out.printf("扩写夹具：%d 条查询，采集于 %s（模型 %s）%n",
+                RecordedQueryExpander.recordedCount(), capturedAt, expandModel);
         System.out.println("======================================================================");
 
         // 重排降级统计。
@@ -115,5 +129,13 @@ class RetrievalComparisonTest {
         System.out.printf("  %s  cases=%d  HitRate@%d=%.3f  MRR=%.3f  NDCG=%.3f%n",
                 group, report.caseCount(), report.topK(),
                 report.hitRate(), report.mrr(), report.ndcg());
+    }
+
+    /** 归因用：把预录扩写里的假想答案丢掉，只留角度改写 */
+    private record AnglesOnlyExpander(QueryExpander delegate) implements QueryExpander {
+        @Override
+        public QueryExpansions expand(String query) {
+            return new QueryExpansions(null, delegate.expand(query).angles());
+        }
     }
 }

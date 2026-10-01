@@ -109,6 +109,13 @@ envoymart:
     # 而不是为了兜某个环境——图谱连不上时这一路本来就会自己降级成空。
     graph-recall:
       enabled: ${RAG_GRAPH_RECALL:true}
+    # 【公开项】查询扩写（检索前的 HyDE + 多角度改写）。
+    # 开着时，每次检索前多一次模型调用，把原句扩成「一段假想的资料原文」与
+    # 「两条换个说法的查询」，分别喂给语义路与词法路；关掉则检索按原句进行，
+    # 行为与历史完全一致。留这个开关是为了能当场演示「同一句话，开与关各检一次」。
+    # 模型不可用时（无 Key 的 Mock 路径）自动短路，不产生调用也不产生延迟。
+    query-expansion:
+      enabled: ${RAG_QUERY_EXPANSION:true}
 
 management:
   endpoints:

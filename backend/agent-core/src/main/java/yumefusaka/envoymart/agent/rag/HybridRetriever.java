@@ -35,14 +35,14 @@ public class HybridRetriever implements Retriever {
 
     private final VectorStore vectorStore;
     /**
-     * 参与 BM25 的检索单元；文档级入口会把每篇文档包成一个切片。
+     * 参与 BM25 的检索单元与它们的统计量；文档级入口会把每篇文档包成一个切片。
      * <p>
      * {@code volatile} 且非 final：语料来自知识库，可以在运行时被整份替换
      * （见 {@link #rebuild}）。读它的是每个检索请求，写它的是一次管理动作，
      * 不保证可见性的话会有一部分线程继续拿着旧语料打分——表现为「重建了，
      * 但一部分查询搜到的还是旧内容」，且不可复现。
      */
-    private volatile List<DocumentChunk> localChunks;
+    private volatile Bm25Index bm25Index;
     private final Reranker reranker;
     /** true：按 docId 归一（防抬权）；false：按 chunkId 归一（切片级召回）。 */
     private final boolean groupByDocId;
@@ -73,7 +73,7 @@ public class HybridRetriever implements Retriever {
     private HybridRetriever(VectorStore vectorStore, List<DocumentChunk> chunks,
                             Reranker reranker, boolean groupByDocId, Retriever graphRetriever) {
         this.vectorStore = vectorStore;
-        this.localChunks = chunks;
+        this.bm25Index = Bm25Index.of(chunks);
         this.reranker = reranker;
         this.groupByDocId = groupByDocId;
         this.graphRetriever = graphRetriever;
@@ -119,8 +119,11 @@ public class HybridRetriever implements Retriever {
      * 一份持久状态的理由。
      */
     public void rebuild(List<DocumentChunk> chunks) {
-        this.localChunks = List.copyOf(chunks);
-        log.info("[Retriever] BM25 语料已重建，切片 {} 片", this.localChunks.size());
+        // 先算统计再发布：读线程一旦看见新索引，它内部的一致性就已经成立。
+        // 反过来（先换语料再算统计）会有一个窗口，查询拿着新语料、对着旧统计打分
+        Bm25Index rebuilt = Bm25Index.of(chunks);
+        this.bm25Index = rebuilt;
+        log.info("[Retriever] BM25 语料已重建，切片 {} 片", rebuilt.size());
     }
 
     /**
@@ -150,21 +153,55 @@ public class HybridRetriever implements Retriever {
 
     @Override
     public List<DocumentChunk> retrieve(String query, int topK) {
-        // 1. 向量检索（由 VectorStore 负责向量化）
-        List<DocumentChunk> vectorResults = vectorStore.search(query, topK * 2);
+        return retrieve(query, QueryExpansions.none(), topK);
+    }
 
-        // 2. BM25 关键词检索
-        List<DocumentChunk> keywordResults = bm25Search(query);
+    /**
+     * 带扩写的检索 —— 把一批变体和原句一起放进同一个候选池。
+     * <p>
+     * <b>每一路只吃它擅长的那种变体，这是这个方法存在的全部理由：</b>
+     * 假想答案（HyDE）补的是<b>词汇鸿沟</b>，只有语义路认它；角度改写补的是<b>表述差异</b>，
+     * 只有词法路认它。把两者无差别地喂给所有路，是拿一段编出来的长文本去稀释 BM25 的
+     * 词元（idf 会把那些词也算成信号），同时拿一句太短的改写去占向量路的位置。
+     * <p>
+     * <b>重排只做一次，且用原句。</b>每条路各自重排再合并，等于让每个变体各自做一次
+     * 「不重要的候选就丢掉」的决策——而那个决策恰恰要靠融合之后才有依据。重排的查询
+     * 也必须是用户真正问的那句：变体是检索的手段，不是目的。
+     * <p>
+     * {@code expansions} 为空时，本方法与改造前的行为<b>逐位相同</b>：路数、顺序、
+     * 融合 key、重排输入一个都没变。
+     */
+    public List<DocumentChunk> retrieve(String query, QueryExpansions expansions, int topK) {
+        QueryExpansions ex = expansions == null ? QueryExpansions.none() : expansions;
 
-        // 3. 图谱依据（没接图谱时为空的第三路）
-        List<DocumentChunk> graphResults = graphRetrieve(query, topK);
+        // 各路结果按「向量 → 关键词 → 图谱」的顺序入池。这个顺序有意义：
+        // mergeOnce 的 byKey.putIfAbsent 是先到者胜，同一片被多路召回时留的是先到的那一版
+        List<List<DocumentChunk>> ranked = new ArrayList<>(4 + ex.angles().size());
+        // ① 语义路：原句 + 假想答案
+        ranked.add(vectorStore.search(query, topK * 2));
+        if (hasText(ex.hypothetical())) {
+            ranked.add(vectorStore.search(ex.hypothetical(), topK * 2));
+        }
+        // ② 词法路：原句 + 各角度改写
+        ranked.add(bm25Search(query));
+        for (String angle : ex.angles()) {
+            if (hasText(angle)) {
+                ranked.add(bm25Search(angle));
+            }
+        }
+        // ③ 图谱路：只认原句。它靠实体编号与实体名定位（SPU5 与华法林），
+        //    而变体恰恰是把原句的说法换掉——改写过的句子在这条路上只会削弱它
+        ranked.add(graphRetrieve(query, topK));
 
-        // 4. RRF 融合后多留候选，交给重排精排
-        List<DocumentChunk> fused = rrfMerge(vectorResults, keywordResults, graphResults,
-                Math.max(topK * RERANK_CANDIDATES, topK));
+        // 全部候选汇入同一个 RRF，多留一些给重排腾挪
+        List<DocumentChunk> fused = rrfMerge(ranked, Math.max(topK * RERANK_CANDIDATES, topK));
 
-        // 5. 重排（未配置时是直接截断）
+        // 重排（未配置时是直接截断）
         return reranker.rerank(query, fused, topK);
+    }
+
+    private static boolean hasText(String s) {
+        return s != null && !s.isBlank();
     }
 
     /**
@@ -197,66 +234,98 @@ public class HybridRetriever implements Retriever {
      * 长度按词元数计，因此中文（bigram）与英文（按词）可以混用同一套归一化。
      */
     private List<DocumentChunk> bm25Search(String query) {
-        List<String> queryTerms = TextTokenizer.tokenize(query);
-        if (queryTerms.isEmpty() || localChunks.isEmpty()) {
-            return List.of();
-        }
-
-        // 预计算每个检索单元的词频与词元长度
-        int n = localChunks.size();
-        List<Map<String, Integer>> unitTermFreqs = new ArrayList<>(n);
-        double[] unitLens = new double[n];
-        double totalLen = 0;
-        for (int i = 0; i < n; i++) {
-            Map<String, Integer> termFreq = new HashMap<>();
-            for (String token : TextTokenizer.tokenize(indexTextOf(localChunks.get(i)))) {
-                termFreq.merge(token, 1, Integer::sum);
-            }
-            unitTermFreqs.add(termFreq);
-            unitLens[i] = termFreq.values().stream().mapToInt(Integer::intValue).sum();
-            totalLen += unitLens[i];
-        }
-        double avgLen = totalLen > 0 ? totalLen / n : 1.0;
-
-        // 文档频率：包含该词元的检索单元数
-        Map<String, Integer> unitFreq = new HashMap<>();
-        for (String term : queryTerms) {
-            int df = 0;
-            for (Map<String, Integer> termFreq : unitTermFreqs) {
-                if (termFreq.containsKey(term)) {
-                    df++;
-                }
-            }
-            unitFreq.put(term, df);
-        }
-
-        List<ScoredChunk> scored = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            Map<String, Integer> termFreq = unitTermFreqs.get(i);
-            double score = 0;
-            for (String term : queryTerms) {
-                int tf = termFreq.getOrDefault(term, 0);
-                if (tf == 0) {
-                    continue;
-                }
-                int df = unitFreq.get(term);
-                double idf = Math.log((n - df + 0.5) / (df + 0.5) + 1.0);
-                score += idf * (tf * (K1 + 1)) / (tf + K1 * (1 - B + B * unitLens[i] / avgLen));
-            }
-            if (score > 0) {
-                scored.add(new ScoredChunk(localChunks.get(i), score));
-            }
-        }
-
-        scored.sort((a, b) -> Double.compare(b.score(), a.score()));
-        return scored.stream().map(ScoredChunk::chunk).toList();
+        return bm25Index.search(query);
     }
 
     /** BM25 索引文本：优先用显式指定的（可含标题与标签），否则退化为切片内容。 */
-    private String indexTextOf(DocumentChunk chunk) {
+    private static String indexTextOf(DocumentChunk chunk) {
         return chunk.getIndexText() != null && !chunk.getIndexText().isBlank()
                 ? chunk.getIndexText()
                 : chunk.getContent();
+    }
+
+    /**
+     * BM25 的语料统计 —— <b>只在语料变化时算一次</b>，与查询无关。
+     * <p>
+     * 原先每次检索都把全语料重新分词一遍（为了算词频、词元长度与文档频率）。
+     * 单路检索时这笔开销藏在总耗时里看不出来；扩写把「一次检索跑几遍 BM25」
+     * 从 1 变成 1+k，它就跟着 ×k。缓存它不是为了快一点，是因为多路检索的前提
+     * 就是「同一份语料、多条查询」——不缓存等于让每条查询都付一遍全语料的分词。
+     * <p>
+     * 它和语料<b>同生共死</b>：{@link #rebuild} 一次换掉整个对象，不提供局部更新。
+     * 分两步（先换语料再算统计）会开一个窗口，让查询拿着新语料对着旧统计打分。
+     * <p>
+     * {@code lens} 用数组而非 List：打分时按下标随机访问，每次查询都走一遍。
+     * （也正因如此它不适合做相等性比较——但没人比它。）
+     */
+    private record Bm25Index(List<DocumentChunk> chunks,
+                             List<Map<String, Integer>> termFreqs,
+                             double[] lens,
+                             double avgLen) {
+
+        static Bm25Index of(List<DocumentChunk> chunks) {
+            List<DocumentChunk> units = List.copyOf(chunks);
+            int n = units.size();
+            List<Map<String, Integer>> termFreqs = new ArrayList<>(n);
+            double[] lens = new double[n];
+            double totalLen = 0;
+            for (int i = 0; i < n; i++) {
+                Map<String, Integer> termFreq = new HashMap<>();
+                for (String token : TextTokenizer.tokenize(indexTextOf(units.get(i)))) {
+                    termFreq.merge(token, 1, Integer::sum);
+                }
+                termFreqs.add(termFreq);
+                lens[i] = termFreq.values().stream().mapToInt(Integer::intValue).sum();
+                totalLen += lens[i];
+            }
+            return new Bm25Index(units, termFreqs, lens, totalLen > 0 ? totalLen / n : 1.0);
+        }
+
+        int size() {
+            return chunks.size();
+        }
+
+        /** 按 BM25 得分降序返回命中（得分为 0 的不进榜，与改造前一致）。 */
+        List<DocumentChunk> search(String query) {
+            List<String> queryTerms = TextTokenizer.tokenize(query);
+            int n = chunks.size();
+            if (queryTerms.isEmpty() || n == 0) {
+                return List.of();
+            }
+
+            // 文档频率：包含该词元的检索单元数
+            Map<String, Integer> unitFreq = new HashMap<>();
+            for (String term : queryTerms) {
+                int df = 0;
+                for (Map<String, Integer> termFreq : termFreqs) {
+                    if (termFreq.containsKey(term)) {
+                        df++;
+                    }
+                }
+                unitFreq.put(term, df);
+            }
+
+            List<ScoredChunk> scored = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                Map<String, Integer> termFreq = termFreqs.get(i);
+                double score = 0;
+                for (String term : queryTerms) {
+                    int tf = termFreq.getOrDefault(term, 0);
+                    if (tf == 0) {
+                        continue;
+                    }
+                    int df = unitFreq.get(term);
+                    double idf = Math.log((n - df + 0.5) / (df + 0.5) + 1.0);
+                    score += idf * (tf * (K1 + 1)) / (tf + K1 * (1 - B + B * lens[i] / avgLen));
+                }
+                if (score > 0) {
+                    scored.add(new ScoredChunk(chunks.get(i), score));
+                }
+            }
+
+            scored.sort((a, b) -> Double.compare(b.score(), a.score()));
+            return scored.stream().map(ScoredChunk::chunk).toList();
+        }
     }
 
     /**
@@ -270,14 +339,13 @@ public class HybridRetriever implements Retriever {
      * 比只有一路认为它相关更可信。如果适配器给图谱切片另起一套 id，
      * 这一路就变成了「往候选池里塞重复项」，融合的语义就没了。
      */
-    private List<DocumentChunk> rrfMerge(List<DocumentChunk> vector, List<DocumentChunk> keyword,
-                                         List<DocumentChunk> graph, int topK) {
+    private List<DocumentChunk> rrfMerge(List<List<DocumentChunk>> ranked, int topK) {
         Map<String, Double> scores = new HashMap<>();
         Map<String, DocumentChunk> byKey = new LinkedHashMap<>();
 
-        mergeOnce(scores, byKey, vector);
-        mergeOnce(scores, byKey, keyword);
-        mergeOnce(scores, byKey, graph);
+        for (List<DocumentChunk> list : ranked) {
+            mergeOnce(scores, byKey, list);
+        }
 
         return scores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
