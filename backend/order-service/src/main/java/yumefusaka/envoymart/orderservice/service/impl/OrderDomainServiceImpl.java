@@ -35,6 +35,7 @@ import yumefusaka.envoymart.contract.LogisticsStepResponse;
 import yumefusaka.envoymart.contract.OrderItemResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.orderservice.model.AfterSaleStatus;
+import yumefusaka.envoymart.orderservice.model.DeliveryStatus;
 import yumefusaka.envoymart.orderservice.model.OrderStatus;
 import yumefusaka.envoymart.contract.RedeemItem;
 import yumefusaka.envoymart.contract.RedeemRequest;
@@ -439,6 +440,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 .map(trace -> LogisticsStepResponse.builder()
                         .status(trace.getStatus())
                         .detail(trace.getDescription())
+                        .location(trace.getLocation())
                         .time(trace.getHappenAt())
                         .build())
                 .toList();
@@ -732,11 +734,11 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         delivery.setCarrierCode(carrierCode);
         delivery.setCarrierName(carrierName);
         delivery.setTrackingNo(trackingNo);
-        delivery.setStatus("PICKED_UP");
+        delivery.setStatus(DeliveryStatus.PICKED_UP.name());
         delivery.setShippedAt(now);
         deliveryMapper.insert(delivery);
 
-        writeTrace(delivery.getId(), "PICKED_UP", "包裹已由承运商揽收", null, now);
+        writeTrace(delivery.getId(), DeliveryStatus.PICKED_UP, null, null, now);
 
         writeStatusLog(order.getId(), current, OrderStatus.SHIPPED, "ADMIN", operatorId,
                 "商家发货，运单号 " + trackingNo);
@@ -775,13 +777,13 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         // 同一订单只该有一条履约单，但万一日后支持拆单，这里也不会误伤别的包裹
         deliveryMapper.update(null, new LambdaUpdateWrapper<OrderDeliveryEntity>()
                 .eq(OrderDeliveryEntity::getOrderId, orderId)
-                .set(OrderDeliveryEntity::getStatus, "SIGNED")
+                .set(OrderDeliveryEntity::getStatus, DeliveryStatus.SIGNED.name())
                 .set(OrderDeliveryEntity::getSignedAt, now));
 
         OrderDeliveryEntity delivery = deliveryMapper.selectOne(
                 new LambdaQueryWrapper<OrderDeliveryEntity>().eq(OrderDeliveryEntity::getOrderId, orderId));
         if (delivery != null) {
-            writeTrace(delivery.getId(), "SIGNED", "包裹已签收", null, now);
+            writeTrace(delivery.getId(), DeliveryStatus.SIGNED, null, null, now);
         }
 
         writeStatusLog(order.getId(), current, OrderStatus.RECEIVED, "USER", userId, "用户确认收货");
@@ -809,15 +811,59 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         orderStatusLogMapper.insert(log);
     }
 
-    private void writeTrace(Long deliveryId, String status, String description,
+    /**
+     * 追加一条物流轨迹。
+     * <p>
+     * <b>说明留空就按状态取默认那句</b>：发货与签收两处原先各自硬编码了一句文案，
+     * 与状态的对应关系散在两个方法里；现在那句话归 {@link DeliveryStatus} 管，
+     * 补录接口与自动写入共用同一份，加一个状态不会再漏一处。
+     */
+    private void writeTrace(Long deliveryId, DeliveryStatus status, String description,
                             String location, LocalDateTime happenAt) {
         OrderDeliveryTraceEntity trace = new OrderDeliveryTraceEntity();
         trace.setDeliveryId(deliveryId);
         trace.setHappenAt(happenAt);
-        trace.setStatus(status);
-        trace.setDescription(description);
-        trace.setLocation(location);
+        trace.setStatus(status.name());
+        trace.setDescription(description == null || description.isBlank()
+                ? status.defaultDescription()
+                : description.trim());
+        trace.setLocation(location == null || location.isBlank() ? null : location.trim());
         deliveryTraceMapper.insert(trace);
+    }
+
+    @Override
+    @Transactional
+    public void addDeliveryTrace(Long orderId, DeliveryStatus status, String description,
+                                 String location, LocalDateTime happenAt, String operatorId) {
+        OrderEntity order = orderId == null ? null : orderMapper.selectById(orderId);
+        if (order == null) {
+            throw new IllegalArgumentException("订单不存在");
+        }
+
+        OrderDeliveryEntity delivery = deliveryMapper.selectOne(
+                new LambdaQueryWrapper<OrderDeliveryEntity>()
+                        .eq(OrderDeliveryEntity::getOrderId, orderId));
+        if (delivery == null) {
+            // 409 而不是 400：请求本身没写错，只是这笔订单还没有履约单可挂。
+            // 先发货再补录是唯一的正确顺序，说清楚比让它落进一条孤儿轨迹强
+            throw new IllegalStateException("订单 " + order.getOrderNo() + " 还没有发货，没有轨迹可补录");
+        }
+
+        LocalDateTime at = happenAt == null ? Times.now() : happenAt;
+        writeTrace(delivery.getId(), status, description, location, at);
+
+        // 轨迹表没有操作人列，补录这件事仍要留痕：写进订单状态流水。
+        // 不写就等于轨迹可以被任何人悄悄改写，而纠纷里最需要回答的正是"这条谁录的"。
+        //
+        // from 与 to 都填当前状态：补录**不改订单状态**，流水记的是"谁在什么时候动了这个订单"。
+        // 填 from=null 表达不了这个意思 —— 那是"初始态"的写法（下单那一条就是 null→CREATED），
+        // 两条流水会在管理台上长得一样，而它们是完全不同的两件事
+        OrderStatus current = OrderStatus.parse(order.getStatus());
+        writeStatusLog(order.getId(), current, current, "ADMIN", operatorId,
+                "补录物流节点：" + status.name() + " / " + at);
+
+        log.info("[Order] 补录物流节点 orderNo={} status={} location={} at={} operator={}",
+                order.getOrderNo(), status.name(), location, at, operatorId);
     }
 
     @Override

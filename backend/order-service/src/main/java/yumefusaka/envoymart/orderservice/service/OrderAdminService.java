@@ -1,10 +1,12 @@
 package yumefusaka.envoymart.orderservice.service;
 
 import yumefusaka.envoymart.common.result.PageResult;
+import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderDetail;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderQuery;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderSummary;
 import yumefusaka.envoymart.orderservice.model.admin.AdminShipRequest;
+import yumefusaka.envoymart.orderservice.model.admin.AdminTraceRequest;
 
 /**
  * 订单域的管理侧读与写。
@@ -39,4 +41,18 @@ public interface OrderAdminService {
      * @return 更新后的那一行，带归一化过的备注（空白已折成 null）
      */
     AdminOrderSummary remark(Long orderId, String remark);
+
+    /**
+     * 补录一条物流节点。
+     * <p>
+     * 本项目没有对接承运商推送，轨迹只有发货与签收两条，"在路上"那段最需要被看见的
+     * 过程在用户那边是一片空白。这个方法是把它补上的入口。
+     * <p>
+     * <b>只追加，不修改也不删除</b>：轨迹是事实记录，纠正一条录错的节点应当是再录一条
+     * （"此前一条系误录"），而不是把历史抹掉——能被悄悄改写的轨迹，在纠纷里证明不了任何事。
+     *
+     * @return 补录之后的完整轨迹。返回整条而不是刚写入的那一步：客服要能立刻看到
+     *         自己这一步落在时间轴的哪个位置，时间给错了当场就发现
+     */
+    LogisticsResponse addTrace(Long orderId, AdminTraceRequest request, String operatorId);
 }

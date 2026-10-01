@@ -13,7 +13,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
-import { getOrderDetail, listOrders, remarkOrder, shipOrder } from '@/api/admin/order'
+import { addOrderTrace, getOrderDetail, listOrders, remarkOrder, shipOrder } from '@/api/admin/order'
 import { formatPrice } from '@/api/product'
 import { useAdminList } from '@/composables/useAdminList'
 import { formatDate, formatDateTime } from '@/utils/format'
@@ -23,6 +23,7 @@ import type {
   AdminOrderQuery,
   AdminOrderSummary,
   AdminShipRequest,
+  AdminTraceRequest,
 } from '@/types/admin'
 
 const route = useRoute()
@@ -173,6 +174,66 @@ async function submitShip() {
     shipDialog.saving = false
   }
 }
+
+// ==================== 补录物流节点 ====================
+
+const traceDialog = reactive({ visible: false, saving: false })
+const traceForm = ref<AdminTraceRequest>(emptyTrace())
+
+function emptyTrace(): AdminTraceRequest {
+  return { status: 'IN_TRANSIT', description: '', location: '', happenAt: null }
+}
+
+/**
+ * 物流节点字典。
+ *
+ * 与承运商那份一样写在前端：取值非法时后端会 400 并把合法取值一并回过来，
+ * 而"加一个节点"是物流侧的事，不该为它发一次前端版本。这里的 label 只影响
+ * 下拉框里显示什么，不影响落库的编码。
+ */
+const deliveryStatuses = [
+  { code: 'CREATED', label: '电子面单已生成' },
+  { code: 'PICKED_UP', label: '已揽收' },
+  { code: 'IN_TRANSIT', label: '运输中' },
+  { code: 'DELIVERING', label: '派送中' },
+  { code: 'SIGNED', label: '已签收' },
+]
+
+function openTrace() {
+  traceForm.value = emptyTrace()
+  traceDialog.visible = true
+}
+
+async function submitTrace() {
+  if (activeOrderId.value === null) {
+    return
+  }
+  const form = traceForm.value
+  traceDialog.saving = true
+  try {
+    const updated = await addOrderTrace(activeOrderId.value, {
+      status: form.status,
+      // 空串不发给后端：那边空串会走默认文案，但先清掉能少一次无意义的传输
+      description: form.description?.trim() || undefined,
+      location: form.location?.trim() || undefined,
+      happenAt: form.happenAt ?? null,
+    })
+    // 用接口回来的整条轨迹就地更新，不重拉详情：补录的价值之一就是
+    // "看看这一步落在时间轴的哪个位置"，多一次往返就多一次看不到的机会
+    if (detail.value) {
+      detail.value.delivery = updated
+    }
+    ElMessage.success('物流节点已补录')
+    traceDialog.visible = false
+  } catch {
+    // 取值非法等拒绝原因由后端给出（含全部合法取值），拦截器已展示
+  } finally {
+    traceDialog.saving = false
+  }
+}
+
+/** 轨迹是给人读时间顺序的，列表里倒序看更顺 —— 最新的一条总在最上面 */
+const traceSteps = computed(() => [...(detail.value?.delivery?.steps ?? [])].reverse())
 
 // ==================== 备注 ====================
 
@@ -507,7 +568,12 @@ async function copy(value: string) {
         </div>
 
         <template v-if="detail.delivery">
-          <h3 class="admin-section__title">物流轨迹</h3>
+          <h3 class="admin-section__title">
+            物流轨迹
+            <el-button class="admin-section__action" link type="primary" @click="openTrace"
+              >补录节点</el-button
+            >
+          </h3>
           <div class="admin-kv">
             <span class="admin-kv__key">承运商</span>
             <span class="admin-kv__value">{{ detail.delivery.carrier }}</span>
@@ -521,17 +587,21 @@ async function copy(value: string) {
               >
             </span>
           </div>
-          <div class="admin-timeline">
-            <div
-              v-for="(step, index) in detail.delivery.steps"
-              :key="index"
-              class="admin-timeline__item"
-            >
+          <p v-if="traceSteps.length === 0" class="admin-empty">
+            还没有轨迹节点。发货会自动写一条「已揽收」。
+          </p>
+          <div v-else class="admin-timeline">
+            <div v-for="(step, index) in traceSteps" :key="`${step.time}-${index}`" class="admin-timeline__item">
               <div class="admin-timeline__head">
-                <span>{{ step.status }}</span>
+                <span :class="{ 'admin-cell--strong': index === 0 }">{{ step.detail }}</span>
                 <span class="admin-timeline__time">{{ formatDateTime(step.time) }}</span>
               </div>
-              <p class="admin-timeline__body">{{ step.detail }}</p>
+              <!-- 编码与地点各占一行：前者是给机器认的取值（补录时要照着填），
+                   后者是"货到哪了"的答案，客服核对时两样都要看 -->
+              <p class="admin-timeline__body">
+                <el-tag size="small" effect="plain">{{ step.status }}</el-tag>
+                <template v-if="step.location"> · {{ step.location }}</template>
+              </p>
             </div>
           </div>
         </template>
@@ -554,6 +624,54 @@ async function copy(value: string) {
         </div>
       </div>
     </el-drawer>
+
+    <el-dialog v-model="traceDialog.visible" title="补录物流节点" width="460px">
+      <el-form label-width="90px">
+        <el-form-item label="节点" required>
+          <el-select v-model="traceForm.status" style="width: 100%">
+            <el-option
+              v-for="s in deliveryStatuses"
+              :key="s.code"
+              :label="`${s.label}（${s.code}）`"
+              :value="s.code"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="所在地">
+          <el-input v-model="traceForm.location" placeholder="如 杭州转运中心" />
+        </el-form-item>
+        <el-form-item label="说明">
+          <el-input
+            v-model="traceForm.description"
+            type="textarea"
+            :rows="2"
+            placeholder="留空按节点生成，如「包裹已发往下一站」"
+          />
+        </el-form-item>
+        <el-form-item label="发生时间">
+          <el-date-picker
+            v-model="traceForm.happenAt"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ss"
+            placeholder="留空即现在"
+            style="width: 100%"
+          />
+        </el-form-item>
+      </el-form>
+      <p class="admin-dialog__hint">
+        补录是事后录入，时间要按包裹实际经过那一站的时刻填，而不是现在 ——
+        按录入时间落库会让轨迹的顺序与事实不符，而轨迹的意义就是那个顺序。
+        录错了再补一条更正，已录的节点不会被改写。
+      </p>
+      <template #footer>
+        <div class="admin-dialog__foot">
+          <el-button @click="traceDialog.visible = false">取消</el-button>
+          <el-button type="primary" :loading="traceDialog.saving" @click="submitTrace"
+            >确认补录</el-button
+          >
+        </div>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="shipDialog.visible" title="发货" width="460px">
       <el-form label-width="90px">

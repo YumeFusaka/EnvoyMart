@@ -13,11 +13,13 @@ import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.common.web.RequireAdmin;
+import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderDetail;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderQuery;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderRemarkRequest;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderSummary;
 import yumefusaka.envoymart.orderservice.model.admin.AdminShipRequest;
+import yumefusaka.envoymart.orderservice.model.admin.AdminTraceRequest;
 import yumefusaka.envoymart.orderservice.service.OrderAdminService;
 
 /**
@@ -70,6 +72,25 @@ public class OrderAdminController {
             @Valid @RequestBody AdminShipRequest request,
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String operatorId) {
         return Result.success(adminService.ship(id, request, operatorId));
+    }
+
+    /**
+     * 补录一条物流节点。
+     * <p>
+     * 用 {@code POST} 到 {@code /traces}（复数、追加语义）而不是 {@code PUT}：
+     * 轨迹是**可增长的时间序列**，多录一条就多一行，重复提交同一个节点会产生两条。
+     * 这与 {@link #remark} 正好相反——那边改的是订单上的一个字段，重复提交同一个值
+     * 结果完全一样，所以是 {@code PUT}。
+     * <p>
+     * 返回整条轨迹：客服补录完要能立刻看到这一步落在时间轴的哪个位置，
+     * 时间给错了（比如少打一位年份）当场就发现，而不是等用户来问。
+     */
+    @PostMapping("/orders/{id}/traces")
+    public Result<LogisticsResponse> addTrace(
+            @PathVariable("id") Long id,
+            @Valid @RequestBody AdminTraceRequest request,
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String operatorId) {
+        return Result.success(adminService.addTrace(id, request, operatorId));
     }
 
     /**

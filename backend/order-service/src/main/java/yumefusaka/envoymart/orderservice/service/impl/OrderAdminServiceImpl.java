@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.result.PageResult;
+import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.orderservice.entity.OrderDeliveryEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderEntity;
 import yumefusaka.envoymart.orderservice.entity.OrderItemEntity;
@@ -15,11 +16,13 @@ import yumefusaka.envoymart.orderservice.mapper.OrderDeliveryMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderItemMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderMapper;
 import yumefusaka.envoymart.orderservice.mapper.OrderStatusLogMapper;
+import yumefusaka.envoymart.orderservice.model.DeliveryStatus;
 import yumefusaka.envoymart.orderservice.model.OrderStatus;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderDetail;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderQuery;
 import yumefusaka.envoymart.orderservice.model.admin.AdminOrderSummary;
 import yumefusaka.envoymart.orderservice.model.admin.AdminShipRequest;
+import yumefusaka.envoymart.orderservice.model.admin.AdminTraceRequest;
 import yumefusaka.envoymart.orderservice.model.admin.StatusLogView;
 import yumefusaka.envoymart.orderservice.service.OrderAdminService;
 import yumefusaka.envoymart.orderservice.service.OrderDomainService;
@@ -122,6 +125,17 @@ public class OrderAdminServiceImpl implements OrderAdminService {
         orderDomainService.shipOrder(orderId, request.getCarrierCode(), request.getCarrierName(),
                 request.getTrackingNo(), operatorId);
         return summaryOf(orderId);
+    }
+
+    @Override
+    @Transactional
+    public LogisticsResponse addTrace(Long orderId, AdminTraceRequest request, String operatorId) {
+        // 状态在这里就译成枚举，非法取值当场 400 —— 不能让一个拼错的字符串
+        // 一路走到落库，那条轨迹之后会在用户那边显示成一个谁也看不懂的英文词
+        DeliveryStatus status = DeliveryStatus.parse(request.getStatus());
+        orderDomainService.addDeliveryTrace(orderId, status, request.getDescription(),
+                request.getLocation(), request.getHappenAt(), operatorId);
+        return orderDomainService.logisticsOf(orderId);
     }
 
     @Override

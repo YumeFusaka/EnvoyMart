@@ -230,6 +230,20 @@ export interface AdminShipRequest {
   trackingNo: string
 }
 
+/**
+ * 补录一条物流节点。
+ *
+ * `description` 留空由服务端按状态给默认文案 —— 让客服只需选一个状态；
+ * 一句话都编不出来的节点，多半也不该录进去。
+ */
+export interface AdminTraceRequest {
+  status: string
+  description?: string
+  location?: string
+  /** ISO-8601。不填就是"现在"，补录历史节点时才给 */
+  happenAt?: string | null
+}
+
 export interface AdminAfterSaleQuery {
   keyword?: string
   userId?: string

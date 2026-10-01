@@ -275,3 +275,12 @@
     margin-top: var(--ys-space-2);
   }
 }
+
+/* 标题行右端的操作入口（如物流轨迹的「补录节点」）。
+   标题本身仍是块级、其余标题不受影响：按钮是 inline-flex，跟着文字流走即可，
+   为它把 h3 改成 flex 会让所有标题的对齐方式一起变 */
+.admin-section__action {
+  margin-inline-start: var(--ys-space-3);
+  font-size: var(--ys-font-xs);
+  font-weight: 400;
+}

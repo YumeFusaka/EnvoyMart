@@ -283,6 +283,8 @@ export interface Payment {
 export interface LogisticsStep {
   status: string
   detail: string
+  /** 节点所在地，可空 —— 客服补录时手上常常只有承运商给的一句话 */
+  location?: string | null
   time: string
 }
 

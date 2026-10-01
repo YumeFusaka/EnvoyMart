@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { LocationInformation } from '@element-plus/icons-vue'
 import { cancelOrder, confirmReceipt, formatAddress, getLogistics, getOrder } from '@/api/order'
 import { formatPrice } from '@/api/product'
 import ErrorState from '@/components/ui/ErrorState.vue'
@@ -66,6 +67,32 @@ const payable = computed(
     order.value?.status === 'CREATED' &&
     (!order.value.expireAt || new Date(order.value.expireAt) > new Date()),
 )
+
+/**
+ * 物流轨迹**倒序**，最新一条在最上面。
+ *
+ * 后端按时间正序返回（那是"轨迹"这件事本来的样子，模型读它也按时间读），
+ * 但页面是给人看的：用户点进来问的是「我的包裹现在到哪了」，
+ * 正序意味着每次都要先划过三天前的"已揽收"才看得到今天那一条。
+ * 顺序是**展示**问题，所以在这一层翻，不动接口。
+ */
+const traceSteps = computed(() => [...(logistics.value?.steps ?? [])].reverse())
+
+/** 刷新物流：包裹在路上时用户会反复看这一块，不能逼他刷整页 */
+const refreshingTrace = ref(false)
+async function refreshTrace() {
+  refreshingTrace.value = true
+  try {
+    logistics.value = await getLogistics(orderId.value)
+    ElMessage.success('物流信息已更新')
+  } catch {
+    // 拉取失败保留原来那份轨迹：把它清空等于「刚才看过的信息凭空消失了」，
+    // 而用户只会以为是自己点错了
+    ElMessage.warning('物流信息暂时取不到，请稍后再试')
+  } finally {
+    refreshingTrace.value = false
+  }
+}
 
 /** 底部操作条提示：告诉用户「现在能做什么、为什么」 */
 const barHint = computed(() => {
@@ -207,22 +234,40 @@ onMounted(load)
         </el-timeline>
       </section>
 
-      <section v-if="logistics?.steps?.length" class="surface">
+      <section v-if="traceSteps.length" class="surface">
         <h2 class="section-title">
           物流轨迹
-          <span class="section-hint">承运商：{{ logistics.carrier }} · 运单号 {{ logistics.trackingNo }}</span>
-        </h2>
-        <el-timeline>
-          <el-timeline-item
-            v-for="(step, index) in logistics.steps"
-            :key="index"
-            :timestamp="step.time?.replace('T', ' ')"
-            placement="top"
+          <span class="section-hint">承运商：{{ logistics?.carrier }} · 运单号 {{ logistics?.trackingNo }}</span>
+          <el-button
+            class="trace-refresh"
+            link
+            type="primary"
+            :loading="refreshingTrace"
+            @click="refreshTrace"
+            >刷新</el-button
           >
-            <strong>{{ step.status }}</strong>
-            <p class="trace-detail">{{ step.detail }}</p>
-          </el-timeline-item>
-        </el-timeline>
+        </h2>
+        <ol class="trace">
+          <li
+            v-for="(step, index) in traceSteps"
+            :key="`${step.time}-${index}`"
+            class="trace__item"
+            :class="{ 'is-latest': index === 0 }"
+          >
+            <span class="trace__dot" aria-hidden="true"></span>
+            <div class="trace__body">
+              <p class="trace__head">
+                <!-- 用户看得懂的是那句说明，"PICKED_UP" 是给机器认的编码 -->
+                <strong>{{ step.detail }}</strong>
+                <time class="trace__time">{{ step.time?.replace('T', ' ') }}</time>
+              </p>
+              <p v-if="step.location" class="trace__where">
+                <el-icon><LocationInformation /></el-icon>
+                {{ step.location }}
+              </p>
+            </div>
+          </li>
+        </ol>
       </section>
 
       <section class="surface">
@@ -330,7 +375,85 @@ onMounted(load)
   font-weight: 400;
 }
 
-.trace-detail {
+/* 刷新放在标题行右端：包裹在路上时用户会反复看这一块 */
+.trace-refresh {
+  margin-left: var(--ys-space-3);
+  font-size: var(--ys-font-xs);
+  font-weight: 400;
+}
+
+/*
+ * 轨迹用竖线 + 圆点自己画，而不是 el-timeline。
+ * el-timeline 的节点是"由大到小"的一套固定观感（时间戳在上、节点大小均等），
+ * 而物流轨迹要表达的是**一条线上走到哪了**：最新一条必须一眼看出来，
+ * 之前的几条要退到背景里去。这个层级差用自定义样式写比覆盖组件样式干净。
+ */
+.trace {
+  display: grid;
+  gap: var(--ys-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace__item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: var(--ys-space-3);
+  padding-inline-start: var(--ys-space-1);
+}
+
+/* 竖线画在每一项上、连到下一项：最后一项不画，轨迹才不会拖出一条没有终点的尾巴 */
+.trace__item:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  inset-block: 16px calc(-1 * var(--ys-space-4));
+  inset-inline-start: 7px;
+  width: 2px;
+  background: var(--color-border);
+}
+
+.trace__dot {
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  margin-block-start: 5px;
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--ys-radius-full);
+  background: var(--color-bg-surface);
+}
+
+.trace__item.is-latest .trace__dot {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 4px var(--color-primary-subtle);
+}
+
+.trace__item:not(.is-latest) .trace__head strong {
+  color: var(--color-text-secondary);
+  font-weight: 400;
+}
+
+.trace__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ys-space-3);
+}
+
+.trace__time {
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「货到哪了」问的就是地点，所以它不能只作为说明的一部分被折进去 */
+.trace__where {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-block-start: 2px;
   color: var(--color-text-secondary);
   font-size: var(--ys-font-sm);
 }

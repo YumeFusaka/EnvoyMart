@@ -3,7 +3,9 @@ package yumefusaka.envoymart.orderservice.service;
 import yumefusaka.envoymart.orderservice.model.CheckoutRequest;
 import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
+import yumefusaka.envoymart.orderservice.model.DeliveryStatus;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -68,4 +70,20 @@ public interface OrderDomainService {
      * 不是"某个用户在操作"）。幂等由状态条件更新保证，重复投递不会出问题。
      */
     void markPaid(Long orderId);
+
+    /**
+     * 补录一条物流节点（管理侧动作）。
+     * <p>
+     * 入参用领域类型（{@link DeliveryStatus} 与几个字符串），不是管理端的请求 DTO ——
+     * 后者属于接口层，让它下沉到这里等于把"管理台长什么样"写进领域。
+     * 翻译那一层放在 {@code OrderAdminService}，与 {@link #shipOrder} 同一分工。
+     *
+     * @param description 留空即按状态取默认说明
+     * @param happenAt    节点实际发生的时间。补录多半是事后补，按录入时间落库会让
+     *                    轨迹的时间顺序与事实不符，而轨迹的全部意义就是那个顺序
+     * @param operatorId  补录人。轨迹本身没有操作人列，操作人写进订单状态流水
+     *                    （from 为空、to 为当前状态，表示"这是一次记录而非流转"）
+     */
+    void addDeliveryTrace(Long orderId, DeliveryStatus status, String description,
+                          String location, LocalDateTime happenAt, String operatorId);
 }

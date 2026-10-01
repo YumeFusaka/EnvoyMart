@@ -28,8 +28,9 @@ public class LogisticsTool implements Tool {
     public ToolDefinition getDefinition() {
         return ToolDefinition.builder()
                 .name("logistics_query")
-                .description("按订单编号查询当前用户的物流轨迹：承运商、运单号、每一步的状态与时间。"
-                        + "用户问「货到哪了」「什么时候能到」时使用。")
+                .description("按订单编号查询当前用户的物流轨迹：承运商、运单号、每一步的状态、时间与所在地。"
+                        + "用户问「货到哪了」「什么时候能到」时使用。"
+                        + "轨迹不含预计到达时间——承运商没有给出这个信息时，不要替它估一个。")
                 .parameters(Map.of(
                         "orderId", ToolDefinition.ParameterSpec.builder()
                                 .type("integer").description("订单编号").required(true).build()
@@ -77,6 +78,11 @@ public class LogisticsTool implements Tool {
                         .append(step.getStatus());
                 if (step.getDetail() != null && !step.getDetail().isBlank()) {
                     sb.append(" —— ").append(step.getDetail());
+                }
+                // 地点单独给：用户问的是「货到哪了」，而"到哪了"问的就是地点。
+                // 只给状态不给地点，模型只能答"已发往下一站"——等于没答
+                if (step.getLocation() != null && !step.getLocation().isBlank()) {
+                    sb.append("（").append(step.getLocation()).append("）");
                 }
                 sb.append("\n");
             }
