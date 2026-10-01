@@ -176,6 +176,10 @@ const adminList = await call('/favorites?page=0&size=20', { token: A })
 ck('admin 的收藏夹里没有 alice 的收藏', (adminList.body?.data?.records ?? []).length === 0)
 
 console.log('\n=== 8. 商品下架后：收藏还在，只是标为不可购买 ===')
+// 入口先还原一次，**然后才**下架。光靠下面的 finally 不够：它挡得住断言失败，
+// 挡不住进程被 SIGKILL——2026-10-01 实测，这个脚本中途被杀之后 SPU 1 一直停在下架态，
+// 后续跑别的验收和演示时表现为「这个商品凭空没了」，而那时没有任何地方记得是它干的
+await call(`/products/admin/spus/${p1.id}/status?status=1`, { method: 'PUT', token: A })
 // 走下架**接口**而不是直接改库：改库绕过了详情缓存的那次 evict，会把「缓存里的旧详情」
 // 当成「下架没生效」——那是夹具的问题，不是被测行为的问题
 await call(`/products/admin/spus/${p1.id}/status?status=0`, { method: 'PUT', token: A })

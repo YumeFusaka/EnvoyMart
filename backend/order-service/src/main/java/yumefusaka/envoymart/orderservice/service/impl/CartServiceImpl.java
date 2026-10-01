@@ -27,37 +27,34 @@ public class CartServiceImpl implements CartService {
     private static final int MAX_QUANTITY = 99;
     private static final int SELECTED = 1;
     private static final int UNSELECTED = 0;
-    private static final int STATUS_ON = 1;
 
     private final CartItemMapper cartItemMapper;
     private final ProductClient productClient;
-    private final CartCacheService cartCacheService;
 
     public CartServiceImpl(CartItemMapper cartItemMapper,
-                           ProductClient productClient,
-                           CartCacheService cartCacheService) {
+                           ProductClient productClient) {
         this.cartItemMapper = cartItemMapper;
         this.productClient = productClient;
-        this.cartCacheService = cartCacheService;
     }
 
+    /**
+     * 每次都现组装，不走缓存。
+     * <p>
+     * 这里曾经把整份 {@code CartItemResponse} 列表缓存进 Redis（TTL 72 小时），
+     * 只在这个用户改动自己的购物车时失效。问题是这份数据里没有一个字段由本服务说了算 ——
+     * 价格、库存、上下架全在 product-service，于是商品侧的任何变化都不会让缓存失效：
+     * 管理员改价或下架之后，购物车能对着三天前的快照说「有货、就这个价」，
+     * 而结算页拿到的是服务端现算的另一个数。<b>失效触发覆盖不了全部输入，缓存就不成立</b>。
+     * <p>
+     * 想加速的话，缓存该放在 product-service 的 {@code skus()} 上 —— 数据在谁手上，
+     * 谁才失效得动（那条链路已经有 {@code derivedRefresh}）。
+     */
     @Override
     public List<CartItemResponse> list(String userId) {
-        // 缓存未命中时它返回的是**空列表**而不是 null，所以判空必须用 isEmpty ——
-        // 写成 `!= null` 会让这个方法永远返回空车，而库里明明有数据。
-        // 改造中实际踩到：加购返回正常，一读购物车就是空的
-        List<CartItemResponse> cached = cartCacheService.getCachedCart(userId);
-        if (cached != null && !cached.isEmpty()) {
-            return cached;
-        }
-
         List<CartItemEntity> items = cartItemMapper.selectList(new LambdaQueryWrapper<CartItemEntity>()
                 .eq(CartItemEntity::getUserId, userId)
                 .orderByDesc(CartItemEntity::getId));
-
-        List<CartItemResponse> result = assemble(items);
-        cartCacheService.cacheCart(userId, result);
-        return result;
+        return assemble(items);
     }
 
     @Override
@@ -84,7 +81,6 @@ public class CartServiceImpl implements CartService {
                 // 两个请求同时点「加入购物车」，用户的预期是数量加两次
                 return mergeQuantity(userId, request.getSkuId(), request.getQuantity(), sku);
             }
-            cartCacheService.evictCartCache(userId);
             return toResponse(entity, sku);
         }
 
@@ -103,7 +99,6 @@ public class CartServiceImpl implements CartService {
         entity.setQuantity(Math.min(entity.getQuantity() + delta, MAX_QUANTITY));
         entity.setUpdatedAt(Times.now());
         cartItemMapper.updateById(entity);
-        cartCacheService.evictCartCache(userId);
         return toResponse(entity, sku);
     }
 
@@ -113,7 +108,6 @@ public class CartServiceImpl implements CartService {
         entity.setQuantity(request.getQuantity());
         entity.setUpdatedAt(Times.now());
         cartItemMapper.updateById(entity);
-        cartCacheService.evictCartCache(userId);
         return toResponse(entity, requireSku(entity.getSkuId()));
     }
 
@@ -121,7 +115,6 @@ public class CartServiceImpl implements CartService {
     public void remove(String userId, Long id) {
         requireOwned(userId, id);
         cartItemMapper.deleteById(id);
-        cartCacheService.evictCartCache(userId);
     }
 
     @Override
@@ -130,7 +123,6 @@ public class CartServiceImpl implements CartService {
         entity.setSelected(selected ? SELECTED : UNSELECTED);
         entity.setUpdatedAt(Times.now());
         cartItemMapper.updateById(entity);
-        cartCacheService.evictCartCache(userId);
         return toResponse(entity, requireSku(entity.getSkuId()));
     }
 
@@ -141,7 +133,6 @@ public class CartServiceImpl implements CartService {
                 .eq(CartItemEntity::getUserId, userId)
                 .set(CartItemEntity::getSelected, selected ? SELECTED : UNSELECTED)
                 .set(CartItemEntity::getUpdatedAt, Times.now()));
-        cartCacheService.evictCartCache(userId);
         return list(userId);
     }
 
@@ -181,7 +172,7 @@ public class CartServiceImpl implements CartService {
         if (sku == null) {
             throw new IllegalArgumentException("商品规格不存在");
         }
-        if (sku.getStatus() == null || sku.getStatus() != STATUS_ON) {
+        if (!sku.purchasable()) {
             throw new IllegalStateException("商品已下架");
         }
         return sku;
@@ -222,7 +213,7 @@ public class CartServiceImpl implements CartService {
         long price = sku.getPrice() == null ? 0L : sku.getPrice();
         int quantity = item.getQuantity() == null ? 0 : item.getQuantity();
         int stock = sku.getStock() == null ? 0 : sku.getStock();
-        boolean onSale = sku.getStatus() != null && sku.getStatus() == STATUS_ON;
+        boolean onSale = sku.purchasable();
 
         return CartItemResponse.builder()
                 .id(item.getId())

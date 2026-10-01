@@ -82,9 +82,6 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
     private static final String BIZ_TYPE_ORDER = "ORDER";
 
-    /** 商品服务里「在售」的取值 */
-    private static final int STATUS_ON = 1;
-
     private final CartItemMapper cartItemMapper;
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
@@ -95,7 +92,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     private final ProductClient productClient;
     private final PaymentClient paymentClient;
     private final PromotionClient promotionClient;
-    private final CartCacheService cartCacheService;
+    private final StockLockService stockLockService;
     private final OrderEventPublisher eventPublisher;
 
     public OrderDomainServiceImpl(CartItemMapper cartItemMapper,
@@ -108,7 +105,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                                   ProductClient productClient,
                                   PaymentClient paymentClient,
                                   PromotionClient promotionClient,
-                                  CartCacheService cartCacheService,
+                                  StockLockService stockLockService,
                                   OrderEventPublisher eventPublisher) {
         this.cartItemMapper = cartItemMapper;
         this.orderMapper = orderMapper;
@@ -120,7 +117,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         this.productClient = productClient;
         this.paymentClient = paymentClient;
         this.promotionClient = promotionClient;
-        this.cartCacheService = cartCacheService;
+        this.stockLockService = stockLockService;
         this.eventPublisher = eventPublisher;
     }
 
@@ -148,7 +145,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
         try {
             for (CartItemEntity cartItem : cartItems) {
-                if (!cartCacheService.tryLock(cartItem.getSkuId())) {
+                if (!stockLockService.tryLock(cartItem.getSkuId())) {
                     throw new IllegalStateException("商品「" + resolveName(cartItem.getSkuId())
                             + "」当前购买人数过多，请稍后再试");
                 }
@@ -269,12 +266,12 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             cartItemMapper.delete(new LambdaQueryWrapper<CartItemEntity>()
                     .eq(CartItemEntity::getUserId, userId)
                     .eq(CartItemEntity::getSelected, 1));
-            cartCacheService.evictCartCache(userId);
+            
             log.info("用户 {} 下单成功，订单号 {}，应付 {} 分", userId, order.getOrderNo(), order.getPayAmount());
         } finally {
             // 逆序释放，与加锁顺序相反，降低与其他事务交叉持锁时死锁的概率
             for (int i = lockedSkuIds.size() - 1; i >= 0; i--) {
-                cartCacheService.unlock(lockedSkuIds.get(i));
+                stockLockService.unlock(lockedSkuIds.get(i));
             }
         }
 
@@ -1081,9 +1078,14 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 .build();
     }
 
-    /** 已下架或查不到 —— 结算与试算用同一个判据，两处结论才不会分叉 */
+    /**
+     * 已下架或查不到 —— 结算与试算用同一个判据，两处结论才不会分叉。
+     * <p>
+     * 判据本体在 {@link SkuSnapshot#purchasable()}：它同时看 SPU 与 SKU 两级状态，
+     * 而这里原先只看 SKU 一层，于是「下架商品仍可下单」。
+     */
     private boolean isUnavailable(SkuSnapshot sku) {
-        return sku == null || sku.getStatus() == null || sku.getStatus() != STATUS_ON;
+        return sku == null || !sku.purchasable();
     }
 
     /** 这一批订单的行，一次查完 */

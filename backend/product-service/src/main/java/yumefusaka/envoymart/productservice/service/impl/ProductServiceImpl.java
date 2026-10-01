@@ -268,6 +268,9 @@ public class ProductServiceImpl implements ProductService {
                             .price(sku.getPrice())
                             .stock(sku.getStock())
                             .status(sku.getStatus())
+                            // 两级状态都带上：SPU 下架是「整个商品停售」，而 SKU 自己的状态不会
+                            // 跟着变，只带一层的话交易链路会把停售商品当在售（spu 已在上面的 map 里）
+                            .spuStatus(spu == null ? null : spu.getStatus())
                             .build();
                 })
                 .toList();

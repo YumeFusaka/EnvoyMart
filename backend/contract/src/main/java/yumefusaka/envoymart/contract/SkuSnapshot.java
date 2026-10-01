@@ -61,5 +61,30 @@ public class SkuSnapshot {
     /** 1 在售 / 0 下架。购物车据此把失效商品标出来，而不是直接删掉 */
     private Integer status;
 
+    /**
+     * SPU 状态：1 在售 / 0 下架。
+     * <p>
+     * 与 {@link #status}（SKU 自身状态）并存，因为它们是两件事：下架一个 SPU 是
+     * 「整个商品停售」，但它下面每个 SKU 行自己的状态不会跟着变。只带 SKU 状态的话，
+     * 一个已停售的商品在交易链路上仍然是在售的。
+     */
+    private Integer spuStatus;
+
     private Integer stock;
+
+    /** 在售。语义见 {@link #purchasable()} */
+    public static final int STATUS_ON = 1;
+
+    /**
+     * 这件商品现在能不能买 —— **全链路唯一的判据**。
+     * <p>
+     * SPU 与 SKU 两级状态都在售才算数。此前这个判断在购物车、订单、收藏三处各写了一遍，
+     * 且交易路径那两处只看了 SKU 状态：管理员下架一个 SPU 后，详情接口已经回「不存在」，
+     * 但它照样能加购、能结算、能下单——「下架」只停了展示，没停交易。
+     * 判据放在契约上，是因为它跨越了 product-service 与 order-service 的边界：
+     * 两边各自实现一次，就等于给下一次分叉留了土壤。
+     */
+    public boolean purchasable() {
+        return Integer.valueOf(STATUS_ON).equals(status) && Integer.valueOf(STATUS_ON).equals(spuStatus);
+    }
 }
