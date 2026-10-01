@@ -1,9 +1,14 @@
 package yumefusaka.envoymart.orderservice.service;
 
+import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.orderservice.model.CheckoutRequest;
 import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.orderservice.model.DeliveryStatus;
+import yumefusaka.envoymart.orderservice.model.OrderListQuery;
+import yumefusaka.envoymart.orderservice.model.OrderPreviewRequest;
+import yumefusaka.envoymart.orderservice.model.OrderPreviewResponse;
+import yumefusaka.envoymart.orderservice.model.OrderTabCount;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -18,7 +23,27 @@ public interface OrderDomainService {
 
     OrderResponse checkout(String userId, CheckoutRequest request);
 
-    List<OrderResponse> listOrders(String userId);
+    /**
+     * 结算页试算：金额、券的可用性与抵扣。
+     * <p>
+     * <b>商品明细取自服务端</b>（购物车已勾选条目 + SKU 快照），与 {@link #checkout}
+     * 装配的是同一份输入。这不是为了省一次查询，而是为了让「预览说能用」与
+     * 「提交被拒」不再可能同时发生 —— 那份分叉的根因就是两边各算各的。
+     * <p>
+     * 不落任何库、不核销券：它是一次读操作。
+     */
+    OrderPreviewResponse preview(String userId, OrderPreviewRequest request);
+
+    /** 我的订单，按状态页签分页 */
+    PageResult<OrderResponse> listOrders(String userId, OrderListQuery query);
+
+    /**
+     * 我的订单各页签的数量，给页签角标用。
+     * <p>
+     * 单独一个接口而不是塞进列表返回体：翻页时角标不该跟着变，
+     * 而它必须与列表<b>同一时刻</b>的口径 —— 分六次查会取到六个快照。
+     */
+    List<OrderTabCount> orderSummary(String userId);
 
     OrderResponse getOrder(String userId, Long orderId);
 

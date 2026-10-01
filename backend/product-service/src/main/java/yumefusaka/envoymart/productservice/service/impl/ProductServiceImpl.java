@@ -248,20 +248,28 @@ public class ProductServiceImpl implements ProductService {
                                 view -> view.getSpecName() + ":" + view.getSpecValue(),
                                 Collectors.joining(";"))));
 
+        // 类目祖先链一次算完这一批的（物化路径直接拆，不再查库）：
+        // 优惠券的类目作用域要判「这行商品落在子树的哪儿」，而核销侧看不到类目树
+        Map<Long, List<Long>> categoryPaths = categoryService.categoryPaths(
+                spus.values().stream().map(ProductSpuEntity::getCategoryId).toList());
+
         return skus.stream()
-                .map(sku -> SkuSnapshot.builder()
-                        .id(sku.getId())
-                        .spuId(sku.getSpuId())
-                        .categoryId(spus.containsKey(sku.getSpuId())
-                                ? spus.get(sku.getSpuId()).getCategoryId() : null)
-                        .spuName(spus.containsKey(sku.getSpuId())
-                                ? spus.get(sku.getSpuId()).getName() : null)
-                        .specText(specTexts.get(sku.getId()))
-                        .image(sku.getImage())
-                        .price(sku.getPrice())
-                        .stock(sku.getStock())
-                        .status(sku.getStatus())
-                        .build())
+                .map(sku -> {
+                    ProductSpuEntity spu = spus.get(sku.getSpuId());
+                    Long categoryId = spu == null ? null : spu.getCategoryId();
+                    return SkuSnapshot.builder()
+                            .id(sku.getId())
+                            .spuId(sku.getSpuId())
+                            .categoryId(categoryId)
+                            .categoryPath(categoryPaths.get(categoryId))
+                            .spuName(spu == null ? null : spu.getName())
+                            .specText(specTexts.get(sku.getId()))
+                            .image(sku.getImage())
+                            .price(sku.getPrice())
+                            .stock(sku.getStock())
+                            .status(sku.getStatus())
+                            .build();
+                })
                 .toList();
     }
 

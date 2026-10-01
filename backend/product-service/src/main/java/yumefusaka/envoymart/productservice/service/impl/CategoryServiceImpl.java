@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.productservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.productservice.entity.BrandEntity;
 import yumefusaka.envoymart.productservice.entity.CategoryEntity;
@@ -20,6 +21,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 public class CategoryServiceImpl implements CategoryService {
 
@@ -96,6 +98,42 @@ public class CategoryServiceImpl implements CategoryService {
     }
 
     @Override
+    public Map<Long, List<Long>> categoryPaths(Collection<Long> ids) {
+        Set<Long> cleaned = cleanIds(ids);
+        if (cleaned.isEmpty()) {
+            return EMPTY_PATH_LOOKUP;
+        }
+        return categoryMapper.selectByIds(cleaned).stream()
+                .collect(Collectors.toMap(CategoryEntity::getId, CategoryServiceImpl::ancestorChain));
+    }
+
+    /**
+     * 把物化路径拆成 id 链。{@code path} 形如 {@code 1/5}，<b>含自身</b>，由近及远。
+     * <p>
+     * 缺失或拆不出数时回退成「只有自己」而不是空链：空链会让限类目的券把这行商品
+     * 判成「不在适用范围」，而真实原因只是某一行 path 没维护好 ——
+     * 一个配置问题伪装成业务结论，排查时看到的是「券用不了」而不是「数据缺了」。
+     */
+    private static List<Long> ancestorChain(CategoryEntity category) {
+        String path = category.getPath();
+        if (path != null && !path.isBlank()) {
+            List<Long> ids = new ArrayList<>();
+            for (String part : path.split("/")) {
+                try {
+                    ids.add(Long.valueOf(part.trim()));
+                } catch (NumberFormatException e) {
+                    log.warn("[Category] 类目路径段非法，已跳过 categoryId={} path={} 段={}",
+                            category.getId(), path, part);
+                }
+            }
+            if (!ids.isEmpty()) {
+                return List.copyOf(ids);
+            }
+        }
+        return List.of(category.getId());
+    }
+
+    @Override
     public Map<Long, String> brandNames(Collection<Long> ids) {
         Set<Long> cleaned = cleanIds(ids);
         if (cleaned.isEmpty()) {
@@ -119,6 +157,10 @@ public class CategoryServiceImpl implements CategoryService {
      * 语义与「查了但没有」一致：<b>返回 null，不抛异常</b>。
      */
     private static final Map<Long, String> EMPTY_LOOKUP = Collections.unmodifiableMap(new HashMap<>());
+
+    /** 同 {@link #EMPTY_LOOKUP} 的理由，只是值类型不同 —— 同样要能 {@code get(null)} 返回 null */
+    private static final Map<Long, List<Long>> EMPTY_PATH_LOOKUP =
+            Collections.unmodifiableMap(new HashMap<>());
 
     /**
      * 剔除 null 再查。

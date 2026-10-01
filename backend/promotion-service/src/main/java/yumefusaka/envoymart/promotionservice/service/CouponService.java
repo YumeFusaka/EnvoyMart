@@ -1,5 +1,7 @@
 package yumefusaka.envoymart.promotionservice.service;
 
+import yumefusaka.envoymart.contract.CouponPreview;
+import yumefusaka.envoymart.contract.RedeemItem;
 import yumefusaka.envoymart.contract.RedeemRequest;
 import yumefusaka.envoymart.promotionservice.model.CouponResponse;
 import yumefusaka.envoymart.promotionservice.model.UserCouponResponse;
@@ -15,13 +17,25 @@ public interface CouponService {
     UserCouponResponse receive(String userId, Long couponId);
 
     /**
-     * 我的券。
+     * 我的券（券包视图）。
+     * <p>
+     * 不算「这张券在某个订单上能不能用」—— 那件事需要订单行明细，
+     * 见 {@link #preview(String, List)}。
      *
      * @param status UNUSED / USED / EXPIRED；为空则全部
-     * @param orderAmount 结算页传入订单金额，用于算出每张券「现在能不能用」；
-     *                    为空则不计算可用性
      */
-    List<UserCouponResponse> myCoupons(String userId, String status, Long orderAmount);
+    List<UserCouponResponse> myCoupons(String userId, String status);
+
+    /**
+     * 结算页预览：这批商品下，我的每张未使用券能不能用、能抵多少。
+     * <p>
+     * 与 {@link #redeem(String, RedeemRequest)} <b>吃同一份 items、走同一段判定</b>：
+     * 不可用时的理由就是核销会抛的那句话。此前预览只拿到一个订单总额，
+     * 于是限类目的券可以「预览说可用、提交被拒」——两边输入不同，结论必然可能分叉。
+     *
+     * @param items 订单行明细，由 order-service 从购物车与 SKU 快照组装（与结算同一段代码）
+     */
+    List<CouponPreview> preview(String userId, List<RedeemItem> items);
 
     /**
      * 核销一张券并返回<b>抵扣金额（分）</b>。

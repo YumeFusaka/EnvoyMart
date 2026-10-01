@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.util.Times;
+import yumefusaka.envoymart.contract.CouponPreview;
 import yumefusaka.envoymart.contract.RedeemItem;
 import yumefusaka.envoymart.contract.RedeemRequest;
 import yumefusaka.envoymart.promotionservice.entity.CouponEntity;
@@ -119,11 +120,11 @@ public class CouponServiceImpl implements CouponService {
         userCouponMapper.insert(entity);
 
         log.info("用户 {} 领取优惠券 {}（{}）", userId, couponId, coupon.getName());
-        return toUserCouponResponse(entity, coupon, null);
+        return toUserCouponResponse(entity, coupon);
     }
 
     @Override
-    public List<UserCouponResponse> myCoupons(String userId, String status, Long orderAmount) {
+    public List<UserCouponResponse> myCoupons(String userId, String status) {
         List<UserCouponEntity> mine = userCouponMapper.selectList(
                 new LambdaQueryWrapper<UserCouponEntity>()
                         .eq(UserCouponEntity::getUserId, userId)
@@ -134,14 +135,60 @@ public class CouponServiceImpl implements CouponService {
             return List.of();
         }
 
-        Map<Long, CouponEntity> templates = couponMapper.selectByIds(
+        Map<Long, CouponEntity> templates = templatesOf(mine);
+
+        return mine.stream()
+                .map(entity -> toUserCouponResponse(entity, templates.get(entity.getCouponId())))
+                .toList();
+    }
+
+    @Override
+    public List<CouponPreview> preview(String userId, List<RedeemItem> items) {
+        List<UserCouponEntity> mine = userCouponMapper.selectList(
+                new LambdaQueryWrapper<UserCouponEntity>()
+                        .eq(UserCouponEntity::getUserId, userId)
+                        .eq(UserCouponEntity::getStatus, STATUS_UNUSED)
+                        .orderByDesc(UserCouponEntity::getId));
+        if (mine.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Long, CouponEntity> templates = templatesOf(mine);
+        LocalDateTime now = Times.now();
+
+        return mine.stream()
+                .map(entity -> {
+                    CouponEntity coupon = templates.get(entity.getCouponId());
+                    CouponPreview.CouponPreviewBuilder preview = CouponPreview.builder()
+                            .id(entity.getId())
+                            .name(coupon == null ? "优惠券已下架" : coupon.getName())
+                            .ruleText(coupon == null ? null : ruleText(coupon));
+
+                    if (coupon == null) {
+                        return preview.usable(false).unusableReason("优惠券已下架").build();
+                    }
+                    // 自动过期是定时任务的事，它还没来得及跑时券还是 UNUSED ——
+                    // 这里如实说「已过期」，而不是把它当成能用
+                    if (entity.getExpireAt() != null && entity.getExpireAt().isBefore(now)) {
+                        return preview.usable(false).unusableReason("已过期").build();
+                    }
+                    try {
+                        return preview.usable(true).deductAmount(evaluate(coupon, items)).build();
+                    } catch (IllegalStateException e) {
+                        // **理由就是核销会抛的那句话本身**，不另写措辞：预览与提交
+                        // 各写一套说法，迟早出现「预览说差 20 元、提交说不在适用范围」
+                        return preview.usable(false).unusableReason(e.getMessage()).build();
+                    }
+                })
+                .toList();
+    }
+
+    /** 把一批用户券对应的模板一次查出来，而不是逐张查一次 */
+    private Map<Long, CouponEntity> templatesOf(List<UserCouponEntity> mine) {
+        return couponMapper.selectByIds(
                         mine.stream().map(UserCouponEntity::getCouponId).collect(Collectors.toSet()))
                 .stream()
                 .collect(Collectors.toMap(CouponEntity::getId, Function.identity()));
-
-        return mine.stream()
-                .map(entity -> toUserCouponResponse(entity, templates.get(entity.getCouponId()), orderAmount))
-                .toList();
     }
 
     @Override
@@ -159,18 +206,7 @@ public class CouponServiceImpl implements CouponService {
             throw new IllegalStateException("优惠券已下架");
         }
 
-        // 门槛与折扣都按「券作用范围内商品的小计」算，范围外的商品不参与
-        long scopeAmount = scopeAmount(coupon, request.getItems());
-
-        // 门槛在核销前校验一次，给出能指导下一步的提示（还差多少）。
-        // 差在范围上还是差在总额上，提示不同 —— 限类目券差 50 分和全场券差 50 分，
-        // 用户要做的操作（加购哪类商品）不一样
-        long threshold = coupon.getThreshold() == null ? 0L : coupon.getThreshold();
-        if (scopeAmount < threshold) {
-            long all = request.getItems().stream().mapToLong(this::subtotalOf).sum();
-            String what = all > scopeAmount ? "优惠券适用范围内的商品金额" : "订单金额";
-            throw new IllegalStateException(what + "未达到使用门槛，还差 " + (threshold - scopeAmount) + " 分");
-        }
+        long deduct = evaluate(coupon, request.getItems());
 
         // 扣减由条件更新裁决：未使用 + 未过期。并发下只有一次能成功 ——
         // 折扣只能减一次钱，这条约束必须落在 SQL 上
@@ -178,10 +214,33 @@ public class CouponServiceImpl implements CouponService {
             throw new IllegalStateException("优惠券不可用（已使用或已过期）");
         }
 
-        long deduct = computeDeduction(coupon, scopeAmount);
-        log.info("优惠券已核销 userId={} userCouponId={} orderNo={} 范围内小计={}分 抵扣={}分",
-                userId, userCouponId, request.getOrderNo(), scopeAmount, deduct);
+        log.info("优惠券已核销 userId={} userCouponId={} orderNo={} 抵扣={}分",
+                userId, userCouponId, request.getOrderNo(), deduct);
         return deduct;
+    }
+
+    /**
+     * 一张券在这批商品上能抵多少（分）。<b>不可用即抛</b>，消息就是给用户看的理由。
+     * <p>
+     * 核销与结算页预览共用这一段：核销让它抛出去（下单失败并告知原因），
+     * 预览把它 catch 成「不可用 + 理由」。共用而不是各写一遍，是「预览说能用、
+     * 提交却被拒」不再复发的根据 —— 那条 bug 的根因正是两边各自算。
+     * <p>
+     * 门槛与折扣都按「券作用范围内商品的小计」算，范围外的商品不参与。
+     */
+    private long evaluate(CouponEntity coupon, List<RedeemItem> items) {
+        long scopeAmount = scopeAmount(coupon, items);
+
+        // 差在范围上还是差在总额上，提示不同 —— 限类目券差 50 分和全场券差 50 分，
+        // 用户要做的操作（加购哪类商品）不一样
+        long threshold = coupon.getThreshold() == null ? 0L : coupon.getThreshold();
+        if (scopeAmount < threshold) {
+            long all = items.stream().mapToLong(this::subtotalOf).sum();
+            String what = all > scopeAmount ? "优惠券适用范围内的商品金额" : "订单金额";
+            throw new IllegalStateException(what + "未达到使用门槛，还差 " + (threshold - scopeAmount) + " 分");
+        }
+
+        return computeDeduction(coupon, scopeAmount);
     }
 
     @Override
@@ -219,6 +278,11 @@ public class CouponServiceImpl implements CouponService {
      * 范围外的商品既不参与门槛、也不参与折扣 —— 只按订单总额算的话，
      * 一张「保健品满 100 减 20」的券能被 1 元的保健品凑上 99 元的别的商品用掉。
      * <p>
+     * <b>限类目券判的是「落在子树里」而不是「等于某个 id」</b>：类目是棵树，
+     * 运营配「营养保健」级目的券时预期是「这个类目及其下所有商品」。商品行随行带着
+     * 自己的类目祖先链（见 {@link RedeemItem#getCategoryPath()}），
+     * 于是判定退化成一次集合求交，核销这一侧不必知道类目树长什么样。
+     * <p>
      * 作用域数据不自洽（类型未知 / 声明了范围却没配 id / id 非法）时拒绝而不是猜：
      * 与售后政策引擎同一条理由 —— 猜错的方向是多减钱。不限范围的券适用于全部商品。
      */
@@ -234,16 +298,23 @@ public class CouponServiceImpl implements CouponService {
         }
         Set<Long> scopeIds = parseScopeIds(coupon);
         long amount = items.stream()
-                .filter(item -> {
-                    Long key = byCategory ? item.getCategoryId() : item.getSpuId();
-                    return key != null && scopeIds.contains(key);
-                })
+                .filter(item -> byCategory ? inScopeCategory(item, scopeIds) : inScopeSpu(item, scopeIds))
                 .mapToLong(this::subtotalOf)
                 .sum();
         if (amount <= 0) {
             throw new IllegalStateException("该优惠券不适用于订单中的商品");
         }
         return amount;
+    }
+
+    /** 商品行挂在范围内类目的子树上即命中（自身或任一祖先在 scopeIds 里） */
+    private boolean inScopeCategory(RedeemItem item, Set<Long> scopeIds) {
+        List<Long> path = item.getCategoryPath();
+        return path != null && path.stream().anyMatch(scopeIds::contains);
+    }
+
+    private boolean inScopeSpu(RedeemItem item, Set<Long> scopeIds) {
+        return item.getSpuId() != null && scopeIds.contains(item.getSpuId());
     }
 
     /**
@@ -322,26 +393,7 @@ public class CouponServiceImpl implements CouponService {
                 .build();
     }
 
-    private UserCouponResponse toUserCouponResponse(UserCouponEntity entity, CouponEntity coupon, Long orderAmount) {
-        String usableReason = null;
-        Boolean usable = null;
-        if (orderAmount != null) {
-            usable = true;
-            if (!STATUS_UNUSED.equals(entity.getStatus())) {
-                usable = false;
-                usableReason = STATUS_USED.equals(entity.getStatus()) ? "已使用" : "已过期";
-            } else if (entity.getExpireAt() != null && entity.getExpireAt().isBefore(Times.now())) {
-                usable = false;
-                usableReason = "已过期";
-            } else if (coupon != null) {
-                long threshold = coupon.getThreshold() == null ? 0L : coupon.getThreshold();
-                if (orderAmount < threshold) {
-                    usable = false;
-                    usableReason = "差 " + (threshold - orderAmount) + " 分可用";
-                }
-            }
-        }
-
+    private UserCouponResponse toUserCouponResponse(UserCouponEntity entity, CouponEntity coupon) {
         return UserCouponResponse.builder()
                 .id(entity.getId())
                 .couponId(entity.getCouponId())
@@ -356,8 +408,6 @@ public class CouponServiceImpl implements CouponService {
                 .receivedAt(entity.getReceivedAt())
                 .usedAt(entity.getUsedAt())
                 .expireAt(entity.getExpireAt())
-                .usable(usable)
-                .unusableReason(usableReason)
                 .build();
     }
 

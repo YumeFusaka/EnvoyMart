@@ -3,12 +3,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listAddresses } from '@/api/address'
-import { checkout } from '@/api/order'
+import { checkout, previewOrder } from '@/api/order'
 import { formatPrice } from '@/api/product'
-import { listMyCoupons } from '@/api/coupon'
 import { useCartStore } from '@/stores'
 import ErrorState from '@/components/ui/ErrorState.vue'
-import type { UserAddress, UserCoupon } from '@/types/models'
+import type { OrderPreview, UserAddress } from '@/types/models'
 
 const router = useRouter()
 const cart = useCartStore()
@@ -18,29 +17,20 @@ const selectedAddressId = ref<number | null>(null)
 const remark = ref('')
 const submitting = ref(false)
 
-/** 我的券（带可用性）。传订单金额进去，服务端算出每张「能不能用、差多少」 */
-const coupons = ref<UserCoupon[]>([])
+/**
+ * 试算结果：金额与每张券的可用性都由服务端算。
+ *
+ * 商品明细不从这里传 —— 服务端拿购物车里已勾选的条目，与下单时装配的是同一段代码，
+ * 所以「这里说能用、提交却被拒」不可能发生。金额同理：折扣只有一个出处，
+ * 前端不拿券面文案反推（曾经用正则从「满 100 减 10 元」里解数字，
+ * 「8.5 折」这类券的取整方向一旦与后端不同，就差一分钱）。
+ */
+const preview = ref<OrderPreview | null>(null)
 const selectedCouponId = ref<number | null>(null)
+/** 切券要重新试算：金额是服务端算的，本地不自己减 */
+const previewing = ref(false)
 
-const selectedCoupon = computed(
-  () => coupons.value.find((item) => item.id === selectedCouponId.value) ?? null,
-)
-
-/** 券面的抵扣金额（分）。真正的抵扣由服务端在核销时算，这里只用于展示 */
-const couponDiscount = computed(() => {
-  const coupon = selectedCoupon.value
-  if (!coupon || coupon.usable === false) {
-    return 0
-  }
-  if (coupon.type === 'DISCOUNT' && coupon.ruleText) {
-    const match = coupon.ruleText.match(/(\d+(?:\.\d+)?)\s*折/)
-    if (match) {
-      const rate = Number(match[1]) / 10
-      return Math.max(0, cart.selectedAmount - Math.floor(cart.selectedAmount * rate))
-    }
-  }
-  return Math.min(coupon.amount ?? 0, cart.selectedAmount)
-})
+const coupons = computed(() => preview.value?.coupons ?? [])
 /** 地址加载完成之前不渲染空态 —— 否则有地址的用户会看到一帧「还没有收货地址」 */
 const addressLoading = ref(true)
 const addressFailed = ref(false)
@@ -49,18 +39,33 @@ const selectedAddress = computed(
   () => addresses.value.find((item) => item.id === selectedAddressId.value) ?? null,
 )
 
-/** 运费规则尚未实现，先按包邮处理 —— 与后端 checkout 里的 FREIGHT_FREE 一致 */
-const freight = 0
-const payAmount = computed(() => cart.selectedAmount + freight - couponDiscount.value)
+const payAmount = computed(() => preview.value?.payAmount ?? cart.selectedAmount)
 
-async function loadCoupons() {
+async function loadPreview() {
+  previewing.value = true
   try {
-    // 带上订单金额：服务端会算出每张券现在能不能用、不能用时差多少
-    coupons.value = await listMyCoupons('UNUSED', cart.selectedAmount)
+    preview.value = await previewOrder(selectedCouponId.value)
   } catch {
-    // 券拉不到不该挡住下单 —— 用户按原价结算就是了
-    coupons.value = []
+    // 试算失败不该挡住下单 —— 用户按原价结算就是了。
+    // 清空而不是留着旧值：旧金额对应的是上一批商品或上一张券，留着比没有更误导
+    preview.value = null
+  } finally {
+    previewing.value = false
   }
+}
+
+/**
+ * 换券：只改选择，金额等重新试算的结果。
+ *
+ * 不回滚成「先本地减掉再等服务端」—— 那样页面上会先出现一个可能不对的数字。
+ * 试算期间按钮禁用（见模板的 loading），用户点不快也点不乱。
+ */
+async function selectCoupon(id: number | null) {
+  if (selectedCouponId.value === id || previewing.value) {
+    return
+  }
+  selectedCouponId.value = id
+  await loadPreview()
 }
 
 async function submit() {
@@ -124,7 +129,7 @@ onMounted(async () => {
     return
   }
   await loadAddresses()
-  await loadCoupons()
+  await loadPreview()
 })
 </script>
 
@@ -194,13 +199,14 @@ onMounted(async () => {
 
     <section v-if="coupons.length" class="surface">
       <h2 class="section-title">优惠券</h2>
-      <!-- 不可用的券也列出来并写明原因：用户会想知道自己那张券为什么没出现在这里 -->
-      <div class="coupons">
+      <!-- 不可用的券也列出来并写明原因：用户会想知道自己那张券为什么没出现在这里。
+           理由来自服务端，与提交时被拒的那句话是同一段判定产生的 -->
+      <div v-loading="previewing" class="coupons">
         <button
           type="button"
           class="coupon-pick"
           :class="{ 'is-active': selectedCouponId === null }"
-          @click="selectedCouponId = null"
+          @click="selectCoupon(null)"
         >
           不使用优惠券
         </button>
@@ -211,10 +217,11 @@ onMounted(async () => {
           class="coupon-pick"
           :class="{ 'is-active': selectedCouponId === item.id, 'is-disabled': item.usable === false }"
           :disabled="item.usable === false"
-          @click="selectedCouponId = item.id"
+          @click="selectCoupon(item.id)"
         >
           <span class="coupon-pick__rule">{{ item.ruleText }}</span>
-          <span v-if="item.unusableReason" class="coupon-pick__hint">{{ item.unusableReason }}</span>
+          <span v-if="item.usable" class="coupon-pick__hint">-{{ formatPrice(item.deductAmount) }}</span>
+          <span v-else class="coupon-pick__hint">{{ item.unusableReason }}</span>
         </button>
       </div>
     </section>
@@ -232,17 +239,30 @@ onMounted(async () => {
     </section>
 
     <footer class="surface bar">
-      <dl class="summary">
-        <div><dt>商品金额</dt><dd>{{ formatPrice(cart.selectedAmount) }}</dd></div>
-        <div><dt>运费</dt><dd>{{ freight === 0 ? '包邮' : formatPrice(freight) }}</dd></div>
-        <div v-if="couponDiscount > 0">
-          <dt>优惠券</dt><dd class="summary__discount">-{{ formatPrice(couponDiscount) }}</dd>
-        </div>
-        <div class="summary__total">
-          <dt>应付</dt>
-          <dd>{{ formatPrice(payAmount) }}</dd>
-        </div>
-      </dl>
+      <div class="bar__left">
+        <!-- 有失效商品时当场说清：这些行不进结算，提交后它们仍留在购物车 -->
+        <p v-if="preview && preview.unavailableCount > 0" class="bar__warn">
+          有 {{ preview.unavailableCount }} 件商品已失效，不会进入本单
+        </p>
+        <dl class="summary">
+          <div>
+            <dt>商品金额</dt>
+            <dd>{{ formatPrice(preview?.totalAmount ?? cart.selectedAmount) }}</dd>
+          </div>
+          <div>
+            <dt>运费</dt>
+            <dd>{{ (preview?.freightAmount ?? 0) === 0 ? '包邮' : formatPrice(preview!.freightAmount) }}</dd>
+          </div>
+          <div v-if="(preview?.discountAmount ?? 0) > 0">
+            <dt>优惠券</dt>
+            <dd class="summary__discount">-{{ formatPrice(preview!.discountAmount) }}</dd>
+          </div>
+          <div class="summary__total">
+            <dt>应付</dt>
+            <dd>{{ formatPrice(payAmount) }}</dd>
+          </div>
+        </dl>
+      </div>
       <el-button
         type="primary"
         size="large"
@@ -356,6 +376,16 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: var(--ys-space-6);
+}
+
+.bar__left {
+  display: grid;
+  gap: var(--ys-space-2);
+}
+
+.bar__warn {
+  color: var(--color-danger);
+  font-size: var(--ys-font-xs);
 }
 
 .summary {

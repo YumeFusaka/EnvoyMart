@@ -7,7 +7,11 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
+import yumefusaka.envoymart.contract.CouponPreview;
+import yumefusaka.envoymart.contract.CouponPreviewRequest;
 import yumefusaka.envoymart.contract.RedeemRequest;
+
+import java.util.List;
 
 /**
  * 营销服务客户端 —— 下单时核销优惠券。
@@ -29,6 +33,16 @@ public interface PromotionClient {
     @PostMapping("/coupons/internal/redeem")
     Result<Long> redeem(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                         @RequestBody RedeemRequest request);
+
+    /**
+     * 结算页试算：这批商品下我的每张券能不能用、能抵多少。
+     * <p>
+     * 与 {@link #redeem} 传同一份 items、在营销服务里走同一段判定 ——
+     * 用户看到的「为什么不能用」与提交被拒时的那句话逐字一致。
+     */
+    @PostMapping("/coupons/internal/preview")
+    Result<List<CouponPreview>> preview(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+                                        @RequestBody CouponPreviewRequest request);
 
     /**
      * 退还优惠券（把已核销的改回未使用）。

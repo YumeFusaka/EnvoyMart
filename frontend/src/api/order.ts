@@ -1,5 +1,12 @@
 import request from '@/utils/axios'
-import type { Logistics, Order } from '@/types/models'
+import type {
+  Logistics,
+  Order,
+  OrderPreview,
+  OrderTab,
+  OrderTabCount,
+  PageResult,
+} from '@/types/models'
 
 export interface CheckoutPayload {
   receiverName: string
@@ -24,9 +31,32 @@ export async function checkout(payload: CheckoutPayload) {
   return response.data.data as Order
 }
 
-export async function listOrders() {
-  const response = await request.get('/orders')
-  return response.data.data as Order[]
+/**
+ * 我的订单，按状态页签分页。
+ *
+ * 筛选在服务端：页签的成员状态（如「退款/取消」= CANCELLED + CLOSED + REFUNDING + REFUNDED）
+ * 只在后端 OrderTab 里定义一次。前端各存一份的话，筛选与角标计数就成了同一件事的两种说法。
+ */
+export async function listOrders(tab: OrderTab = 'ALL', page = 0, size = 10) {
+  const response = await request.get('/orders', { params: { tab, page, size } })
+  return response.data.data as PageResult<Order>
+}
+
+/** 各页签的数量。翻页时它不变，所以与列表分开取 —— 但两边同一套页签定义 */
+export async function orderSummary() {
+  const response = await request.get('/orders/summary')
+  return response.data.data as OrderTabCount[]
+}
+
+/**
+ * 结算页试算：金额、券的可用性与抵扣。
+ *
+ * 商品明细不传 —— 服务端拿购物车里已勾选的条目，与真正下单时装配的是同一段代码。
+ * 前端把商品传上去「省一次查询」，就是「预览说券能用、提交却被拒」的复现路径。
+ */
+export async function previewOrder(userCouponId?: number | null) {
+  const response = await request.post('/orders/preview', { userCouponId: userCouponId ?? null })
+  return response.data.data as OrderPreview
 }
 
 export async function getOrder(id: number) {

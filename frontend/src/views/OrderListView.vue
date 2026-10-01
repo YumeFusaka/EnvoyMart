@@ -1,18 +1,31 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { cancelOrder, listOrders } from '@/api/order'
+import { cancelOrder, listOrders, orderSummary } from '@/api/order'
 import { formatPrice } from '@/api/product'
 import ErrorState from '@/components/ui/ErrorState.vue'
-import type { Order, OrderStatus } from '@/types/models'
+import type { Order, OrderTab, OrderTabCount } from '@/types/models'
 
 const router = useRouter()
 
 const orders = ref<Order[]>([])
 const loading = ref(false)
 const failed = ref(false)
-const activeStatus = ref<OrderStatus | 'ALL'>('ALL')
+
+/**
+ * 页签与计数都来自服务端。
+ *
+ * 曾经这里自己存一份「待付款 = CREATED」之类的成员关系，于是同一件事有了两种说法：
+ * 前端按本地那份筛已加载的订单，后端按另一份筛全量，页签上的数字还是前端数当前页得来的。
+ * 现在页签文案、成员状态、计数只在后端 `OrderTab` 里定义一次。
+ */
+const tabs = ref<OrderTabCount[]>([])
+const activeTab = ref<OrderTab>('ALL')
+const PAGE_SIZE = 10
+/** 0 基，与后端一致；翻页组件那边再加一 */
+const page = ref(0)
+const total = ref(0)
 
 /**
  * 当前时间。`payable()` 与倒计时都依赖它：订单超时那一刻界面上要有变化，
@@ -21,34 +34,6 @@ const activeStatus = ref<OrderStatus | 'ALL'>('ALL')
 const now = ref(Date.now())
 
 let timer: ReturnType<typeof setInterval> | undefined
-
-/**
- * 状态分组。用「分组」而不是枚举出全部 9 个状态当筛选项：
- * 用户想找的是「待付款的」「在路上的」，不是 REFUNDING 与 REFUNDED 的区别。
- */
-const STATUS_TABS: { value: OrderStatus | 'ALL'; label: string; match: OrderStatus[] }[] = [
-  { value: 'ALL', label: '全部', match: [] },
-  { value: 'CREATED', label: '待付款', match: ['CREATED'] },
-  { value: 'PAID', label: '待发货', match: ['PAID'] },
-  { value: 'SHIPPED', label: '待收货', match: ['SHIPPED'] },
-  { value: 'RECEIVED', label: '已完成', match: ['RECEIVED', 'COMPLETED'] },
-  { value: 'CANCELLED', label: '退款/取消', match: ['CANCELLED', 'CLOSED', 'REFUNDING', 'REFUNDED'] },
-]
-
-const filtered = computed(() => {
-  const tab = STATUS_TABS.find((item) => item.value === activeStatus.value)
-  if (!tab || tab.match.length === 0) {
-    return orders.value
-  }
-  return orders.value.filter((order) => tab.match.includes(order.status))
-})
-
-function countOf(tab: (typeof STATUS_TABS)[number]): number {
-  if (tab.match.length === 0) {
-    return orders.value.length
-  }
-  return orders.value.filter((order) => tab.match.includes(order.status)).length
-}
 
 /** 未支付且未超时 —— 只有这种订单还能付款 */
 function payable(order: Order): boolean {
@@ -92,12 +77,42 @@ async function load() {
   loading.value = true
   failed.value = false
   try {
-    orders.value = await listOrders()
+    // 列表与计数一起取：页签上的数字和下面的列表出自同一批数据，不会出现
+    // 「角标说 3 单、列表只有 1 单」这种自相矛盾
+    const [result, counts] = await Promise.all([
+      listOrders(activeTab.value, page.value, PAGE_SIZE),
+      orderSummary(),
+    ])
+    // 当前页被清空（最后一单刚被取消、或页签刚切过）时回退一页，
+    // 不让用户停在一个「有订单但这一页是空的」页面上
+    if (result.records.length === 0 && page.value > 0) {
+      page.value = Math.max(0, Math.ceil(result.total / PAGE_SIZE) - 1)
+      await load()
+      return
+    }
+    orders.value = result.records
+    total.value = result.total
+    tabs.value = counts
   } catch {
     failed.value = true
   } finally {
     loading.value = false
   }
+}
+
+function switchTab(tab: OrderTab) {
+  if (activeTab.value === tab) {
+    return
+  }
+  activeTab.value = tab
+  page.value = 0
+  load()
+}
+
+/** 翻页组件从 1 数起，接口从 0 */
+function changePage(next: number) {
+  page.value = next - 1
+  load()
 }
 
 /** 取消/退款重试的文案：三种入口（未支付、已支付、退款重试）说三种话 */
@@ -173,26 +188,26 @@ onUnmounted(() => {
 
     <nav class="tabs" aria-label="订单状态筛选">
       <button
-        v-for="tab in STATUS_TABS"
-        :key="tab.value"
+        v-for="tab in tabs"
+        :key="tab.tab"
         type="button"
         class="tabs__item"
-        :class="{ 'is-active': activeStatus === tab.value }"
-        @click="activeStatus = tab.value"
+        :class="{ 'is-active': activeTab === tab.tab }"
+        @click="switchTab(tab.tab)"
       >
         {{ tab.label }}
-        <span v-if="countOf(tab) > 0" class="tabs__count">{{ countOf(tab) }}</span>
+        <span v-if="tab.count > 0" class="tabs__count">{{ tab.count }}</span>
       </button>
     </nav>
 
     <div v-loading="loading" class="orders">
       <ErrorState v-if="failed" message="订单加载失败" :on-retry="load" />
 
-      <el-empty v-else-if="!loading && filtered.length === 0" description="没有相关订单">
+      <el-empty v-else-if="!loading && orders.length === 0" description="没有相关订单">
         <el-button type="primary" @click="router.push('/shop')">去逛逛</el-button>
       </el-empty>
 
-      <article v-for="order in filtered" :key="order.id" class="surface order">
+      <article v-for="order in orders" :key="order.id" class="surface order">
         <header class="order__head">
           <div class="order__meta">
             <span class="order__no">{{ order.orderNo }}</span>
@@ -245,6 +260,17 @@ onUnmounted(() => {
         </footer>
       </article>
     </div>
+
+    <el-pagination
+      v-if="!failed && total > PAGE_SIZE"
+      class="pager"
+      layout="prev, pager, next, total"
+      background
+      :total="total"
+      :page-size="PAGE_SIZE"
+      :current-page="page + 1"
+      @current-change="changePage"
+    />
   </div>
 </template>
 
@@ -290,6 +316,10 @@ onUnmounted(() => {
   display: grid;
   gap: var(--ys-space-4);
   min-height: 200px;
+}
+
+.pager {
+  justify-content: flex-end;
 }
 
 .order {

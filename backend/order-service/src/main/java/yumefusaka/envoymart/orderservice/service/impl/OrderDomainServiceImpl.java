@@ -5,10 +5,12 @@ import com.alibaba.csp.sentinel.SphU;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.seata.spring.annotation.GlobalTransactional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.orderservice.client.PaymentClient;
@@ -34,9 +36,17 @@ import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.contract.LogisticsStepResponse;
 import yumefusaka.envoymart.contract.OrderItemResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
+import yumefusaka.envoymart.contract.CouponPreview;
+import yumefusaka.envoymart.contract.CouponPreviewRequest;
 import yumefusaka.envoymart.orderservice.model.AfterSaleStatus;
 import yumefusaka.envoymart.orderservice.model.DeliveryStatus;
+import yumefusaka.envoymart.orderservice.model.OrderListQuery;
+import yumefusaka.envoymart.orderservice.model.OrderPreviewRequest;
+import yumefusaka.envoymart.orderservice.model.OrderPreviewResponse;
 import yumefusaka.envoymart.orderservice.model.OrderStatus;
+import yumefusaka.envoymart.orderservice.model.OrderStatusCount;
+import yumefusaka.envoymart.orderservice.model.OrderTab;
+import yumefusaka.envoymart.orderservice.model.OrderTabCount;
 import yumefusaka.envoymart.contract.RedeemItem;
 import yumefusaka.envoymart.contract.RedeemRequest;
 import yumefusaka.envoymart.contract.RefundRequest;
@@ -52,6 +62,7 @@ import yumefusaka.envoymart.orderservice.service.OrderDomainService;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -160,11 +171,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     cartItems.stream().map(CartItemEntity::getSkuId).toList());
             long unavailable = cartItems.stream()
                     .map(CartItemEntity::getSkuId)
-                    .filter(skuId -> {
-                        SkuSnapshot sku = skus.get(skuId);
-                        return sku == null || sku.getStatus() == null
-                                || sku.getStatus() != STATUS_ON;
-                    })
+                    .filter(skuId -> isUnavailable(skus.get(skuId)))
                     .count();
             if (unavailable > 0) {
                 throw new IllegalStateException("购物车中有 " + unavailable
@@ -214,11 +221,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     long subtotal = sku.getPrice() * cartItem.getQuantity();
                     total += subtotal;
 
-                    redeemItems.add(RedeemItem.builder()
-                            .spuId(sku.getSpuId())
-                            .categoryId(sku.getCategoryId())
-                            .subtotal(subtotal)
-                            .build());
+                    redeemItems.add(toRedeemItem(sku, subtotal));
 
                     OrderItemEntity item = new OrderItemEntity();
                     item.setOrderId(order.getId());
@@ -369,12 +372,120 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
-    public List<OrderResponse> listOrders(String userId) {
-        return orderMapper.selectList(new LambdaQueryWrapper<OrderEntity>()
-                        .eq(OrderEntity::getUserId, userId)
-                        .orderByDesc(OrderEntity::getCreatedAt))
-                .stream()
-                .map(this::toOrderResponse)
+    public OrderPreviewResponse preview(String userId, OrderPreviewRequest request) {
+        List<CartItemEntity> cartItems = selectSelected(userId);
+        if (cartItems.isEmpty()) {
+            throw new IllegalArgumentException("请先勾选要结算的商品");
+        }
+        Map<Long, SkuSnapshot> skus = fetchSkus(
+                cartItems.stream().map(CartItemEntity::getSkuId).toList());
+
+        long total = 0L;
+        int unavailable = 0;
+        List<RedeemItem> items = new ArrayList<>();
+        for (CartItemEntity cartItem : cartItems) {
+            SkuSnapshot sku = skus.get(cartItem.getSkuId());
+            if (isUnavailable(sku)) {
+                // 失效行不计金额、也不进券的作用域 —— 提交时同一条件会把它挡下，
+                // 这里如实报数量，而不是让它悄悄从账里消失
+                unavailable++;
+                continue;
+            }
+            long subtotal = sku.getPrice() * cartItem.getQuantity();
+            total += subtotal;
+            items.add(toRedeemItem(sku, subtotal));
+        }
+
+        List<CouponPreview> coupons = items.isEmpty()
+                ? List.of()
+                : previewCoupons(userId, items);
+
+        // 所选券只在这次试算的结论里可用时才算抵扣：结论不可用却先减掉钱，
+        // 就是把「提交会被拒」重新藏回结算页
+        long discount = request == null || request.getUserCouponId() == null
+                ? 0L
+                : coupons.stream()
+                        .filter(coupon -> request.getUserCouponId().equals(coupon.getId()))
+                        .filter(coupon -> Boolean.TRUE.equals(coupon.getUsable()))
+                        .mapToLong(coupon -> coupon.getDeductAmount() == null ? 0L : coupon.getDeductAmount())
+                        .findFirst()
+                        .orElse(0L);
+
+        return OrderPreviewResponse.builder()
+                .totalAmount(total)
+                .freightAmount(FREIGHT_FREE)
+                .discountAmount(discount)
+                .payAmount(total + FREIGHT_FREE - discount)
+                .itemCount(items.size())
+                .unavailableCount(unavailable)
+                .coupons(coupons)
+                .build();
+    }
+
+    /**
+     * 调营销服务试算券。
+     * <p>
+     * 失败<b>不抛</b>：结算页的券试不了不该让人买不了东西 —— 用户按原价结算即可。
+     * 但也不静默：日志里留下原因，页面上是一份没有券的账（与「一张券都用不了」可区分——
+     * 那种情况营销服务会正常回一份列表，每张带各自的理由）。
+     */
+    private List<CouponPreview> previewCoupons(String userId, List<RedeemItem> items) {
+        Result<List<CouponPreview>> response;
+        try {
+            response = promotionClient.preview(userId, CouponPreviewRequest.builder()
+                    .items(items)
+                    .build());
+        } catch (Exception e) {
+            log.warn("[Order] 优惠券试算失败 userId={}: {}", userId, e.getMessage());
+            return List.of();
+        }
+        if (response == null || response.getCode() == null || response.getCode() != 200) {
+            log.warn("[Order] 优惠券试算被拒 userId={}: {}",
+                    userId, response == null ? "无响应" : response.getMsg());
+            return List.of();
+        }
+        return response.getData() == null ? List.of() : response.getData();
+    }
+
+    @Override
+    public PageResult<OrderResponse> listOrders(String userId, OrderListQuery query) {
+        OrderTab tab = query.tabOrDefault();
+        Page<OrderEntity> page = new Page<>(query.mpCurrent(), query.safeSize());
+        Page<OrderEntity> result = orderMapper.selectPage(page, new LambdaQueryWrapper<OrderEntity>()
+                .eq(OrderEntity::getUserId, userId)
+                // 页签的成员状态只在 OrderTab 里定义一次，这里不重复一遍
+                .in(!tab.isAll(), OrderEntity::getStatus, tab.statusNames())
+                .orderByDesc(OrderEntity::getCreatedAt)
+                // 同一秒建的订单（下单脚本、并发压测）光按时间排不稳定：翻页时
+                // 数据库可以给出两种顺序，于是第 2 页里混进第 1 页看过的那一单
+                .orderByDesc(OrderEntity::getId));
+
+        // 这一页的订单行一次查完：分页之后逐单查仍然是 N+1，
+        // 只是 N 从「全部订单」悄悄变成了 size
+        Map<Long, List<OrderItemEntity>> itemsByOrder = itemsOf(result.getRecords());
+
+        return PageResult.<OrderResponse>builder()
+                .records(result.getRecords().stream()
+                        .map(order -> toOrderResponse(order,
+                                itemsByOrder.getOrDefault(order.getId(), List.of())))
+                        .toList())
+                .total(result.getTotal())
+                .page(query.zeroBasedPage())
+                .size(query.safeSize())
+                .build();
+    }
+
+    @Override
+    public List<OrderTabCount> orderSummary(String userId) {
+        Map<String, Long> countByStatus = orderMapper.countByStatus(userId).stream()
+                .collect(Collectors.toMap(OrderStatusCount::getStatus, OrderStatusCount::getCnt,
+                        (a, b) -> a));
+        return Arrays.stream(OrderTab.values())
+                .map(tab -> OrderTabCount.builder()
+                        .tab(tab.name())
+                        .label(tab.label())
+                        .count(tab.countIn(countByStatus))
+                        .build())
                 .toList();
     }
 
@@ -955,6 +1066,37 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         }
     }
 
+    /**
+     * 商品行在结算链路里的统一形态。**结算与试算共用**：
+     * 试算的结论要与提交一致，第一件事就是两边问的是同一批商品、同一份类目路径。
+     * <p>
+     * 类目路径来自 SKU 快照（product-service 按类目物化路径算好），
+     * 核销侧据此判「落在不在券的类目子树里」，不必自己回查类目树。
+     */
+    private RedeemItem toRedeemItem(SkuSnapshot sku, long subtotal) {
+        return RedeemItem.builder()
+                .spuId(sku.getSpuId())
+                .categoryPath(sku.getCategoryPath())
+                .subtotal(subtotal)
+                .build();
+    }
+
+    /** 已下架或查不到 —— 结算与试算用同一个判据，两处结论才不会分叉 */
+    private boolean isUnavailable(SkuSnapshot sku) {
+        return sku == null || sku.getStatus() == null || sku.getStatus() != STATUS_ON;
+    }
+
+    /** 这一批订单的行，一次查完 */
+    private Map<Long, List<OrderItemEntity>> itemsOf(List<OrderEntity> orders) {
+        if (orders.isEmpty()) {
+            return Map.of();
+        }
+        return orderItemMapper.selectList(new LambdaQueryWrapper<OrderItemEntity>()
+                        .in(OrderItemEntity::getOrderId, orders.stream().map(OrderEntity::getId).toList()))
+                .stream()
+                .collect(Collectors.groupingBy(OrderItemEntity::getOrderId));
+    }
+
     private Map<Long, SkuSnapshot> fetchSkus(List<Long> skuIds) {
         if (skuIds.isEmpty()) {
             return Map.of();
@@ -1033,11 +1175,21 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         }
     }
 
+    /** 单笔订单（详情、下单返回）—— 订单行现查 */
     private OrderResponse toOrderResponse(OrderEntity order) {
-        List<OrderItemResponse> items = orderItemMapper.selectList(
-                        new LambdaQueryWrapper<OrderItemEntity>()
-                                .eq(OrderItemEntity::getOrderId, order.getId()))
-                .stream()
+        return toOrderResponse(order, orderItemMapper.selectList(
+                new LambdaQueryWrapper<OrderItemEntity>().eq(OrderItemEntity::getOrderId, order.getId())));
+    }
+
+    /**
+     * 带上已查好的订单行。
+     * <p>
+     * 列表页走这条重载：订单行由调用方批量查一次（见 {@link #itemsOf}），
+     * 而不是逐单再查一遍 —— 逐单查在只返回一笔订单时看不出问题，
+     * 分页之后就是「每页 10 笔 = 多 10 次查询」。
+     */
+    private OrderResponse toOrderResponse(OrderEntity order, List<OrderItemEntity> orderItems) {
+        List<OrderItemResponse> items = orderItems.stream()
                 .map(item -> OrderItemResponse.builder()
                         .id(item.getId())
                         .spuId(item.getSpuId())

@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 /**
  * SKU 快照：按 SKU id 批量取，给购物车与订单组装用。
  * <p>
@@ -33,6 +35,15 @@ public class SkuSnapshot {
      * 少了这个字段，政策引擎就只能按全类目默认政策走。
      */
     private Long categoryId;
+
+    /**
+     * 所属类目及其全部祖先，由近及远（见 {@link RedeemItem#getCategoryPath()}）。
+     * <p>
+     * 与 {@link #categoryId} 并存而不是取代它：订单行存的是「挂在哪个类目」这一个事实
+     * （售后政策按它等值匹配），而优惠券作用域要判「落在这棵子树的哪儿」。
+     * 这条路径由 product-service 用自己的类目表算，调用方不必知道类目树长什么样。
+     */
+    private List<Long> categoryPath;
 
     private Long spuId;
 

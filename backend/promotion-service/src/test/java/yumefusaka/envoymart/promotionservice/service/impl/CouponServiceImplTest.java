@@ -10,6 +10,7 @@ import yumefusaka.envoymart.promotionservice.mapper.CouponMapper;
 import yumefusaka.envoymart.promotionservice.mapper.UserCouponMapper;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,6 +29,10 @@ import static org.mockito.Mockito.when;
  * 钉住的核心事实：门槛与折扣的基数都是<b>券作用范围内商品的小计</b>，不是订单总额，
  * 也不是被券「蹭」上的任意金额。范围外的商品既不能帮用户凑门槛、也不能被折扣。
  * 数据不自洽（scopeIds 非法）时拒绝而不是猜——猜错的方向就是多减钱。
+ * <p>
+ * 类目作用域配的是<b>祖先链上的任意一级</b>：商品挂的是叶子类目（2 维生素矿物质、4 蛋白质氨基酸、
+ * 14 骨骼关节），路径形如 `1/2`，所以券配一级类目 1 时整棵子树都算数。用例里作用域写 "1"
+ * 而商品类目写 2 / 4 / 14，量的是这条；配 "2" 那一条量的是反向——叶子类目只命中它自己。
  */
 class CouponServiceImplTest {
 
@@ -66,8 +71,16 @@ class CouponServiceImplTest {
         return c;
     }
 
-    private static RedeemItem item(long spuId, long categoryId, long subtotal) {
-        return RedeemItem.builder().spuId(spuId).categoryId(categoryId).subtotal(subtotal).build();
+    /**
+     * 一行商品：spuId、行小计、类目路径（自身在前、祖先依次向后）。路径用可变参数是为了让
+     * 调用处一眼看出「商品挂哪个类目、它的祖先是谁」—— 本项目类目树两层，现有用例都是两级路径。
+     */
+    private static RedeemItem item(long spuId, long subtotal, long... categoryPath) {
+        return RedeemItem.builder()
+                .spuId(spuId)
+                .subtotal(subtotal)
+                .categoryPath(Arrays.stream(categoryPath).boxed().toList())
+                .build();
     }
 
     private static RedeemRequest request(RedeemItem... items) {
@@ -76,10 +89,10 @@ class CouponServiceImplTest {
 
     @Test
     void 购物车里一件范围内商品都没有时拒绝核销() {
-        givenCoupon(coupon("FIXED", 2000L, null, 10000, "CATEGORY", "2,3,4,5,6"));
+        givenCoupon(coupon("FIXED", 2000L, null, 10000, "CATEGORY", "1"));
         when(userCouponMapper.redeem(anyLong(), anyString(), anyString())).thenReturn(1);
 
-        assertThatThrownBy(() -> service.redeem("u1001", request(item(10, 14, 13800))))
+        assertThatThrownBy(() -> service.redeem("u1001", request(item(10, 13800, 14, 13))))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("该优惠券不适用于订单中的商品");
         // 拒绝发生在核销之前：券不能被消耗
@@ -88,10 +101,10 @@ class CouponServiceImplTest {
 
     @Test
     void 门槛按范围内小计判定而不是订单总额() {
-        givenCoupon(coupon("FIXED", 2000L, null, 10000, "CATEGORY", "2,3,4,5,6"));
+        givenCoupon(coupon("FIXED", 2000L, null, 10000, "CATEGORY", "1"));
 
         // 总额 20700 > 门槛，但范围内的只有 6900 < 10000
-        assertThatThrownBy(() -> service.redeem("u1001", request(item(10, 14, 13800), item(6, 4, 6900))))
+        assertThatThrownBy(() -> service.redeem("u1001", request(item(10, 13800, 14, 13), item(6, 6900, 4, 1))))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("优惠券适用范围内的商品金额未达到使用门槛，还差 3100 分");
         verify(userCouponMapper, never()).redeem(anyLong(), anyString(), anyString());
@@ -99,10 +112,10 @@ class CouponServiceImplTest {
 
     @Test
     void 满减券按范围内小计抵扣范围外不参与() {
-        givenCoupon(coupon("FIXED", 2000L, null, 10000, "CATEGORY", "2,3,4,5,6"));
+        givenCoupon(coupon("FIXED", 2000L, null, 10000, "CATEGORY", "1"));
         when(userCouponMapper.redeem(anyLong(), anyString(), anyString())).thenReturn(1);
 
-        long deduct = service.redeem("u1001", request(item(2, 2, 12800), item(10, 14, 13800)));
+        long deduct = service.redeem("u1001", request(item(2, 12800, 2, 1), item(10, 13800, 14, 13)));
 
         assertThat(deduct).isEqualTo(2000L);
         verify(userCouponMapper).redeem(1L, "u1001", "YS1");
@@ -114,7 +127,7 @@ class CouponServiceImplTest {
         when(userCouponMapper.redeem(anyLong(), anyString(), anyString())).thenReturn(1);
 
         // 范围内 12800：抵扣 12800×0.15=1920；若错用总额 26600 会算出 3990
-        long deduct = service.redeem("u1001", request(item(2, 2, 12800), item(10, 14, 13800)));
+        long deduct = service.redeem("u1001", request(item(2, 12800, 2, 1), item(10, 13800, 14, 13)));
 
         assertThat(deduct).isEqualTo(1920L);
     }
@@ -124,7 +137,7 @@ class CouponServiceImplTest {
         givenCoupon(coupon("FIXED", 2000L, null, 10000, "ALL", null));
         when(userCouponMapper.redeem(anyLong(), anyString(), anyString())).thenReturn(1);
 
-        long deduct = service.redeem("u1001", request(item(2, 2, 12800), item(10, 14, 13800)));
+        long deduct = service.redeem("u1001", request(item(2, 12800, 2, 1), item(10, 13800, 14, 13)));
 
         assertThat(deduct).isEqualTo(2000L);
     }
@@ -133,7 +146,7 @@ class CouponServiceImplTest {
     void scopeIds非法时按不可用拒绝而不是当成全场券() {
         givenCoupon(coupon("FIXED", 2000L, null, 0, "SPU", "abc"));
 
-        assertThatThrownBy(() -> service.redeem("u1001", request(item(2, 2, 12800))))
+        assertThatThrownBy(() -> service.redeem("u1001", request(item(2, 12800, 2, 1))))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("该优惠券暂不可用");
         verify(userCouponMapper, never()).redeem(anyLong(), anyString(), anyString());
@@ -145,7 +158,7 @@ class CouponServiceImplTest {
         // 并发下另一个请求先核销了：affected=0
         when(userCouponMapper.redeem(anyLong(), anyString(), anyString())).thenReturn(0);
 
-        assertThatThrownBy(() -> service.redeem("u1001", request(item(2, 2, 12800))))
+        assertThatThrownBy(() -> service.redeem("u1001", request(item(2, 12800, 2, 1))))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("优惠券不可用（已使用或已过期）");
     }

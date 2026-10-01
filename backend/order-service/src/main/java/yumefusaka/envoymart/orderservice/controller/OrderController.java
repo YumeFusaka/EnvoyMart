@@ -9,11 +9,16 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.orderservice.model.CheckoutRequest;
 import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
+import yumefusaka.envoymart.orderservice.model.OrderListQuery;
+import yumefusaka.envoymart.orderservice.model.OrderPreviewRequest;
+import yumefusaka.envoymart.orderservice.model.OrderPreviewResponse;
+import yumefusaka.envoymart.orderservice.model.OrderTabCount;
 import yumefusaka.envoymart.orderservice.service.OrderDomainService;
 
 import java.util.List;
@@ -44,10 +49,40 @@ public class OrderController {
         return Result.success(orderDomainService.checkout(userId, request));
     }
 
+    /**
+     * 结算页试算。<b>不改任何状态</b>：商品明细取自服务端（购物车已勾选条目 + SKU 快照），
+     * 与 {@link #checkout} 是同一段装配代码 —— 于是「预览说券能用、提交却被拒」
+     * 这一类分叉不可能发生（两边问的是同一批商品、同一份类目路径）。
+     * <p>
+     * 请求体可省：不传券就是「我这单原价多少、我有哪些券可用」。
+     */
+    @PostMapping("/preview")
+    public Result<OrderPreviewResponse> preview(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestBody(required = false) OrderPreviewRequest request) {
+        return Result.success(orderDomainService.preview(userId, request));
+    }
+
+    /**
+     * 我的订单，按状态页签分页。
+     * <p>
+     * 字面量路径 {@code /summary} 与这里的根路径都不与 {@code /{id}} 冲突：
+     * Spring 的字面量优先于模板。真踩过的坑是另一回事 —— 新接口在<b>跑着旧 class
+     * 的进程</b>里不存在时，{@code /orders/summary} 会被匹配到 {@code /{id}} 上，
+     * 报一句「参数格式不正确：id」，把「路由没生效」伪装成「参数写错了」。
+     */
     @GetMapping
-    public Result<List<OrderResponse>> listOrders(
+    public Result<PageResult<OrderResponse>> listOrders(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            OrderListQuery query) {
+        return Result.success(orderDomainService.listOrders(userId, query));
+    }
+
+    /** 各页签的数量，给角标用。与列表同一口径（页签成员关系只在 OrderTab 里定义一次） */
+    @GetMapping("/summary")
+    public Result<List<OrderTabCount>> summary(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId) {
-        return Result.success(orderDomainService.listOrders(userId));
+        return Result.success(orderDomainService.orderSummary(userId));
     }
 
     @GetMapping("/{id}")

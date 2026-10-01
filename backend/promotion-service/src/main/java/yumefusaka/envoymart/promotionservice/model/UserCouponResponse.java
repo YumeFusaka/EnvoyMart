@@ -26,13 +26,4 @@ public class UserCouponResponse {
     private LocalDateTime usedAt;
     /** 过期时间。前端据此显示「N 天后过期」 */
     private LocalDateTime expireAt;
-
-    /**
-     * 当前订单金额下是否可用。
-     * <p>
-     * 在**结算页**带上：让用户一眼看出哪张券现在用不了、差多少金额，
-     * 而不是选完才报「不满足使用条件」。
-     */
-    private Boolean usable;
-    private String unusableReason;
 }

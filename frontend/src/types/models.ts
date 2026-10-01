@@ -292,10 +292,48 @@ export interface UserCoupon {
   receivedAt: string
   usedAt: string | null
   expireAt: string
-  /** 传入订单金额时才有：这张券现在能不能用 */
-  usable: boolean | null
-  /** 不能用时的原因，如「差 5000 分可用」 */
+}
+
+/**
+ * 一张券在「当前这批商品」上的结论，来自结算页试算。
+ *
+ * 与 `UserCoupon` 是两个视图形状：券包要的是「我有什么券」，
+ * 结算页要的是「这张券在这单能不能用、抵多少」。后者必须有商品明细才算得出来，
+ * 所以由服务端拿着订单行算好再下发 —— 前端不拿券面文案反推金额。
+ */
+export interface CouponPreview {
+  /** 用户券 id */
+  id: number
+  name: string
+  /** 服务端拼好的人话，如「满 100 减 20 元」 */
+  ruleText: string | null
+  usable: boolean
+  /** 不可用的原因。措辞与提交被拒时逐字一致（同一段判定产生） */
   unusableReason: string | null
+  /** 本单能抵多少（分），可用时才有意义 */
+  deductAmount: number | null
+}
+
+/** 结算页试算结果。每个金额都由服务端算 —— 应付金额只有一个出处 */
+export interface OrderPreview {
+  totalAmount: number
+  freightAmount: number
+  discountAmount: number
+  payAmount: number
+  itemCount: number
+  /** 已失效（下架/不存在）的行数：它们不计金额，且提交时会被整单挡下 */
+  unavailableCount: number
+  coupons: CouponPreview[]
+}
+
+/** 我的订单的状态页签。成员状态由服务端 OrderTab 定义，前端只负责渲染与筛选 */
+export type OrderTab = 'ALL' | 'CREATED' | 'PAID' | 'SHIPPED' | 'RECEIVED' | 'CANCELLED'
+
+/** 页签角标。label 由服务端给出，与列表筛选同源 */
+export interface OrderTabCount {
+  tab: OrderTab
+  label: string
+  count: number
 }
 
 export interface Payment {

@@ -13,12 +13,15 @@ export async function receiveCoupon(couponId: number) {
 }
 
 /**
- * 我的券。
+ * 我的券（券包）。
  *
- * @param orderAmount 传订单金额（分）时，会算出每张券「现在能不能用、差多少」。
- *                    结算页用它，让用户一眼看出哪张用不了
+ * 不算「在某单上能不能用」—— 那件事要订单行明细，走结算页试算（`previewOrder`）。
+ * 曾经这里收一个订单金额就地算，但它只有总额、没有商品明细，
+ * 限类目的券于是「预览说能用、提交被拒」。
+ *
+ * @param status UNUSED / USED / EXPIRED；不传则全部
  */
-export async function listMyCoupons(status?: string, orderAmount?: number) {
-  const response = await request.get('/coupons/mine', { params: { status, orderAmount } })
+export async function listMyCoupons(status?: string) {
+  const response = await request.get('/coupons/mine', { params: { status } })
   return response.data.data as UserCoupon[]
 }

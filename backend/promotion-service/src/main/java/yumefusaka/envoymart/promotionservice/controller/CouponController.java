@@ -11,6 +11,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
+import yumefusaka.envoymart.contract.CouponPreview;
+import yumefusaka.envoymart.contract.CouponPreviewRequest;
 import yumefusaka.envoymart.contract.RedeemRequest;
 import yumefusaka.envoymart.promotionservice.model.CouponResponse;
 import yumefusaka.envoymart.promotionservice.model.UserCouponResponse;
@@ -48,16 +50,32 @@ public class CouponController {
     }
 
     /**
-     * 我的券。
-     *
-     * @param orderAmount 结算页传入订单金额，用于算出每张券「现在能不能用、差多少」
+     * 我的券（券包）。
+     * <p>
+     * 这里<b>不算「在某个订单上能不能用」</b>：那件事需要订单行明细，
+     * 由结算页走 order-service 的 {@code POST /orders/preview} 触发
+     * （见 {@link #preview}）。曾经这个接口收一个 orderAmount 就地算，
+     * 但它只有总额、没有商品明细，限类目券的结论与核销必然分叉。
      */
     @GetMapping("/mine")
     public Result<List<UserCouponResponse>> mine(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @RequestParam(value = "status", required = false) String status,
-            @RequestParam(value = "orderAmount", required = false) Long orderAmount) {
-        return Result.success(couponService.myCoupons(userId, status, orderAmount));
+            @RequestParam(value = "status", required = false) String status) {
+        return Result.success(couponService.myCoupons(userId, status));
+    }
+
+    /**
+     * 结算页预览。**服务间动作**，由订单服务在用户进结算页与切换券时调用。
+     * <p>
+     * 传的是订单行明细而不是订单金额，判定与核销共用同一段代码
+     * （见 {@link CouponService#preview(String, List)}）—— 用户看到的
+     * 「为什么不能用」与提交被拒时的那句话逐字一致。
+     */
+    @PostMapping("/internal/preview")
+    public Result<List<CouponPreview>> preview(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @Valid @RequestBody CouponPreviewRequest request) {
+        return Result.success(couponService.preview(userId, request.getItems()));
     }
 
     /**
