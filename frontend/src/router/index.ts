@@ -77,6 +77,14 @@ const router = createRouter({
           meta: { title: '我的收藏' },
         },
         {
+          // 评价是「我做过的一件事」的留档，所以放在个人侧而不是商品侧：
+          // 商品页只回答「这件东西别人怎么说」，这里回答「我说过什么、现在什么状态」
+          path: 'reviews',
+          name: 'my-reviews',
+          component: () => import('@/views/MyReviewsView.vue'),
+          meta: { title: '我的评价' },
+        },
+        {
           path: 'orders/:id',
           name: 'order-detail',
           component: () => import('@/views/OrderDetailView.vue'),

@@ -151,6 +151,7 @@ onMounted(() => {
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item @click="router.push('/profile')">个人中心</el-dropdown-item>
+                  <el-dropdown-item @click="router.push('/reviews')">我的评价</el-dropdown-item>
                   <el-dropdown-item v-if="isAdmin" @click="router.push('/admin')"
                     >管理台</el-dropdown-item
                   >
@@ -212,6 +213,10 @@ onMounted(() => {
         <RouterLink v-if="userStore.token" to="/profile" class="app-nav__link" @click="closeDrawer">
           <el-icon><User /></el-icon>
           <span>个人中心</span>
+        </RouterLink>
+        <RouterLink v-if="userStore.token" to="/reviews" class="app-nav__link" @click="closeDrawer">
+          <el-icon><Star /></el-icon>
+          <span>我的评价</span>
         </RouterLink>
         <RouterLink v-if="isAdmin" to="/admin" class="app-nav__link" @click="closeDrawer">
           <el-icon><Setting /></el-icon>

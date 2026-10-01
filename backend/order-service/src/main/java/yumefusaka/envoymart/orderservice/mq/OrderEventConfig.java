@@ -34,6 +34,16 @@ public class OrderEventConfig {
     public static final String ORDER_CREATED_KEY = "order.created";
     public static final String PAYMENT_COMPLETED_KEY = "payment.completed";
 
+    /**
+     * 订单真的变成「已支付」了 —— 与 {@code payment.completed} 的方向相反：
+     * 那条是 payment-service 发进来、这个服务收，这条是这个服务发出去、商品服务收（累加销量）。
+     * <p>
+     * 本服务<b>不为自己发出去的事件声明队列</b>：队列属于消费方（product-service 那边声明）。
+     * 在这里也建一条队列并绑定，等于多出一个没人消费的"幽灵队列"——
+     * 消息进去就堆着，看起来像"事件没人处理"，实际是重复声明出来的。
+     */
+    public static final String ORDER_PAID_KEY = "order.paid";
+
     @Bean
     public TopicExchange orderExchange() {
         return ExchangeBuilder.topicExchange(ORDER_EXCHANGE)

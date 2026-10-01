@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { LocationInformation } from '@element-plus/icons-vue'
 import { cancelOrder, confirmReceipt, formatAddress, getLogistics, getOrder } from '@/api/order'
 import { formatPrice } from '@/api/product'
+import { listMyReviews } from '@/api/review'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import AfterSaleDialog from '@/components/order/AfterSaleDialog.vue'
 import ReviewDialog from '@/components/order/ReviewDialog.vue'
@@ -23,6 +24,25 @@ const receiving = ref(false)
 const activeItem = ref<OrderItem | null>(null)
 const afterSaleOpen = ref(false)
 const reviewOpen = ref(false)
+
+/**
+ * 这一单里已经评过的订单行 → 打的分。
+ *
+ * 按订单行而不是整单记：一单三件商品，用户可能只评了其中一件，
+ * 按整单标「已评价」会让另外两件再也点不开评价入口。
+ */
+const reviewedRatings = ref(new Map<number, number>())
+
+async function loadReviewed() {
+  try {
+    const result = await listMyReviews({ orderId: orderId.value, size: 50 })
+    reviewedRatings.value = new Map(result.records.map((r) => [r.orderItemId, r.rating]))
+  } catch {
+    // 拉不到就当作「都没评过」：最坏的结果是用户点进评价框、
+    // 提交时被服务端的唯一约束挡住，而不是整页打不开
+    reviewedRatings.value = new Map()
+  }
+}
 
 /** 已收货之后才能申请售后或评价 */
 const afterSaleEligible = computed(
@@ -137,6 +157,7 @@ async function load() {
     } else {
       logistics.value = null
     }
+    await loadReviewed()
   } catch {
     failed.value = true
   } finally {
@@ -302,7 +323,17 @@ onMounted(load)
                  只退其中一件 -->
             <div v-if="afterSaleEligible" class="goods__actions">
               <el-button link size="small" @click="openAfterSale(item)">申请售后</el-button>
-              <el-button link size="small" type="primary" @click="openReview(item)">评价</el-button>
+              <!--
+                评过的行给状态而不是继续摆一个点进去必然报错的「评价」按钮：
+                用户看不出哪里不一样，只会在提交时撞上「该商品已经评价过了」。
+              -->
+              <span v-if="reviewedRatings.has(item.id)" class="goods__reviewed">
+                <el-rate :model-value="reviewedRatings.get(item.id)" disabled size="small" />
+                已评价
+              </span>
+              <el-button v-else link size="small" type="primary" @click="openReview(item)"
+                >评价</el-button
+              >
             </div>
           </li>
         </ul>
@@ -477,8 +508,17 @@ onMounted(load)
 .goods__actions {
   grid-column: 2 / -1;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: var(--ys-space-2);
+}
+
+.goods__reviewed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ys-space-1);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
 }
 
 .goods__item img {

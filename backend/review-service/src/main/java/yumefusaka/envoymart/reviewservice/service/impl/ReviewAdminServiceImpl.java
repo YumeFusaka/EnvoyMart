@@ -15,6 +15,7 @@ import yumefusaka.envoymart.reviewservice.mapper.ReviewMapper;
 import yumefusaka.envoymart.reviewservice.model.admin.AdminReviewDetail;
 import yumefusaka.envoymart.reviewservice.model.admin.AdminReviewQuery;
 import yumefusaka.envoymart.reviewservice.model.admin.AdminReviewSummary;
+import yumefusaka.envoymart.reviewservice.mq.ReviewAggregatePublisher;
 import yumefusaka.envoymart.reviewservice.service.ReviewAdminService;
 
 import java.util.List;
@@ -34,10 +35,14 @@ public class ReviewAdminServiceImpl implements ReviewAdminService {
 
     private final ReviewMapper reviewMapper;
     private final ReviewImageMapper reviewImageMapper;
+    private final ReviewAggregatePublisher aggregatePublisher;
 
-    public ReviewAdminServiceImpl(ReviewMapper reviewMapper, ReviewImageMapper reviewImageMapper) {
+    public ReviewAdminServiceImpl(ReviewMapper reviewMapper,
+                                  ReviewImageMapper reviewImageMapper,
+                                  ReviewAggregatePublisher aggregatePublisher) {
         this.reviewMapper = reviewMapper;
         this.reviewImageMapper = reviewImageMapper;
+        this.aggregatePublisher = aggregatePublisher;
     }
 
     @Override
@@ -119,6 +124,13 @@ public class ReviewAdminServiceImpl implements ReviewAdminService {
         log.info("评价状态变更: reviewId={}, {} -> {}, operator={}, reason={}",
                 reviewId, review.getStatus(), target, operatorId,
                 STATUS_HIDDEN.equals(target) ? trimmedReason : null);
+
+        // 隐藏一条评价会让商品的均分与评论数一起变——商品侧那份冗余必须跟着动。
+        // 只有牵涉 PUBLISHED 的变更才要发：PENDING 与 HIDDEN 都不在聚合里，
+        // 它们之间互转对商品评分没有任何影响
+        if (STATUS_PUBLISHED.equals(review.getStatus()) || STATUS_PUBLISHED.equals(target)) {
+            aggregatePublisher.publishAfterCommit(review.getSpuId());
+        }
 
         ReviewEntity updated = reviewMapper.selectById(reviewId);
         return toSummary(updated, imagesOf(reviewId).size());

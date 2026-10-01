@@ -34,4 +34,28 @@ public class OrderEventPublisher {
                 new CorrelationData(event.getOrderNo()));
         log.info("[MQ] 订单创建事件已发布: orderNo={}, amount={}", event.getOrderNo(), event.getTotalAmount());
     }
+
+    /**
+     * 订单已支付 —— 由 {@code markPaid} 在状态真正推进之后调用，商品服务据此累加销量。
+     * <p>
+     * <b>失败要抛出去，不在这里吞掉。</b>调用方是「支付完成」的 MQ 消费者：抛出去会 nack
+     * 重试，重试时订单还是待支付（事务一起回滚了），于是走的是同一条正常路径、
+     * 重新发一次事件。吞掉的话就是一条已支付的订单永远不计销量，而且没有任何信号——
+     * 这与 {@code refundPaidButClosedOrder} 的取舍是同一条理由。
+     * <p>
+     * <b>发布点因此放在事务提交之前，这是想清楚后选的。</b>提交后再发的话，消息不会早到，
+     * 但发送失败时事务已经落地、没有任何东西能重放它；而"消息早于提交到达"在这里无害：
+     * 消费方（商品服务）只读 {@code product_spu}、写自己的台账，从不回读订单表。
+     * 至于「消息发出去了、事务却回滚了」——重试会把这一单重新走一遍，而台账的
+     * {@code (order_id, spu_id)} 唯一约束让第二次发布是幂等的，销量不会数两遍。
+     */
+    public void publishOrderPaid(OrderPaidEvent event) {
+        rabbitTemplate.convertAndSend(
+                OrderEventConfig.ORDER_EXCHANGE,
+                OrderEventConfig.ORDER_PAID_KEY,
+                event,
+                new CorrelationData("order-paid-" + event.orderNo()));
+        log.info("[MQ] 订单支付完成事件已发布: orderNo={}, 订单行={}",
+                event.orderNo(), event.items() == null ? 0 : event.items().size());
+    }
 }

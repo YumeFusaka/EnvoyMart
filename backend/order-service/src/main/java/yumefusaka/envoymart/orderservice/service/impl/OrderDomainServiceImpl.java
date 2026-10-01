@@ -46,6 +46,7 @@ import yumefusaka.envoymart.contract.StockChangeRequest;
 import yumefusaka.envoymart.orderservice.mq.OrderCreatedEvent;
 import yumefusaka.envoymart.orderservice.mq.OrderEventPublisher;
 import yumefusaka.envoymart.orderservice.mq.OrderItemEvent;
+import yumefusaka.envoymart.orderservice.mq.OrderPaidEvent;
 import yumefusaka.envoymart.orderservice.service.OrderDomainService;
 
 import java.time.LocalDateTime;
@@ -907,6 +908,17 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         order.setStatus(OrderStatus.PAID.name());
         order.setPaidAt(now);
         log.info("[Order] 订单已标记为已支付 orderId={} orderNo={}", orderId, order.getOrderNo());
+
+        // 销量在商品侧，靠这条事件累加。放在事务里发（而不是 afterCommit）是想清楚后选的：
+        // 发送失败要能让整条链路重试，见 OrderEventPublisher.publishOrderPaid 的说明。
+        // 走到这里说明状态已经真的推进过（updated > 0），重复投递在更前面就被幂等吞掉了，
+        // 所以这一单只会发一次
+        eventPublisher.publishOrderPaid(new OrderPaidEvent(orderId, order.getOrderNo(),
+                orderItemMapper.selectList(new LambdaQueryWrapper<OrderItemEntity>()
+                                .eq(OrderItemEntity::getOrderId, orderId))
+                        .stream()
+                        .map(item -> new OrderPaidEvent.Item(item.getId(), item.getSpuId(), item.getQuantity()))
+                        .toList()));
     }
 
     /**

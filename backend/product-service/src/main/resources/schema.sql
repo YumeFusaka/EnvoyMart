@@ -70,6 +70,33 @@ create table if not exists product_spu (
     index idx_spu_brand (brand_id)
 );
 
+-- 销量台账：一笔订单里的某一行，计入过一次销量。
+--
+-- **为什么需要它，而不是直接给 sales 加一**：「支付完成」是消息驱动的，而消息是
+-- at-least-once —— 「业务处理成功、但 ack 之前进程挂了」会让同一条消息再投一次，
+-- 销量就多加了一遍，且两次都留下正常的日志。用 (order_id, spu_id) 做主键之后，
+-- 重复的那次插入撞唯一约束、直接跳过：幂等由数据库保证，不靠消费者「记得」
+-- 自己处理过什么，也不靠一个会过期、会因故障清零的 Redis 标记。
+--
+-- 顺带买到的是可对账：sales = sum(quantity)，派生数据错了能重算，
+-- 而不用手工去猜那个数字本来该是多少。
+create table if not exists product_sales_ledger (
+    -- 唯一键是**订单行**，不是「一笔订单里的一个商品」。
+    -- 一笔订单里同一个商品买两个规格是再普通不过的事（三个 SKU 同属一个 SPU），
+    -- 用 (order_id, spu_id) 做主键会把第 2、3 行当成「重复投递」丢掉 ——
+    -- 销量少算，而且少算得没有任何动静：实测下单三件只加了 1。
+    -- 老库需要重建这张表（它每次启动都由 data.sql 从种子重建，直接 drop 再让服务启动即可）
+    --   alter table product_sales_ledger add column order_item_id bigint not null;
+    --   alter table product_sales_ledger drop primary key, add primary key (order_item_id);
+    order_item_id bigint not null,
+    order_id bigint not null,
+    spu_id bigint not null,
+    quantity int not null,
+    created_at datetime not null,
+    primary key (order_item_id),
+    index idx_sales_ledger_order (order_id)
+);
+
 create table if not exists product_sku (
     id bigint auto_increment primary key,
     spu_id bigint not null,

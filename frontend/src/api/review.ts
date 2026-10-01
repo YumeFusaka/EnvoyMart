@@ -1,5 +1,5 @@
 import request from '@/utils/axios'
-import type { Review, ReviewStatistics } from '@/types/models'
+import type { MyReview, PageResult, Review, ReviewStatistics } from '@/types/models'
 
 /**
  * 发表评价。粒度是**订单行**，所以传的是 `orderItemId` 而不是商品 id ——
@@ -17,14 +17,34 @@ export async function createReview(payload: {
   return response.data.data as Review
 }
 
-export async function listReviews(spuId: number) {
-  const response = await request.get(`/reviews/spu/${spuId}`)
-  return response.data.data as Review[]
+/**
+ * 按商品列评价。
+ *
+ * 分页与筛选都在服务端做：评价条数是会长的，拉全量回来在浏览器里筛，
+ * 商品越热门越慢，而且星级分布与筛选结果会来自两个不同的快照。
+ */
+export async function listReviews(
+  spuId: number,
+  params: { rating?: number; hasImage?: boolean; page?: number; size?: number } = {},
+) {
+  const response = await request.get(`/reviews/spu/${spuId}`, { params })
+  return response.data.data as PageResult<Review>
 }
 
 export async function getReviewStatistics(spuId: number) {
   const response = await request.get(`/reviews/spu/${spuId}/statistics`)
   return response.data.data as ReviewStatistics
+}
+
+/**
+ * 我发表过的评价，**含被隐藏的**：用户有权知道自己写的东西现在是什么状态。
+ * 从「我的评价」里抹掉，他只会以为是自己没发表成功，然后再发一遍。
+ */
+export async function listMyReviews(
+  params: { orderId?: number; page?: number; size?: number } = {},
+) {
+  const response = await request.get('/reviews/mine', { params })
+  return response.data.data as PageResult<MyReview>
 }
 
 export async function markReviewUseful(id: number) {

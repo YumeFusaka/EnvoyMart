@@ -46,6 +46,16 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-openfeign</artifactId>
         </dependency>
+        <!--
+            评价落库后要把商品侧的评分聚合（rating_avg / review_count）同步过去。
+            走同步 Feign 的话，product-service 抖一下就得选择「让用户白写一条评价」或
+            「静默丢掉这次同步」——两者都不能接受。改走消息：发送端只管把事件投出去，
+            product-service 不在也不影响用户写完评价。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot4-starter</artifactId>

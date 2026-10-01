@@ -147,7 +147,12 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             "/coupons/internal/",
             // 知识库内部接口：语料下发与种子重导。上面刚把 /knowledge/** 开了公开读，
             // 这一条就是那份必须存在的反向排除——不做的话，同前缀下的内部接口会被静默放行
-            "/knowledge/internal/");
+            "/knowledge/internal/",
+            // 评价聚合重建：重算全量商品评分并触发下游重算与索引重建。
+            // 它本身幂等、不写用户数据，但它是「我一个请求让整条派生链路全量跑一遍」的
+            // 放大器——公开出去等于给每个匿名请求一个打满 product-service 与 ES 的开关。
+            // 运维/演示从 review-service 端口直连调用（run-local.sh demo 就是这么做的）
+            "/reviews/internal/");
 
     /** 路径模式：以 {@code /**} 结尾表示前缀匹配，否则精确匹配。 */
     private record PublicRule(String method, String path) {

@@ -52,8 +52,15 @@ select * from (
 where not exists (select 1 from brand where name = seed.name);
 
 -- ==================== 商品（SPU） ====================
--- 价格与库存在 SKU 上，这里只有商品概念与展示信息
-insert into product_spu (id, spu_code, name, subtitle, category_id, brand_id, main_image, images, tags, detail_html, status, sales, rating_avg, review_count, created_at, updated_at)
+-- 价格与库存在 SKU 上，这里只有商品概念与展示信息。
+--
+-- **sales / rating_avg / review_count 三个列不在这里写**，它们走建表默认值，
+-- 真值分别来自销量台账（product_sales_ledger）与评价库，由链路算出来回写。
+--
+-- 种子原先把 1280 / 4.80 / 216 这类数字直接写死，后果是商品页写着「216 条评价」、
+-- 点开评价区只有 1 条 —— 两个数字出自两套互不相干的口径，而并排放在同一个页面上
+-- 也看不出该信谁。派生值一旦有了第二个来源，两个来源迟早会打架。
+insert into product_spu (id, spu_code, name, subtitle, category_id, brand_id, main_image, images, tags, detail_html, status, created_at, updated_at)
 select * from (
     select 1 as id, 'SPU001' as spu_code, '维生素 D3 软胶囊' as name, '每粒 400IU，助力钙吸收' as subtitle,
            2 as category_id, 2 as brand_id,
@@ -61,52 +68,86 @@ select * from (
            'https://picsum.photos/seed/spu1a/800,https://picsum.photos/seed/spu1b/800,https://picsum.photos/seed/spu1c/800' as images,
            '热销,骨骼健康' as tags,
            '<h2>产品说明</h2><p>维生素 D3 有助于促进钙的吸收，维持骨骼健康。适用于日常日照不足、久坐办公的人群。</p><h2>服用建议</h2><p>随餐服用吸收更佳。</p>' as detail_html,
-           1 as status, 1280 as sales, 4.80 as rating_avg, 216 as review_count, now() as created_at, now() as updated_at
+           1 as status, now() as created_at, now() as updated_at
     union all select 2, 'SPU002', '复合维生素矿物质片', '每日一片，覆盖 12 种维生素与 8 种矿物质', 2, 2,
            'https://picsum.photos/seed/spu2/600', 'https://picsum.photos/seed/spu2a/800', '综合补充',
-           '<h2>产品说明</h2><p>针对成人日常营养缺口设计的复合配方。</p>', 1, 960, 4.60, 154, now(), now()
+           '<h2>产品说明</h2><p>针对成人日常营养缺口设计的复合配方。</p>', 1, now(), now()
     union all select 3, 'SPU003', '乳清蛋白粉', '每份 24g 蛋白质，低脂低糖', 3, 3,
            'https://picsum.photos/seed/spu3/600', 'https://picsum.photos/seed/spu3a/800', '运动,增肌',
-           '<h2>产品说明</h2><p>分离乳清蛋白，乳糖含量低。</p>', 1, 2100, 4.70, 388, now(), now()
+           '<h2>产品说明</h2><p>分离乳清蛋白，乳糖含量低。</p>', 1, now(), now()
     union all select 4, 'SPU004', '植物蛋白粉', '豌豆与糙米双蛋白，适合素食人群', 3, 3,
            'https://picsum.photos/seed/spu4/600', 'https://picsum.photos/seed/spu4a/800', '素食',
-           '<h2>产品说明</h2><p>植物来源，不含乳制品。</p>', 1, 430, 4.40, 76, now(), now()
+           '<h2>产品说明</h2><p>植物来源，不含乳制品。</p>', 1, now(), now()
     union all select 5, 'SPU005', '益生菌粉', '每袋 100 亿活菌，独立包装', 4, 1,
            'https://picsum.photos/seed/spu5/600', 'https://picsum.photos/seed/spu5a/800', '肠道健康',
-           '<h2>产品说明</h2><p>含多种乳杆菌与双歧杆菌。</p>', 1, 1560, 4.90, 302, now(), now()
+           '<h2>产品说明</h2><p>含多种乳杆菌与双歧杆菌。</p>', 1, now(), now()
     union all select 6, 'SPU006', '膳食纤维粉', '水溶性膳食纤维，无味易冲调', 4, 1,
            'https://picsum.photos/seed/spu6/600', 'https://picsum.photos/seed/spu6a/800', null,
-           '<h2>产品说明</h2><p>可加入水、牛奶或饮品中。</p>', 1, 320, 4.30, 48, now(), now()
+           '<h2>产品说明</h2><p>可加入水、牛奶或饮品中。</p>', 1, now(), now()
     union all select 7, 'SPU007', '鱼油软胶囊', '深海鱼油，富含 EPA 与 DHA', 6, 5,
            'https://picsum.photos/seed/spu7/600', 'https://picsum.photos/seed/spu7a/800', '心脑血管',
-           '<h2>产品说明</h2><p>深海小型鱼提取，经分子蒸馏纯化。</p>', 1, 870, 4.50, 165, now(), now()
+           '<h2>产品说明</h2><p>深海小型鱼提取，经分子蒸馏纯化。</p>', 1, now(), now()
     union all select 8, 'SPU008', '辅酶 Q10 软胶囊', '每粒 100mg', 6, 5,
            'https://picsum.photos/seed/spu8/600', 'https://picsum.photos/seed/spu8a/800', null,
-           '<h2>产品说明</h2><p>辅酶 Q10 是人体自身合成的物质。</p>', 1, 540, 4.60, 92, now(), now()
+           '<h2>产品说明</h2><p>辅酶 Q10 是人体自身合成的物质。</p>', 1, now(), now()
     union all select 9, 'SPU009', '维生素 K2 软胶囊', '每粒 90μg，与钙同补', 2, 6,
            'https://picsum.photos/seed/spu9/600', 'https://picsum.photos/seed/spu9a/800', '骨骼健康',
-           '<h2>产品说明</h2><p>维生素 K2 参与骨钙素的活化。</p><h2>注意事项</h2><p>正在服用抗凝药物者，服用前请咨询医师或药师。</p>', 1, 260, 4.50, 41, now(), now()
+           '<h2>产品说明</h2><p>维生素 K2 参与骨钙素的活化。</p><h2>注意事项</h2><p>正在服用抗凝药物者，服用前请咨询医师或药师。</p>', 1, now(), now()
     union all select 10, 'SPU010', '碳酸钙 D3 咀嚼片', '含钙 600mg，添加维生素 D3', 14, 2,
            'https://picsum.photos/seed/spu10/600', 'https://picsum.photos/seed/spu10a/800', null,
-           '<h2>产品说明</h2><p>咀嚼片剂型，无需吞服。辅料中含乳糖。</p>', 1, 720, 4.40, 128, now(), now()
+           '<h2>产品说明</h2><p>咀嚼片剂型，无需吞服。辅料中含乳糖。</p>', 1, now(), now()
     union all select 11, 'SPU011', '柠檬酸钙胶囊', '不含乳糖，随餐与否均可', 14, 2,
            'https://picsum.photos/seed/spu11/600', 'https://picsum.photos/seed/spu11a/800', null,
-           '<h2>产品说明</h2><p>柠檬酸钙对胃酸依赖小，空腹也可服用。</p>', 1, 390, 4.70, 63, now(), now()
+           '<h2>产品说明</h2><p>柠檬酸钙对胃酸依赖小，空腹也可服用。</p>', 1, now(), now()
     union all select 12, 'SPU012', '孕期复合营养包', '含叶酸、铁、钙、DHA', 11, 4,
            'https://picsum.photos/seed/spu12/600', 'https://picsum.photos/seed/spu12a/800', '孕期',
-           '<h2>产品说明</h2><p>针对孕期营养需求设计。</p>', 1, 640, 4.80, 117, now(), now()
+           '<h2>产品说明</h2><p>针对孕期营养需求设计。</p>', 1, now(), now()
     union all select 13, 'SPU013', '全营养配方粉', '特殊医学用途，整蛋白型', 5, 4,
            'https://picsum.photos/seed/spu13/600', 'https://picsum.photos/seed/spu13a/800', null,
-           '<h2>产品说明</h2><p>适用于进食受限人群的营养补充，使用前请咨询医师或临床营养师。</p>', 1, 180, 4.60, 29, now(), now()
+           '<h2>产品说明</h2><p>适用于进食受限人群的营养补充，使用前请咨询医师或临床营养师。</p>', 1, now(), now()
     union all select 14, 'SPU014', '胶原蛋白肽粉', '小分子肽，易吸收', 3, 6,
            'https://picsum.photos/seed/spu14/600', 'https://picsum.photos/seed/spu14a/800', '美容',
-           '<h2>产品说明</h2><p>鱼胶原蛋白肽，分子量小于 1000 道尔顿。</p>', 1, 810, 4.40, 143, now(), now()
+           '<h2>产品说明</h2><p>鱼胶原蛋白肽，分子量小于 1000 道尔顿。</p>', 1, now(), now()
     union all select 15, 'SPU015', '儿童多种维生素软糖', '3 岁以上适用，天然水果味', 12, 2,
            'https://picsum.photos/seed/spu15/600', 'https://picsum.photos/seed/spu15a/800', '儿童',
-           '<h2>产品说明</h2><p>软糖剂型，儿童易接受。</p>', 1, 1180, 4.70, 246, now(), now()
+           '<h2>产品说明</h2><p>软糖剂型，儿童易接受。</p>', 1, now(), now()
 ) as seed
 -- product_spu 的唯一键是 spu_code：运营改过商品编号之后，id 守卫会放行、spu_code 撞车
 where not exists (select 1 from product_spu where spu_code = seed.spu_code);
+
+-- ==================== 销量台账 ====================
+-- 演示用的历史销量。它不是「给商品写一个好看的数字」，而是一批**已经发生过、
+-- 但订单在另一个库里查不到的成交**——order_id 用负数，与真实订单的自增正数
+-- 天然隔开，一眼能认出这几行是种子而不是真单。
+--
+-- 写成台账而不是直接写 product_spu.sales，是为了让那个数字有来源、能对账：
+-- 「支付成功累计销量」走的也是同一条路（先落一行台账、再累加 sales），
+-- 所以演示时新增一笔支付，销量是真的会动，而不是在看一个写死的常量。
+insert into product_sales_ledger (order_item_id, order_id, spu_id, quantity, created_at)
+select * from (
+    select -1 as order_item_id, -1 as order_id, 1 as spu_id, 1280 as quantity, now() as created_at
+    union all select -2, -2, 2, 960, now()
+    union all select -3, -3, 3, 2100, now()
+    union all select -4, -4, 4, 430, now()
+    union all select -5, -5, 5, 1560, now()
+    union all select -6, -6, 6, 320, now()
+    union all select -7, -7, 7, 870, now()
+    union all select -8, -8, 8, 540, now()
+    union all select -9, -9, 9, 260, now()
+    union all select -10, -10, 10, 720, now()
+    union all select -11, -11, 11, 390, now()
+    union all select -12, -12, 12, 640, now()
+    union all select -13, -13, 13, 180, now()
+    union all select -14, -14, 14, 810, now()
+    union all select -15, -15, 15, 1180, now()
+) as seed
+where not exists (select 1 from product_sales_ledger where order_item_id = seed.order_item_id);
+
+-- sales 是台账的汇总，每次启动重算一次。
+-- 它与「支付后累加」这条路径算出来的结果一致，所以不会覆盖真实销量 ——
+-- 它把的是另一种情况：冗余被谁改错了之后，能从权威来源自愈。
+update product_spu
+set sales = coalesce((select sum(l.quantity) from product_sales_ledger l where l.spu_id = product_spu.id), 0);
 
 -- ==================== 规格 ====================
 -- 决定「买哪一个」。属性描述事实，规格决定选择

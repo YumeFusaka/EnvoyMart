@@ -257,6 +257,52 @@ wait_ready() { # 名称 超时秒 检查命令...
   return 1
 }
 
+# 派生数据重建：product_spu 上的评分与销量是从评价、订单**算出来**的冗余，
+# 换过库、或者消息丢过之后它就会与权威值对不上——而页面上看不出哪边是对的，
+# 只会看到「商品卡写 5.0 分 0 条评价、详情页写 4.2 分 9 条」。
+# 重建走 MQ 是异步的，所以等到**看得见收敛**再放行，否则演示首页会先给出一屏错分数。
+resync_derived() {
+  printf '%-18s' "派生数据重建"
+
+  local recomputed
+  recomputed=$(curl -s -X POST --max-time 10 \
+    http://127.0.0.1:9006/reviews/internal/aggregates/republish 2>/dev/null)
+  if [ -z "$recomputed" ]; then
+    # 不挡住演示：错的是评分这一项派生数据，不是整个环境
+    echo "跳过（review-service 没响应，看 $LOG_DIR/review-service.log）"
+    return 0
+  fi
+
+  local i
+  for i in $(seq 1 30); do
+    if derived_converged; then
+      echo "就绪"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "未收敛（评分可能滞后，看 $LOG_DIR/product-service.log）"
+  return 0
+}
+
+# 拿「商品侧声称有评价的某个商品」，去评价服务问权威值，对得上才算收敛。
+# 不写死商品 id：换了语料/种子之后写死的那个可能一条评价都没有，
+# 那样这条检查会永远等不到而变得看不出真假。
+derived_converged() {
+  node -e '
+    const get = async (url) => (await fetch(url, { signal: AbortSignal.timeout(3000) })).json();
+    (async () => {
+      const catalog = ((await get("http://127.0.0.1:9002/products/internal/catalog")).data) ?? [];
+      const product = catalog.find((p) => (p.reviewCount ?? 0) > 0);
+      if (!product) process.exit(1);
+      const stats = (await get(`http://127.0.0.1:9006/reviews/spu/${product.id}/statistics`)).data;
+      const same = stats.total === product.reviewCount
+        && Number(stats.average) === Number(product.ratingAvg);
+      process.exit(same ? 0 : 1);
+    })().catch(() => process.exit(1));
+  ' >/dev/null 2>&1
+}
+
 preflight() {
   if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
     echo "Docker 引擎不可用——中间件全部跑在容器里，先确认 Docker Desktop 在运行（卡死的话重启它）" >&2
@@ -358,6 +404,7 @@ demo_up() {
     fi
   done
   wait_healthy
+  resync_derived
 
   frontend_up prod || exit 1
   print_entries

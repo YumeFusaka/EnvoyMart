@@ -135,8 +135,14 @@ export interface Review {
   spuId: number
   skuId: number
   orderId: number
-  /** 匿名评价时服务端就不返回它 */
-  userId: string | null
+  /**
+   * 展示用的脱敏昵称，例如 `a***e`。
+   *
+   * 服务端返回的是**脱敏后的**名字而不是 userId —— 评价区是公开面，
+   * 而本项目里 userId 就是登录名。匿名评价时这里直接是 null，
+   * 服务端就不下发，不指望前端不显示。
+   */
+  nickname: string | null
   rating: number
   content: string | null
   images: string[]
@@ -146,6 +152,35 @@ export interface Review {
   replyAt: string | null
   usefulCount: number
   createdAt: string
+}
+
+/**
+ * 「我的评价」列表项。
+ *
+ * 与 {@link Review} 的差别：多一个 `product`（自己的评价列表里要认得出是哪个商品），
+ * 少一个 `nickname`（看自己的评价时「别人怎么称呼我」没有意义）。
+ */
+export interface MyReview {
+  id: number
+  spuId: number
+  skuId: number
+  orderId: number
+  /** 被评价的那一条订单行。订单详情据此标「已评价」——粒度是订单行而不是订单 */
+  orderItemId: number
+  rating: number
+  content: string | null
+  images: string[]
+  anonymous: boolean
+  /** PUBLISHED / HIDDEN / PENDING，原样透出 */
+  status: string
+  /** 被隐藏的原因，仅隐藏时有值。只有作者看得到 */
+  hiddenReason: string | null
+  replyContent: string | null
+  replyAt: string | null
+  usefulCount: number
+  createdAt: string
+  /** 商品卡片数据。product-service 不可用时为 null，界面退化成只显示评价本身 */
+  product: ProductSummary | null
 }
 
 export interface ReviewStatistics {

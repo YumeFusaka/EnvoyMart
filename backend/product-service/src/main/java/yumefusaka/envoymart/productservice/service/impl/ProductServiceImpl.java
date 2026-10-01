@@ -42,6 +42,15 @@ public class ProductServiceImpl implements ProductService {
     private static final int MAX_CATALOG_SIZE = 100;
 
     /**
+     * 批量取商品摘要一次最多几个。
+     * <p>
+     * 调用方是订单列表与我的评价：一页最多几十行，每行一个商品。100 是满页的几倍，
+     * 正常调用碰不到；设这条线是为了让「把整个目录的 id 一次性塞进来」在入库前就被挡住——
+     * {@code in (…) } 的展开长度直接由请求决定，没有上限时它就是一个可以打穿连接池的入口。
+     */
+    private static final int MAX_SUMMARIES_SIZE = 100;
+
+    /**
      * 排序白名单。
      * <p>
      * 排序子句**必须**走白名单映射：那个位置没法用参数占位符，把请求里的字符串直接拼进去
@@ -261,6 +270,12 @@ public class ProductServiceImpl implements ProductService {
         if (spuIds == null || spuIds.isEmpty()) {
             return List.of();
         }
+        if (spuIds.size() > MAX_SUMMARIES_SIZE) {
+            throw new IllegalArgumentException(
+                    "一次最多查询 " + MAX_SUMMARIES_SIZE + " 个商品，当前 " + spuIds.size() + " 个");
+        }
+        // 不筛选上下架状态：这个接口服务于「已经成交或已评价过的东西」——
+        // 商品下架后，用户的订单里仍要显示它的名字，评价也要挂得住
         return assemble(spuMapper.selectByIds(spuIds.stream().distinct().toList()));
     }
 

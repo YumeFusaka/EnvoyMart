@@ -39,3 +39,16 @@ create table if not exists review_image (
     sort int not null default 0,
     index idx_review_image_review (review_id)
 );
+
+-- 「有用」一票一人。原先只对 review.useful_count 做 +1，userId 收下了却没用，
+-- 于是同一个账号多调几次就能把那个数字顶上去 —— 而它是所有用户都看得见的。
+-- 计数仍是 review.useful_count（列表页不该为了一个数字多查一张表），
+-- 这张表只负责回答「这个人投过没有」。
+create table if not exists review_useful (
+    id bigint auto_increment primary key,
+    review_id bigint not null,
+    user_id varchar(32) not null,
+    created_at datetime not null,
+    constraint uk_review_useful unique (review_id, user_id),
+    index idx_review_useful_user (user_id)
+);

@@ -12,14 +12,21 @@ spring:
   sql:
     init:
       mode: always
-  cloud:
-    nacos:
-      discovery:
-        enabled: ${NACOS_ENABLED:false}
-        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:envoymart}
+    password: ${RABBITMQ_PASSWORD:envoymart123}
+    template:
+      # 路由不到队列时把消息退回来（而不是静默丢弃）。
+      # 评价聚合事件发往 envoymart.review，卖出去的队列由 product-service 声明 ——
+      # 它没起、或队列名被改错时，没有这个开关就只在 broker 侧丢一条消息，
+      # 发送方这边一切正常，商品评分停在旧值也无人知道
+      mandatory: true
 
 services:
   order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
+  product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
 
 mybatis-plus:
   configuration:

@@ -21,6 +21,7 @@ import yumefusaka.envoymart.reviewservice.mapper.ReviewImageMapper;
 import yumefusaka.envoymart.reviewservice.mapper.ReviewMapper;
 import yumefusaka.envoymart.reviewservice.model.admin.AdminReviewQuery;
 import yumefusaka.envoymart.reviewservice.model.admin.AdminReviewSummary;
+import yumefusaka.envoymart.reviewservice.mq.ReviewAggregatePublisher;
 
 import java.util.List;
 import java.util.Objects;
@@ -53,6 +54,7 @@ class ReviewAdminServiceImplTest {
 
     private ReviewMapper reviewMapper;
     private ReviewImageMapper reviewImageMapper;
+    private ReviewAggregatePublisher aggregatePublisher;
     private ReviewAdminServiceImpl service;
 
     /**
@@ -71,7 +73,8 @@ class ReviewAdminServiceImplTest {
     void setUp() {
         reviewMapper = mock(ReviewMapper.class);
         reviewImageMapper = mock(ReviewImageMapper.class);
-        service = new ReviewAdminServiceImpl(reviewMapper, reviewImageMapper);
+        aggregatePublisher = mock(ReviewAggregatePublisher.class);
+        service = new ReviewAdminServiceImpl(reviewMapper, reviewImageMapper, aggregatePublisher);
     }
 
     @Test
@@ -221,6 +224,30 @@ class ReviewAdminServiceImplTest {
                 .as("MyBatis-Plus 的 offset() 对 current <= 1 一律返回 0：把对外的第 0 页"
                         + "原样传进去，第 0 页与第 1 页会查出同一批数据，之后整体后移一页")
                 .isEqualTo(1L);
+    }
+
+    @Test
+    void 隐藏已发布评价要通知商品侧重算评分() {
+        when(reviewMapper.selectById(1L))
+                .thenReturn(review(1L, "PUBLISHED"), review(1L, "HIDDEN"));
+
+        service.changeStatus(1L, "HIDDEN", "含违禁词", OPERATOR);
+
+        // 隐藏掉一条一星差评，商品页的均分就该跟着涨。不发这条事件，
+        // 商品侧那份冗余会一直带着一条已经被平台删掉的评价算出来的分数
+        verify(aggregatePublisher).publishAfterCommit(1001L);
+    }
+
+    @Test
+    void 与已发布无关的状态变更不发事件() {
+        when(reviewMapper.selectById(1L))
+                .thenReturn(review(1L, "PENDING"), review(1L, "HIDDEN"));
+
+        service.changeStatus(1L, "HIDDEN", "含联系方式", OPERATOR);
+
+        // PENDING 与 HIDDEN 都不在聚合里，互转对商品评分没有任何影响。
+        // 无脑发一次会白白触发下游重算 + 缓存失效 + 索引重建
+        verify(aggregatePublisher, never()).publishAfterCommit(any());
     }
 
     @Test

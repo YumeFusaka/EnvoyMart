@@ -82,6 +82,18 @@ public class ProductController {
         return Result.success(hotKeywordService.top(limit));
     }
 
+    /**
+     * 批量取商品摘要，供订单、评价等「已经拿到一批 spuId，只需要补商品信息」的场景。
+     * <p>
+     * <b>与 {@code /{id}} 的差别</b>：详情接口一次一个 id，二十条订单就要二十次调用；
+     * 这个接口一次拿完。返回顺序与入参无关，查不到的 id 直接缺席——调用方按 id 建映射，
+     * 不要按下标对——商品被删掉时缺一个比返回一个 null 更容易被发现。
+     */
+    @GetMapping("/summaries")
+    public Result<List<ProductSummary>> summaries(@RequestParam("ids") List<Long> ids) {
+        return Result.success(productService.summaries(ids));
+    }
+
     @GetMapping("/{id}")
     public Result<ProductDetail> detail(@PathVariable("id") Long id) {
         return Result.success(productService.detail(id));

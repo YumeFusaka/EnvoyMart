@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { StarFilled } from '@element-plus/icons-vue'
 import { formatPriceRange } from '@/api/product'
 import FavoriteButton from '@/components/shop/FavoriteButton.vue'
 import type { ProductSummary } from '@/types/models'
@@ -58,6 +59,16 @@ withDefaults(
         <template v-else>{{ product.name }}</template>
       </h3>
       <p v-if="product.subtitle" class="product-card__subtitle">{{ product.subtitle }}</p>
+
+      <!--
+        评分与销量是电商卡片上的一等信息，缺一个都会让人觉得「这个平台是不是没人买」。
+        没人评价过时整行不出现，而不是显示 0.0 分 —— 那会被读成「评价极差」。
+      -->
+      <p v-if="product.reviewCount" class="product-card__rating">
+        <el-icon class="product-card__rating-star"><StarFilled /></el-icon>
+        <span class="product-card__rating-value">{{ (product.ratingAvg ?? 0).toFixed(1) }}</span>
+        <span class="product-card__rating-count">{{ product.reviewCount }} 条评价</span>
+      </p>
 
       <ul v-if="product.tags.length" class="product-card__tags">
         <li v-for="tag in product.tags" :key="tag">{{ tag }}</li>
@@ -212,6 +223,30 @@ withDefaults(
   margin: var(--ys-space-1) 0 0;
   padding: 0;
   list-style: none;
+}
+
+.product-card__rating {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--ys-space-1);
+  font-size: var(--ys-font-xs);
+  line-height: 1.4;
+}
+
+.product-card__rating-star {
+  color: var(--color-warning);
+}
+
+.product-card__rating-value {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  /* 数字等宽：评分位数不同时，「条评价」不会跟着左右晃 */
+  font-variant-numeric: tabular-nums;
+}
+
+.product-card__rating-count {
+  color: var(--color-text-muted);
 }
 
 .product-card__tags li {
