@@ -64,6 +64,7 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     ShopFavoriteButton: typeof import('./src/components/shop/FavoriteButton.vue')['default']
     ShopProductCard: typeof import('./src/components/shop/ProductCard.vue')['default']
+    ShopSearchBox: typeof import('./src/components/shop/SearchBox.vue')['default']
     UiErrorState: typeof import('./src/components/ui/ErrorState.vue')['default']
   }
   export interface GlobalDirectives {

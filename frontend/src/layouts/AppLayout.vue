@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -16,12 +16,55 @@ import {
   SwitchButton,
   User,
 } from '@element-plus/icons-vue'
+import SearchBox, { type SearchIntent } from '@/components/shop/SearchBox.vue'
 import { useCartStore, useUserStore } from '@/stores'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const cart = useCartStore()
+
+/**
+ * 顶栏搜索框里的文字。
+ *
+ * 只在商城页与 URL 同步：搜索框是全局的，URL 只有商城页读得懂。
+ * 无条件跟着 URL 清空的话，用户搜完再点开「我的订单」，回来时输入框已经空了，
+ * 想改一个词重搜就得整个重打。
+ */
+const searchKeyword = ref('')
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (route.path === '/shop') {
+      searchKeyword.value = typeof route.query.keyword === 'string' ? route.query.keyword : ''
+    }
+  },
+  { immediate: true },
+)
+
+/**
+ * 把搜索意图翻译成去处。
+ *
+ * 这是整条搜索链路上唯一知道「去哪里」的地方：联想组件只描述用户点了什么，
+ * 商城页只认 URL 上的筛选条件。三者各自独立，改路由不用动组件。
+ */
+function onSearch(intent: SearchIntent) {
+  if (intent.kind === 'product') {
+    router.push(`/products/${intent.id}`)
+    return
+  }
+  if (intent.kind === 'brand') {
+    router.push({ path: '/shop', query: { brandId: String(intent.id) } })
+    return
+  }
+  if (intent.kind === 'category') {
+    router.push({ path: '/shop', query: { categoryId: String(intent.id) } })
+    return
+  }
+  // 词为空时不带 keyword 参数，URL 上留一个 ?keyword= 会让人以为筛了什么
+  router.push(intent.keyword ? { path: '/shop', query: { keyword: intent.keyword } } : { path: '/shop' })
+}
 
 /** 窄屏下的抽屉菜单。宽屏时导航直接写在顶栏里，这个抽屉不出现 */
 const drawerOpen = ref(false)
@@ -82,13 +125,60 @@ onMounted(() => {
 <template>
   <div class="app-layout">
     <header class="app-header">
-      <div class="app-header__inner">
-        <RouterLink to="/shop" class="app-brand">
-          <span class="app-brand__mark" aria-hidden="true">EM</span>
-          <span class="app-brand__text">EnvoyMart</span>
-        </RouterLink>
+      <div class="app-header__bar">
+        <div class="app-header__inner">
+          <RouterLink to="/shop" class="app-brand">
+            <span class="app-brand__mark" aria-hidden="true">EM</span>
+            <span class="app-brand__text">EnvoyMart</span>
+          </RouterLink>
 
-        <nav class="app-nav" aria-label="主导航">
+          <SearchBox v-model="searchKeyword" @search="onSearch" />
+
+          <div class="app-header__actions">
+            <RouterLink v-if="userStore.token" to="/cart" class="app-cart" aria-label="购物车">
+              <el-badge :value="cart.totalQuantity" :hidden="cart.totalQuantity === 0" :max="99">
+                <el-icon :size="18"><ShoppingCart /></el-icon>
+              </el-badge>
+            </RouterLink>
+
+            <el-dropdown v-if="userStore.token" trigger="click">
+              <button class="app-user" type="button" aria-label="账号菜单">
+                <el-avatar :size="26" :src="userStore.profile?.avatar ?? undefined">
+                  {{ displayName.slice(0, 1) }}
+                </el-avatar>
+                <span class="app-user__name">{{ displayName }}</span>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item @click="router.push('/profile')">个人中心</el-dropdown-item>
+                  <el-dropdown-item v-if="isAdmin" @click="router.push('/admin')"
+                    >管理台</el-dropdown-item
+                  >
+                  <el-dropdown-item divided @click="handleLogout">
+                    <el-icon><SwitchButton /></el-icon>
+                    退出登录
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+
+            <!-- 未登录时给的是登录入口而不是一个点不开的头像 -->
+            <RouterLink v-else class="app-login" :to="{ name: 'login' }">登录</RouterLink>
+
+            <button
+              class="app-menu-toggle"
+              type="button"
+              aria-label="打开导航菜单"
+              @click="drawerOpen = true"
+            >
+              <el-icon :size="18"><Fold /></el-icon>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="app-header__sub">
+        <nav class="app-header__inner app-nav" aria-label="主导航">
           <RouterLink
             v-for="item in visibleNavItems"
             :key="item.to"
@@ -100,47 +190,6 @@ onMounted(() => {
             <span>{{ item.label }}</span>
           </RouterLink>
         </nav>
-
-        <div class="app-header__actions">
-          <RouterLink v-if="userStore.token" to="/cart" class="app-cart" aria-label="购物车">
-            <el-badge :value="cart.totalQuantity" :hidden="cart.totalQuantity === 0" :max="99">
-              <el-icon :size="18"><ShoppingCart /></el-icon>
-            </el-badge>
-          </RouterLink>
-
-          <el-dropdown v-if="userStore.token" trigger="click">
-            <button class="app-user" type="button" aria-label="账号菜单">
-              <el-avatar :size="26" :src="userStore.profile?.avatar ?? undefined">
-                {{ displayName.slice(0, 1) }}
-              </el-avatar>
-              <span class="app-user__name">{{ displayName }}</span>
-            </button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item @click="router.push('/profile')">个人中心</el-dropdown-item>
-                <el-dropdown-item v-if="isAdmin" @click="router.push('/admin')"
-                  >管理台</el-dropdown-item
-                >
-                <el-dropdown-item divided @click="handleLogout">
-                  <el-icon><SwitchButton /></el-icon>
-                  退出登录
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
-          <!-- 未登录时给的是登录入口而不是一个点不开的头像 -->
-          <RouterLink v-else class="app-login" :to="{ name: 'login' }">登录</RouterLink>
-
-          <button
-            class="app-menu-toggle"
-            type="button"
-            aria-label="打开导航菜单"
-            @click="drawerOpen = true"
-          >
-            <el-icon :size="18"><Fold /></el-icon>
-          </button>
-        </div>
       </div>
     </header>
 
@@ -182,6 +231,20 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  /*
+   * 顶栏两行：上排「标志 + 搜索 + 账号」，下排导航。
+   * 覆盖在这一层而不是改 tokens.css：管理台用的是另一套布局，顶栏仍是单行 60px，
+   * 全局改掉会让它的内容区短掉 44px。自定义属性会往下继承，所以页面里那些
+   * 「吸顶偏移 = 顶栏高度」的算式（商城侧栏、知识库目录、对话页）自动跟着对。
+   */
+  --header-bar-height: 60px;
+  --header-sub-height: 44px;
+  /* 加上下边框那条分隔线：这个变量的用途是「页面内容从顶栏下面开始」的偏移量，
+     少算 1px 会让吸顶的侧栏被顶栏压住一条头发丝宽的边 */
+  --header-divider: 1px;
+  --layout-header-height: calc(
+    var(--header-bar-height) + var(--header-sub-height) + var(--header-divider)
+  );
 }
 
 .app-header {
@@ -194,11 +257,22 @@ onMounted(() => {
   border-bottom: 1px solid var(--color-border);
 }
 
+.app-header__bar {
+  height: var(--header-bar-height);
+}
+
+/* 下排比上排矮、底色也压一档：导航是「次级入口」，和搜索抢视觉重量会显得整条顶栏很吵 */
+.app-header__sub {
+  height: var(--header-sub-height);
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg-surface-muted) 70%, transparent);
+}
+
 .app-header__inner {
   display: flex;
   align-items: center;
-  gap: var(--ys-space-6);
-  height: var(--layout-header-height);
+  gap: var(--ys-space-5);
+  height: 100%;
   max-width: var(--layout-content-max);
   margin: 0 auto;
   padding: 0 var(--ys-space-8);
@@ -227,9 +301,9 @@ onMounted(() => {
   font-size: var(--ys-font-md);
 }
 
+/* 下排本身就是容器本体，它复用 .app-header__inner 的版心与内边距 */
 .app-nav {
   display: flex;
-  flex: 1;
   align-items: center;
   gap: var(--ys-space-1);
 }
@@ -259,8 +333,11 @@ onMounted(() => {
 
 .app-header__actions {
   display: flex;
+  flex: none;
   align-items: center;
   gap: var(--ys-space-3);
+  /* 搜索框吃掉剩余宽度，账号区永远贴右，不随搜索框长度浮动 */
+  margin-inline-start: auto;
 }
 
 .app-cart {
@@ -343,8 +420,14 @@ onMounted(() => {
 /* 1080 而不是 960：导航有七个入口，窄一点就挤成两行或溢出。
    挤不下时收进抽屉比硬塞着强 */
 @media (max-width: 1080px) {
-  .app-nav {
+  /* 导航整排收进抽屉，顶栏回到单行 —— 本排只剩一条空底边会很难看，
+     而顶栏少了 44px，页面里那些按顶栏高度算的吸顶偏移必须跟着回退 */
+  .app-header__sub {
     display: none;
+  }
+
+  .app-layout {
+    --layout-header-height: calc(var(--header-bar-height) + var(--header-divider));
   }
 
   .app-menu-toggle {
@@ -357,6 +440,13 @@ onMounted(() => {
   }
 
   .app-user__name {
+    display: none;
+  }
+}
+
+/* 再窄就只剩「标志 + 搜索 + 账号图标」，品牌文字让位给输入框 */
+@media (max-width: 720px) {
+  .app-brand__text {
     display: none;
   }
 }

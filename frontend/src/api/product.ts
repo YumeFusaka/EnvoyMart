@@ -5,6 +5,7 @@ import type {
   PageResult,
   ProductDetail,
   ProductSummary,
+  SuggestItem,
 } from '@/types/models'
 
 export interface ProductQueryParams {
@@ -39,6 +40,26 @@ export async function searchProducts(params: ProductQueryParams = {}) {
 export async function getProductDetail(id: number) {
   const response = await request.get(`/products/${id}`)
   return response.data.data as ProductDetail
+}
+
+/**
+ * 搜索联想。输入两个字就该出候选，所以后端走的是 ES 的前缀查询。
+ *
+ * 返回项带 `type`：同一个词可能既是商品名又是品牌名（「肌」既是「肌力方」品牌，
+ * 也出现在「乳清蛋白粉」这类商品里），界面据此显示不同的去向前缀。
+ */
+export async function suggestProducts(q: string, limit = 8) {
+  const response = await request.get('/products/suggest', { params: { q, limit } })
+  return response.data.data as SuggestItem[]
+}
+
+/**
+ * 热门搜索词。来自真实搜索行为的排行，冷启动时后端回落种子词，
+ * 所以这里不会拿到空数组。
+ */
+export async function getHotKeywords(limit = 8) {
+  const response = await request.get('/products/hot-keywords', { params: { limit } })
+  return response.data.data as string[]
 }
 
 export async function getCategoryTree() {

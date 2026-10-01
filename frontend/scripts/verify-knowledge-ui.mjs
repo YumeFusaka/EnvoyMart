@@ -21,6 +21,7 @@
 import { chromium } from 'playwright-core'
 
 const BASE = process.env.VERIFY_BASE ?? 'http://localhost:5173'
+const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
 const CHROMIUM =
   process.env.PLAYWRIGHT_CHROMIUM ??
   'C:/Users/j/AppData/Local/ms-playwright/chromium-1223/chrome-win64/chrome.exe'
@@ -65,8 +66,17 @@ await page.goto(`${BASE}/#/knowledge/graph`, { waitUntil: 'networkidle' })
 await page.reload({ waitUntil: 'networkidle' })
 await page.locator('svg.canvas').waitFor({ state: 'visible', timeout: 20000 })
 
+// 与接口对账，而不是比对写死的数字。
+// 原先钉的是「39 实体 / 37 关系」——图谱重建过一次之后就一直是红的，
+// 而页面上写的与接口给的完全一致。钉死数据量的断言，坏掉的是断言不是产品，
+// 更糟的是它会训练人忽略红灯
+const stats = await (await fetch(`${GW}/knowledge/graph/stats`)).json()
 const scale = (await page.locator('.graph-scale').textContent()) ?? ''
-ck('规模数字渲染（39 实体 / 37 关系）', scale.includes('39') && scale.includes('37'), scale.replace(/\s+/g, ' ').trim())
+ck(
+  `规模数字与接口一致（${stats.data.entities} 实体 / ${stats.data.relations} 关系）`,
+  scale.includes(String(stats.data.entities)) && scale.includes(String(stats.data.relations)),
+  scale.replace(/\s+/g, ' ').trim(),
+)
 
 const ariaLabel = (await page.locator('svg.canvas').getAttribute('aria-label')) ?? ''
 ck('画布可访问名给出实体/关系/跳数', /知识图谱：\d+ 个实体、\d+ 条关系/.test(ariaLabel), ariaLabel)

@@ -717,6 +717,19 @@ export interface ProductSummary {
 }
 
 /**
+ * 搜索联想的一个候选。
+ *
+ * 三种类型共用一个列表，是因为它们在用户眼里是一回事——「我要找的东西」。
+ * 分成三个下拉分组反而要多看一层结构。
+ */
+export interface SuggestItem {
+  text: string
+  type: 'PRODUCT' | 'BRAND' | 'CATEGORY'
+  /** 商品 / 品牌 / 类目的 id。点到它就能直接跳过去，不必再搜一次 */
+  id: number
+}
+
+/**
  * 收藏夹里的一条。
  *
  * 比商品卡多两个字段，都不是装饰：
