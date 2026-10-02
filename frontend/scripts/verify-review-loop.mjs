@@ -522,8 +522,11 @@ ck(
 )
 ck(
   '详情页的分数与接口一致（同一份冗余，不是自己算的）',
-  metaText.includes(Number(statsAfterHide.average).toFixed(1)) ||
-    (afterRestore && metaText.includes(Number(afterRestore.ratingAvg).toFixed(1))),
+  // 与 cardText 同理：恢复没收敛时 afterRestore 是 null，页面停在隐藏态——
+  // 此时必须由隐藏后的分兜住，且显式排除「两边都取不到数、NaN 互比被短路放过」
+  Number.isFinite(Number(statsAfterHide.average)) &&
+    (metaText.includes(Number(statsAfterHide.average).toFixed(1)) ||
+      (!!afterRestore && metaText.includes(Number(afterRestore.ratingAvg).toFixed(1)))),
   metaText.replace(/\s+/g, ' '),
 )
 
