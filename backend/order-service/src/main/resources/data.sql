@@ -35,3 +35,10 @@ where not exists (select 1 from after_sale_policy where id = seed.id);
 -- 修正已播过种的老库：EXCHANGE 原先配了 1.00 的退款比例，换货会被算成全额退款。
 -- 带条件更新，重复执行无副作用
 update after_sale_policy set max_refund_ratio = 0.00 where id = 3 and max_refund_ratio = 1.00;
+
+-- 修正已播过种的老库：订单行的商品图快照原先存的是 picsum 外链（下单时
+-- 商品服务给的就是它），现换成本地生成图（frontend/public/img/photos/，
+-- 由 frontend/scripts/gen-product-images.mjs 生成）。文件名依据是快照行必带的 sku_id。
+-- 带条件更新，重复执行无副作用
+update shop_order_item set sku_image = concat('/img/photos/sku', sku_id, '-400.svg')
+where sku_image like '%picsum.photos%';

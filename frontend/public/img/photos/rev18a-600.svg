@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#f6efe0"/><stop offset="1" stop-color="#e9ddc6"/>
+    </linearGradient>
+    <radialGradient id="vin" cx="0.5" cy="0.42" r="0.85">
+      <stop offset="0.55" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#4a3a29" stop-opacity="0.20"/>
+    </radialGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f3ecdf"/></linearGradient>
+    <linearGradient id="brandfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1f7a6b"/><stop offset="1" stop-color="#14564b"/></linearGradient>
+    
+  </defs>
+  <rect width="600" height="600" fill="url(#bg)"/>
+  <rect y="150" width="600" height="450" fill="#efe5d1"/>
+  <rect y="148" width="600" height="6" fill="#e0d4bc"/>
+  <ellipse cx="226" cy="466.24" rx="117" ry="17.55" fill="#4a3a29" opacity="0.10"/>
+  <g transform="translate(-8 70) rotate(2) scale(0.78)">
+  <g>
+    <g transform="translate(438 452) rotate(-64)">
+      <rect x="-72" y="-132" width="144" height="264" rx="16" fill="#f6f0e2" stroke="#e3d9c6" stroke-width="2"/>
+      <rect x="-72" y="-132" width="144" height="52" rx="16" fill="#1f7a6b" opacity="0.85"/>
+      <rect x="-46" y="-40" width="92" height="12" rx="6" fill="#d9cbb2"/>
+      <rect x="-46" y="-14" width="64" height="12" rx="6" fill="#e2d7c2"/>
+    </g>
+    <rect x="212" y="128" width="176" height="384" rx="18" fill="url(#body)" stroke="#e3d9c6" stroke-width="2"/>
+    <rect x="212" y="128" width="176" height="86" rx="18" fill="url(#brandfill)"/>
+    <line x1="266" y1="118" x2="266" y2="140" stroke="#c9bca6" stroke-width="3"/><line x1="300" y1="118" x2="300" y2="140" stroke="#c9bca6" stroke-width="3"/><line x1="334" y1="118" x2="334" y2="140" stroke="#c9bca6" stroke-width="3"/>
+    <text x="300" y="188" text-anchor="middle" font-family="'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif" font-size="26" font-weight="600" fill="#ffffff">益生源</text>
+    <text x="300" y="292" text-anchor="middle" font-family="'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif" font-size="30" font-weight="600" fill="#2f2418">益生菌粉</text>
+    <line x1="248" y1="322" x2="352" y2="322" stroke="#e8ddc9" stroke-width="1.5"/>
+    <text x="300" y="352" text-anchor="middle" font-family="'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif" font-size="19" fill="#7d6b52">独立包装 · 便携分装</text>
+    <rect x="240" y="408" width="120" height="64" rx="10" fill="#d7efe8" opacity="0.8"/>
+    <text x="300" y="448" text-anchor="middle" font-family="'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif" font-size="20" fill="#14564b">颗粒</text>
+  </g></g>
+  <rect width="600" height="600" fill="url(#vin)"/>
+  <text x="556" y="576" text-anchor="end" font-family="'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif" font-size="22" fill="#7d6b52" opacity="0.75">买家实拍</text>
+</svg>

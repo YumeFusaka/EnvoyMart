@@ -52,12 +52,12 @@ where not exists (select 1 from category where id = seed.id);
 -- ==================== 品牌 ====================
 insert into brand (id, name, logo, description, status)
 select * from (
-    select 1 as id, '益生源' as name, 'https://picsum.photos/seed/brand1/120' as logo, '专注益生菌与肠道健康' as description, 1 as status
-    union all select 2, '元气元素', 'https://picsum.photos/seed/brand2/120', '维生素与矿物质补充', 1
-    union all select 3, '肌力方', 'https://picsum.photos/seed/brand3/120', '运动营养与蛋白质', 1
-    union all select 4, '康倍适', 'https://picsum.photos/seed/brand4/120', '特殊医学用途配方食品', 1
-    union all select 5, '深海鲜', 'https://picsum.photos/seed/brand5/120', '海洋来源营养', 1
-    union all select 6, '本草纪', 'https://picsum.photos/seed/brand6/120', '中式草本与现代营养结合', 1
+    select 1 as id, '益生源' as name, '/img/photos/brand1-120.svg' as logo, '专注益生菌与肠道健康' as description, 1 as status
+    union all select 2, '元气元素', '/img/photos/brand2-120.svg', '维生素与矿物质补充', 1
+    union all select 3, '肌力方', '/img/photos/brand3-120.svg', '运动营养与蛋白质', 1
+    union all select 4, '康倍适', '/img/photos/brand4-120.svg', '特殊医学用途配方食品', 1
+    union all select 5, '深海鲜', '/img/photos/brand5-120.svg', '海洋来源营养', 1
+    union all select 6, '本草纪', '/img/photos/brand6-120.svg', '中式草本与现代营养结合', 1
 ) as seed
 -- brand 的唯一键是 name，不是 id
 where not exists (select 1 from brand where name = seed.name);
@@ -75,88 +75,88 @@ insert into product_spu (id, spu_code, name, subtitle, category_id, brand_id, ma
 select * from (
     select 1 as id, 'SPU001' as spu_code, '维生素 D3 软胶囊' as name, '每粒 400IU，助力钙吸收' as subtitle,
            2 as category_id, 2 as brand_id,
-           'https://picsum.photos/seed/spu1/600' as main_image,
-           'https://picsum.photos/seed/spu1a/800,https://picsum.photos/seed/spu1b/800,https://picsum.photos/seed/spu1c/800' as images,
+           '/img/photos/spu1-600.svg' as main_image,
+           '/img/photos/spu1a-800.svg,/img/photos/spu1b-800.svg,/img/photos/spu1c-800.svg' as images,
            '热销,骨骼健康' as tags,
            '<h2>产品说明</h2><p>维生素 D3 有助于促进钙的吸收，维持骨骼健康。适用于日常日照不足、久坐办公的人群。</p><h2>服用建议</h2><p>随餐服用吸收更佳。</p>' as detail_html,
            1 as status, now() as created_at, now() as updated_at
     union all select 2, 'SPU002', '复合维生素矿物质片', '每日一片，覆盖 12 种维生素与 8 种矿物质', 2, 2,
-           'https://picsum.photos/seed/spu2/600', 'https://picsum.photos/seed/spu2a/800', '综合补充',
+           '/img/photos/spu2-600.svg', '/img/photos/spu2a-800.svg', '综合补充',
            '<h2>产品说明</h2><p>针对成人日常营养缺口设计的复合配方。</p>', 1, now(), now()
     union all select 3, 'SPU003', '乳清蛋白粉', '每份 24g 蛋白质，低脂低糖', 3, 3,
-           'https://picsum.photos/seed/spu3/600', 'https://picsum.photos/seed/spu3a/800', '运动,增肌',
+           '/img/photos/spu3-600.svg', '/img/photos/spu3a-800.svg', '运动,增肌',
            '<h2>产品说明</h2><p>分离乳清蛋白，乳糖含量低。</p>', 1, now(), now()
     union all select 4, 'SPU004', '植物蛋白粉', '豌豆与糙米双蛋白，适合素食人群', 3, 3,
-           'https://picsum.photos/seed/spu4/600', 'https://picsum.photos/seed/spu4a/800', '素食',
+           '/img/photos/spu4-600.svg', '/img/photos/spu4a-800.svg', '素食',
            '<h2>产品说明</h2><p>植物来源，不含乳制品。</p>', 1, now(), now()
     union all select 5, 'SPU005', '益生菌粉', '每袋 100 亿活菌，独立包装', 4, 1,
-           'https://picsum.photos/seed/spu5/600', 'https://picsum.photos/seed/spu5a/800', '肠道健康',
+           '/img/photos/spu5-600.svg', '/img/photos/spu5a-800.svg', '肠道健康',
            '<h2>产品说明</h2><p>含多种乳杆菌与双歧杆菌。</p>', 1, now(), now()
     union all select 6, 'SPU006', '膳食纤维粉', '水溶性膳食纤维，无味易冲调', 4, 1,
-           'https://picsum.photos/seed/spu6/600', 'https://picsum.photos/seed/spu6a/800', null,
+           '/img/photos/spu6-600.svg', '/img/photos/spu6a-800.svg', null,
            '<h2>产品说明</h2><p>可加入水、牛奶或饮品中。</p>', 1, now(), now()
     union all select 7, 'SPU007', '鱼油软胶囊', '深海鱼油，富含 EPA 与 DHA', 6, 5,
-           'https://picsum.photos/seed/spu7/600', 'https://picsum.photos/seed/spu7a/800', '心脑血管',
+           '/img/photos/spu7-600.svg', '/img/photos/spu7a-800.svg', '心脑血管',
            '<h2>产品说明</h2><p>深海小型鱼提取，经分子蒸馏纯化。</p>', 1, now(), now()
     union all select 8, 'SPU008', '辅酶 Q10 软胶囊', '每粒 100mg', 6, 5,
-           'https://picsum.photos/seed/spu8/600', 'https://picsum.photos/seed/spu8a/800', null,
+           '/img/photos/spu8-600.svg', '/img/photos/spu8a-800.svg', null,
            '<h2>产品说明</h2><p>辅酶 Q10 是人体自身合成的物质。</p>', 1, now(), now()
     union all select 9, 'SPU009', '维生素 K2 软胶囊', '每粒 90μg，与钙同补', 2, 6,
-           'https://picsum.photos/seed/spu9/600', 'https://picsum.photos/seed/spu9a/800', '骨骼健康',
+           '/img/photos/spu9-600.svg', '/img/photos/spu9a-800.svg', '骨骼健康',
            '<h2>产品说明</h2><p>维生素 K2 参与骨钙素的活化。</p><h2>注意事项</h2><p>正在服用抗凝药物者，服用前请咨询医师或药师。</p>', 1, now(), now()
     union all select 10, 'SPU010', '碳酸钙 D3 咀嚼片', '含钙 600mg，添加维生素 D3', 14, 2,
-           'https://picsum.photos/seed/spu10/600', 'https://picsum.photos/seed/spu10a/800', null,
+           '/img/photos/spu10-600.svg', '/img/photos/spu10a-800.svg', null,
            '<h2>产品说明</h2><p>咀嚼片剂型，无需吞服。辅料中含乳糖。</p>', 1, now(), now()
     union all select 11, 'SPU011', '柠檬酸钙胶囊', '不含乳糖，随餐与否均可', 14, 2,
-           'https://picsum.photos/seed/spu11/600', 'https://picsum.photos/seed/spu11a/800', null,
+           '/img/photos/spu11-600.svg', '/img/photos/spu11a-800.svg', null,
            '<h2>产品说明</h2><p>柠檬酸钙对胃酸依赖小，空腹也可服用。</p>', 1, now(), now()
     union all select 12, 'SPU012', '孕期复合营养包', '含叶酸、铁、钙、DHA', 11, 4,
-           'https://picsum.photos/seed/spu12/600', 'https://picsum.photos/seed/spu12a/800', '孕期',
+           '/img/photos/spu12-600.svg', '/img/photos/spu12a-800.svg', '孕期',
            '<h2>产品说明</h2><p>针对孕期营养需求设计。</p>', 1, now(), now()
     union all select 13, 'SPU013', '全营养配方粉', '特殊医学用途，整蛋白型', 5, 4,
-           'https://picsum.photos/seed/spu13/600', 'https://picsum.photos/seed/spu13a/800', null,
+           '/img/photos/spu13-600.svg', '/img/photos/spu13a-800.svg', null,
            '<h2>产品说明</h2><p>适用于进食受限人群的营养补充，使用前请咨询医师或临床营养师。</p>', 1, now(), now()
     union all select 14, 'SPU014', '胶原蛋白肽粉', '小分子肽，易吸收', 3, 6,
-           'https://picsum.photos/seed/spu14/600', 'https://picsum.photos/seed/spu14a/800', '美容',
+           '/img/photos/spu14-600.svg', '/img/photos/spu14a-800.svg', '美容',
            '<h2>产品说明</h2><p>鱼胶原蛋白肽，分子量小于 1000 道尔顿。</p>', 1, now(), now()
     union all select 15, 'SPU015', '儿童多种维生素软糖', '3 岁以上适用，天然水果味', 12, 2,
-           'https://picsum.photos/seed/spu15/600', 'https://picsum.photos/seed/spu15a/800', '儿童',
+           '/img/photos/spu15-600.svg', '/img/photos/spu15a-800.svg', '儿童',
            '<h2>产品说明</h2><p>软糖剂型，儿童易接受。</p>', 1, now(), now()
     union all select 16, 'SPU016', '褪黑素缓释片', '每片 3mg，缓释 8 小时', 16, 2,
-           'https://picsum.photos/seed/spu16/600', 'https://picsum.photos/seed/spu16a/800', '睡眠',
+           '/img/photos/spu16-600.svg', '/img/photos/spu16a-800.svg', '睡眠',
            '<h2>产品说明</h2><p>褪黑素是松果体分泌的激素，参与调节睡眠节律，适用于倒时差与作息紊乱的人群。</p><h2>注意事项</h2><p>不建议长期连续服用；服用后请勿驾驶。</p>', 1, now(), now()
     union all select 17, 'SPU017', 'γ-氨基丁酸软糖', '每粒 100mg，睡前半小时', 16, 6,
-           'https://picsum.photos/seed/spu17/600', 'https://picsum.photos/seed/spu17a/800', '睡眠,情绪',
+           '/img/photos/spu17-600.svg', '/img/photos/spu17a-800.svg', '睡眠,情绪',
            '<h2>产品说明</h2><p>γ-氨基丁酸是中枢神经系统中的抑制性神经递质。</p>', 1, now(), now()
     union all select 18, 'SPU018', '叶黄素酯软胶囊', '每粒叶黄素酯 10mg，搭配玉米黄质', 17, 5,
-           'https://picsum.photos/seed/spu18/600', 'https://picsum.photos/seed/spu18a/800', '护眼',
+           '/img/photos/spu18-600.svg', '/img/photos/spu18a-800.svg', '护眼',
            '<h2>产品说明</h2><p>叶黄素酯是叶黄素的稳定前体，在体内转化为叶黄素后集中于视网膜黄斑区。</p>', 1, now(), now()
     union all select 19, 'SPU019', '越橘叶黄素片', '北欧越橘提取物与叶黄素复合配方', 17, 6,
-           'https://picsum.photos/seed/spu19/600', 'https://picsum.photos/seed/spu19a/800', '护眼',
+           '/img/photos/spu19-600.svg', '/img/photos/spu19a-800.svg', '护眼',
            '<h2>产品说明</h2><p>越橘提取物富含花青素，适合长时间用眼的人群。</p>', 1, now(), now()
     union all select 20, 'SPU020', '维生素 C 咀嚼片', '每片 500mg，橙味', 18, 2,
-           'https://picsum.photos/seed/spu20/600', 'https://picsum.photos/seed/spu20a/800', '免疫',
+           '/img/photos/spu20-600.svg', '/img/photos/spu20a-800.svg', '免疫',
            '<h2>产品说明</h2><p>维生素 C 参与胶原蛋白合成，咀嚼片剂型无需吞服。</p>', 1, now(), now()
     union all select 21, 'SPU021', '锌硒宝片', '锌 10mg 与硒 50μg 复合配方', 18, 2,
-           'https://picsum.photos/seed/spu21/600', 'https://picsum.photos/seed/spu21a/800', '免疫',
+           '/img/photos/spu21-600.svg', '/img/photos/spu21a-800.svg', '免疫',
            '<h2>产品说明</h2><p>锌与硒是人体必需的微量元素。</p>', 1, now(), now()
     union all select 22, 'SPU022', '共轭亚油酸软胶囊', '每粒 1000mg CLA', 19, 3,
-           'https://picsum.photos/seed/spu22/600', 'https://picsum.photos/seed/spu22a/800', '体重管理,运动',
+           '/img/photos/spu22-600.svg', '/img/photos/spu22a-800.svg', '体重管理,运动',
            '<h2>产品说明</h2><p>共轭亚油酸来源于红花籽油，通常与规律运动配合使用。</p>', 1, now(), now()
     union all select 23, 'SPU023', '白芸豆膳食纤维片', '餐前一片，含白芸豆提取物', 19, 6,
-           'https://picsum.photos/seed/spu23/600', 'https://picsum.photos/seed/spu23a/800', '体重管理',
+           '/img/photos/spu23-600.svg', '/img/photos/spu23a-800.svg', '体重管理',
            '<h2>产品说明</h2><p>白芸豆提取物含 α-淀粉酶抑制蛋白，配合膳食纤维使用。</p>', 1, now(), now()
     union all select 24, 'SPU024', '氨糖软骨素钙片', '氨糖 750mg、软骨素 250mg 与钙 200mg', 14, 4,
-           'https://picsum.photos/seed/spu24/600', 'https://picsum.photos/seed/spu24a/800', '关节,骨骼健康',
+           '/img/photos/spu24-600.svg', '/img/photos/spu24a-800.svg', '关节,骨骼健康',
            '<h2>产品说明</h2><p>氨基葡萄糖与硫酸软骨素是关节软骨的组成成分。</p><h2>注意事项</h2><p>对甲壳类过敏者慎用。</p>', 1, now(), now()
     union all select 25, 'SPU025', '孕妇钙片', '柠檬酸钙 500mg 与维生素 D3 400IU，孕期哺乳期适用', 14, 4,
-           'https://picsum.photos/seed/spu25/600', 'https://picsum.photos/seed/spu25a/800', '孕期,骨骼健康',
+           '/img/photos/spu25-600.svg', '/img/photos/spu25a-800.svg', '孕期,骨骼健康',
            '<h2>产品说明</h2><p>柠檬酸钙对胃酸依赖小，孕期胃部不适时也可随餐或空腹服用。</p><h2>注意事项</h2><p>请按医师或营养师建议的剂量服用。</p>', 1, now(), now()
     union all select 26, 'SPU026', '儿童钙软糖', '3 岁以上适用，每粒含钙 100mg', 12, 2,
-           'https://picsum.photos/seed/spu26/600', 'https://picsum.photos/seed/spu26a/800', '儿童,骨骼健康',
+           '/img/photos/spu26-600.svg', '/img/photos/spu26a-800.svg', '儿童,骨骼健康',
            '<h2>产品说明</h2><p>软糖剂型，含维生素 D 帮助钙吸收。</p>', 1, now(), now()
     union all select 27, 'SPU027', '孕期 DHA 藻油软胶囊', '每粒 DHA 200mg，藻油来源', 11, 4,
-           'https://picsum.photos/seed/spu27/600', 'https://picsum.photos/seed/spu27a/800', '孕期',
+           '/img/photos/spu27-600.svg', '/img/photos/spu27a-800.svg', '孕期',
            '<h2>产品说明</h2><p>DHA 藻油来源，适合孕期与哺乳期补充。</p>', 1, now(), now()
 ) as seed
 -- product_spu 的唯一键是 spu_code：运营改过商品编号之后，id 守卫会放行、spu_code 撞车
@@ -252,42 +252,42 @@ where not exists (select 1 from product_spec_value where id = seed.id);
 -- 价格单位「分」。原始价格用于展示划线价
 insert into product_sku (id, spu_id, sku_code, price, original_price, stock, image, status)
 select * from (
-    select 1 as id, 1 as spu_id, 'SKU001' as sku_code, 5900 as price, 7900 as original_price, 320 as stock, 'https://picsum.photos/seed/sku1/400' as image, 1 as status
-    union all select 2, 1, 'SKU002', 9900, 12900, 180, 'https://picsum.photos/seed/sku2/400', 1
-    union all select 3, 1, 'SKU003', 7900, 9900, 260, 'https://picsum.photos/seed/sku3/400', 1
-    union all select 4, 2, 'SKU004', 12800, 15800, 210, 'https://picsum.photos/seed/sku4/400', 1
-    union all select 5, 3, 'SKU005', 26800, 32800, 150, 'https://picsum.photos/seed/sku5/400', 1
-    union all select 6, 3, 'SKU006', 26800, 32800, 130, 'https://picsum.photos/seed/sku6/400', 1
-    union all select 7, 3, 'SKU007', 49800, 59800, 70, 'https://picsum.photos/seed/sku7/400', 1
-    union all select 8, 4, 'SKU008', 22800, 27800, 90, 'https://picsum.photos/seed/sku8/400', 1
-    union all select 9, 5, 'SKU009', 15800, 19800, 400, 'https://picsum.photos/seed/sku9/400', 1
-    union all select 10, 5, 'SKU010', 27800, 33800, 220, 'https://picsum.photos/seed/sku10/400', 1
-    union all select 11, 6, 'SKU011', 6900, 8900, 300, 'https://picsum.photos/seed/sku11/400', 1
-    union all select 12, 7, 'SKU012', 16800, 20800, 260, 'https://picsum.photos/seed/sku12/400', 1
-    union all select 13, 7, 'SKU013', 29800, 35800, 140, 'https://picsum.photos/seed/sku13/400', 1
-    union all select 14, 8, 'SKU014', 19800, 24800, 180, 'https://picsum.photos/seed/sku14/400', 1
-    union all select 15, 9, 'SKU015', 12800, 15800, 240, 'https://picsum.photos/seed/sku15/400', 1
-    union all select 16, 10, 'SKU016', 6900, 8900, 350, 'https://picsum.photos/seed/sku16/400', 1
-    union all select 17, 10, 'SKU017', 11800, 14800, 200, 'https://picsum.photos/seed/sku17/400', 1
-    union all select 18, 11, 'SKU018', 8900, 10800, 280, 'https://picsum.photos/seed/sku18/400', 1
-    union all select 19, 12, 'SKU019', 25800, 31800, 160, 'https://picsum.photos/seed/sku19/400', 1
-    union all select 20, 12, 'SKU020', 69800, 82800, 80, 'https://picsum.photos/seed/sku20/400', 1
-    union all select 21, 13, 'SKU021', 36800, 43800, 60, 'https://picsum.photos/seed/sku21/400', 1
-    union all select 22, 14, 'SKU022', 18800, 22800, 190, 'https://picsum.photos/seed/sku22/400', 1
-    union all select 23, 15, 'SKU023', 7900, 9900, 420, 'https://picsum.photos/seed/sku23/400', 1
-    union all select 24, 15, 'SKU024', 7900, 9900, 380, 'https://picsum.photos/seed/sku24/400', 1
-    union all select 25, 16, 'SKU025', 9900, 12900, 260, 'https://picsum.photos/seed/sku25/400', 1
-    union all select 26, 17, 'SKU026', 11800, 14800, 300, 'https://picsum.photos/seed/sku26/400', 1
-    union all select 27, 18, 'SKU027', 15800, 19800, 220, 'https://picsum.photos/seed/sku27/400', 1
-    union all select 28, 19, 'SKU028', 13800, 16800, 240, 'https://picsum.photos/seed/sku28/400', 1
-    union all select 29, 20, 'SKU029', 4900, 6900, 500, 'https://picsum.photos/seed/sku29/400', 1
-    union all select 30, 21, 'SKU030', 8900, 10800, 280, 'https://picsum.photos/seed/sku30/400', 1
-    union all select 31, 22, 'SKU031', 19800, 24800, 170, 'https://picsum.photos/seed/sku31/400', 1
-    union all select 32, 23, 'SKU032', 12800, 15800, 210, 'https://picsum.photos/seed/sku32/400', 1
-    union all select 33, 24, 'SKU033', 16800, 20800, 190, 'https://picsum.photos/seed/sku33/400', 1
-    union all select 34, 25, 'SKU034', 12900, 15900, 230, 'https://picsum.photos/seed/sku34/400', 1
-    union all select 35, 26, 'SKU035', 8900, 10900, 340, 'https://picsum.photos/seed/sku35/400', 1
-    union all select 36, 27, 'SKU036', 21800, 26800, 150, 'https://picsum.photos/seed/sku36/400', 1
+    select 1 as id, 1 as spu_id, 'SKU001' as sku_code, 5900 as price, 7900 as original_price, 320 as stock, '/img/photos/sku1-400.svg' as image, 1 as status
+    union all select 2, 1, 'SKU002', 9900, 12900, 180, '/img/photos/sku2-400.svg', 1
+    union all select 3, 1, 'SKU003', 7900, 9900, 260, '/img/photos/sku3-400.svg', 1
+    union all select 4, 2, 'SKU004', 12800, 15800, 210, '/img/photos/sku4-400.svg', 1
+    union all select 5, 3, 'SKU005', 26800, 32800, 150, '/img/photos/sku5-400.svg', 1
+    union all select 6, 3, 'SKU006', 26800, 32800, 130, '/img/photos/sku6-400.svg', 1
+    union all select 7, 3, 'SKU007', 49800, 59800, 70, '/img/photos/sku7-400.svg', 1
+    union all select 8, 4, 'SKU008', 22800, 27800, 90, '/img/photos/sku8-400.svg', 1
+    union all select 9, 5, 'SKU009', 15800, 19800, 400, '/img/photos/sku9-400.svg', 1
+    union all select 10, 5, 'SKU010', 27800, 33800, 220, '/img/photos/sku10-400.svg', 1
+    union all select 11, 6, 'SKU011', 6900, 8900, 300, '/img/photos/sku11-400.svg', 1
+    union all select 12, 7, 'SKU012', 16800, 20800, 260, '/img/photos/sku12-400.svg', 1
+    union all select 13, 7, 'SKU013', 29800, 35800, 140, '/img/photos/sku13-400.svg', 1
+    union all select 14, 8, 'SKU014', 19800, 24800, 180, '/img/photos/sku14-400.svg', 1
+    union all select 15, 9, 'SKU015', 12800, 15800, 240, '/img/photos/sku15-400.svg', 1
+    union all select 16, 10, 'SKU016', 6900, 8900, 350, '/img/photos/sku16-400.svg', 1
+    union all select 17, 10, 'SKU017', 11800, 14800, 200, '/img/photos/sku17-400.svg', 1
+    union all select 18, 11, 'SKU018', 8900, 10800, 280, '/img/photos/sku18-400.svg', 1
+    union all select 19, 12, 'SKU019', 25800, 31800, 160, '/img/photos/sku19-400.svg', 1
+    union all select 20, 12, 'SKU020', 69800, 82800, 80, '/img/photos/sku20-400.svg', 1
+    union all select 21, 13, 'SKU021', 36800, 43800, 60, '/img/photos/sku21-400.svg', 1
+    union all select 22, 14, 'SKU022', 18800, 22800, 190, '/img/photos/sku22-400.svg', 1
+    union all select 23, 15, 'SKU023', 7900, 9900, 420, '/img/photos/sku23-400.svg', 1
+    union all select 24, 15, 'SKU024', 7900, 9900, 380, '/img/photos/sku24-400.svg', 1
+    union all select 25, 16, 'SKU025', 9900, 12900, 260, '/img/photos/sku25-400.svg', 1
+    union all select 26, 17, 'SKU026', 11800, 14800, 300, '/img/photos/sku26-400.svg', 1
+    union all select 27, 18, 'SKU027', 15800, 19800, 220, '/img/photos/sku27-400.svg', 1
+    union all select 28, 19, 'SKU028', 13800, 16800, 240, '/img/photos/sku28-400.svg', 1
+    union all select 29, 20, 'SKU029', 4900, 6900, 500, '/img/photos/sku29-400.svg', 1
+    union all select 30, 21, 'SKU030', 8900, 10800, 280, '/img/photos/sku30-400.svg', 1
+    union all select 31, 22, 'SKU031', 19800, 24800, 170, '/img/photos/sku31-400.svg', 1
+    union all select 32, 23, 'SKU032', 12800, 15800, 210, '/img/photos/sku32-400.svg', 1
+    union all select 33, 24, 'SKU033', 16800, 20800, 190, '/img/photos/sku33-400.svg', 1
+    union all select 34, 25, 'SKU034', 12900, 15900, 230, '/img/photos/sku34-400.svg', 1
+    union all select 35, 26, 'SKU035', 8900, 10900, 340, '/img/photos/sku35-400.svg', 1
+    union all select 36, 27, 'SKU036', 21800, 26800, 150, '/img/photos/sku36-400.svg', 1
 ) as seed
 -- product_sku 的唯一键是 sku_code。**这一条是最容易踩的**：规格组合重算会删掉旧 SKU、
 -- 按新 id 建回来（这正是 `verify-sku-regen.mjs` 盯着的那条路径），
@@ -444,3 +444,30 @@ where not exists (
     select 1 from spu_attribute_value
     where spu_id = seed.spu_id and attribute_id = seed.attribute_id
 );
+
+-- ==================== 配图修复（picsum 外链 → 本地生成图） ====================
+-- 商品/品牌/SKU 的图原先指向 picsum.photos 的随机照片（卖保健品的货架上摆着
+-- 风景和猫），现改为 frontend/public/img/photos/ 下由
+-- `frontend/scripts/gen-product-images.mjs` 生成的本地 SVG，不依赖外网。
+-- 文件名沿用原 URL 里的 seed-尺寸：seed/spu1/600 → spu1-600.svg。
+--
+-- 上面的种子都是 insert-only（唯一键守卫不会回头改已有行），所以老库要这几行
+-- UPDATE 把库里还留着的旧 URL 换掉。id 与 seed 编号一致是种子文件自身的写法
+-- （`select 1 as id` 配 `seed/spu1`）；守卫用 like 而不是全表覆盖，
+-- 运营在后台改过图的商品不会被误伤。
+update brand set logo = concat('/img/photos/brand', id, '-120.svg')
+where logo like '%picsum.photos%';
+
+update product_spu set main_image = concat('/img/photos/spu', id, '-600.svg')
+where main_image like '%picsum.photos%';
+
+update product_spu
+set images = case
+    when images like '%,%,%'
+        then concat('/img/photos/spu', id, 'a-800.svg,/img/photos/spu', id, 'b-800.svg,/img/photos/spu', id, 'c-800.svg')
+    else concat('/img/photos/spu', id, 'a-800.svg')
+end
+where images like '%picsum.photos%';
+
+update product_sku set image = concat('/img/photos/sku', id, '-400.svg')
+where image like '%picsum.photos%';

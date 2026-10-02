@@ -100,19 +100,38 @@ select 1, 2, -9, -9, 'yanglin', 5,
        '2026-08-21 10:30:00', 'admin', 4, '2026-08-20 09:18:00'
 where not exists (select 1 from review where order_item_id = -9);
 
--- 带图评价。url 指向 picsum 的固定 seed，离线环境下图挂掉也不影响功能链路。
+-- 带图评价。url 指向前端本地生成的 SVG（frontend/public/img/photos/，
+-- 由 scripts/gen-product-images.mjs 生成，按评价所属商品出图），不依赖外网。
 insert into review_image (review_id, url, sort)
 select r.id, seed.url, seed.sort
 from (
-    select -1 as order_item_id, 'https://picsum.photos/seed/rev1a/600' as url,
+    select -1 as order_item_id, '/img/photos/rev1a-600.svg' as url,
            0 as sort
-    union all select -1, 'https://picsum.photos/seed/rev1b/600', 1
-    union all select -4, 'https://picsum.photos/seed/rev4a/600', 0
-    union all select -13, 'https://picsum.photos/seed/rev13a/600', 0
-    union all select -13, 'https://picsum.photos/seed/rev13b/600', 1
-    union all select -18, 'https://picsum.photos/seed/rev18a/600', 0
-    union all select -30, 'https://picsum.photos/seed/rev30a/600', 0
-    union all select -30, 'https://picsum.photos/seed/rev30b/600', 1
+    union all select -1, '/img/photos/rev1b-600.svg', 1
+    union all select -4, '/img/photos/rev4a-600.svg', 0
+    union all select -13, '/img/photos/rev13a-600.svg', 0
+    union all select -13, '/img/photos/rev13b-600.svg', 1
+    union all select -18, '/img/photos/rev18a-600.svg', 0
+    union all select -30, '/img/photos/rev30a-600.svg', 0
+    union all select -30, '/img/photos/rev30b-600.svg', 1
 ) as seed
 join review r on r.order_item_id = seed.order_item_id
 where not exists (select 1 from review_image i where i.review_id = r.id and i.sort = seed.sort);
+
+-- 老库修复：评价图从 picsum 外链换成本地生成 SVG 后，insert-only 的种子
+-- （唯一键守卫）不会回头改已有行，这几行把库里还留着的旧 URL 逐条换掉。
+-- 其中 rev1 不在种子之列——它是早期通过接口创建的真实评价（验收残留），
+-- 与种子同一条修复路径处理。
+update review_image set url = case url
+    when 'https://picsum.photos/seed/rev1/600' then '/img/photos/rev1-600.svg'
+    when 'https://picsum.photos/seed/rev1a/600' then '/img/photos/rev1a-600.svg'
+    when 'https://picsum.photos/seed/rev1b/600' then '/img/photos/rev1b-600.svg'
+    when 'https://picsum.photos/seed/rev4a/600' then '/img/photos/rev4a-600.svg'
+    when 'https://picsum.photos/seed/rev13a/600' then '/img/photos/rev13a-600.svg'
+    when 'https://picsum.photos/seed/rev13b/600' then '/img/photos/rev13b-600.svg'
+    when 'https://picsum.photos/seed/rev18a/600' then '/img/photos/rev18a-600.svg'
+    when 'https://picsum.photos/seed/rev30a/600' then '/img/photos/rev30a-600.svg'
+    when 'https://picsum.photos/seed/rev30b/600' then '/img/photos/rev30b-600.svg'
+    else url
+end
+where url like '%picsum.photos%';

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbf8f3"/><stop offset="1" stop-color="#f1eadc"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.8" cy="0.12" r="0.85">
+      <stop offset="0" stop-color="#1f7a6b" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#1f7a6b" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#14564b" opacity="0.10"/>
+    </pattern>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f3ecdf"/>
+    </linearGradient>
+    <linearGradient id="brandfill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f7a6b"/><stop offset="1" stop-color="#14564b"/>
+    </linearGradient>
+    
+  </defs>
+  <rect width="600" height="600" fill="url(#bg)"/>
+  <rect width="600" height="600" fill="url(#dots)"/>
+  <rect width="600" height="600" fill="url(#glow)"/>
+  <circle cx="86" cy="512" r="150" fill="none" stroke="#1f7a6b" stroke-opacity="0.12" stroke-width="26"/>
+  <ellipse cx="300" cy="470" rx="212" ry="32" fill="#4a3a29" opacity="0.07"/>
+  
+    <g transform="translate(206 322) rotate(-16)"><rect x="-42" y="-96" width="84" height="192" rx="14" fill="#faf6ee" stroke="#e3d9c6" stroke-width="2"/><rect x="-42" y="-96" width="84" height="40" rx="14" fill="#1f7a6b"/></g>
+    <g transform="translate(394 322) rotate(14)"><rect x="-42" y="-96" width="84" height="192" rx="14" fill="#faf6ee" stroke="#e3d9c6" stroke-width="2"/><rect x="-42" y="-96" width="84" height="40" rx="14" fill="#1f7a6b"/></g>
+    <g transform="translate(300 340) rotate(-2)"><rect x="-46" y="-104" width="92" height="208" rx="16" fill="#ffffff" stroke="#ddd0b8" stroke-width="2"/><rect x="-46" y="-104" width="92" height="44" rx="16" fill="url(#brandfill)"/><text x="0" y="30" text-anchor="middle" font-family="'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif" font-size="24" font-weight="600" fill="#2f2418">益生菌粉</text></g>
+  <text x="300" y="556" text-anchor="middle" font-family="'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif" font-size="20" fill="#7d6b52" letter-spacing="4">益生源</text>
+</svg>
