@@ -26,10 +26,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 确认轮：<b>执行的是用户批准的那次调用，不是模型这一轮想起什么。</b>
@@ -93,22 +95,22 @@ class AgentApprovalTokenTest {
      */
     private static final class PendingGraph extends AgentGraph {
         private final AtomicInteger runs = new AtomicInteger();
-        private final PendingAction action;
+        private final List<PendingAction> actions;
 
-        PendingGraph(PendingAction action) {
+        PendingGraph(List<PendingAction> actions) {
             super(new MockLLMProvider(), LLM_CONFIG, new ToolRegistry(),
                     Executors.newVirtualThreadPerTaskExecutor());
-            this.action = action;
+            this.actions = actions;
         }
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
             runs.incrementAndGet();
-            if (action == null) {
+            if (actions == null) {
                 return GraphResult.builder().answer("图给的回答").steps(List.of()).build();
             }
-            return GraphResult.builder().pendingActions(List.of(action)).steps(List.of()).build();
+            return GraphResult.builder().pendingActions(actions).steps(List.of()).build();
         }
     }
 
@@ -137,7 +139,7 @@ class AgentApprovalTokenTest {
     @Test
     void 确认轮按签名载荷执行并逐字回报工具结果() {
         RecordingCancelTool cancel = new RecordingCancelTool();
-        PendingGraph graph = new PendingGraph(PendingAction.of("order_cancel", Map.of("orderId", 12)));
+        PendingGraph graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))));
         ToolRegistry registry = new ToolRegistry();
         registry.register(cancel);
         Agent agent = agent(graph, registry);
@@ -159,7 +161,7 @@ class AgentApprovalTokenTest {
     @Test
     void 确认轮不进执行图() {
         RecordingCancelTool cancel = new RecordingCancelTool();
-        PendingGraph graph = new PendingGraph(PendingAction.of("order_cancel", Map.of("orderId", 12)));
+        PendingGraph graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))));
         ToolRegistry registry = new ToolRegistry();
         registry.register(cancel);
         Agent agent = agent(graph, registry);
@@ -181,7 +183,7 @@ class AgentApprovalTokenTest {
     @Test
     void 载荷被改过则一条都不执行() {
         RecordingCancelTool cancel = new RecordingCancelTool();
-        PendingGraph graph = new PendingGraph(PendingAction.of("order_cancel", Map.of("orderId", 12)));
+        PendingGraph graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))));
         ToolRegistry registry = new ToolRegistry();
         registry.register(cancel);
         Agent agent = agent(graph, registry);
@@ -203,7 +205,7 @@ class AgentApprovalTokenTest {
     @Test
     void 令牌只对签发它的用户和会话有效() {
         RecordingCancelTool cancel = new RecordingCancelTool();
-        PendingGraph graph = new PendingGraph(PendingAction.of("order_cancel", Map.of("orderId", 12)));
+        PendingGraph graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))));
         ToolRegistry registry = new ToolRegistry();
         registry.register(cancel);
         Agent agent = agent(graph, registry);
@@ -248,7 +250,7 @@ class AgentApprovalTokenTest {
     @Test
     void 确认轮也发工具进度事件() {
         RecordingCancelTool cancel = new RecordingCancelTool();
-        PendingGraph graph = new PendingGraph(PendingAction.of("order_cancel", Map.of("orderId", 12)));
+        PendingGraph graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))));
         ToolRegistry registry = new ToolRegistry();
         registry.register(cancel);
         Agent agent = agent(graph, registry);
@@ -273,5 +275,49 @@ class AgentApprovalTokenTest {
                 .as("事件必须来自真正执行的那一次调用（载荷里的 order_cancel）")
                 .containsExactly("start:order_cancel", "finish:order_cancel:true");
         assertThat(cancel.calls).hasSize(1);
+    }
+
+    /**
+     * 用户点完确认又点停止：已开始的那条让它跑完，还没开始的绝不放行。
+     * <p>
+     * 确认表达的是「批准这一次调用」，不是「把通行证永久点亮」——取消必须同样作用在
+     * 这条路径上，且判据在每一条调用之前（而不是整批之前）：中止那一刻已执行到哪、
+     * 还剩几条没动，要从轨迹里读得出来（warn 日志），而不是留下一片未知。
+     */
+    @Test
+    void 确认轮执行中途取消后剩余操作一条都不执行() {
+        RecordingCancelTool cancel = new RecordingCancelTool();
+        PendingGraph graph = new PendingGraph(List.of(
+                PendingAction.of("order_cancel", Map.of("orderId", 12)),
+                PendingAction.of("order_cancel", Map.of("orderId", 13))));
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(cancel);
+        Agent agent = agent(graph, registry);
+        String token = issueToken(agent, "u1", "s1");
+
+        // 第一条开始执行时取消到达（onStart 与用户点击都发生在执行期间）
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        ToolProgressListener listener = new ToolProgressListener() {
+            @Override
+            public void onStart(String tool) {
+                cancelled.set(true);
+            }
+
+            @Override
+            public void onFinish(String tool, boolean success, boolean noData, long latencyMs) {
+            }
+
+            @Override
+            public boolean cancelled() {
+                return cancelled.get();
+            }
+        };
+
+        assertThatThrownBy(() -> agent.chatStream("u1", "s1", "确认执行", token, chunk -> {
+        }, listener)).satisfies(e -> assertThat(AgentCancelledException.isCancellation(e)).isTrue());
+
+        assertThat(cancel.calls)
+                .as("已开始的那单让它跑完（不可撤销操作悬在半途更糟），后一单绝不执行")
+                .containsExactly(Map.of("orderId", 12));
     }
 }

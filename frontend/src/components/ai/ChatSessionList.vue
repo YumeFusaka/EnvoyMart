@@ -221,6 +221,13 @@ const buckets = computed<Bucket[]>(() => {
   box-shadow: var(--focus-ring);
 }
 
+/* 触屏没有 hover：藏起来的删除按钮等于不存在（看得见才点得到），常显 */
+@media (hover: none) {
+  .session-list__remove {
+    opacity: 1;
+  }
+}
+
 .session-list__empty {
   margin: 0;
   padding: 0 var(--ys-space-2);

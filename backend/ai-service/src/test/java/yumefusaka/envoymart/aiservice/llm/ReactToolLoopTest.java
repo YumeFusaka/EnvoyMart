@@ -3,11 +3,15 @@ package yumefusaka.envoymart.aiservice.llm;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.output.TokenUsage;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import yumefusaka.envoymart.agent.core.AgentCancelledException;
 import yumefusaka.envoymart.agent.llm.ChatMessage;
 import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMResponse;
@@ -18,16 +22,19 @@ import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.Tool;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 工具循环是否真的会执行工具 —— 这条是迁移的核心回归防线。
@@ -411,5 +418,235 @@ class ReactToolLoopTest {
         assertThat(response.getToolExecutions())
                 .as("被拦的操作不是执行轨迹——报成失败会把「等你批准」说成「出错了」")
                 .isEmpty();
+    }
+
+    // ==================== 取消（用户点了「停止生成」） ====================
+
+    /**
+     * 取消已生效：循环的第一次问话都不该发生。
+     * <p>
+     * 用户已经走了，之后每一次模型往返、每一次工具执行都是没有接收方的开销。
+     * 检查点放在循环顶部（问话之前）而不是工具执行处，是因为「不再开始新工作」
+     * 覆盖的正是「下一圈还会不会发生」——只拦工具不拦问话，账单照走。
+     */
+    @Test
+    void 取消已生效时工具循环连模型都不问() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(echoTool);
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(stubModel, null, registry,
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+
+        ToolProgressListener listener = new ToolProgressListener() {
+            @Override
+            public void onStart(String tool) {
+            }
+
+            @Override
+            public void onFinish(String tool, boolean success, boolean noData, long latencyMs) {
+            }
+
+            @Override
+            public boolean cancelled() {
+                return true;
+            }
+        };
+
+        assertThatThrownBy(() -> provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.TOOL_PROGRESS, listener)))
+                .satisfies(e -> assertThat(AgentCancelledException.isCancellation(e)).isTrue());
+
+        assertThat(modelCalls.get())
+                .as("取消后不该再发起任何计费调用")
+                .isZero();
+        assertThat(executed.get()).isNull();
+    }
+
+    /**
+     * 模型<b>已经</b>要了工具、取消在工具真正动手之前到达 —— 工具必须一条都不执行。
+     * <p>
+     * 这是取消语义里最硬的一段：工具是唯一会跨出本进程、产生不可撤销副作用的动作。
+     * 「模型要了」不等于「会执行」，判据落在执行之前；而同一批里如果第一条已经在跑，
+     * 让它跑完（悬在半途的副作用比慢更糟），后面的不再放行。
+     */
+    @Test
+    void 模型已请求工具但取消在工具执行前到达时不执行() {
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        AtomicInteger requests = new AtomicInteger();
+        ChatModel model = new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                requests.incrementAndGet();
+                // 模型这一轮生成期间用户点了停止
+                cancelled.set(true);
+                return ChatResponse.builder()
+                        .aiMessage(AiMessage.from("", List.of(ToolExecutionRequest.builder()
+                                .id("call-1").name(TOOL_NAME).arguments("{}").build())))
+                        .build();
+            }
+        };
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(echoTool);
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(model, null, registry,
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+
+        ToolProgressListener listener = new ToolProgressListener() {
+            @Override
+            public void onStart(String tool) {
+            }
+
+            @Override
+            public void onFinish(String tool, boolean success, boolean noData, long latencyMs) {
+            }
+
+            @Override
+            public boolean cancelled() {
+                return cancelled.get();
+            }
+        };
+
+        assertThatThrownBy(() -> provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.TOOL_PROGRESS, listener)))
+                .satisfies(e -> assertThat(AgentCancelledException.isCancellation(e)).isTrue());
+
+        assertThat(executed.get())
+                .as("模型要了工具不等于工具会被执行——没开始的副作用绝不放行")
+                .isNull();
+        assertThat(requests.get()).isEqualTo(1);
+    }
+
+    /**
+     * 取消在<b>问话期间</b>到达：在途的那一轮跑完，但不能按「正常收尾」交出去。
+     * <p>
+     * 掉这一条的表现最隐蔽：循环顶的检查要等下一圈才执行，而这一轮已经拿到了
+     * 「没有工具请求」的终局——循环直接 break 返回，取消旗不再有人看，
+     * 一次用户按下的停止变成一轮完整作答。
+     */
+    @Test
+    void 取消在问话期间到达时该轮跑完也不交出去() {
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        AtomicInteger calls = new AtomicInteger();
+        ChatModel model = new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                calls.incrementAndGet();
+                // 这一轮生成期间用户点了停止
+                cancelled.set(true);
+                return ChatResponse.builder().aiMessage(AiMessage.from("整篇回答")).build();
+            }
+        };
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(model, null, new ToolRegistry(),
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+
+        ToolProgressListener listener = new ToolProgressListener() {
+            @Override
+            public void onStart(String tool) {
+            }
+
+            @Override
+            public void onFinish(String tool, boolean success, boolean noData, long latencyMs) {
+            }
+
+            @Override
+            public boolean cancelled() {
+                return cancelled.get();
+            }
+        };
+
+        assertThatThrownBy(() -> provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.TOOL_PROGRESS, listener)))
+                .satisfies(e -> assertThat(AgentCancelledException.isCancellation(e)).isTrue());
+
+        assertThat(calls.get())
+                .as("那一轮已经在途，拦不住也不必拦；拦的是把它当成正常结果交出去")
+                .isEqualTo(1);
+    }
+
+    // ==================== 流式推送节奏 ====================
+
+    /**
+     * 流式正文必须<b>边到边推、且恰好推一次</b>。
+     * <p>
+     * 两个失败模式各钉一头：
+     * <ul>
+     *   <li><b>攒着不推</b>（把 chunk 收在轮次里、收尾一次性倒出）——体感是生成期间
+     *       界面一片静止、结束时整篇砸下来，恰好不是对话界面的样子。断言放在回调现场：
+     *       第一个 chunk 推出去的这一刻，消费者必须已经拿到它，而不是等收尾帧；</li>
+     *   <li><b>推两遍</b>（live 推送与收尾回放同时存在）——屏幕上整篇正文重复一遍。
+     *       收尾断言严格相等即覆盖。</li>
+     * </ul>
+     */
+    @Test
+    void 流式chunk边到边推且恰好一次() {
+        List<String> received = new ArrayList<>();
+        StreamingChatModel stubStream = new StreamingChatModel() {
+            @Override
+            public void chat(ChatRequest request, StreamingChatResponseHandler handler) {
+                handler.onPartialResponse("你好");
+                // 回调现场断言：这一刻消费者必须已经拿到——攒到收尾再倒出的话这里还是空
+                assertThat(received)
+                        .as("chunk 产生即推送，不是收尾时一次性回放")
+                        .containsExactly("你好");
+                handler.onPartialResponse("，世界");
+                handler.onCompleteResponse(ChatResponse.builder()
+                        .aiMessage(AiMessage.from("你好，世界"))
+                        .tokenUsage(new TokenUsage(1, 2))
+                        .build());
+            }
+        };
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(stubModel, stubStream,
+                new ToolRegistry(), LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+
+        provider.chatStream(messages(), LLMConfig.builder().model(MODEL).build(), received::add);
+
+        assertThat(received)
+                .as("每个 chunk 恰好推一次：live 推送与收尾回放若同时存在，整篇正文会被推两遍")
+                .containsExactly("你好", "，世界");
+    }
+
+    /**
+     * 取消在<b>正文轮期间</b>到达：轮次跑完（在途调用收不回），但收尾必须按取消走。
+     * <p>
+     * 这是「停止生成」最常见的时序——用户看着字往外冒，读到一半按了停止。少了
+     * 收口这一步，这一轮会被当成正常作答返回：历史里记下整篇，屏幕上只有半句，
+     * 下次打开会话回答「自己长长了」。
+     */
+    @Test
+    void 取消在正文轮期间到达时整轮跑完也不按正常收尾返回() {
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        StreamingChatModel stubStream = new StreamingChatModel() {
+            @Override
+            public void chat(ChatRequest request, StreamingChatResponseHandler handler) {
+                handler.onPartialResponse("用户看到的前半句");
+                // 这一轮还在生成时用户点了停止
+                cancelled.set(true);
+                handler.onPartialResponse("推给空气的后半句");
+                handler.onCompleteResponse(ChatResponse.builder()
+                        .aiMessage(AiMessage.from("用户看到的前半句推给空气的后半句"))
+                        .tokenUsage(new TokenUsage(1, 2))
+                        .build());
+            }
+        };
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(stubModel, stubStream, new ToolRegistry(),
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+
+        ToolProgressListener listener = new ToolProgressListener() {
+            @Override
+            public void onStart(String tool) {
+            }
+
+            @Override
+            public void onFinish(String tool, boolean success, boolean noData, long latencyMs) {
+            }
+
+            @Override
+            public boolean cancelled() {
+                return cancelled.get();
+            }
+        };
+
+        assertThatThrownBy(() -> provider.chatStreamWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.TOOL_PROGRESS, listener), chunk -> {
+                }))
+                .satisfies(e -> assertThat(AgentCancelledException.isCancellation(e)).isTrue());
     }
 }

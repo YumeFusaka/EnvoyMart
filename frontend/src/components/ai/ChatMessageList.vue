@@ -7,7 +7,7 @@ import PendingApprovalCard from '@/components/ai/PendingApprovalCard.vue'
 import RecommendationCards from '@/components/ai/RecommendationCards.vue'
 import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
-import { formatClock } from '@/utils/format'
+import { formatChatStamp } from '@/utils/format'
 import {
   type TraceOutcome,
   factEntries,
@@ -60,7 +60,21 @@ const emit = defineEmits<{
   openProduct: [product: ProductSummary]
   approve: []
   dismiss: []
+  regenerate: [messageId: string]
 }>()
+
+/**
+ * 「重新生成」只出现在最后一条回答上，且流不在飞时。
+ * 中间某条重写会让它后面的回答全部对不上它——那是一次分叉，不是一次重试，
+ * 这个界面没有分叉的能力，就不该提供分叉的按钮。
+ */
+function regenerable(message: ChatMessage, position: number, count: number, streamingIndex: number) {
+  return (
+    message.role === 'assistant' &&
+    position === count - 1 &&
+    streamingIndex < 0
+  )
+}
 
 const userStore = useUserStore()
 
@@ -122,21 +136,16 @@ async function handleCopy(message: ChatMessage) {
           alt=""
         />
         <span v-else class="message-avatar is-user" aria-hidden="true">你</span>
-        <strong>{{ message.role === 'assistant' ? 'Yume AI' : '你' }}</strong>
+        <strong>{{ message.role === 'assistant' ? 'EnvoyMart AI' : '你' }}</strong>
         <span v-if="position === streamingIndex" class="message-live">
           <span class="message-live__dot" aria-hidden="true" />
           正在生成
         </span>
-        <time v-else-if="message.at" :datetime="message.at">{{ formatClock(message.at) }}</time>
-        <button
-          v-if="message.role === 'assistant' && message.content"
-          type="button"
-          class="message-copy"
-          :aria-label="copiedId === message.id ? '已复制' : '复制这条回答'"
-          @click="handleCopy(message)"
-        >
-          {{ copiedId === message.id ? '已复制' : '复制' }}
-        </button>
+        <!--
+          用会话列表那套「今天给钟点、昨天/更早给日期」的格式：恢复三天前的会话时，
+          每条都显示 14:32 而无从判断是哪天——日期粒度只在当天消息上才是多余的
+        -->
+        <time v-else-if="message.at" :datetime="message.at">{{ formatChatStamp(message.at) }}</time>
       </header>
 
       <!--
@@ -167,8 +176,43 @@ async function handleCopy(message: ChatMessage) {
         :content="message.content"
         :citation-count="message.knowledge?.length ?? 0"
         :streaming="position === streamingIndex"
+        :plain="message.role === 'user'"
         @cite="(index) => handleCite(message.id, index)"
       />
+
+      <!--
+        断流与主动停止：半截正文照留在上面，这里只补一句它为什么停在半路。
+        不覆盖正文是刻意的——断的是连接，不是用户已经读到一半的内容。
+      -->
+      <p v-if="message.error" class="message-notice is-error">{{ message.error }}</p>
+      <p v-else-if="message.stopped" class="message-notice">已停止生成</p>
+
+      <!--
+        消息级操作。悬停浮现（触屏常显）：ChatGPT 的一排操作按钮是肌肉记忆，
+        缺了它整条消息就只是"一段文字"，不是"一条对话消息"。
+        生成中不出现——半截回答的"复制"给的是半截内容。
+      -->
+      <div
+        v-if="position !== streamingIndex && (message.content || message.error)"
+        class="message-actions"
+      >
+        <button
+          type="button"
+          class="message-action"
+          :aria-label="copiedId === message.id ? '已复制' : '复制这条消息'"
+          @click="handleCopy(message)"
+        >
+          {{ copiedId === message.id ? '已复制' : '复制' }}
+        </button>
+        <button
+          v-if="regenerable(message, position, messages.length, streamingIndex ?? -1)"
+          type="button"
+          class="message-action"
+          @click="emit('regenerate', message.id)"
+        >
+          重新生成
+        </button>
+      </div>
 
       <!--
         整篇无依据的声明<b>一直摊开</b>，且排在冲突与逐句说明之前：它改变的是
@@ -516,41 +560,69 @@ async function handleCopy(message: ChatMessage) {
 }
 
 /*
-  复制按钮悬停浮现。`margin-inline-start: auto` 把它推到头部行尾，
-  不挤占名字与时间的空间；键盘用户 Tab 到它时同样可见（focus-visible）。
+  消息操作行：复制 / 重新生成，悬停浮现。
+  位置跟着 ChatGPT 的肌肉记忆走——在回答正文下面，不在头部角落；
+  键盘用户 Tab 到按钮时同样可见（focus-within / focus-visible）。
 */
-.message-copy {
-  margin-inline-start: auto;
-  padding: 0 var(--ys-space-1);
-  border: 0;
+.message-actions {
+  display: flex;
+  gap: var(--ys-space-1);
+  margin-top: var(--ys-space-2);
+  opacity: 0;
+  transition: opacity var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.message-card:hover .message-actions,
+.message-actions:focus-within {
+  opacity: 1;
+}
+
+.message-action {
+  padding: 2px var(--ys-space-2);
+  border: 1px solid transparent;
   border-radius: var(--ys-radius-sm);
   background: transparent;
   color: var(--color-text-muted);
   font-size: var(--ys-font-xs);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--ys-duration-fast) var(--ys-ease-out);
+  transition:
+    color var(--ys-duration-fast) var(--ys-ease-out),
+    border-color var(--ys-duration-fast) var(--ys-ease-out);
 }
 
-.message-card:hover .message-copy,
-.message-copy:focus-visible {
-  opacity: 1;
-}
-
-.message-copy:hover {
+.message-action:hover {
+  border-color: var(--color-border);
   color: var(--color-primary);
 }
 
-.message-copy:focus-visible {
+.message-action:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
 
 /* 没有悬停能力的设备（触屏）上，藏起来的按钮等于不存在，常显 */
 @media (hover: none) {
-  .message-copy {
+  .message-actions {
     opacity: 1;
   }
+}
+
+/*
+  断流 / 主动停止的说明条。与正文分开：正文是模型写的，这条是系统说的，
+  用背景色而不是换行正文去区分，也让「复制」复制不到它。
+*/
+.message-notice {
+  margin: var(--ys-space-2) 0 0;
+  padding: var(--ys-space-1) var(--ys-space-3);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-surface-muted);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+}
+
+.message-notice.is-error {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
 }
 
 .grounding {

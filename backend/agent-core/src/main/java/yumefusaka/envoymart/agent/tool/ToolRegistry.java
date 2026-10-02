@@ -58,7 +58,22 @@ public class ToolRegistry {
                                 .errorMessage("该操作需要用户确认后才能执行：" + call.getToolName())
                                 .build();
                     }
-                    return tool.execute(call);
+                    // 工具体抛异常 = 一次「失败的工具调用」，不是一次「系统故障」。
+                    // 让它冒泡的代价实测过：异常冲出计划路径的 Future.get 后，进度回调的
+                    // onFinish 永远不会发——界面上那枚「正在执行」的芯片卡到流结束才被清掉，
+                    // 而且整个批次的结果一起丢。工具的契约是「用 ToolResult 说话」，
+                    // 违约的调用在这里翻译成一次失败，护栏与降级逻辑照常打理后续
+                    try {
+                        return tool.execute(call);
+                    } catch (Exception e) {
+                        log.error("[Tool] {} 执行抛出异常", call.getToolName(), e);
+                        // 不标 transient：异常从工具里直接穿出来时，「下游抖了」和「工具自己有 bug」
+                        // 在这里分不出来，而猜错的代价见 ToolResult#transientFailure
+                        return ToolResult.builder()
+                                .success(false)
+                                .errorMessage("工具执行异常：" + e.getMessage())
+                                .build();
+                    }
                 })
                 .orElseGet(() -> ToolResult.builder()
                         .success(false)
@@ -174,7 +189,13 @@ public class ToolRegistry {
      * 不单独计数的话，就无从判断"预算是设得过紧"还是"模型真在失控"。
      */
     public void recordBlocked(String toolName) {
-        listener.onToolCall(toolName, ToolCallListener.Outcome.BLOCKED, 0);
+        // 与 execute 出口同一个立场：观测不能影响被观测的行为。这里虽然只是计数，
+        // 但监听器一抛会顺着调用方（护栏分支）冲进模型循环，把「被拦下」变成「整轮炸掉」
+        try {
+            listener.onToolCall(toolName, ToolCallListener.Outcome.BLOCKED, 0);
+        } catch (RuntimeException e) {
+            log.warn("[Tool] 调用监听器自身异常，不影响本次拦截 tool={} : {}", toolName, e.toString());
+        }
     }
 
     /** 列出所有需要用户确认的高危工具名。 */

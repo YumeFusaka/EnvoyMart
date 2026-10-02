@@ -13,6 +13,13 @@ export interface ChatPayload {
    * 前端只是搬运工——改一个字符都会验签失败，服务端一条也不执行。
    */
   approvalToken?: string
+  /**
+   * 重新生成上一轮的回答。
+   *
+   * 服务端据此不新增一个用户轮次，而是把会话里最后一份答复改写成这一轮的产物——
+   * 用户点「重新生成」期待的是「答案重写」，不是把同一句话再问一遍。
+   */
+  regenerate?: boolean
 }
 
 export async function chat(payload: ChatPayload) {

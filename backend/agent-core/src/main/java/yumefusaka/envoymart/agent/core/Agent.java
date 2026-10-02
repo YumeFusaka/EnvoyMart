@@ -178,6 +178,12 @@ public class Agent {
             response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, knowledge, onChunk, progress);
             response.setEvidenceLevel(evidence.level());
         } catch (Exception e) {
+            // 取消不是故障，不该走降级：用户已经叫停，替他编一句「暂时不可用」既不对题，
+            // 还会被底下几行记成一轮正常回答。交给上层按取消语义收尾（部分答复照常落历史）。
+            // 判据查整条 cause 链：它可能被执行框架包过一层才到这里
+            if (AgentCancelledException.isCancellation(e)) {
+                throw AgentCancelledException.unwrap(e);
+            }
             log.error("[Agent] chat failed, degrade to fallback reply", e);
             response = AgentResponse.builder()
                     .reply("抱歉，智能助手暂时不可用，请稍后再试或换个说法。")
@@ -231,8 +237,21 @@ public class Agent {
         }
 
         List<ToolExecution> executions = new ArrayList<>();
-        for (PendingAction action : actions.get()) {
-            executions.add(runApproved(userId, action, progress));
+        try {
+            for (PendingAction action : actions.get()) {
+                // 已确认≠豁免取消：用户可能点完确认又点停止。检查放在每条调用之前——
+                // 已开始的那条让它跑完（尤其是不可撤销操作，悬在半途的结局比慢更糟），
+                // 还没开始的绝不放行
+                progress.throwIfCancelled();
+                executions.add(runApproved(userId, action, progress));
+            }
+        } catch (AgentCancelledException e) {
+            // 中止发生在确认执行的中途时，回复文案还没生成——但「哪几条真的执行了」
+            // 必须留痕：用户按过确认，最坏的结果不是失败，而是他以为成功了
+            log.warn("[Agent] 确认轮执行中被取消 userId={} 已执行 {}/{} 项 tools={}", userId,
+                    executions.size(), actions.get().size(),
+                    executions.stream().map(ToolExecution::getTool).toList());
+            throw e;
         }
         String reply = renderApproved(executions);
         log.info("[Agent] 确认轮执行完成 userId={} 操作数={} 成功={}", userId, executions.size(),

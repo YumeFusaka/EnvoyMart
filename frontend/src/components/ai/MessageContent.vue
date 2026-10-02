@@ -8,6 +8,11 @@ const props = defineProps<{
   citationCount?: number
   /** 正在流式生成。末尾渲染闪烁光标，让"还在写"这件事可见 */
   streaming?: boolean
+  /**
+   * 纯文本渲染（用户消息）。用户打的 `# 1.` 是一句话，不是标题和列表——
+   * 按 Markdown 渲染等于替用户改写他的话；保留换行、不做任何解析才如实。
+   */
+  plain?: boolean
 }>()
 
 const emit = defineEmits<{ cite: [index: number] }>()
@@ -54,11 +59,14 @@ async function copyCode(button: HTMLElement) {
 </script>
 
 <template>
+  <!-- 用户消息：插值输出即天然转义，白空格由 CSS 保留（pre-wrap） -->
+  <div v-if="plain" class="message-content is-plain">{{ content }}</div>
   <!--
     v-html 的内容已经过 markdown-it（html:false）+ DOMPurify 两道处理，
     见 utils/markdown.ts —— 模型输出是不可信输入，这里不是直通。
   -->
   <div
+    v-else
     class="message-content"
     :class="{ 'is-streaming': streaming }"
     v-html="html"
@@ -83,6 +91,11 @@ async function copyCode(button: HTMLElement) {
 
 .message-content :deep(> :first-child) {
   margin-block-start: 0;
+}
+
+/* 用户消息按纯文本渲染：换行是他敲的换行，原样保留 */
+.message-content.is-plain {
+  white-space: pre-wrap;
 }
 
 .message-content :deep(> :last-child) {
@@ -178,12 +191,23 @@ async function copyCode(button: HTMLElement) {
   padding: var(--ys-space-2) var(--ys-space-3);
   border: 1px solid var(--color-border);
   text-align: start;
-  white-space: nowrap;
+  /* 表头保持单行（列名短、断开反而难认）；数据格允许折行——模型给的说明列
+     往往是一整句，nowrap 会让整张表变成一条横向滚动的长带 */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .message-content :deep(th) {
   background: var(--color-bg-surface-muted);
   font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 模型输出里的图片。不约束的话一张原图能把 860px 的正文列直接撑破 */
+.message-content :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--ys-radius-sm);
 }
 
 /* ==================== 代码 ==================== */

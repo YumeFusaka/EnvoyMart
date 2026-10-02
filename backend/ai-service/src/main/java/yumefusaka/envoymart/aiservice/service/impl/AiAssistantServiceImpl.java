@@ -3,6 +3,7 @@ package yumefusaka.envoymart.aiservice.service.impl;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.agent.core.Agent;
+import yumefusaka.envoymart.agent.core.AgentCancelledException;
 import yumefusaka.envoymart.agent.llm.TokenLedger;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.tool.ToolProgressListener;
@@ -69,11 +70,39 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 userId, request.getSessionId(), request.getMessage());
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
-            ChatResponse response = toChatResponse(request, agent.chatStream(
-                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken(),
-                    onChunk, ToolProgressListener.orNoop(progress)), ledger);
-            recordTurn(userId, request, response);
-            return response;
+            // 旁录一份已交付文本。正常收尾时它与 response.getReply() 相同（甚至更短——
+            // done 帧要过后置校验，剔除过的句子不出现在 reply 里）；被取消时它是唯一的
+            // 「用户看到过什么」的记录。历史必须与屏幕一致：用户按停止后回看，
+            // 看到一段自己从未见过的完整答案是更坏的谎
+            StringBuilder delivered = new StringBuilder();
+            ToolProgressListener effective = ToolProgressListener.orNoop(progress);
+            try {
+                ChatResponse response = toChatResponse(request, agent.chatStream(
+                        userId, request.getSessionId(), request.getMessage(), request.getApprovalToken(),
+                        chunk -> {
+                            // 只把「交付得出去」的分片计入。断开之后模型还在推的分片，
+                            // 控制器已不再往那条连接上写——把它们算进已交付，历史里
+                            // 就会多出用户从没见过的结尾。与控制器同一判据，边界误差
+                            // 最多一片（旗标翻转与分片到达之间的那一片）
+                            if (!effective.cancelled()) {
+                                delivered.append(chunk);
+                            }
+                            onChunk.accept(chunk);
+                        },
+                        effective), ledger);
+                recordTurn(userId, request, response);
+                return response;
+            } catch (AgentCancelledException e) {
+                log.info("[AiService] 本轮已取消，按已交付的 {} 字落历史 userId={} sessionId={}",
+                        delivered.length(), userId, request.getSessionId());
+                recordTurn(userId, request, ChatResponse.builder()
+                        .usage(usageOf(ledger))
+                        .requestId(RequestId.current())
+                        .sessionId(request.getSessionId())
+                        .reply(delivered.toString())
+                        .build());
+                throw e;
+            }
         }
     }
 
@@ -93,6 +122,14 @@ public class AiAssistantServiceImpl implements AiAssistantService {
      * 白白多躺十天的凭证。卡片文案照旧保留：用户回看时该看到「当时问过他要不要确认」。
      */
     private void recordTurn(String userId, ChatRequest request, ChatResponse response) {
+        // 重新生成：用户重问的是「刚才那条」，会话里不该出现第二条用户消息——
+        // 就地改写最后一条助手答复。没有这个分支，点一次重新生成历史就多一对
+        // 重复的问答，点三次侧栏里就挂着一串一模一样的提问
+        if (request.isRegenerate()) {
+            history.recordAnswer(userId, request.getSessionId(),
+                    response.getReply(), response.toBuilder().approvalToken(null).build());
+            return;
+        }
         history.recordTurn(userId, request.getSessionId(), request.getMessage(),
                 response.getReply(), response.toBuilder().approvalToken(null).build());
     }

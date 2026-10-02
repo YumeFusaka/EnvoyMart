@@ -14,9 +14,11 @@
  *       刷新页面之后，`.citation` 与 `details.usage` 仍在。
  *   三、删除是**真删** —— 界面移除之后，再用接口拉一次列表对账，确认服务端也没了。
  *   四、流式态与滚动锚定 —— 生成中要有流式标记；用户上翻之后不能被自动滚动拽回底部。
+ *   五、重新生成与「历史与屏幕一致」—— 重新生成是原地替换（不新增一轮问答）；
+ *       点「停止生成」后，落进历史的是用户看过的那半句，而不是服务端继续跑完的整篇。
  *
  * 前置条件：后端服务 + 前端已启动（dev server 或生产产物都行）。
- * 会真实调用 2 次模型对话，约 1–2 分钟。
+ * 会真实调用 7 次模型对话，约 5–10 分钟。
  *
  * 用法：
  *   node scripts/verify-chat-ui.mjs
@@ -177,6 +179,18 @@ ck('用户消息是独立气泡', (await page.locator('.message-card.user').coun
 await page.locator('.message-content.is-streaming').waitFor({ state: 'attached', timeout: 60000 })
 ck('生成过程中带流式态标记', true)
 ck('消息头显示「正在生成」', await page.locator('.message-live').isVisible())
+// 真·流式：流式态还挂着的时候正文就必须已经在长。把整轮攒到收尾再一次性倒出的
+// 实现，「正在生成」的整段时间里正文是空的——20 秒里一个字都不出现就是它
+const earlyText = await poll(
+  () => page.locator('.message-content.is-streaming').first().innerText().catch(() => ''),
+  (t) => (t ?? '').trim().length > 0,
+  20000,
+)
+ck(
+  '正文在流式期间就开始增长（边到边推，不是收尾一次性倒出）',
+  (earlyText ?? '').trim().length > 0,
+  '流式态持续 20 秒正文仍为空',
+)
 await page.screenshot({ path: resolve(OUT_DIR, 'chat-1-streaming.png') })
 
 // 完成信号：生成中才存在的「停止生成」按钮消失
@@ -210,10 +224,27 @@ if (badgeCount > 0) {
   ck('点击角标点亮对应引用卡', activeIndex >= 0, `activeIndex=${activeIndex}`)
 }
 
-// 复制整条回答
-await card.locator('.message-copy').hover()
-await card.locator('.message-copy').click()
-ck('复制按钮给出「已复制」反馈', (await card.locator('.message-copy').innerText()) === '已复制')
+// 复制整条回答（操作行里的第一个按钮）
+const copyBtn = card.locator('.message-action').first()
+await copyBtn.hover()
+await copyBtn.click()
+ck('复制按钮给出「已复制」反馈', (await copyBtn.innerText()) === '已复制')
+
+// 重新生成：就地重写最后一条回答，而不是把同一句话再问一遍。追加式实现会在正文
+// 与侧栏里多出一对完全重复的问答，刷新后还能看到，像回声
+await card.hover()
+await card.getByRole('button', { name: '重新生成' }).click()
+await page.locator('.message-content.is-streaming').waitFor({ state: 'attached', timeout: 60000 })
+ck('重新生成进入流式态', true)
+await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'detached', timeout: 180000 })
+await poll(() => page.locator('.message-content.is-streaming').count(), (c) => c === 0, 5000)
+ck('重新生成不新增用户轮次', (await page.locator('.message-card.user').count()) === 1)
+ck(
+  '重新生成原地替换回答而不是追加',
+  (await page.locator('.message-card.assistant').count()) === 1,
+  '回答变成了两条——服务端按追加处理了重新生成',
+)
+await page.screenshot({ path: resolve(OUT_DIR, 'chat-2b-regenerated.png') })
 
 // ─────────── 三、工具实时进度（流式期间的「正在查询商品」） ───────────
 console.log('\n三、工具实时进度')
@@ -441,6 +472,74 @@ await page.locator('.assistant-drawer .session-list__title').first().waitFor({ t
 ck('抽屉里能看到会话列表', true)
 await page.screenshot({ path: resolve(OUT_DIR, 'chat-4-drawer.png') })
 await page.keyboard.press('Escape')
+// 关掉再走：抽屉一旦打开过，它内部的按钮就会留在角色树里，
+// 后面不带作用域的「新对话」会同时命中固定侧栏和抽屉两份
+await page.locator('.assistant-drawer').waitFor({ state: 'hidden', timeout: 5000 })
+
+// ─────────── 九、停止生成：历史停在用户看到的那个字 ───────────
+console.log('\n九、停止生成（取消语义）')
+await page.setViewportSize({ width: 1440, height: 1000 })
+await page.locator('.assistant-sidebar').getByRole('button', { name: /新对话/ }).click()
+// 长作答 + 结尾标记：标记就是判据。点停止时离结尾还差好几百字，半截记录必然
+// 不含它；服务端若把这一轮当正常收尾跑完，历史里就会带着「【全文完】」——
+// 用户从没见过的结尾，比少记半句更坏
+await page
+  .locator('.composer textarea')
+  .fill(`会员积分怎么算？（${RUN_TAG}）请用不少于 800 字逐条详细展开，全文结束后另起一行只写「【全文完】」`)
+await page.getByRole('button', { name: '发送消息' }).click()
+await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'visible', timeout: 60000 })
+// 等用户确实读到了一部分再停——一个字都没上屏时停止，「历史该不该有东西」都说不清
+const partialText = await poll(
+  () => page.locator('.message-content.is-streaming').first().innerText().catch(() => ''),
+  (t) => (t ?? '').trim().length > 0,
+  30000,
+)
+ck('停止前已有正文上屏（停的是半句话）', (partialText ?? '').trim().length > 0)
+await page.getByRole('button', { name: '停止生成' }).click()
+
+await page.locator('.message-notice').last().waitFor({ state: 'visible', timeout: 10000 })
+ck(
+  '停止后标出「已停止生成」',
+  (await page.locator('.message-notice').last().innerText()).includes('已停止生成'),
+)
+const stoppedLen = (await page.locator('.message-content').last().innerText()).trim().length
+ck('半截回答留在屏幕上（不被清空）', stoppedLen > 0, `屏幕正文长度=${stoppedLen}`)
+
+// 服务端：等这一轮收手并落历史。停止只断了浏览器这一侧，在途的那一轮会继续跑完
+// 才轮到收口检查——所以这里等的是「历史出现」，断言的却是「历史是半截」
+const cancelSession = await poll(
+  async () => {
+    const list = await apiSessions()
+    return (
+      list.find(
+        (s) => (s.title ?? '').includes(RUN_TAG) && (s.title ?? '').startsWith('会员积分'),
+      ) ?? null
+    )
+  },
+  (hit) => hit !== null,
+  180000,
+)
+ck('取消的那一轮最终落进历史', cancelSession !== null, '侧栏里没等到这条会话')
+if (cancelSession) {
+  const msgs = await (
+    await fetch(`${GW}/ai/sessions/${cancelSession.sessionId}/messages`, {
+      headers: { Authorization: `Bearer ${session.token}` },
+    })
+  ).json()
+  const answer = [...(msgs.data ?? [])].reverse().find((m) => m.role === 'assistant')
+  const content = answer?.content ?? ''
+  ck('历史里是半截答复', content.length > 0, `历史正文长度=${content.length}`)
+  ck(
+    '历史里不是服务端继续跑完的整篇',
+    !content.includes('【全文完】'),
+    '历史里出现了结尾标记——这一轮没被取消，只是浏览器不看了',
+  )
+  ck(
+    '历史与屏幕一致（没有多出用户没见过的结尾）',
+    content.length > 0 && content.length < stoppedLen * 2 + 200,
+    `屏幕（渲染后）${stoppedLen} 字 vs 历史（原文）${content.length} 字`,
+  )
+}
 
 // ─────────── 收尾 ───────────
 const ignorable = /favicon|Download the Vue Devtools|ResizeObserver loop/

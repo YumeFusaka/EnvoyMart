@@ -26,6 +26,7 @@ import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -189,6 +190,7 @@ public class AgentGraph {
 
     /** 规划：产出显式计划；计划为空说明没有工具能帮上忙。 */
     private Map<String, Object> planNode(GraphContext ctx, GraphState state) {
+        ctx.progress().throwIfCancelled();
         List<PlanStep> plan = filterRegistered(
                 llmProvider.plan(ctx.message(), toolRegistry.listDefinitions(), planContext(ctx)));
         log.debug("[Graph] plan: {}", plan.stream().map(PlanStep::getTool).toList());
@@ -235,6 +237,8 @@ public class AgentGraph {
 
     /** 重规划：把已完成步骤与失败原因交给模型，修正剩余计划。 */
     private Map<String, Object> replanNode(GraphContext ctx, GraphState state) {
+        // 重规划是一次真实计费的模型调用，取消后不该再发起
+        ctx.progress().throwIfCancelled();
         List<GraphStep> steps = state.get(KEY_STEPS, List.<GraphStep>of());
         List<PlanStep> plan = filterRegistered(replan(ctx, steps));
         log.debug("[Graph] replanned: {}", plan.stream().map(PlanStep::getTool).toList());
@@ -281,6 +285,10 @@ public class AgentGraph {
                 break;
             }
 
+            // 取消在「下一批工具执行」之前生效——与 ReAct 循环里那处是同一个位置、
+            // 同一条理由：还没开始的副作用绝不放行
+            ctx.progress().throwIfCancelled();
+
             // 调用工具前的拦截：发生在执行之前，这是 ReAct 结构上做不到的位置。
             // 没有「已确认就放行」这一支——确认后要执行的东西不再经过图（见 PendingAction）
             List<PendingAction> risky = ready.stream()
@@ -320,12 +328,32 @@ public class AgentGraph {
                 batchResults.add(futures.get(i).get(STEP_TIMEOUT_MS, TimeUnit.MILLISECONDS));
             } catch (TimeoutException e) {
                 log.warn("[Graph] step {} 超时（{}ms），标记为失败", index, STEP_TIMEOUT_MS);
+                // 超时的那一步已经 onStart 过（进度芯片已经亮了），必须补一个 onFinish——
+                // 少了它，芯片永远停在「正在执行」，要等整条流结束才被前端清掉。
+                // 这里的超时是「跑太久」，不是「抛异常」，所以失败结局由本处直接落定
+                ctx.progress().onFinish(step.getTool(), false, false, STEP_TIMEOUT_MS);
                 // 取消仍在跑的任务，避免它在后台继续占用线程
                 futures.get(i).cancel(true);
                 batchResults.add(GraphStep.builder()
                         .round(round).index(index).tool(step.getTool())
                         .optional(step.isOptional())
                         .success(false).output("执行超时（" + STEP_TIMEOUT_MS + "ms）")
+                        .build());
+            } catch (ExecutionException e) {
+                // 取消不是「这一步失败了」：它必须中断整张图，而不是被记成一个失败步骤
+                // 然后照常 evaluate → replan。混进去的后果是用户点了停止，服务端
+                // 却把剩下的计划又跑了一轮——只是每一步都「恰好」失败
+                if (AgentCancelledException.isCancellation(e)) {
+                    // 只挡还没开跑的任务（cancel(false) 不打断进行中），与取消语义一致：
+                    // 已进入执行的那一步让它跑完，它的结果也不再有人消费
+                    futures.forEach(future -> future.cancel(false));
+                    throw AgentCancelledException.unwrap(e);
+                }
+                log.warn("[Graph] step {} failed: {}", index, e.getMessage());
+                batchResults.add(GraphStep.builder()
+                        .round(round).index(index).tool(step.getTool())
+                        .optional(step.isOptional())
+                        .success(false).output("执行异常：" + e.getMessage())
                         .build());
             } catch (Exception e) {
                 log.warn("[Graph] step {} failed: {}", index, e.getMessage());
@@ -341,6 +369,8 @@ public class AgentGraph {
     }
 
     private GraphStep executeStep(int round, int index, PlanStep step, GraphContext ctx) {
+        // 同批次里后开跑的步骤也要各自检查：批次是一起提交的，但执行是先后开始的
+        ctx.progress().throwIfCancelled();
         Map<String, Object> arguments = step.getArguments() == null ? Map.of() : step.getArguments();
 
         // 循环护栏：超出预算就不再执行，把原因交回给模型
@@ -515,6 +545,8 @@ public class AgentGraph {
     }
 
     private String call(GraphContext ctx, List<ChatMessage> messages) {
+        // 生成回答是这一轮最贵的一次模型调用（带全部上下文），取消后不再发起
+        ctx.progress().throwIfCancelled();
         // 循环护栏与调用者身份随工具调用下发，工具循环据此把关。
         // 用可变 Map 而非 Map.of：Map.of 不接受 null，身份缺失时会在构造处直接抛 NPE。
         Map<String, Object> loopContext = new HashMap<>();
@@ -553,6 +585,10 @@ public class AgentGraph {
                 ctx.executions().addAll(nodeExecutions);
             }
             return accumulated.toString();
+        } catch (AgentCancelledException e) {
+            // 取消不是生成失败：落到下面的兜底分支会把它变成一句「暂时不可用」
+            // 并作为正常结果返回——一次用户自己按的停止将被记成系统故障
+            throw e;
         } catch (Exception e) {
             log.error("[Graph] answer generation failed", e);
             return "抱歉，智能助手暂时不可用，请稍后再试。";

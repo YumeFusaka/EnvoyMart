@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import yumefusaka.envoymart.agent.core.AgentCancelledException;
 import yumefusaka.envoymart.agent.core.AgentGraph;
 import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.aiservice.model.ChatRequest;
@@ -24,6 +25,7 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 @RestController
@@ -67,9 +69,24 @@ public class AiController {
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                  @Valid @RequestBody ChatRequest request) {
-        SseEmitter emitter = new SseEmitter(180_000L);
-        emitter.onTimeout(emitter::complete);
-        emitter.onError(e -> log.warn("[SSE] emitter error: {}", e.getMessage()));
+        // 600s：SSE 的总寿命必须罩得住内部各段超时的最坏组合（多次模型往返 + 工具批次），
+        // 180s 会在一次正常的长回答中途剪断连接。取消语义已就位，超时不再是唯一的失联手段
+        SseEmitter emitter = new SseEmitter(600_000L);
+
+        // 三类「对端已经离开」都立起取消旗，执行链在每一个「即将开始新工作」的位置查它：
+        // 断开（onError）、超时（onTimeout）、正常收尾（onCompletion，此时工作已结束，
+        // 置位无害）。早先只登记了日志，于是用户关掉页面后服务端继续跑完整张计划——
+        // 模型继续计费、工具继续执行，而这一切的接收方早已不存在
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        emitter.onTimeout(() -> {
+            cancelled.set(true);
+            emitter.complete();
+        });
+        emitter.onError(e -> {
+            cancelled.set(true);
+            log.warn("[SSE] emitter error: {}", e.getMessage());
+        });
+        emitter.onCompletion(() -> cancelled.set(true));
 
         // 流式这段跑在另一个线程上，日志上下文要显式带过去（见 RequestId#inherit）：
         // 不带的话，整轮对话里最有价值的那些日志（工具调用、模型往返、检索命中）
@@ -77,8 +94,20 @@ public class AiController {
         streamExecutor.submit(RequestId.inherit(() -> {
             try {
                 ChatResponse response = aiAssistantService.chatStream(userId, request,
-                        chunk -> send(emitter, "delta", chunk), toolProgress(emitter));
+                        chunk -> {
+                            // 取消后不再往一条已经死掉的连接上写：不是正确性问题
+                            // （send 会吞 IOException），是别让断开后的每一片 token 都付一次发送尝试
+                            if (!cancelled.get()) {
+                                send(emitter, "delta", chunk);
+                            }
+                        },
+                        toolProgress(emitter, cancelled));
                 sendFinal(emitter, response);
+                emitter.complete();
+            } catch (AgentCancelledException e) {
+                // 取消的收尾：不发 error 事件（对端多半已经不在了），更不打 ERROR 堆栈——
+                // 用户按的「停止生成」不是系统故障。部分答复已由服务层落过历史
+                log.info("[SSE] 本轮已取消 userId={} sessionId={}", userId, request.getSessionId());
                 emitter.complete();
             } catch (Exception e) {
                 log.error("[SSE] chat stream failed", e);
@@ -98,8 +127,11 @@ public class AiController {
      * <p>
      * 监听器是请求级的（绑定这一条 SSE 连接）：工具执行可能发生在任意线程，
      * 全局单例会把并发请求的进度串到别人的连接上。
+     * <p>
+     * 取消信号搭同一个对象下发（{@link ToolProgressListener#cancelled()}）：它已经是
+     * 执行链上唯一贯穿全程的请求级通道，再开一条参数通道只会多一个「某处忘了传」的机会。
      */
-    private ToolProgressListener toolProgress(SseEmitter emitter) {
+    private ToolProgressListener toolProgress(SseEmitter emitter, AtomicBoolean cancelled) {
         return new ToolProgressListener() {
             @Override
             public void onStart(String tool) {
@@ -114,6 +146,11 @@ public class AiController {
                         "success", success,
                         "noData", noData,
                         "latencyMs", latencyMs));
+            }
+
+            @Override
+            public boolean cancelled() {
+                return cancelled.get();
             }
         };
     }

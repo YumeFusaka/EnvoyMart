@@ -139,11 +139,19 @@ public class LangChain4jLLMProvider implements LLMProvider {
         int maxRounds = ctx.guard.maxToolCalls() + MAX_ROUND_SLACK;
         try {
             while (true) {
+                // 取消在「下一次问话」之前生效：已经在跑的那一轮模型调用没有中断句柄，
+                // 它的开销已经发生，只能让它跑完并如实记账；能控的是不再开始新的一轮
+                ctx.progress.throwIfCancelled();
                 response = chatModel.chat(buildRequest(working, config, toolsFor(ctx, specs)));
                 rounds++;
                 TokenUsage usage = response.tokenUsage();
                 promptTokens += usageInt(usage, true);
                 completionTokens += usageInt(usage, false);
+
+                // 取消在轮次期间到达：在途的那一轮没有中断句柄，只能让它跑完并如实记账
+                // （用量上面已累加）；但它跑完的这一刻必须收手 —— 少了这一次检查，
+                // 随后走的是「正常收尾」，一次用户按下的停止会被当成一轮完整作答交出去
+                ctx.progress.throwIfCancelled();
 
                 AiMessage aiMessage = response.aiMessage();
                 if (!aiMessage.hasToolExecutionRequests()) {
@@ -173,10 +181,16 @@ public class LangChain4jLLMProvider implements LLMProvider {
     /**
      * 流式版本的 ReAct。
      * <p>
-     * <b>只有最终回答会被推送。</b>工具轮里模型可能吐出的过渡文本不推给用户——
-     * 调用方（{@code AgentGraph.answerNode}）会把收到的每个 chunk 累积成最终答案，
-     * 推出中间文本会污染那个累积值，用户看到的就是「我先查一下……找到了……」拼上答案。
-     * 代价是首字延迟只取决于最终回答的首个 token，而不是工具轮的快速吐字。
+     * <b>每个 chunk 产生即推送。</b>早先是「整轮攒完再一次性回放」：chunk 收在
+     * {@code round.chunks} 里，等这一轮确认是最终回答才 forEach 出去。它带来的体感是
+     * 生成期间界面一片静止，收尾瞬间倒出一整篇——恰好不是对话界面的样子。
+     * 当时攒的理由是「工具轮的过渡文本不能推」，而真正的代价被算错了：
+     * 过渡文本（「我先查一下您的订单」）推出去是<b>过程可见</b>，
+     * 拦下来却是每一轮都让用户对着空屏等一个模型往返。
+     * <p>
+     * 现在推的就是模型的原始节奏：工具轮说了什么就显示什么（真实对话界面同样如此），
+     * 调用方（{@code AgentGraph}）仍会把收到的每个 chunk 累积成最终答案——
+     * 累积值 = 用户看到过的全文，历史与 done 帧因此和屏幕始终一致。
      */
     @Override
     public List<ToolExecution> chatStreamWithTools(List<ChatMessage> messages, LLMConfig config,
@@ -203,15 +217,22 @@ public class LangChain4jLLMProvider implements LLMProvider {
         int completionTokens = 0;
         try {
             while (true) {
+                // 取消在「下一次问话」之前生效，理由同 chatWithTools
+                ctx.progress.throwIfCancelled();
                 // 同 chatWithTools：护栏耗尽后不再下发工具定义，这是循环的终止判据
-                StreamedRound round = streamOneRound(working, config, toolsFor(ctx, specs));
+                StreamedRound round = streamOneRound(working, config, toolsFor(ctx, specs), onChunk);
                 rounds++;
                 promptTokens += round.promptTokens;
                 completionTokens += round.completionTokens;
 
+                // 取消在正文轮期间到达：这一轮是用户看到一半的那一轮，在途的字收不回来，
+                // 但它跑完的这一刻必须收手。丢掉这一次检查，走的会是「正常收尾」——
+                // 历史里写下整篇（对端早已断开，后半篇全推给了空气），而屏幕上只有半句，
+                // 用户下次打开会话会发现回答「自己长长了」
+                ctx.progress.throwIfCancelled();
+
                 if (!round.aiMessage.hasToolExecutionRequests()) {
-                    // 最终回答：此时才把这一轮攒下的 chunk 推出去
-                    round.chunks.forEach(onChunk);
+                    // 正文已随 chunk 逐字推走（见 streamOneRound），这里不再回放
                     long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
                     log.info("[LLM] stream+tools model={} latencyMs={} rounds={} chars={} "
                                     + "promptTokens={} completionTokens={} toolExecutions={}",
@@ -288,6 +309,10 @@ public class LangChain4jLLMProvider implements LLMProvider {
                                         List<dev.langchain4j.data.message.ChatMessage> working,
                                         LoopContext ctx, List<ToolExecution> sink) {
         for (ToolExecutionRequest request : requests) {
+            // 取消在「下一次工具执行」之前生效：这是取消语义里最硬的一段——
+            // 工具是唯一会跨出本进程、产生不可撤销副作用的动作。已进入执行的那一次
+            // 让它跑完（下游的写操作需要确定的结局），还没开始的绝不放行
+            ctx.progress.throwIfCancelled();
             Map<String, Object> arguments = parseArguments(request.arguments());
 
             if (!ctx.guard.allowToolCall(request.name(), arguments)) {
@@ -371,8 +396,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
         }
 
         long startedAt = System.nanoTime();
-        StreamedRound round = streamOneRound(toLangChainMessages(messages), config, List.of());
-        round.chunks.forEach(onChunk);
+        StreamedRound round = streamOneRound(toLangChainMessages(messages), config, List.of(), onChunk);
 
         long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
         log.info("[LLM] stream model={} latencyMs={} chars={} promptTokens={} completionTokens={}",
@@ -384,12 +408,16 @@ public class LangChain4jLLMProvider implements LLMProvider {
     }
 
     /**
-     * 跑一轮流式调用，把 chunk 攒起来交回调用方决定推不推。
+     * 跑一轮流式调用。chunk 边到边推（{@code live}），同时照旧攒一份留作轮次统计。
      * <p>
-     * 攒而不直接推，是因为「这一轮是不是最终回答」只有在轮次结束时才知道。
+     * 推送发生在模型的回调线程上（HTTP 客户端的读线程），不换成队列转交工作线程：
+     * 转交要给每个 chunk 付一次调度延迟，而 SSE 的 {@code SseEmitter} 本身
+     * 对写入是加锁的，跨线程调用是它的设计场景。工作线程在下方用闩锁等待整轮结束，
+     * 两侧通过 {@code CountDownLatch} 建立可见性，累积正文不会读到半个 chunk。
      */
     private StreamedRound streamOneRound(List<dev.langchain4j.data.message.ChatMessage> messages,
-                                         LLMConfig config, List<ToolSpecification> specs) {
+                                         LLMConfig config, List<ToolSpecification> specs,
+                                         Consumer<String> live) {
         StreamedRound round = new StreamedRound();
         CountDownLatch done = new CountDownLatch(1);
         AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -398,6 +426,9 @@ public class LangChain4jLLMProvider implements LLMProvider {
             @Override
             public void onPartialResponse(String partial) {
                 round.chunks.add(partial);
+                if (live != null) {
+                    live.accept(partial);
+                }
             }
 
             @Override
@@ -406,6 +437,12 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 TokenUsage usage = response.tokenUsage();
                 round.promptTokens = usageInt(usage, true);
                 round.completionTokens = usageInt(usage, false);
+                // 有正文而收尾帧没带用量：账记少了不会报错，只会让成本曲线悄悄偏低。
+                // 这是「静默漏账」的唯一可观测点，明确留一行
+                if (round.promptTokens == 0 && round.completionTokens == 0) {
+                    log.warn("[LLM] 流式收尾帧未携带用量，本轮 token 记为 0 model={} chars={}",
+                            config.getModel(), round.totalChars());
+                }
                 done.countDown();
             }
 

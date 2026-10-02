@@ -12,6 +12,7 @@ import ChatSessionList from '@/components/ai/ChatSessionList.vue'
 import QuickPromptBar from '@/components/ai/QuickPromptBar.vue'
 import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
+import { ChatLineRound, Discount, Goods, Van } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -40,6 +41,19 @@ const liveTools = ref<ToolProgressEvent[]>([])
 const bootstrapping = ref(false)
 const input = ref('')
 const drawerOpen = ref(false)
+
+/**
+ * 输入框随内容长高（封顶交给 CSS 的 max-height，这里只负责量）。
+ * 一行高的框里滚动多行提问，是聊天输入框最容易被识破的一处——
+ * placeholder 还在旁边写着「Shift+Enter 换行」，等于邀请人当场试。
+ */
+const composerRef = ref<HTMLTextAreaElement | null>(null)
+function autosize() {
+  const el = composerRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
 
 const activeSession = computed(
   () => sessions.value.find((item) => item.sessionId === activeSessionId.value) ?? null,
@@ -251,11 +265,13 @@ function observeContent() {
 
 // ==================== 发送 / 流式 ====================
 
+// 四条示例各对应一种能力（商品检索 / 知识问答 / 订单物流 / 知识图谱），
+// 问题贴着商品库的真实品类写——示例点下去必须真的答得上来，它是能力说明不是装饰
 const prompts = [
-  '推荐适合学生党的百元内耳机',
-  '活动满减规则是什么',
-  '七天无理由退货怎么处理',
-  '帮我查一下这个订单物流到哪了',
+  { icon: Goods, label: '挑商品', text: '推荐一款适合送长辈的钙片' },
+  { icon: Discount, label: '问活动', text: '平台的满减活动规则是什么' },
+  { icon: Van, label: '查物流', text: '帮我查一下最近一笔订单到哪了' },
+  { icon: ChatLineRound, label: '问知识', text: '维生素 D 和钙片能一起吃吗' },
 ]
 
 /**
@@ -322,6 +338,7 @@ async function sendMessage(message = input.value, approvalToken?: string) {
     at: now,
   })
   input.value = ''
+  await nextTick(autosize)
   loading.value = true
   const seq = ++streamSeq
   liveTools.value = []
@@ -337,9 +354,67 @@ async function sendMessage(message = input.value, approvalToken?: string) {
   })
   messages.value.push(assistantMessage)
 
+  await runStream(sessionId!, content, assistantMessage, seq, { approvalToken: token })
+}
+
+/**
+ * 重新生成：把这一条回答就地重写，不新增一轮对话。
+ * <p>
+ * 界面与服务端说同一句话（`regenerate=true`）：用户点「重新生成」期待的是答案重写，
+ * 不是把同一句话再问一遍——后者会在对话里凭空多出一个一模一样的问句，
+ * 刷新后还能看到第二遍，像回声。
+ * <p>
+ * 只在最后一条回答上出现（按钮由 ChatMessageList 控制）：中间某条重写会让它
+ * 后面的回答全部对不上它，那是一次分叉，不是一次重试。
+ */
+async function regenerate(assistantId: string) {
+  if (loading.value || bootstrapping.value) return
+  const index = messages.value.findIndex((item) => item.id === assistantId)
+  const target = messages.value[index]
+  if (!target || target.role !== 'assistant') return
+  // 这条回答对应的问题是它前面最近的一条用户消息
+  const prompt = [...messages.value.slice(0, index)].reverse().find((item) => item.role === 'user')
+  const sessionId = activeSessionId.value
+  if (!prompt || !sessionId) return
+
+  messages.value.splice(index, 1)
+  const assistantMessage = reactive<ChatMessage>({
+    id: `assistant-${Date.now()}`,
+    role: 'assistant',
+    content: '',
+    at: new Date().toISOString(),
+  })
+  messages.value.push(assistantMessage)
+
+  loading.value = true
+  const seq = ++streamSeq
+  liveTools.value = []
+  abortController = new AbortController()
+  await scrollToBottom()
+
+  await runStream(sessionId, prompt.content, assistantMessage, seq, { regenerate: true })
+}
+
+/**
+ * sendMessage 与 regenerate 共用的流式主体：事件分发与收尾。
+ * 两条路各抄一份的代价不是重复本身，而是将来只在其中一份上修 bug——
+ * 「断流保留半截回答」这类处理恰好是每条路都需要的那种。
+ */
+async function runStream(
+  sessionId: string,
+  content: string,
+  assistantMessage: ChatMessage,
+  seq: number,
+  options: { approvalToken?: string; regenerate?: boolean } = {},
+) {
   try {
     await chatStream(
-      { sessionId: sessionId!, message: content, approvalToken: token },
+      {
+        sessionId,
+        message: content,
+        approvalToken: options.approvalToken,
+        regenerate: options.regenerate,
+      },
       {
         onDelta: (text) => {
           assistantMessage.content += text
@@ -387,20 +462,23 @@ async function sendMessage(message = input.value, approvalToken?: string) {
           followIfPinned()
         },
         onError: (msg) => {
-          assistantMessage.content = msg
+          // 断的是连接，不是已经流出来的正文：半截回答照留，错误另挂一条，
+          // 用户读到一半的内容不会因为一次网络抖动整段消失
+          assistantMessage.error = msg
         },
       },
-      abortController.signal,
+      abortController!.signal,
     )
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') {
       // 用户主动停止不是故障：半截回答照留，但必须标出来 ——
-      // 不标的话它看起来像一段说完了的完整回答
-      assistantMessage.content = assistantMessage.content
-        ? `${assistantMessage.content}\n\n（已停止生成）`
-        : '（已停止生成）'
+      // 不标的话它看起来像一段说完了的完整回答。标记单独存，不拼进正文：
+      // 拼进去会被「复制」原样带走，粘出去的是一段带着舞台说明的文本
+      assistantMessage.stopped = true
     } else {
-      assistantMessage.content = '智能助手暂时不可用，请稍后再试。'
+      assistantMessage.error = assistantMessage.content
+        ? '连接中断，回答可能不完整'
+        : '智能助手暂时不可用，请稍后再试。'
     }
   } finally {
     if (seq === streamSeq) {
@@ -527,7 +605,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
         </button>
         <div class="chat-header__title">
           <strong>{{ activeSession?.title ?? '新对话' }}</strong>
-          <span>Agent + RAG + 工具调用 · 回答逐条可溯源</span>
+          <span>购物、活动、订单、售后都能问 · 回答逐条可溯源</span>
         </div>
         <div class="chat-header__actions">
           <el-button plain size="small" @click="router.push('/shop')">返回商城</el-button>
@@ -561,6 +639,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
             @open-product="openProduct"
             @approve="handleApprove"
             @dismiss="handleDismiss"
+            @regenerate="regenerate"
           />
         </div>
 
@@ -577,12 +656,14 @@ function handleComposerKeydown(event: KeyboardEvent) {
       <footer class="composer">
         <div class="composer__box" :class="{ 'is-busy': loading }">
           <textarea
+            ref="composerRef"
             v-model="input"
             class="composer__input"
             rows="1"
             placeholder="输入商品、活动、售后、订单或物流问题，Enter 发送，Shift+Enter 换行"
             aria-label="输入消息"
             @keydown="handleComposerKeydown"
+            @input="autosize"
           />
           <div class="composer__actions">
             <span class="composer__hint">
@@ -638,6 +719,8 @@ function handleComposerKeydown(event: KeyboardEvent) {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   height: calc(100vh - var(--layout-header-height));
+  /* 移动端浏览器地址栏收放时 vh 不跟着变，输入框会被顶出可视区；dvh 跟着变 */
+  height: calc(100dvh - var(--layout-header-height));
   background: var(--color-bg-page);
 }
 
@@ -808,7 +891,6 @@ function handleComposerKeydown(event: KeyboardEvent) {
 }
 
 .chat-empty :deep(.quick-prompts) {
-  justify-content: center;
   max-width: 640px;
 }
 
@@ -940,6 +1022,12 @@ function handleComposerKeydown(event: KeyboardEvent) {
 
   .composer {
     padding: var(--ys-space-3);
+  }
+
+  /* iOS 对字号 <16px 的输入控件会在聚焦时把整页放大，缩不回去；
+     窄屏下单独把输入框提到 16px，其余排版仍走设计系统的 14px 基准 */
+  .composer__input {
+    font-size: 16px;
   }
 
   .composer__note {

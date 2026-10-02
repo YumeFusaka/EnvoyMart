@@ -1,5 +1,7 @@
 package yumefusaka.envoymart.agent.tool;
 
+import yumefusaka.envoymart.agent.core.AgentCancelledException;
+
 /**
  * 工具执行的实时进度回调（请求级）。
  * <p>
@@ -26,6 +28,32 @@ public interface ToolProgressListener {
      * @param noData 只对成功有意义：查空是有效答案，界面标「无结果」而非「失败」
      */
     void onFinish(String tool, boolean success, boolean noData, long latencyMs);
+
+    /**
+     * 本轮对话是否已被取消（用户点了「停止生成」，或直接断开连接）。
+     * <p>
+     * 取消信号搭这条通道下发，因为它已经是执行链上唯一贯穿全程的请求级对象：
+     * 计划路径、ReAct 循环、确认轮都拿着它。为此再加一个参数，等于把
+     * 「进度就在听、取消没在听」这种不一致留给下一个调用点去犯错。
+     * <p>
+     * 默认 false：非流式入口、MCP 路径与测试里的监听器没有取消这个概念，
+     * 新增方法不能逼它们全部实现一遍。
+     */
+    default boolean cancelled() {
+        return false;
+    }
+
+    /**
+     * 取消中就直接中断——在「即将开始新工作」的位置调用。
+     * <p>
+     * 只查不抛、让每个调用点自己写 if，迟早会漏；收成一个方法，
+     * 语义（<b>不再开始</b>，而非打断进行中的调用）与异常类型都只有一处。
+     */
+    default void throwIfCancelled() {
+        if (cancelled()) {
+            throw new AgentCancelledException("本轮对话已被取消");
+        }
+    }
 
     /** 未接入实时界面时的空实现（非流式入口、测试）。 */
     ToolProgressListener NOOP = new ToolProgressListener() {

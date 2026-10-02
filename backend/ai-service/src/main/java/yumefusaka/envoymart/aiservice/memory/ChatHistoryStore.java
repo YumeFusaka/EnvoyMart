@@ -100,6 +100,87 @@ public class ChatHistoryStore {
         write(userId, sessionId, messages);
     }
 
+    /**
+     * 只记助手答复：就地改写最后一条，而不是追加一轮（「重新生成」落历史的形态）。
+     * <p>
+     * 判据取「列表最新的一条是助手消息」，而不是「盲改 index 0」：改写的前提是
+     * 上一轮确实留下过一份答复。最新一条不是助手消息（半轮孤本、异常状态）时
+     * 退回<b>追加</b>——宁可多一条，也不能把一条用户消息覆盖成助手消息。
+     * <p>
+     * 最新一条在 index 0：写入是 LPUSH（新在头），{@link #loadMessages} 读出时
+     * 才反转为时间正序。
+     */
+    public void recordAnswer(String userId, String sessionId, String assistantReply, Object assistantPayload) {
+        StoredMessage answer = new StoredMessage("a-" + UUID.randomUUID(), "assistant",
+                assistantReply == null ? "" : assistantReply, Instant.now(), toMap(assistantPayload));
+        if (!rewriteLatestAssistant(userId, sessionId, answer)) {
+            // 退回普通追加的路径：共用 write 的墓碑拦截、裁剪、续期与索引更新
+            write(userId, sessionId, List.of(answer));
+        }
+    }
+
+    /** @return true 表示已处理（改写完成、或会话已删除无需再写）；false 表示头部不是助手消息，应改为追加 */
+    private boolean rewriteLatestAssistant(String userId, String sessionId, StoredMessage answer) {
+        // 与 write 同一道闸：会话已删除时这一轮的生成可能还在跑，跑完不能把它写回来
+        if (isDeleted(userId, sessionId)) {
+            log.info("[History] 会话已删除，丢弃本次改写: session={}", sessionId);
+            return true;
+        }
+        String histKey = histKey(userId, sessionId);
+        String metaKey = metaKey(userId, sessionId);
+        String indexKey = indexKey(userId);
+        try {
+            List<String> head = redis.opsForList().range(histKey, 0, 0);
+            if (head == null || head.isEmpty()) {
+                return false;
+            }
+            StoredMessage latest;
+            try {
+                latest = objectMapper.readValue(head.get(0), StoredMessage.class);
+            } catch (Exception e) {
+                // 头部这条读不出来，就无法确认它是不是助手消息 —— 不赌，走追加
+                return false;
+            }
+            if (!"assistant".equals(latest.role())) {
+                return false;
+            }
+
+            String payload = serialize(answer);
+            long score = Instant.now().toEpochMilli();
+            redis.execute(new SessionCallback<Void>() {
+                @Override
+                @SuppressWarnings({"unchecked", "rawtypes"})
+                public <K, V> Void execute(RedisOperations<K, V> operations) {
+                    RedisOperations<String, String> ops = (RedisOperations<String, String>) (RedisOperations) operations;
+                    ops.multi();
+                    ops.opsForList().set(histKey, 0, payload);
+                    ops.expire(histKey, TTL);
+                    // 重新生成把会话顶到侧栏最前：用户刚刚用过它
+                    ops.opsForZSet().add(indexKey, sessionId, score);
+                    ops.expire(indexKey, TTL);
+                    // 只续期不创建：元数据不存在时（异常状态）不该由一次改写来凭空立一个标题，
+                    // EXPIRE 落在不存在的键上是空操作
+                    ops.expire(metaKey, TTL);
+                    ops.exec();
+                    return null;
+                }
+            });
+
+            // 与 write 相同的墓碑复查：删除与改写撞在同一瞬，上面那次 EXEC 会把会话写回来
+            if (isDeleted(userId, sessionId)) {
+                redis.delete(List.of(histKey, metaKey));
+                redis.opsForZSet().remove(indexKey, sessionId);
+                log.info("[History] 改写期间会话被删除，已回滚本次写入: session={}", sessionId);
+            }
+            return true;
+        } catch (Exception e) {
+            // 与 write 的失败立场一致：历史是增强项，失败告警不抛。这里不再退回追加——
+            // 改写失败后追加等于「一次重新生成留下两条答复」，比少写更隐蔽
+            log.warn("[History] 答复改写失败，本次不落历史: session={} err={}", sessionId, e.getMessage());
+            return true;
+        }
+    }
+
     private void write(String userId, String sessionId, List<StoredMessage> messages) {
         // 会话已被删除：这一轮的流可能还在跑（删除不打断生成），跑完不能把它写回来。
         // 没有这道闸，用户删掉的会话会在几十秒后带着新标题"还魂"，删除语义等于失效
