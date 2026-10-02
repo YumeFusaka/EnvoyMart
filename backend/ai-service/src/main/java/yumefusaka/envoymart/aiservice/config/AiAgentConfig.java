@@ -8,6 +8,8 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.store.embedding.milvus.v2.MilvusV2EmbeddingStore;
+import io.milvus.v2.client.ConnectConfig;
+import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.common.ConsistencyLevel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -329,9 +331,18 @@ public class AiAgentConfig {
      * 本项目语料只有十几篇，Strong 的代价可以忽略。
      */
     private MilvusV2EmbeddingStore newMilvusStore(String collection, String host, int port, int dimension) {
+        // 建连超时显式给到 60 秒。SDK 默认 10 秒，而九服务冷启动时 CPU 被多个 JVM
+        // 的初始化挤满，gRPC 建连（wait_for_ready 语义）在 10 秒预算内完不成——
+        // 2026-10-02 修复前两轮实测 ai-service 都因此以 DEADLINE_EXCEEDED(9.8s)
+        // 启动失败；改 60 秒后同场景实测首轮直接就绪（Started in 66.7s）。Milvus
+        // 本身没问题（空闲时秒连），缺的只是启动高峰期的等待预算。
+        // 经 milvusClient 注入，替代 builder 内部按 host/port 自建 client 的路径。
+        MilvusClientV2 client = new MilvusClientV2(ConnectConfig.builder()
+                .uri("http://" + host + ":" + port)
+                .connectTimeoutMs(60_000)
+                .build());
         return MilvusV2EmbeddingStore.builder()
-                .host(host)
-                .port(port)
+                .milvusClient(client)
                 .collectionName(collection)
                 .dimension(dimension)
                 .consistencyLevel(ConsistencyLevel.STRONG)

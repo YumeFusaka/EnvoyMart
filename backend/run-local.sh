@@ -20,6 +20,15 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 
+# 双击 .sh 启动时 bash 跑在交互模式下（`bash --login -i run-local.sh demo`），
+# 于是 Git for Windows 自带的 /etc/profile.d/aliases.sh 在 mintty（TERM=xterm*）下
+# 会把 node 包成 `winpty node.exe` —— 那是给交互式 REPL 用的。而本脚本的 node 调用
+# 全都带着输出重定向（中间件握手、派生数据重建），winpty 找不到 tty 就直接失败或挂死，
+# 且 stderr 被 `2>/dev/null` 吞掉：症状是「curl 版检查全过、node 版检查全不过」
+# （nacos/ES/milvus 就绪，mysql/redis/rabbitmq 全未就绪），或整个脚本冻在某一项检查上。
+# 同一份检查在非交互 shell 里完全正常——脚本要的就是非交互行为，这里显式去掉 alias。
+unalias node 2>/dev/null || true
+
 ENV_FILE=.env.local
 LOG_DIR=../logs/logs-local
 
@@ -169,8 +178,27 @@ start_one() {
   fi
 
   mkdir -p "$LOG_DIR"
+  rotate_log "$svc"
   echo "启动 $svc (端口 $(port_of "$svc")) → $LOG_DIR/$svc.log"
   env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run "${agent_args[@]}" > "$LOG_DIR/$svc.log" 2>&1 &
+}
+
+# 服务日志按次归档。
+#
+# 启动用 `>` 覆盖同名日志——于是"上一轮到底发生了什么"往往在下一次启动时被抹掉，
+# 而它恰恰是排查事故时要的第一份证据：2026-10-02 的死信事故里，product-service
+# 出现异常的那一轮日志就是被一次 restart 覆盖的，最后只能靠"与全部证据相容的
+# 唯一解释"来定性。归档后每一次启动都留下完整的上一轮现场。
+# 同服务只保留最近 5 份，避免长期演示环境无限膨胀；要更久的历史就在启动前手动拷走。
+rotate_log() { # 服务名
+  local log="$LOG_DIR/$1.log" stamp
+  [ -s "$log" ] || return 0
+  mkdir -p "$LOG_DIR/archive"
+  stamp=$(date +%Y%m%d-%H%M%S)
+  mv "$log" "$LOG_DIR/archive/$1-$stamp.log"
+  ls -1t "$LOG_DIR/archive/$1-"*.log 2>/dev/null | tail -n +6 | while read -r old; do
+    rm -f "$old"
+  done
 }
 
 # 按端口杀监听进程（服务与前端共用这一条路径）。
@@ -200,25 +228,66 @@ stop_services() {
   done
 }
 
-wait_healthy() {
-  local i port code ready
-  for i in "${!SERVICES[@]}"; do
-    printf '%-18s' "${SERVICES[$i]}"
-    port=$(port_of "${SERVICES[$i]}")
-    ready=""
-    for _ in $(seq 1 90); do
-      # 先看端口在不在监听；再看 actuator。网关没有 actuator 依赖，
-      # /actuator/health 会走它的路由落到下游并返回 404——那恰恰说明它已经在转发了。
-      if netstat -ano 2>/dev/null | grep LISTENING | grep -q ":$port "; then
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/actuator/health" 2>/dev/null)
-        case "$code" in
-          200|404) ready=1; echo "就绪"; break ;;
-        esac
+# 「已就绪」的判据只有一份：端口在监听 + actuator 应答。网关没有 actuator 依赖，
+# /actuator/health 会走它的路由落到下游并返回 404——那恰恰说明它已经在转发了。
+# wait_healthy 与补启轮的复查共用这个函数；两处各写一份的话，迟早分叉成
+# 「脚本说全就绪、实际有个服务半死」或反向的假红灯。
+svc_ready() { # 服务名
+  local port code
+  port=$(port_of "$1")
+  port_listening "$port" || return 1
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/actuator/health" 2>/dev/null)
+  case "$code" in
+    200|404) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 等服务就绪：并发轮询全部目标，谁好了标记谁，不互相拖累。
+#
+# 三种状态：就绪 / 启动中 / **启动已失败**（端口没监听，且日志里已出现进程死亡的
+# 标志——Spring 的 "Application run failed"，或 Maven 的 BUILD FAILURE /
+# "Process terminated with exit code"）。死进程等多久都不会活，判死即可，补启轮会
+# 重拉它。2026-10-02 实测九服务冷启动：旧的串行等待在三个死进程上白等 9 分钟，
+# 而失败结论在日志里早就写好了——等待修不了死进程，只能更快识别。
+#
+# 判死查**整个日志**，不能只看尾部窗口：死讯后面还跟着几十 KB 的异常堆栈和 Maven
+# 的 [ERROR] 块——实测 `tail -c 4000` 漏掉了它（marker 距末尾 27 KB），于是死进程
+# 被当成"启动中"白等了整整 180 秒。
+wait_healthy() { # [服务名...]，不传则检查全部；未全就绪返回 1
+  local svc
+  local targets=("$@")
+  [ ${#targets[@]} -eq 0 ] && targets=("${SERVICES[@]}")
+
+  declare -A state=()   # 0=启动中 1=就绪 2=已失败
+  for svc in "${targets[@]}"; do state[$svc]=0; done
+
+  local pending
+  for _ in $(seq 1 90); do   # 90 轮 × 2 秒 = 180 秒总余量（实测最慢服务带 agent 启动 66 秒）
+    pending=()
+    for svc in "${targets[@]}"; do
+      [ "${state[$svc]}" -ne 0 ] && continue
+      if svc_ready "$svc"; then
+        state[$svc]=1; printf '%-18s就绪\n' "$svc"
+      elif grep -qE "Application run failed|BUILD FAILURE|Process terminated with exit code" "$LOG_DIR/$svc.log" 2>/dev/null; then
+        state[$svc]=2; printf '%-18s启动失败（看 %s/%s.log）\n' "$svc" "$LOG_DIR" "$svc"
+      else
+        pending+=("$svc")
       fi
-      sleep 2
     done
-    [ -n "$ready" ] || echo "未就绪（看 $LOG_DIR/${SERVICES[$i]}.log）"
+    [ ${#pending[@]} -eq 0 ] && break
+    sleep 2
   done
+
+  local ok=1
+  for svc in "${targets[@]}"; do
+    case "${state[$svc]}" in
+      1) ;;
+      0) printf '%-18s未就绪（180 秒内没等到，看 %s/%s.log）\n' "$svc" "$LOG_DIR" "$svc"; ok=0 ;;
+      *) ok=0 ;;
+    esac
+  done
+  [ "$ok" -eq 1 ]
 }
 
 # ———————————————————— 演示环境一键启动 ————————————————————
@@ -314,25 +383,57 @@ preflight() {
   return 0
 }
 
+# 中间件就绪探测：一个组件一条真握手，与 middleware_up 的检查清单逐项对应。
+probe_middleware() { # 组件名 → 就绪返回 0
+  case "$1" in
+    nacos)         http_ok http://127.0.0.1:8848/nacos/v1/console/health/readiness ;;
+    mysql)         tcp_open 3306 ;;
+    redis)         tcp_open 6379 ;;
+    rabbitmq)      tcp_open 5672 ;;
+    elasticsearch) http_ok http://127.0.0.1:9200/ ;;
+    milvus)        http_ok http://127.0.0.1:9091/healthz ;;
+    neo4j)         tcp_open 7687 ;;
+    seata)         tcp_open 8091 ;;
+    *)             return 1 ;;
+  esac
+}
+
 middleware_up() {
   echo "启动中间件（docker compose up -d，已在跑的容器不受影响）..."
-  # compose 的退出码只报「哪些容器没起来」，不是「环境不可用」——这台机器上
-  # 3306 被宿主原生 MySQL 占着（项目用的就是它），compose 里的 mysql 容器
-  # 永远绑定不了 3306，up 必然非零退出。所以就绪与否一律以下面的真握手为准。
+  # compose 的退出码只报「哪些容器没起来」，不是「环境不可用」——所以就绪与否
+  # 一律以下面的真握手为准。MySQL 跑在宿主机（Windows 服务、开机自启），不在
+  # compose 里，下面按 3306 端口检查它。
   docker compose -f ../docker-compose.yml up -d \
     || echo "（docker compose 报了错，继续——中间件就绪与否看下面的真握手检查）"
 
-  local failed=0
-  wait_ready nacos 90 http_ok http://127.0.0.1:8848/nacos/v1/console/health/readiness || failed=1
-  wait_ready mysql 60 tcp_open 3306 || failed=1
-  wait_ready redis 60 tcp_open 6379 || failed=1
-  wait_ready rabbitmq 60 tcp_open 5672 || failed=1
-  wait_ready elasticsearch 90 http_ok http://127.0.0.1:9200/ || failed=1
-  wait_ready milvus 90 http_ok http://127.0.0.1:9091/healthz || failed=1
-  wait_ready neo4j 60 tcp_open 7687 || failed=1
-  wait_ready seata 60 tcp_open 8091 || failed=1
-  if [ "$failed" -ne 0 ]; then
-    echo "有中间件没就绪。服务连不上 Nacos/MySQL 会起不来或静默降级，先解决上面未就绪的：" >&2
+  # 就绪检查：并行轮询 + 240 秒总预算。
+  #
+  # 为什么不用 wait_ready 串行等：8 项各自计时、超时叠加，冷启动（Docker Desktop
+  # 刚起来、十来个容器一起拉）时最坏会拖几十分钟才报出「全部未就绪」；并行轮询的
+  # 总耗时是最慢那一项的就绪时间，与 wait_healthy 同一模式。
+  #
+  # 为什么超时从 60/90 秒提到 240：给「开机后 Docker 冷启动中立刻跑 demo」留预算——
+  # Milvus 要等 etcd/minio 先起、ES 冷启动也慢，90 秒会把「还在启动」误报成
+  # 「未就绪」。探测就绪即返回，正常路径不为这个数字多等。
+  local name still
+  local pending=(nacos mysql redis rabbitmq elasticsearch milvus neo4j seata)
+  local deadline=$(( $(date +%s) + 240 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    still=()
+    for name in "${pending[@]}"; do
+      if probe_middleware "$name"; then
+        printf '%-14s就绪\n' "$name"
+      else
+        still+=("$name")
+      fi
+    done
+    pending=("${still[@]}")
+    [ ${#pending[@]} -eq 0 ] && break
+    sleep 2
+  done
+
+  if [ ${#pending[@]} -ne 0 ]; then
+    echo "有中间件没就绪：${pending[*]}。服务连不上 Nacos/MySQL 会起不来或静默降级，先解决上面未就绪的：" >&2
     echo "  docker ps · docker compose -f docker-compose.yml logs <容器名> · 卡死就重启 Docker Desktop" >&2
     return 1
   fi
@@ -355,14 +456,17 @@ frontend_up() {
     # （插件没有隐藏开关），投屏演示时它一直飘在页面角落；首屏还要现编译，比静态产物慢。
     # 前端 API 地址是写死的 http://localhost:8080（本项目不用 vite proxy），preview 无需额外配置
     echo "构建前端生产产物（约 20 秒）..."
+    rotate_log frontend-build
     if ! pnpm -C ../frontend build > "$LOG_DIR/frontend-build.log" 2>&1; then
       echo "前端构建失败，看 $LOG_DIR/frontend-build.log" >&2
       return 1
     fi
     echo "启动前端 (端口 5173, 生产产物) → $LOG_DIR/frontend.log"
+    rotate_log frontend
     nohup pnpm -C ../frontend preview --port 5173 --strictPort > "$LOG_DIR/frontend.log" 2>&1 &
   else
     echo "启动前端 (端口 5173) → $LOG_DIR/frontend.log"
+    rotate_log frontend
     nohup pnpm -C ../frontend dev > "$LOG_DIR/frontend.log" 2>&1 &
   fi
   if wait_ready frontend 60 http_ok http://127.0.0.1:5173/; then
@@ -390,20 +494,65 @@ API 网关            http://localhost:8080
 EOF
 }
 
-demo_up() {
-  preflight || { echo "预检未过，演示环境没启动" >&2; exit 1; }
-  middleware_up || exit 1
-
-  local svc port
+# 起全部服务：错峰启动 → 等就绪 → 未就绪的自动补启（最多两轮）。
+#
+# 为什么必须错峰：九个 JVM 同时向 Nacos 建 gRPC 长连接（AI 服务还要连 Milvus），
+# 建连窗口挤在 CPU 最饱和的启动期，注册请求撞上客户端连接还没就绪的窗口
+# （failFast=true 直接退出）。2026-10-02 实测：错峰 3 秒首轮崩三个（Nacos 注册
+# STARTING ×2、Milvus 连接超时 ×1）；错峰 8 秒把 Nacos 类失败压到每轮 0~1 例
+# （概率性，未根除），Milvus 建连超时由 ai-service 侧显式延长建连预算解决
+# （见 AiAgentConfig.newMilvusStore）。
+#
+# 补启轮是最终承诺：2026-10-02 三轮冷启动实测里首轮失败的服务被它全部救回（累计 5/5），
+# 而且补启时 CPU 已空闲、Nacos 连接无竞争——重试的成功率本来就比首轮高。面试现场
+# 能接受自动重试的插曲，不能接受有服务起不来。
+start_all_services() {
+  local svc port round
+  local failed=()
   for svc in "${SERVICES[@]}"; do
     port=$(port_of "$svc")
     if port_listening "$port"; then
       echo "跳过 $svc（端口 $port 已在监听）"
     else
       start_one "$svc"
+      sleep 8
     fi
   done
   wait_healthy
+
+  for round in 1 2; do
+    failed=()
+    for svc in "${SERVICES[@]}"; do
+      svc_ready "$svc" || failed+=("$svc")
+    done
+    [ ${#failed[@]} -eq 0 ] && break
+    echo "第 $round 轮补启：${failed[*]}"
+    for svc in "${failed[@]}"; do
+      # 先清端口再起。failFast 退出的进程没留下监听，但「活着只是没就绪」的也有
+      # （等满 180 秒仍不响应）——那类不清掉，新进程绑不上端口。
+      kill_port "$svc" "$(port_of "$svc")"
+      start_one "$svc"
+      sleep 8
+    done
+    wait_healthy "${failed[@]}"
+  done
+
+  failed=()
+  for svc in "${SERVICES[@]}"; do
+    svc_ready "$svc" || failed+=("$svc")
+  done
+  if [ ${#failed[@]} -gt 0 ]; then
+    echo "补启两轮后仍未就绪：${failed[*]}（看 $LOG_DIR/<服务>.log 末尾的报错）" >&2
+    return 1
+  fi
+  return 0
+}
+
+demo_up() {
+  preflight || { echo "预检未过，演示环境没启动" >&2; exit 1; }
+  middleware_up || exit 1
+
+  start_all_services || exit 1
   resync_derived
 
   frontend_up prod || exit 1
@@ -419,6 +568,6 @@ case "${1:-all}" in
     echo "（中间件容器保持运行；要一并停用 docker compose -f docker-compose.yml stop）"
     ;;
   demo) demo_up ;;
-  all)  for svc in "${SERVICES[@]}"; do start_one "$svc"; done; wait_healthy ;;
+  all)  start_all_services || exit 1 ;;
   *)    for svc in "$@"; do start_one "$svc"; done ;;
 esac
