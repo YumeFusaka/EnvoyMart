@@ -215,8 +215,69 @@ await card.locator('.message-copy').hover()
 await card.locator('.message-copy').click()
 ck('复制按钮给出「已复制」反馈', (await card.locator('.message-copy').innerText()) === '已复制')
 
-// ─────────── 三、滚动锚定 ───────────
-console.log('\n三、滚动锚定')
+// ─────────── 三、工具实时进度（流式期间的「正在查询商品」） ───────────
+console.log('\n三、工具实时进度')
+// 发送前先挂观察器：工具执行可能只持续几百毫秒，发送后再轮询 DOM 很可能
+// 第一眼就已经是结果态，抓不到「执行中」那一帧。MutationObserver 记录整段流里
+// 出现过的每一个状态类，事后断言，不赌时序。
+await page.evaluate(() => {
+  window.__liveStates = []
+  const record = () => {
+    document.querySelectorAll('.live-tool').forEach((el) => {
+      const state = [...el.classList].find((c) => c.startsWith('is-'))
+      if (state) window.__liveStates.push(state)
+    })
+  }
+  new MutationObserver(record).observe(document.body, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['class'],
+  })
+})
+
+await page.locator('.composer textarea').fill('推荐一款维生素D补充剂')
+await page.getByRole('button', { name: '发送消息' }).click()
+
+// chip 出现本身就是「工具开始执行」在界面上的可见证据
+const chipAppeared = await page
+  .locator('.live-tool')
+  .first()
+  .waitFor({ state: 'attached', timeout: 60000 })
+  .then(() => true)
+  .catch(() => false)
+ck('工具执行期间出现实时进度 chip', chipAppeared)
+const chipText = chipAppeared ? await page.locator('.live-tool').first().innerText() : ''
+ck('chip 用中文工具名而不是机器名', chipText.includes('商品检索'), `chip 文案：${chipText}`)
+
+await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'detached', timeout: 180000 })
+
+const liveStates = await page.evaluate(() => window.__liveStates ?? [])
+ck(
+  '「执行中」状态真实渲染过',
+  liveStates.includes('is-running'),
+  `观察到的状态：${[...new Set(liveStates)].join(' / ') || '（无）'}`,
+)
+ck(
+  '执行结束后落到结果态',
+  liveStates.some((s) => ['is-ok', 'is-empty', 'is-fail'].includes(s)),
+  `观察到的状态：${[...new Set(liveStates)].join(' / ') || '（无）'}`,
+)
+
+// 收尾：600ms 展示余量之后芯片收起，由消息自带的正式轨迹接管
+const chipsLeft = await poll(
+  () => page.locator('.live-tool').count(),
+  (c) => c === 0,
+  15000,
+)
+ck('结束后实时 chip 收起（由正式轨迹接管）', chipsLeft === 0, `还剩 ${chipsLeft} 个`)
+ck(
+  '正式工具轨迹仍在（chip 只是过程指示，不是替代）',
+  (await page.locator('.message-card.assistant').last().locator('details.trace').count()) > 0,
+)
+
+// ─────────── 四、滚动锚定 ───────────
+console.log('\n四、滚动锚定')
 const scroller = page.locator('.chat-scroll')
 await scroller.evaluate((el) => el.scrollTo({ top: 0 }))
 await page.locator('.chat-jump').waitFor({ state: 'visible', timeout: 5000 })
@@ -231,8 +292,8 @@ const backAtBottom = await poll(
 ck('点击后回到底部', backAtBottom === true)
 ck('回到底部后按钮消失', (await page.locator('.chat-jump').count()) === 0)
 
-// ─────────── 四、多会话：侧栏、切换、刷新恢复 ───────────
-console.log('\n四、多会话')
+// ─────────── 五、多会话：侧栏、切换、刷新恢复 ───────────
+console.log('\n五、多会话')
 // 侧栏可能有更早批次留下的会话，等的是「这一段」出现，不是「有会话」
 const titles = await poll(
   () => page.locator('.session-list__title').allInnerTexts(),
@@ -280,8 +341,8 @@ await poll(() => page.locator('.message-card.assistant').count(), (c) => c >= 1,
 ck('刷新后自动回到上次的会话', (await page.locator('.message-card.assistant').count()) >= 1)
 ck('刷新后引用卡片仍在', (await page.locator('.citation').count()) > 0)
 
-// ─────────── 五、删除会话（界面 + 接口双向对账） ───────────
-console.log('\n五、删除会话')
+// ─────────── 六、删除会话（界面 + 接口双向对账） ───────────
+console.log('\n六、删除会话')
 const sessionsBefore = await apiSessions()
 // 认本轮创建的那一条：标题是本轮首条用户消息，带着本轮后缀。
 // 单靠「你好」开头会认到上一轮留下的同名会话——标题就是用户说的第一句话，跨轮必然重复，
@@ -324,8 +385,8 @@ if (victim && rowCount === 1) {
   )
 }
 
-// ─────────── 六、生成中删除：服务端不许把会话写回来 ───────────
-console.log('\n六、生成中删除（墓碑）')
+// ─────────── 七、生成中删除：服务端不许把会话写回来 ───────────
+console.log('\n七、生成中删除（墓碑）')
 // 删除与生成撞车是实测复现过的缺陷：SSE 断开不打断服务端那一轮，
 // 用户删掉的会话会在几十秒后带着新内容重新出现在侧栏 —— 删除语义等于失效
 await page.getByRole('button', { name: /新对话/ }).click()
@@ -371,8 +432,8 @@ if (doomed) {
   ck('被删会话读不出任何消息', (msgs.data ?? []).length === 0, `实际 ${(msgs.data ?? []).length} 条`)
 }
 
-// ─────────── 七、窄屏：侧栏收进抽屉 ───────────
-console.log('\n七、窄屏（500px）')
+// ─────────── 八、窄屏：侧栏收进抽屉 ───────────
+console.log('\n八、窄屏（500px）')
 await page.setViewportSize({ width: 500, height: 900 })
 ck('窄屏隐藏固定侧栏', !(await page.locator('.assistant-sidebar').isVisible()))
 await page.getByRole('button', { name: '打开会话列表' }).click()

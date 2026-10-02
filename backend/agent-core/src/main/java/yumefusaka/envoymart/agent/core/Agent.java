@@ -30,6 +30,7 @@ import yumefusaka.envoymart.agent.rag.ToolFactVerifier;
 import yumefusaka.envoymart.agent.tool.ApprovalTokens;
 import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolCall;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
@@ -112,13 +113,20 @@ public class Agent {
     }
 
     public AgentResponse chat(String userId, String sessionId, String message, String approvalToken) {
-        return doChat(userId, sessionId, message, approvalToken, null);
+        // 非流式入口没有实时通道，进度落在空实现上
+        return doChat(userId, sessionId, message, approvalToken, null, ToolProgressListener.NOOP);
     }
 
-    /** 流式变体：最终回答逐块推送；工具编排阶段仍是同步的。 */
+    /**
+     * 流式变体：最终回答逐块推送；工具编排阶段仍是同步的。
+     * <p>
+     * {@code progress} 是工具执行的实时进度（开始/结束），供界面在编排阶段显示
+     * 「正在查询商品」这类中间步骤——它只影响「过程可见」，不影响任何执行决策。
+     */
     public AgentResponse chatStream(String userId, String sessionId, String message,
-                                    String approvalToken, Consumer<String> onChunk) {
-        return doChat(userId, sessionId, message, approvalToken, onChunk);
+                                    String approvalToken, Consumer<String> onChunk,
+                                    ToolProgressListener progress) {
+        return doChat(userId, sessionId, message, approvalToken, onChunk, progress);
     }
 
     /**
@@ -126,7 +134,8 @@ public class Agent {
      *                      非空即表示这一轮是「确认轮」——不再经过模型，直接执行签名里的载荷。
      */
     private AgentResponse doChat(String userId, String sessionId, String message,
-                                 String approvalToken, Consumer<String> onChunk) {
+                                 String approvalToken, Consumer<String> onChunk,
+                                 ToolProgressListener progress) {
         log.info("[Agent] chat userId={} sessionId={} approvalToken={}",
                 userId, sessionId, approvalToken == null ? "-" : "已携带");
 
@@ -136,7 +145,7 @@ public class Agent {
         // 不需要理解用户这句话、不需要召回知识、更不需要模型——那三样每一样都是
         // 一次真实计费的调用，且都给了模型一次「把执行内容想成别的什么」的机会
         if (approvalToken != null && !approvalToken.isBlank()) {
-            AgentResponse confirmed = executeApproved(userId, sessionId, message, approvalToken, onChunk);
+            AgentResponse confirmed = executeApproved(userId, sessionId, message, approvalToken, onChunk, progress);
             remember(scopedSession, userId, sessionId, message, confirmed);
             return confirmed;
         }
@@ -166,7 +175,7 @@ public class Agent {
 
         AgentResponse response;
         try {
-            response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, knowledge, onChunk);
+            response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, knowledge, onChunk, progress);
             response.setEvidenceLevel(evidence.level());
         } catch (Exception e) {
             log.error("[Agent] chat failed, degrade to fallback reply", e);
@@ -210,7 +219,8 @@ public class Agent {
      * 用户批准一次，就执行这一次。
      */
     private AgentResponse executeApproved(String userId, String sessionId, String message,
-                                          String approvalToken, Consumer<String> onChunk) {
+                                          String approvalToken, Consumer<String> onChunk,
+                                          ToolProgressListener progress) {
         Optional<List<PendingAction>> actions = approvals.verify(approvalToken, userId, sessionId);
         if (actions.isEmpty()) {
             emit(onChunk, APPROVAL_EXPIRED_REPLY);
@@ -222,7 +232,7 @@ public class Agent {
 
         List<ToolExecution> executions = new ArrayList<>();
         for (PendingAction action : actions.get()) {
-            executions.add(runApproved(userId, action));
+            executions.add(runApproved(userId, action, progress));
         }
         String reply = renderApproved(executions);
         log.info("[Agent] 确认轮执行完成 userId={} 操作数={} 成功={}", userId, executions.size(),
@@ -242,9 +252,13 @@ public class Agent {
      * （{@code requiresConfirmation && !confirmed → 拒绝}）因此有了确定的意义：
      * 能通过它的，只可能是服务端按签名载荷发起的这一次。
      */
-    private ToolExecution runApproved(String userId, PendingAction action) {
+    private ToolExecution runApproved(String userId, PendingAction action, ToolProgressListener progress) {
+        // 确认轮同样发进度：用户点完「确认」后界面上要能看到「正在取消订单」，
+        // 否则这段执行是黑盒——而它恰恰是不可撤销操作，最需要过程可见
+        progress.onStart(action.tool());
         ToolResult result = toolRegistry.execute(new ToolCall(
                 UUID.randomUUID().toString(), action.tool(), action.arguments(), true, userId));
+        progress.onFinish(action.tool(), result.isSuccess(), result.isNoData(), result.getLatencyMs());
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
                 : "执行失败：" + result.getErrorMessage();
@@ -303,7 +317,7 @@ public class Agent {
      */
     private AgentResponse execute(String userId, String sessionId, String message, String retrievalQuery,
                                   String systemPrompt, List<DocumentChunk> knowledge,
-                                  Consumer<String> onChunk) {
+                                  Consumer<String> onChunk, ToolProgressListener progress) {
 
         Optional<DeterministicFlow> flowOpt = intentRouter.route(retrievalQuery);
         if (flowOpt.isPresent()) {
@@ -326,7 +340,7 @@ public class Agent {
         LoopGuard guard = new LoopGuard(config.getLoopBudget());
         AgentGraph.GraphResult graphResult = agentGraph.run(
                 userId, message, systemPrompt,
-                recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk);
+                recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk, progress);
         log.info("[Agent] loops {}", guard.summary());
 
         // 图的「中断出口」：撞上高危操作，图在此结束，等用户确认后作为新请求重入。

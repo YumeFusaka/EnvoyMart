@@ -45,7 +45,7 @@ class AgentGraphStreamTraceTest {
 
     private AgentGraph.GraphResult run(LLMProvider provider, Consumer<String> onChunk) {
         return new AgentGraph(provider, CONFIG, new ToolRegistry(), executor)
-                .run("u1", "我的订单到哪了", "", List.of(), new LoopGuard(new LoopBudget(8, 2, 2)), onChunk);
+                .run("u1", "我的订单到哪了", "", List.of(), new LoopGuard(new LoopBudget(8, 2, 2)), onChunk, null);
     }
 
     /** 规划一律返回空计划（直奔 answer 节点），对话轮次内自行执行了一次工具 */

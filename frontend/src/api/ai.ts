@@ -60,15 +60,31 @@ export async function deleteSession(sessionId: string) {
   await request.delete(`/ai/sessions/${encodeURIComponent(sessionId)}`)
 }
 
+/**
+ * 工具执行进度事件（SSE `tool`）。
+ *
+ * start 只有工具名；finish 携带结果语义——`success=true, noData=true` 是
+ * 「查到了但没结果」，界面要标「无结果」而不是绿色的「成功」。
+ */
+export interface ToolProgressEvent {
+  phase: 'start' | 'finish'
+  tool: string
+  success?: boolean
+  noData?: boolean
+  latencyMs?: number
+}
+
 export interface StreamHandlers {
   onDelta: (text: string) => void
   onDone: (response: ChatResponse) => void
   onError: (message: string) => void
+  /** 工具执行进度；不需要实时指示的调用方可省略 */
+  onTool?: (event: ToolProgressEvent) => void
 }
 
 /**
  * SSE 流式对话。用 fetch 而非 EventSource——后者不支持 POST。
- * 事件：delta 增量文本 / done 完整结果 / error 异常。
+ * 事件：delta 增量文本 / tool 工具执行进度 / done 完整结果 / error 异常。
  * <p>
  * `signal` 用于用户中途停止：abort 会让 `reader.read()` 抛 AbortError 向上传播，
  * 由调用方区分处理（停止是用户的主动选择，不是故障）。也支持组件卸载时取消，
@@ -109,6 +125,13 @@ export async function chatStream(
     if (settled) return
     if (event.name === 'delta') {
       handlers.onDelta(event.data)
+    } else if (event.name === 'tool') {
+      // 解析失败只丢这一条进度指示，不能掀掉整条流——正文与终态才是主体
+      try {
+        handlers.onTool?.(JSON.parse(event.data) as ToolProgressEvent)
+      } catch {
+        /* 忽略 */
+      }
     } else if (event.name === 'done') {
       settled = true
       handlers.onDone(JSON.parse(event.data) as ChatResponse)

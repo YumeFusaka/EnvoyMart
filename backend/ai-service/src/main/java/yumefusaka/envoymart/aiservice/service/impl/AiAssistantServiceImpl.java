@@ -5,6 +5,7 @@ import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.agent.core.Agent;
 import yumefusaka.envoymart.agent.llm.TokenLedger;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.rag.ConflictReporter;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.aiservice.llm.ModelPricing;
@@ -62,13 +63,15 @@ public class AiAssistantServiceImpl implements AiAssistantService {
     }
 
     @Override
-    public ChatResponse chatStream(String userId, ChatRequest request, java.util.function.Consumer<String> onChunk) {
+    public ChatResponse chatStream(String userId, ChatRequest request, java.util.function.Consumer<String> onChunk,
+                                   ToolProgressListener progress) {
         log.info("[AiService] chatStream userId={} sessionId={} msg={}",
                 userId, request.getSessionId(), request.getMessage());
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             ChatResponse response = toChatResponse(request, agent.chatStream(
-                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken(), onChunk), ledger);
+                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken(),
+                    onChunk, ToolProgressListener.orNoop(progress)), ledger);
             recordTurn(userId, request, response);
             return response;
         }

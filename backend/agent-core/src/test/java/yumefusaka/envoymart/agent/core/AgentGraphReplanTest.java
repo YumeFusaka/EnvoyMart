@@ -98,7 +98,7 @@ class AgentGraphReplanTest {
         ToolRegistry registry = new ToolRegistry();
         registry.register(toolReturning(toolResult));
         AgentGraph graph = new AgentGraph(provider, CONFIG, registry, executor);
-        return graph.run("u1", "有没有维生素D", "", List.of(), guard, null);
+        return graph.run("u1", "有没有维生素D", "", List.of(), guard, null, null);
     }
 
     @Test
@@ -164,7 +164,7 @@ class AgentGraphReplanTest {
         AgentGraph looping = new AgentGraph(alwaysPlans, CONFIG, registry, executor);
         LoopGuard guard = new LoopGuard(new LoopBudget(8, 2, 1));
 
-        AgentGraph.GraphResult result = looping.run("u1", "有没有维生素D", "", List.of(), guard, null);
+        AgentGraph.GraphResult result = looping.run("u1", "有没有维生素D", "", List.of(), guard, null, null);
 
         assertThat(result.getAnswer()).isNotBlank();
         assertThat(guard.planRounds())

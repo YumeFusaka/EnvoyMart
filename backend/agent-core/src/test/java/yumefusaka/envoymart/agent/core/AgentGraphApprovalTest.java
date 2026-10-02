@@ -98,7 +98,7 @@ class AgentGraphApprovalTest {
         registry.register(cancelTool());
         AgentGraph graph = new AgentGraph(new StubProvider(), CONFIG, registry, executor);
         return graph.run("u1", "帮我取消订单 12", "", List.of(),
-                new LoopGuard(new LoopBudget(8, 2, 2)), null);
+                new LoopGuard(new LoopBudget(8, 2, 2)), null, null);
     }
 
     @Test
@@ -199,7 +199,7 @@ class AgentGraphApprovalTest {
         registry.register(cancelTool());
         AgentGraph graph = new AgentGraph(reactProvider, CONFIG, registry, executor);
         AgentGraph.GraphResult result = graph.run("u1", "帮我取消订单 12", "", List.of(),
-                new LoopGuard(new LoopBudget(8, 2, 2)), null);
+                new LoopGuard(new LoopBudget(8, 2, 2)), null, null);
 
         assertThat(result.getPendingActions())
                 .as("ReAct 拦下的操作必须走到与计划路径同一个出口，否则前端没有确认卡可渲染")

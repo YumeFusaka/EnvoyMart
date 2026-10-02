@@ -5,6 +5,7 @@ import {
   fetchSessionMessages,
   fetchSessions,
   type ChatSessionSummary,
+  type ToolProgressEvent,
 } from '@/api/ai'
 import ChatMessageList from '@/components/ai/ChatMessageList.vue'
 import ChatSessionList from '@/components/ai/ChatSessionList.vue'
@@ -26,6 +27,15 @@ const sessionsLoading = ref(true)
 const activeSessionId = ref<string | null>(null)
 const messages = ref<ChatMessage[]>([])
 const loading = ref(false)
+/**
+ * 流式期间的工具实时进度（执行中 → 结果态）。
+ * <p>
+ * `start` 事件原样入列（phase 即「执行中」），对应的 `finish` 到达时就地替换成结果事件——
+ * 不进位、不重排，用户看到的是同一枚 chip 从「执行中」落到「完成」。
+ * 同一工具并发调用（如一次问句同时查订单与物流）按 FIFO 配对：每条 finish 落到
+ * 最早一个还在跑的同类 chip 上，配错会让两枚 chip 的耗时张冠李戴。
+ */
+const liveTools = ref<ToolProgressEvent[]>([])
 /** 切换会话时正在拉历史。与 loading 分开：那是"模型在写"，这是"历史在载"，界面提示不同 */
 const bootstrapping = ref(false)
 const input = ref('')
@@ -273,6 +283,8 @@ function abortStream() {
   abortController = null
   streamSeq++
   loading.value = false
+  // 停止后不会再有 finish 到达，挂着「执行中」的 chip 会永远转下去——立即收起
+  liveTools.value = []
 }
 
 async function sendMessage(message = input.value, approvalToken?: string) {
@@ -312,6 +324,7 @@ async function sendMessage(message = input.value, approvalToken?: string) {
   input.value = ''
   loading.value = true
   const seq = ++streamSeq
+  liveTools.value = []
   abortController = new AbortController()
   await scrollToBottom()
 
@@ -330,6 +343,24 @@ async function sendMessage(message = input.value, approvalToken?: string) {
       {
         onDelta: (text) => {
           assistantMessage.content += text
+          followIfPinned()
+        },
+        onTool: (event) => {
+          if (event.phase === 'start') {
+            liveTools.value.push({ phase: 'start', tool: event.tool })
+          } else {
+            // FIFO 配对：finish 落到最早一个还在跑的同类 chip 上（见 liveTools 注释）
+            const index = liveTools.value.findIndex(
+              (item) => item.phase === 'start' && item.tool === event.tool,
+            )
+            if (index >= 0) {
+              liveTools.value[index] = event
+            } else {
+              // 理论上 start 必然先到；真出现孤立的 finish，也要让它可见，
+              // 而不是因为「没有配对对象」把一次真实执行吞掉
+              liveTools.value.push(event)
+            }
+          }
           followIfPinned()
         },
         onDone: (response) => {
@@ -375,6 +406,14 @@ async function sendMessage(message = input.value, approvalToken?: string) {
     if (seq === streamSeq) {
       loading.value = false
       abortController = null
+      // 收尾不是立刻清空：最后一次工具调用刚落成「完成」，马上抹掉用户根本来不及看。
+      // 留 600ms 再看一遍结果态，之后由正式的工具轨迹接管（停止/新一轮发送会自增 seq，
+      // 这里到点也不会误清别人的 chip）
+      window.setTimeout(() => {
+        if (seq === streamSeq) {
+          liveTools.value = []
+        }
+      }, 600)
     }
     // 刷新侧栏拿权威的标题与条数。**即使这一轮已被切换/停止作废也要刷**：
     // 服务端在流结束时才落历史，此刻列表里正是这一段会话的旧数据；
@@ -517,6 +556,8 @@ function handleComposerKeydown(event: KeyboardEvent) {
             v-else
             :messages="messages"
             :streaming-index="loading ? messages.length - 1 : -1"
+            :live-tools="liveTools"
+            :live-tools-index="liveTools.length ? messages.length - 1 : -1"
             @open-product="openProduct"
             @approve="handleApprove"
             @dismiss="handleDismiss"

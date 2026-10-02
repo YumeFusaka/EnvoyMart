@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ToolProgressEvent } from '@/api/ai'
 import CitationList from '@/components/ai/CitationList.vue'
 import ConflictList from '@/components/ai/ConflictList.vue'
 import MessageContent from '@/components/ai/MessageContent.vue'
@@ -8,6 +9,7 @@ import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
 import { formatClock } from '@/utils/format'
 import {
+  type TraceOutcome,
   factEntries,
   formatMs,
   formatTokens,
@@ -23,7 +25,36 @@ defineProps<{
   messages: ChatMessage[]
   /** 正在生成的那条消息的下标；-1 表示没有在飞的流 */
   streamingIndex?: number
+  /**
+   * 流式期间的工具实时进度：`phase=start` 是「执行中」，`finish` 是结果态。
+   * 仅作数据来源，可见性由 {@link liveToolsIndex} 决定。
+   */
+  liveTools?: ToolProgressEvent[]
+  /**
+   * 实时 chip 归属的那条消息下标；-1 表示没有。
+   * <p>
+   * 与 `streamingIndex` 分开是必须的：流一结束 `streamingIndex` 立刻回到 -1，
+   * chip 会在结果态闪现之前就消失；这条下标由父组件在「还有 chip 要展示」的
+   * 整个窗口内保持指向最后一条消息（含结束后的 600ms 收尾），到点随 chip 一起收。
+   */
+  liveToolsIndex?: number
 }>()
+
+/**
+ * 实时 chip 的结局。「执行中」是第四态——start 已到、finish 未到。
+ * 后三态与正式轨迹共用 {@link TraceOutcome}：同一件事在两个时刻（进行中/已归档）
+ * 必须是同一套语义，「无结果」不能因为来早了几秒就被渲染成绿色对勾。
+ */
+function liveToolState(item: ToolProgressEvent): TraceOutcome | 'running' {
+  if (item.phase === 'start') return 'running'
+  if (!item.success) return 'fail'
+  return item.noData ? 'empty' : 'ok'
+}
+
+function liveToolStateLabel(item: ToolProgressEvent): string {
+  const state = liveToolState(item)
+  return state === 'running' ? '执行中' : outcomeLabel(state)
+}
 
 const emit = defineEmits<{
   openProduct: [product: ProductSummary]
@@ -107,6 +138,30 @@ async function handleCopy(message: ChatMessage) {
           {{ copiedId === message.id ? '已复制' : '复制' }}
         </button>
       </header>
+
+      <!--
+        流式期间的工具实时进度。出首个正文块之前可能要先跑几个工具，
+        没有这段界面在首字到达前是一片空白，用户不知道 Agent 在忙什么。
+        只在正在生成的那条消息上出现；正文一开始流式输出，它就和正文同上同下。
+      -->
+      <ol
+        v-if="position === liveToolsIndex && liveTools?.length"
+        class="live-tools"
+        aria-label="工具执行进度"
+      >
+        <li
+          v-for="(item, index) in liveTools"
+          :key="`${item.tool}-${index}`"
+          :class="['live-tool', `is-${liveToolState(item)}`]"
+        >
+          <span class="live-tool__dot" aria-hidden="true" />
+          <span class="live-tool__label">{{ toolLabel(item.tool) }}</span>
+          <span class="live-tool__state">{{ liveToolStateLabel(item) }}</span>
+          <span v-if="item.phase === 'finish' && item.latencyMs != null" class="live-tool__ms">
+            {{ formatMs(item.latencyMs) }}
+          </span>
+        </li>
+      </ol>
 
       <MessageContent
         :content="message.content"
@@ -368,6 +423,94 @@ async function handleCopy(message: ChatMessage) {
 
 @media (prefers-reduced-motion: reduce) {
   .message-live__dot {
+    animation: none;
+  }
+}
+
+/*
+  实时工具 chip：与头部「正在生成」同一条视觉语言（小圆点 + 小字），
+  不给它卡片和阴影——它是过程的注脚，正文才是主角。
+  状态不靠颜色单独表达：每枚 chip 都带文字结局（执行中/成功/无结果/失败），
+  色觉障碍用户读到的是同一份信息。
+*/
+.live-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.live-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ys-space-1);
+  padding: var(--ys-space-1) var(--ys-space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-full);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+  animation: live-tool-in var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+@keyframes live-tool-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
+.live-tool__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ys-radius-full);
+  background: currentColor;
+}
+
+/* 执行中：复用头部那个呼吸点——同一件事（还在跑）用同一个动效 */
+.live-tool.is-running {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+.live-tool.is-running .live-tool__dot {
+  animation: live-pulse 1s ease-in-out infinite;
+}
+
+.live-tool.is-ok {
+  border-color: var(--color-success-subtle);
+  background: var(--color-success-subtle);
+  color: var(--color-success-strong);
+}
+
+.live-tool.is-empty {
+  border-color: var(--color-warning-subtle);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning-strong);
+}
+
+.live-tool.is-fail {
+  border-color: var(--color-danger-subtle);
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.live-tool__ms {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-tool {
+    animation: none;
+  }
+
+  .live-tool.is-running .live-tool__dot {
     animation: none;
   }
 }

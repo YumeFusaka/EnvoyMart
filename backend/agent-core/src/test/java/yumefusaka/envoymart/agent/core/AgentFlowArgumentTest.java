@@ -17,6 +17,7 @@ import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
 import java.util.List;
@@ -155,7 +156,7 @@ class AgentFlowArgumentTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<yumefusaka.envoymart.agent.llm.ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
             return GraphResult.builder().answer("stub-graph").steps(List.of()).build();
         }
     }

@@ -18,6 +18,7 @@ import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.Tool;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
@@ -102,7 +103,7 @@ class AgentApprovalTokenTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
             runs.incrementAndGet();
             if (action == null) {
                 return GraphResult.builder().answer("图给的回答").steps(List.of()).build();
@@ -234,5 +235,43 @@ class AgentApprovalTokenTest {
         assertThat(graph.runs.get()).isEqualTo(runsBefore + 1);
         assertThat(cancel.calls).isEmpty();
         assertThat(response.getReply()).isEqualTo("图给的回答");
+    }
+
+    /**
+     * 确认轮也要发工具进度事件。
+     * <p>
+     * 确认轮不经执行图、直接执行签名载荷，是另一条执行路径——它漏接进度回调时
+     * 不会有任何报错：用户点完「确认执行」后界面静静等几秒（取消订单要动库存、
+     * 走事务），然后直接出结果，看起来只是"慢"。这一类「只有一处接线」的缺口
+     * 每加一条执行路径就会出现一次，所以每条路径都钉一条。
+     */
+    @Test
+    void 确认轮也发工具进度事件() {
+        RecordingCancelTool cancel = new RecordingCancelTool();
+        PendingGraph graph = new PendingGraph(PendingAction.of("order_cancel", Map.of("orderId", 12)));
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(cancel);
+        Agent agent = agent(graph, registry);
+        String token = issueToken(agent, "u1", "s1");
+
+        List<String> events = new ArrayList<>();
+        ToolProgressListener listener = new ToolProgressListener() {
+            @Override
+            public void onStart(String tool) {
+                events.add("start:" + tool);
+            }
+
+            @Override
+            public void onFinish(String tool, boolean success, boolean noData, long latencyMs) {
+                events.add("finish:" + tool + ":" + success);
+            }
+        };
+        agent.chatStream("u1", "s1", "确认执行", token, chunk -> {
+        }, listener);
+
+        assertThat(events)
+                .as("事件必须来自真正执行的那一次调用（载荷里的 order_cancel）")
+                .containsExactly("start:order_cancel", "finish:order_cancel:true");
+        assertThat(cancel.calls).hasSize(1);
     }
 }

@@ -16,6 +16,7 @@ import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
 import yumefusaka.envoymart.agent.tool.PendingAction;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
 import java.util.List;
@@ -65,7 +66,7 @@ class AgentApprovalExitTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
             return GraphResult.builder()
                     .pendingActions(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))))
                     .toolExecutions(executions)

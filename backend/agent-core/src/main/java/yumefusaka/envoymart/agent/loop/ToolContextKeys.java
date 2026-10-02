@@ -48,6 +48,18 @@ public final class ToolContextKeys {
      */
     public static final String PENDING_ACTIONS = "pendingActions";
 
+    /**
+     * 工具执行进度回调（{@code ToolProgressListener}）。
+     * <p>
+     * 与 {@link #PENDING_ACTIONS} 方向相反：那个是「循环 → 调用方」的出口，
+     * 这个是「调用方 → 循环」的入口——ReAct 循环里的工具执行发生在 provider 内部，
+     * 图要把进度通知的出口递进去，走的是同一个 per-request 通道。
+     * <p>
+     * 与 {@link #LOOP_GUARD} 一样缺失即退化：不传就只有计划路径的进度，
+     * ReAct 路径静默 —— 进度是旁路通知，不该让任何调用点因为漏传而执行失败。
+     */
+    public static final String TOOL_PROGRESS = "toolProgress";
+
     private ToolContextKeys() {
     }
 }

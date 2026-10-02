@@ -30,6 +30,7 @@ import yumefusaka.envoymart.agent.loop.ToolContextKeys;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 import yumefusaka.envoymart.common.context.BaseContext;
@@ -318,9 +319,11 @@ public class LangChain4jLLMProvider implements LLMProvider {
 
             // confirmed 恒为 false：走到这里的都是没被拦下的常规工具，本来就不需要批准。
             // 需要批准的那些上面已经返回了——放行只发生在确认轮，而确认轮不经这个循环
+            ctx.progress.onStart(request.name());
             ToolResult result = toolRegistry.execute(new ToolCall(
                     request.id() == null ? UUID.randomUUID().toString() : request.id(),
                     request.name(), arguments, false, ctx.userId));
+            ctx.progress.onFinish(request.name(), result.isSuccess(), result.isNoData(), result.getLatencyMs());
 
             String output = result.isSuccess()
                     ? String.valueOf(result.getOutput())
@@ -799,11 +802,15 @@ public class LangChain4jLLMProvider implements LLMProvider {
         private final String userId;
         /** 拦下的高危操作载荷，见 {@link ToolContextKeys#PENDING_ACTIONS} */
         private final List<PendingAction> pendingActions;
+        /** 工具执行进度回调，见 {@link ToolContextKeys#TOOL_PROGRESS}；不传退化为 NOOP */
+        private final ToolProgressListener progress;
 
-        private LoopContext(LoopGuard guard, String userId, List<PendingAction> pendingActions) {
+        private LoopContext(LoopGuard guard, String userId, List<PendingAction> pendingActions,
+                            ToolProgressListener progress) {
             this.guard = guard;
             this.userId = userId;
             this.pendingActions = pendingActions;
+            this.progress = progress;
         }
 
         private static LoopContext from(Map<String, Object> toolContext) {
@@ -827,7 +834,11 @@ public class LangChain4jLLMProvider implements LLMProvider {
             List<PendingAction> pendingActions = providedSink instanceof List<?> provided
                     ? (List<PendingAction>) provided
                     : new ArrayList<>();
-            return new LoopContext(guard, userId, pendingActions);
+            // 进度监听器同理：不传就退化为 NOOP（如 MCP 路径、非流式入口），
+            // 界面少几片「正在执行」的指示，而不是在工具执行处抛 NPE
+            ToolProgressListener progress = toolContext.get(ToolContextKeys.TOOL_PROGRESS)
+                    instanceof ToolProgressListener listener ? listener : ToolProgressListener.NOOP;
+            return new LoopContext(guard, userId, pendingActions, progress);
         }
     }
 }

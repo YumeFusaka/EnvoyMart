@@ -14,6 +14,7 @@ import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
 import java.util.List;
@@ -63,7 +64,7 @@ class AgentSessionIsolationTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
             this.lastConversation = conversation == null ? List.of() : conversation;
             return GraphResult.builder().answer("stub").steps(List.of()).build();
         }

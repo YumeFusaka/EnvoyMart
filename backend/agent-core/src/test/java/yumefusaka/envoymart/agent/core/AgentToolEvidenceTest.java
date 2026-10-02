@@ -15,6 +15,7 @@ import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 
 import java.util.List;
@@ -79,7 +80,7 @@ class AgentToolEvidenceTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
             // steps 不能留空：Agent 用它区分 react / plan 两个出口（getSteps().isEmpty()）
             return GraphResult.builder()
                     .answer(answer).steps(List.of()).toolExecutions(executions)

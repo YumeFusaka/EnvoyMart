@@ -21,6 +21,7 @@ import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
 import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolCall;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
@@ -109,14 +110,15 @@ public class AgentGraph {
     // ==================== 对外入口 ====================
 
     public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                           LoopGuard guard, Consumer<String> onChunk) {
+                           LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
 
         GraphContext ctx = GraphContext.of(userId,
                 message,
                 systemPrompt == null ? "" : systemPrompt,
                 conversation == null ? List.of() : conversation,
                 guard == null ? new LoopGuard() : guard,
-                onChunk);
+                onChunk,
+                ToolProgressListener.orNoop(progress));
 
         Map<String, Object> initial = new HashMap<>();
         initial.put(KEY_STEPS, new ArrayList<GraphStep>());
@@ -354,8 +356,10 @@ public class AgentGraph {
         // 身份从上下文注入，绝不取自模型给的 arguments——模型不知道真实用户是谁，只能编。
         // confirmed 写死 false：图里的每一次执行都是模型驱动的，而高危工具在这一层
         // 根本走不到这里（上面已经拦下）。用户确认过的那批由 Agent 直接执行，见 PendingAction
+        ctx.progress().onStart(step.getTool());
         ToolResult result = toolRegistry.execute(new ToolCall(
                 "graph_" + round + "_" + index, step.getTool(), arguments, false, ctx.userId()));
+        ctx.progress().onFinish(step.getTool(), result.isSuccess(), result.isNoData(), result.getLatencyMs());
 
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
@@ -515,6 +519,9 @@ public class AgentGraph {
         // 用可变 Map 而非 Map.of：Map.of 不接受 null，身份缺失时会在构造处直接抛 NPE。
         Map<String, Object> loopContext = new HashMap<>();
         loopContext.put(ToolContextKeys.LOOP_GUARD, ctx.guard());
+        // ReAct 路径的工具执行发生在 provider 内部，进度通知的出口得沿这条通道递进去，
+        // 否则流式界面只看得见计划路径的工具、看不见模型自驱那一部分
+        loopContext.put(ToolContextKeys.TOOL_PROGRESS, ctx.progress());
         // 方向相反的一个键：循环把拦下的高危操作写进来，answerNode 读它决定中断
         // （见 ToolContextKeys#PENDING_ACTIONS——ReAct 无法像计划路径那样提前拦，
         // 拦截只能发生在循环内部，这是拦住的结果回到图里的唯一通道）
@@ -611,12 +618,12 @@ public class AgentGraph {
      * {@code NotSerializableException}）。
      */
     private record GraphContext(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                                LoopGuard guard, Consumer<String> onChunk,
+                                LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
                                 List<ToolExecution> executions, List<PendingAction> pendingActions) {
 
         static GraphContext of(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk) {
-            return new GraphContext(userId, message, systemPrompt, conversation, guard, onChunk,
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
+            return new GraphContext(userId, message, systemPrompt, conversation, guard, onChunk, progress,
                     Collections.synchronizedList(new ArrayList<>()), new ArrayList<>());
         }
     }
