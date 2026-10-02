@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import yumefusaka.envoymart.contract.ProductDetail;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 一级缓存（进程内，Caffeine）—— 挡在 Redis 前面。
@@ -41,6 +42,15 @@ public class ProductLocalCache {
      */
     private final Cache<Long, ProductDetail> cache;
 
+    /**
+     * 失效纪元：任何一次 {@link #invalidate} 都会 +1，供回填方判断
+     * "我读这份数据期间，有没有发生过失效"。
+     */
+    private final AtomicLong invalidationEpoch = new AtomicLong();
+
+    /** 让"校验纪元 + 写入"与"递增纪元 + 失效"互斥，见 {@link #fillIfNoInvalidationSince}。 */
+    private final Object fillLock = new Object();
+
     public ProductLocalCache(
             @Value("${envoymart.cache.local.max-size:10000}") long maxSize,
             @Value("${envoymart.cache.local.ttl-seconds:60}") long ttlSeconds) {
@@ -55,9 +65,37 @@ public class ProductLocalCache {
         return id == null ? null : cache.getIfPresent(id);
     }
 
-    public void put(Long id, ProductDetail product) {
-        if (id != null && product != null) {
-            cache.put(id, product);
+    /** 读取当前纪元，作为随后那次回填的"读起点"。 */
+    public long invalidationEpoch() {
+        return invalidationEpoch.get();
+    }
+
+    /**
+     * 读期间没发生过失效才回填 —— 挡住"旧值被钉回缓存"的竞态。
+     * <p>
+     * <b>竞态长什么样</b>：读路径先查缓存拿到旧值 V，准备回填本地；与此同时写入方
+     * 提交了新值并让缓存失效（删 Redis、广播、清本地）。若回填无条件执行，V 就又回到了
+     * 本地缓存里——**刚被删掉的值被自己钉了回去**，此后直到本地 TTL（默认 60s）
+     * 或下一次失效为止，这个实例一直返回旧值。窗口通常只有微秒级，但一次 GC 停顿
+     * 就能把它拉大到几十毫秒，观感是"改动生效了、只不过某台机器上要等一分钟后才生效"。
+     * <p>
+     * <b>为什么纪元是全局而不是按 id</b>：按 id 要维护一张会增长的计数表，而失效本身
+     * 不频繁——全局纪元最坏只是把"另一个商品的失效"误判成"不能回填"，代价是这次少一次
+     * 本地缓存命中，不会读到错误数据。宁可少回填，不可错回填。
+     *
+     * @param epochAtRead 发起读取前通过 {@link #invalidationEpoch()} 取得的纪元
+     * @return 是否允许回填；{@code false} 表示期间发生过失效，调用方应放弃这次回填
+     *         （Redis 那边同理：写回 Redis 也可能把刚删的旧值灌回去）
+     */
+    public boolean fillIfNoInvalidationSince(Long id, ProductDetail product, long epochAtRead) {
+        synchronized (fillLock) {
+            if (invalidationEpoch.get() != epochAtRead) {
+                return false;
+            }
+            if (id != null && product != null) {
+                cache.put(id, product);
+            }
+            return true;
         }
     }
 
@@ -66,10 +104,16 @@ public class ProductLocalCache {
      * <p>
      * **本实例不等广播回来**：发布者自己也要立刻一致，依赖"pub/sub 会回显给自己"
      * 是把正确性押在中间件的行为细节上。
+     * <p>
+     * 递增纪元与删除在同一把锁里完成，保证与 {@link #fillIfNoInvalidationSince}
+     * 的全序：任何一次失效，要么发生在回填校验之前（回填被拒），要么之后（回填的值当场被删）。
      */
     public void invalidate(Long id) {
-        if (id != null) {
-            cache.invalidate(id);
+        synchronized (fillLock) {
+            invalidationEpoch.incrementAndGet();
+            if (id != null) {
+                cache.invalidate(id);
+            }
         }
     }
 

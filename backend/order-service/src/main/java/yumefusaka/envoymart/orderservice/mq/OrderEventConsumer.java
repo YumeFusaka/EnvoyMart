@@ -41,8 +41,8 @@ public class OrderEventConsumer {
         orderDomainService.markPaid(event.getOrderId());
     }
 
-    @RabbitListener(queues = OrderEventConfig.ORDER_DLX_QUEUE)
-    public void handleDeadLetter(String message) {
-        log.warn("[MQ.DLX] 收到死信消息: {}, 进入人工处理流程", message);
-    }
+    // 死信队列（order.dlx.queue）**刻意没有消费者**：消费掉只剩一行日志，
+    // 而日志会被下次重启覆盖——实测一次真死信，靠的正是"消息还躺在队列里"才追出源头。
+    // 死信该留在队列里等人看（跨批验收断言"死信队列必须为空"会红着提醒），
+    // 而不是被一个只会打日志的监听器悄悄吃掉。
 }

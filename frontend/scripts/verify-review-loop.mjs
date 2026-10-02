@@ -275,13 +275,25 @@ console.log('\n== 三、评价 → 商品评分聚合（MQ 回写） ==')
 
 // 只有本轮真提的 3 条进聚合：夹具那 2 条是 HIDDEN，不进任何对外可见的数字
 const expectedTotal = Number(beforeStats.total) + 3
-const expectedAvg = (
-  (Number(beforeStats.average) * Number(beforeStats.total) +
-    1 +
-    5 +
-    4) /
-  expectedTotal
-).toFixed(1)
+
+/**
+ * 均分的「一位小数」是两个断言共同的坑，算法收在这里，两处都用它。
+ * <p>
+ * statistics 的 average 只回一位小数，而商品 1 的评价池经过历轮积累已是几十条——新 3 条
+ * （1/5/4 ≈ 3.33）推均分一把只有 0.03 上下，一位小数上表现为 3.7 → 3.7，
+ * `<` 退化成相等、红得莫名其妙（实测踩到）。池子越大，"看不见的变化"越多。
+ * distribution 是五格全整数的星级分布（下标 0 是 1 星），整数加权和 / 总数 = 全精度均分。
+ */
+const weightedSum = (stats) => (stats.distribution ?? []).reduce((sum, n, i) => sum + Number(n) * (i + 1), 0)
+const fullAvg = (stats) => {
+  const total = (stats.distribution ?? []).reduce((sum, n) => sum + Number(n), 0)
+  return total === 0 ? 0 : weightedSum(stats) / total
+}
+
+// 预期均分同理不能用 beforeStats.average 反推：一位小数已经先把池子均分截断
+// （如 63/16 = 3.9375 显示 3.9），乘条数反推会把这个误差放大后推过舍入边界——
+// 实测期望算出 4.0、真值 3.9，红的是断言不是产品。改用整数加权和，全程不丢精度
+const expectedAvg = ((weightedSum(beforeStats) + 1 + 5 + 4) / expectedTotal).toFixed(1)
 
 const converged = await waitFor(async () => {
   const d = await detail(SPU)
@@ -309,21 +321,6 @@ ck(
   Number(statsNow.average).toFixed(1) === expectedAvg,
   `期望 ${expectedAvg}，实得 ${statsNow.average}`,
 )
-/**
- * 均分的「可见精度」陷阱：statistics 的 average 只回一位小数，而商品 1 的评价池
- * 经过历轮积累已是几十条——新 3 条（1/5/4 ≈ 3.33）推均分一把只有 0.03 上下，
- * 一位小数上表现为 3.7 → 3.7，`<` 退化成相等、红得莫名其妙（实测踩到）。
- * 聚合本身没有错（上一条断言已按手工重算逐位核对），错的是拿一位小数
- * 去判一个精度以下的变化——池子越大，"看不见的变化"越多。
- * distribution 是五格全整数的星级分布（下标 0 是 1 星），
- * 加权和 / 总数 = 全精度均分，池子再大也判得动。
- */
-const fullAvg = (stats) => {
-  const buckets = stats.distribution ?? []
-  const total = buckets.reduce((sum, n) => sum + Number(n), 0)
-  const weighted = buckets.reduce((sum, n, i) => sum + Number(n) * (i + 1), 0)
-  return total === 0 ? 0 : weighted / total
-}
 ck(
   '一条 1 星评价把均分拉下来了',
   fullAvg(statsNow) < Number(beforeStats.average || ratingA.ratingAvg),
@@ -526,7 +523,7 @@ ck(
 ck(
   '详情页的分数与接口一致（同一份冗余，不是自己算的）',
   metaText.includes(Number(statsAfterHide.average).toFixed(1)) ||
-    metaText.includes(Number(afterRestore.ratingAvg).toFixed(1)),
+    (afterRestore && metaText.includes(Number(afterRestore.ratingAvg).toFixed(1))),
   metaText.replace(/\s+/g, ' '),
 )
 
@@ -547,7 +544,11 @@ ck('商品卡上有评分行', ratingShown)
 const cardText = (await cardRating.innerText().catch(() => '')).replace(/\s+/g, ' ')
 ck(
   '卡片上的分数与条数与接口一致',
-  cardText.includes(Number(afterRestore.ratingAvg).toFixed(1)) && cardText.includes(`${expectedTotal} 条评价`),
+  // 恢复没收敛时 afterRestore 是 null：这条断言该红着说话，
+  // 而不是崩在 TypeError 上——上一版就崩在这里，把「前端控制台无报错」和收尾自净一起带走了
+  !!afterRestore &&
+    cardText.includes(Number(afterRestore.ratingAvg).toFixed(1)) &&
+    cardText.includes(`${expectedTotal} 条评价`),
   cardText,
 )
 

@@ -267,5 +267,37 @@ try {
   }
 }
 
+// ════ 三、全 broker 的死信队列必须为空 ════
+console.log('\n三、死信队列：一条都不该躺着')
+// 为什么值得一条常驻断言：死信不是"消息系统的内部状态"，而是"某件本该发生的事没发生"。
+// 实测一笔真实支付订单的销量事件在死信队列躺了 24 小时（重试耗尽被 reject，没人看、没回放），
+// 商品少记 3 件销量且全程无声。它放在跨批脚本里而不是任何单批脚本里：
+// 每批脚本只断言自己那条链路，而"有没有消息死在没人看的地方"不属于任何一批。
+const rabbitAuth = 'Basic ' + Buffer.from(
+  `${process.env.RABBITMQ_USERNAME ?? 'envoymart'}:${process.env.RABBITMQ_PASSWORD ?? 'envoymart123'}`,
+).toString('base64')
+const queues = await fetch(
+  `${process.env.RABBITMQ_API ?? 'http://127.0.0.1:15672'}/api/queues?columns=name,messages_ready`,
+  { headers: { Authorization: rabbitAuth } },
+)
+  .then((r) => r.json())
+  .catch(() => null)
+// 只看 messages_ready 不看 messages：后者含 unacked，正常消费中（毫秒级）的消息
+// 也会被算进去，那是在测消费速度而不是测"有没有消息死了"
+const deadQueues = (queues ?? []).filter((q) => String(q.name).includes('dlx'))
+// 先钉死"真的查到了死信队列"：查不到队列时下面"过滤后为空"在空集上恒真，
+// 接口挂了、认证错了都会被这层绿掉——空集的真不是真
+ck(
+  `查到了 ${deadQueues.length} 个死信队列（三个服务各一，不是"没查到"）`,
+  deadQueues.length >= 3,
+  queues === null ? '管理 API 不可达或认证失败' : deadQueues.map((q) => q.name).join(', '),
+)
+const notEmpty = deadQueues.filter((q) => Number(q.messages_ready) > 0)
+ck(
+  '死信队列全部为空（有条目 = 有事件没人处理，先看 x-death 再回放）',
+  notEmpty.length === 0,
+  notEmpty.map((q) => `${q.name} 躺着 ${q.messages_ready} 条`).join('；'),
+)
+
 console.log(`\n===== 跨批接缝验收：${pass} 通过 / ${fail} 失败 =====`)
 process.exit(fail ? 1 : 0)

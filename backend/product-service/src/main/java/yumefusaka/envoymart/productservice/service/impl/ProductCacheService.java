@@ -176,10 +176,13 @@ public class ProductCacheService {
             return local;
         }
 
-        // 二级缓存：Redis，跨实例共享
+        // 二级缓存：Redis，跨实例共享。
+        // 纪元在"读 Redis 之前"取：读回来的值若在这之后被失效，回填必须被拒——
+        // 否则就是"刚删掉的旧值又被读路径亲手钉回本地"（见 fillIfNoInvalidationSince）
+        long epochAtRead = localCache.invalidationEpoch();
         ProductDetail cached = read(id);
         if (cached != null) {
-            localCache.put(id, cached);   // 回填一级，下次不走网络
+            localCache.fillIfNoInvalidationSince(id, cached, epochAtRead);   // 回填一级，下次不走网络
             return cached;
         }
         // 缓存里明确标记过"不存在"：直接返回，不必回源
@@ -201,7 +204,7 @@ public class ProductCacheService {
 
         try {
             ProductDetail loaded = loader.get();
-            write(id, loaded);
+            write(id, loaded, epochAtRead);
             return loaded;
         } finally {
             // **只释放自己拿到的那把锁。**
@@ -294,10 +297,15 @@ public class ProductCacheService {
         }
     }
 
-    private void write(Long id, ProductDetail product) {
+    private void write(Long id, ProductDetail product, long epochAtRead) {
+        // 回填前先校验纪元：回源读到的是"某一刻的库"，而失效意味着"库变了、缓存已删"。
+        // 期间发生过失效就两级都不写——写回 Redis 同样会把刚被删掉的旧值灌回去。
+        // 代价只是这次不回填，数据本身照常返回
+        if (!localCache.fillIfNoInvalidationSince(id, product, epochAtRead)) {
+            return;
+        }
         // 一级缓存**不依赖 Redis**：即使 Redis 正熔断着，本地这一层照样填。
         // 于是 Redis 挂掉期间，热点商品仍然不查库——多级缓存顺带把容灾也补了一截。
-        localCache.put(id, product);
 
         if (!cacheUsable()) {
             return;
