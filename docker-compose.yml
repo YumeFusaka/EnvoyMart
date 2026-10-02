@@ -1,12 +1,12 @@
 # EnvoyMart 智能零售平台 - Docker 部署
-# 基础设施：Nacos + MySQL + Redis + RabbitMQ + Elasticsearch + Sentinel + Milvus
+# 基础设施：Nacos + Redis + RabbitMQ + Elasticsearch + Sentinel + Milvus
+# MySQL 不在本文件：跑在宿主机（Windows 服务、开机自启），见 skywalking-oap 的 SW_JDBC_URL 注释
 
 networks:
   envoymart-net:
     driver: bridge
 
 volumes:
-  mysql-data:
   redis-data:
   es-data:
   nacos-data:
@@ -32,22 +32,6 @@ services:
       JVM_XMX: 512m
     volumes:
       - nacos-data:/home/nacos/data
-    networks:
-      - envoymart-net
-
-  # ========== 数据库 ==========
-  mysql:
-    image: mysql:8.4
-    # 本地开发：Docker Desktop 重启后自动拉起，避免整套中间件静默停摆
-    restart: unless-stopped
-    container_name: envoymart-mysql
-    ports:
-      - "3306:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: envoymart123
-      MYSQL_DATABASE: envoymart
-    volumes:
-      - mysql-data:/var/lib/mysql
     networks:
       - envoymart-net
 
