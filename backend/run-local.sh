@@ -29,6 +29,13 @@ cd "$(dirname "$0")"
 # 同一份检查在非交互 shell 里完全正常——脚本要的就是非交互行为，这里显式去掉 alias。
 unalias node 2>/dev/null || true
 
+# 两种运行场景要区别对待：
+#   双击 .sh → bash 是交互式（bash --login -i run-local.sh demo），脚本一结束窗口就关；
+#   终端里跑 → 非交互，脚本结束把命令行交还给终端。
+# 交互场景下把「窗口」做成演示环境的总开关（见 hold_window / stop_all_fast）：关窗即停服务。
+INTERACTIVE=""
+case $- in *i*) INTERACTIVE=1 ;; esac
+
 ENV_FILE=.env.local
 LOG_DIR=../logs/logs-local
 
@@ -213,6 +220,29 @@ kill_port() { # 名称 端口
   fi
 }
 
+# 「整场停」的快速版，给窗口绑定用：**要快**。
+# 关窗时 mintty 发完 SIGHUP 很快就会回收进程，照 kill_port 逐个走（每个起一次
+# powershell，0.2 秒起）会被半路截断；这里 netstat 一次收齐全部监听端口、
+# 一条 taskkill 全杀（含前端 5173），几百毫秒内完成。停漏的兜底是 ./run-local.sh stop。
+stop_all_fast() {
+  local ports pattern pids args=() p
+  ports="5173 $(for s in "${SERVICES[@]}"; do port_of "$s"; done)"
+  pattern=":($(echo $ports | tr ' ' '|')) "
+  pids=$(netstat -ano 2>/dev/null | grep LISTENING | grep -E "$pattern" | awk '{print $NF}' | sort -u)
+  if command -v taskkill >/dev/null 2>&1; then
+    for p in $pids; do args+=(//PID "$p"); done
+    [ ${#args[@]} -gt 0 ] && taskkill //F "${args[@]}" >/dev/null 2>&1
+  else
+    for p in $pids; do kill "$p" 2>/dev/null; done   # 非 Windows 兜底
+  fi
+  return 0
+}
+
+# 双击场景的窗口绑定：关窗（SIGHUP）或 Ctrl-C（SIGINT）时把服务与前端一并停掉——
+# 服务是 nohup 起的（脱离本 bash、免疫 SIGHUP），不显式停就会留一堆孤儿进程。
+# 非交互场景不注册：终端里 Ctrl-C 应该只是打断命令，不该顺手杀掉在跑的服务。
+[ -n "$INTERACTIVE" ] && trap 'echo; echo "收到退出信号——停止全部服务与前端..."; stop_all_fast; echo "已停止（中间件容器保持运行）"; exit 0' INT TERM HUP
+
 # 停服务。不传名字就停全部，传了就只停传的那些。
 # <p>
 # 早先这个函数无条件遍历全部服务、把参数丢掉——`stop knowledge-service` 会静默地
@@ -241,6 +271,16 @@ svc_ready() { # 服务名
     200|404) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# 复查判定加一次复验（间隔 2 秒）：单发失败可能只是瞬时抖动（curl 2 秒超时、
+# 机器正忙），而它触发的动作是 kill + 重启一个**本来健康**的服务——2026-10-03
+# 冷启动实测里 auth-service 就这样被误杀过一次（被杀前日志毫无异常）。
+# 两次都失败才判失败。
+svc_ready_confirm() { # 服务名
+  svc_ready "$1" && return 0
+  sleep 2
+  svc_ready "$1"
 }
 
 # 等服务就绪：并发轮询全部目标，谁好了标记谁，不互相拖累。
@@ -332,6 +372,7 @@ wait_ready() { # 名称 超时秒 检查命令...
 # 重建走 MQ 是异步的，所以等到**看得见收敛**再放行，否则演示首页会先给出一屏错分数。
 resync_derived() {
   printf '%-18s' "派生数据重建"
+  local t0=$SECONDS   # 它是「服务全部就绪」到「演示就绪」之间的主要等待，耗时要量得出来
 
   local recomputed
   recomputed=$(curl -s -X POST --max-time 10 \
@@ -345,12 +386,12 @@ resync_derived() {
   local i
   for i in $(seq 1 30); do
     if derived_converged; then
-      echo "就绪"
+      echo "就绪（耗时 $((SECONDS - t0)) 秒）"
       return 0
     fi
     sleep 1
   done
-  echo "未收敛（评分可能滞后，看 $LOG_DIR/product-service.log）"
+  echo "未收敛（等了 $((SECONDS - t0)) 秒，评分可能滞后，看 $LOG_DIR/product-service.log）"
   return 0
 }
 
@@ -440,6 +481,25 @@ middleware_up() {
   return 0
 }
 
+# 构建前端生产产物（产物进 ../frontend/dist，preview 从这里服务）。
+frontend_build() {
+  mkdir -p "$LOG_DIR"
+  rotate_log frontend-build
+  pnpm -C ../frontend build > "$LOG_DIR/frontend-build.log" 2>&1
+}
+
+# demo_up 在启动流程最前面调用它，把构建放进后台与启动并行：构建只编译静态资源，
+# 与中间件/服务零依赖，几秒的构建被后面几十秒以上的启动流程完全盖住。
+# （原先它串在 resync 之后——服务全就绪了还要先等收敛、再花几秒构建，
+# 观感就是「后端都好了前端还在磨蹭」。）
+# 前端已在跑（5173 监听）时跳过：frontend_up 也会跳过，重建 dist 反而会把
+# 正在服务的预览页搅出"新 index + 旧 chunk"的混杂状态。
+frontend_build_bg() {
+  port_listening 5173 && return 0
+  frontend_build &
+  FE_BUILD_PID=$!
+}
+
 frontend_up() {
   local mode="${1:-dev}"
   if port_listening 5173; then
@@ -455,11 +515,19 @@ frontend_up() {
     # 演示走生产产物而不是 dev server：dev 模式会注入 Vue DevTools 悬浮面板
     # （插件没有隐藏开关），投屏演示时它一直飘在页面角落；首屏还要现编译，比静态产物慢。
     # 前端 API 地址是写死的 http://localhost:8080（本项目不用 vite proxy），preview 无需额外配置
-    echo "构建前端生产产物（约 20 秒）..."
-    rotate_log frontend-build
-    if ! pnpm -C ../frontend build > "$LOG_DIR/frontend-build.log" 2>&1; then
-      echo "前端构建失败，看 $LOG_DIR/frontend-build.log" >&2
-      return 1
+    if [ -n "${FE_BUILD_PID:-}" ]; then
+      # 构建已在 demo_up 开头后台发起，这里只等它收尾（通常早已完成）
+      printf '%-16s' "前端构建"
+      if wait "$FE_BUILD_PID"; then
+        echo "完成（与后端启动并行）"
+      else
+        echo "失败（看 $LOG_DIR/frontend-build.log）" >&2
+        return 1
+      fi
+      FE_BUILD_PID=""
+    else
+      echo "构建前端生产产物..."
+      frontend_build || { echo "前端构建失败，看 $LOG_DIR/frontend-build.log" >&2; return 1; }
     fi
     echo "启动前端 (端口 5173, 生产产物) → $LOG_DIR/frontend.log"
     rotate_log frontend
@@ -494,6 +562,22 @@ API 网关            http://localhost:8080
 EOF
 }
 
+# 双击场景的收尾（非交互直接返回，命令行交还给终端）：
+# 启动完成后脚本**驻留不退出**，窗口 = 演示环境总开关——关窗 / Ctrl-C 由上面的
+# trap 停掉全部服务与前端。失败时同样驻留，让报错留在屏幕上看得到。
+hold_window() {
+  [ -n "$INTERACTIVE" ] || return 0
+  cat <<'EOF'
+
+==================== 服务运行中 ====================
+本窗口只管前后端（9 个服务 + 前端页面），中间件容器归 Docker Desktop 管。
+  关闭本窗口 或 Ctrl-C   停止全部服务与前端
+若窗口被强制结束、有残留，兜底： ./run-local.sh stop
+==================================================
+EOF
+  while sleep 60; do :; done
+}
+
 # 起全部服务：错峰启动 → 等就绪 → 未就绪的自动补启（最多两轮）。
 #
 # 为什么必须错峰：九个 JVM 同时向 Nacos 建 gRPC 长连接（AI 服务还要连 Milvus），
@@ -523,7 +607,7 @@ start_all_services() {
   for round in 1 2; do
     failed=()
     for svc in "${SERVICES[@]}"; do
-      svc_ready "$svc" || failed+=("$svc")
+      svc_ready_confirm "$svc" || failed+=("$svc")
     done
     [ ${#failed[@]} -eq 0 ] && break
     echo "第 $round 轮补启：${failed[*]}"
@@ -550,6 +634,8 @@ start_all_services() {
 
 demo_up() {
   preflight || { echo "预检未过，演示环境没启动" >&2; exit 1; }
+  # 前端构建最早开跑：与中间件/服务无依赖，构建时间被后面的启动流程盖住（见 frontend_build_bg）
+  frontend_build_bg
   middleware_up || exit 1
 
   start_all_services || exit 1
@@ -567,7 +653,20 @@ case "${1:-all}" in
     stop_services "$@"
     echo "（中间件容器保持运行；要一并停用 docker compose -f docker-compose.yml stop）"
     ;;
-  demo) demo_up ;;
+  demo)
+    mkdir -p "$LOG_DIR"
+    rotate_log demo
+    # 全程输出同时落一份到 demo.log（双击场景窗口会关，事后靠它复盘）
+    if demo_up 2>&1 | tee "$LOG_DIR/demo.log"; then
+      echo "✓ 演示环境全部就绪（完整输出已存 $LOG_DIR/demo.log）"
+      rc=0
+    else
+      echo "✗ 演示环境没起来——往上翻找报错，完整输出已存 $LOG_DIR/demo.log" >&2
+      rc=1
+    fi
+    hold_window
+    exit "$rc"
+    ;;
   all)  start_all_services || exit 1 ;;
   *)    for svc in "$@"; do start_one "$svc"; done ;;
 esac
