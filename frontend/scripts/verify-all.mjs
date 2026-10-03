@@ -20,7 +20,7 @@
  * 用法：
  *   node scripts/verify-all.mjs              # 默认组
  *   node scripts/verify-all.mjs --slow       # 含慢脚本（放最后）
- *   node scripts/verify-all.mjs --only=收藏,工单   # 只跑文件名含这些关键词的
+ *   node scripts/verify-all.mjs --only=favorites,ticket   # 只跑文件名含这些子串的（英文，不是中文）
  *   node scripts/verify-all.mjs --list       # 只列要跑哪些，不动手
  */
 import { spawnSync } from 'node:child_process'
