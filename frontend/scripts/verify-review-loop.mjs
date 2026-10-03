@@ -19,7 +19,7 @@
  * 数据影响：
  *   - 每轮**新注册一个验收用户**，它名下会留下 1 笔订单（订单流水只增不减，不还原）
  *   - 每轮销量 +3（台账是流水，不还原）
- *   - 商品 1 上本轮提交的评价在**收尾自净**里被管理端隐藏——评价挂在商品公开页上，
+ *   - 商品 1 上本轮提交的评价在**收尾自净**里先隐藏、再删除——评价挂在商品公开页上，
  *     是商品的公共资产，不能像订单流水那样留着（历轮累积到 23 条时，演示页面上
  *     全是「verify-review-loop 差评」；顺带把均分断言推出了可见精度，见脚本尾部注释）
  * 之所以每轮换用户：每日上限按用户按天算，固定账号跑第二遍就会被上一轮的额度挡住，
@@ -581,19 +581,25 @@ ck('前端控制台没有报错', pageErrors.length === 0, pageErrors.join(' | '
 // 商品 1 的公开展示页上是污染：每跑一轮 +3 条，实测已积了 23 条，
 // 演示时点开详情页满眼测试文案。「每轮新注册用户」挡的是「我的评价」穿帮，
 // 挡不住商品页——评价是商品的公共资产，不是测试用户的私有数据。
-// 走管理端隐藏而不是 SQL update：状态变更要经过重聚合（商品侧均分与 ES 同步），
-// 直接改库会留下一份没人重算的统计。隐藏而非删除：被隐藏的测试评价在库里的
-// 形态与真实审核场景一致，不必为了洁癖再造一条删除通道。
+// **先隐藏（走管理端）再删除（走 SQL），顺序不能反**：隐藏走的是状态变更，
+// 会触发重聚合（商品侧均分与 ES 同步），重聚合之后商品侧已不计这批行，此时删除
+// 才不带统计数据；先删后藏则跳过重聚合，商品侧留下一份没人重算的统计。
+// 也**不能只隐藏不删除**：被隐藏的夹具会永久堆在管理台「已隐藏」筛选里，
+// 每跑一轮 +5 条——污染只是从商品页换到了管理台。
 // 清理失败不判红（断言已在上面全部结算），但要吵——留下的是演示污染，得让人看见。
-const junkIds = sql(
-  `select id from envoymart_review.review
-    where spu_id = ${SPU} and status = 'PUBLISHED' and content like 'verify-review-loop%'
+// 要清的一共两种形态：本轮的 3 条接口评价（跑完还是 PUBLISHED）与 2 条 SQL 注入的
+// 额度夹具（**故意的 HIDDEN**——额度计数不看状态）。先按内容把两种都盘出来，
+// 再只有 PUBLISHED 的需要走管理端隐藏（触发重聚合），HIDDEN 的没有聚合可触发。
+const junkRows = sql(
+  `select id, status from envoymart_review.review
+    where spu_id = ${SPU} and content like 'verify-review-loop%'
     order by id`,
 )
   .split('\n')
-  .map((line) => line.trim())
-  .filter(Boolean)
-for (const id of junkIds) {
+  .map((line) => line.trim().split(/\s+/))
+  .filter(([id]) => id)
+const junkIds = junkRows.map(([id]) => id)
+for (const [id, status] of junkRows.filter(([, s]) => s === 'PUBLISHED')) {
   const r = await call(`/reviews/admin/reviews/${id}/status`, {
     method: 'PUT',
     token: A,
@@ -603,15 +609,29 @@ for (const id of junkIds) {
     console.log(`\x1b[31m警告：评价 ${id} 没藏成功（${r.msg}）——商品 ${SPU} 页面上会残留测试评价\x1b[0m`)
   }
 }
-// 藏完再数一遍库：过程返回值只是过程，「干净没有」要看落库结果
+// 藏完再数一遍库：过程返回值只是过程，「重聚合跑没跑」看这里
 const leftover = sql(
   `select count(*) from envoymart_review.review
     where spu_id = ${SPU} and status = 'PUBLISHED' and content like 'verify-review-loop%'`,
 )
 if (leftover !== '0') {
   console.log(`\x1b[31m警告：商品 ${SPU} 上仍有 ${leftover} 条测试评价未藏干净\x1b[0m`)
-} else {
-  console.log(`收尾自净：${junkIds.length} 条测试评价已隐藏（商品页恢复干净）`)
+} else if (junkIds.length > 0) {
+  // 重聚合已经跑过（PUBLISHED 已清零），删除只剩清库。按 id 删而不是按 LIKE 再选一遍——
+  // 删的必须是刚盘过的这一批，多删一条都不行
+  const inList = junkIds.join(',')
+  sql(`delete from envoymart_review.review_image where review_id in (${inList})`)
+  sql(`delete from envoymart_review.review_useful where review_id in (${inList})`)
+  sql(`delete from envoymart_review.review where id in (${inList})`)
+  const remaining = sql(
+    `select count(*) from envoymart_review.review
+      where spu_id = ${SPU} and content like 'verify-review-loop%'`,
+  )
+  if (remaining !== '0') {
+    console.log(`\x1b[31m警告：商品 ${SPU} 上仍残留 ${remaining} 条夹具行\x1b[0m`)
+  } else {
+    console.log(`收尾自净：${junkIds.length} 条测试评价已隐藏并删除（商品页与管理台都干净）`)
+  }
 }
 
 // ════ 汇总 ════

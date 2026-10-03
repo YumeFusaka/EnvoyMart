@@ -120,10 +120,7 @@ where not exists (select 1 from review_image i where i.review_id = r.id and i.so
 
 -- 老库修复：评价图从 picsum 外链换成本地生成 SVG 后，insert-only 的种子
 -- （唯一键守卫）不会回头改已有行，这几行把库里还留着的旧 URL 逐条换掉。
--- 其中 rev1 不在种子之列——它是早期通过接口创建的真实评价（验收残留），
--- 与种子同一条修复路径处理。
 update review_image set url = case url
-    when 'https://picsum.photos/seed/rev1/600' then '/img/photos/rev1-600.svg'
     when 'https://picsum.photos/seed/rev1a/600' then '/img/photos/rev1a-600.svg'
     when 'https://picsum.photos/seed/rev1b/600' then '/img/photos/rev1b-600.svg'
     when 'https://picsum.photos/seed/rev4a/600' then '/img/photos/rev4a-600.svg'
