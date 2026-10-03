@@ -275,7 +275,7 @@ onMounted(load)
           <h2 class="section-title">成分与相互作用</h2>
           <p class="knowledge-entry__desc">
             这件商品含什么成分、提供哪些营养素、与常见药物是否有相互作用，都已整理进关系图谱。
-            图上每条连线都能点回说明书原文，可以自己核对。
+            图上每条连线都能点回说明书原文。
           </p>
         </div>
         <RouterLink

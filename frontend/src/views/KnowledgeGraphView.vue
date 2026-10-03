@@ -165,8 +165,7 @@ watch([root, depth], load, { immediate: true })
         <div>
           <h1>成分与相互作用图谱</h1>
           <p class="graph-head__sub">
-            每个商品沿「成分 → 营养素 → 药物」连出去。<strong>每条线都能点回原文</strong>——
-            图谱不生产结论，它只把散落在说明书里的那几句话连起来。
+            每个商品沿「成分 → 营养素 → 药物」连出去。<strong>每条线都能点回原文</strong>。
           </p>
         </div>
         <p v-if="stats?.available" class="graph-scale">

@@ -46,8 +46,7 @@ onMounted(load)
       <p class="eyebrow">Knowledge Base</p>
       <h1>平台知识库</h1>
       <p class="subcopy">
-        智能助手回答里的每一条依据都出自这里。全库公开可读，不需要账号即可核对 ——
-        「登录了才给你看依据」与溯源的目的正好相反。
+        智能助手回答里的每一条依据都出自这里。全库公开可读，不需要账号。
       </p>
 
       <!--
@@ -68,7 +67,7 @@ onMounted(load)
           <span class="kb-entry__title">检索质量评测</span>
           <span class="kb-entry__desc">
             第三种读法：120 条标注查询按三档难度算出的命中率与排序指标，对照随机基线；
-            失败样本逐条列出，可现场重跑。
+            失败样本逐条列出。
           </span>
           <span class="kb-entry__arrow" aria-hidden="true">→</span>
         </RouterLink>
@@ -76,8 +75,8 @@ onMounted(load)
         <RouterLink to="/knowledge/eval/answer" class="kb-entry">
           <span class="kb-entry__title">回答质量评测</span>
           <span class="kb-entry__desc">
-            检索的另一半：24 条标注问题上的幻觉率、引用准确率、拒答准确率与多跳命中率，
-            逐条可核对；管理员可触发真实重跑对照。
+            检索的另一半：24 条标注问题上的幻觉率、引用准确率、拒答准确率与多跳命中率；
+            管理员可触发真实重跑对照。
           </span>
           <span class="kb-entry__arrow" aria-hidden="true">→</span>
         </RouterLink>

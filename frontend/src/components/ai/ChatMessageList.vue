@@ -294,9 +294,8 @@ async function handleCopy(message: ChatMessage) {
           <p class="trace__io"><span>入参</span>{{ call.input }}</p>
           <p class="trace__io trace__io--output"><span>返回</span>{{ call.output }}</p>
           <!--
-            工具当场确立的事实，单独一栏并标出「已核对」。回答里凡是提到这些字段的地方，
-            后端都拿这一栏的值逐条比过，对不上的句子会被删掉。摆出来是为了让这件事可验：
-            用户不用相信平台的自我评价，扫一眼就能自己比。
+            工具当场确立的事实，单独一栏。回答里凡是提到这些字段的地方，
+            后端都拿这一栏的值逐条比过，对不上的句子会被删掉。
           -->
           <div v-if="factEntries(call).length" class="trace__facts">
             <dl class="trace__facts-list">
@@ -305,7 +304,7 @@ async function handleCopy(message: ChatMessage) {
                 <dd>{{ value }}</dd>
               </template>
             </dl>
-            <p class="trace__facts-note">回答中涉及以上字段的说法已与这里的取值逐条核对。</p>
+            <p class="trace__facts-note">回答中提到以上字段时，以此处的取值为准。</p>
           </div>
         </div>
       </details>
