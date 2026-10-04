@@ -17,6 +17,19 @@ instance.interceptors.request.use(
     if (userStore.token) {
       config.headers.Authorization = 'Bearer ' + userStore.token
     }
+    // 请求标识：让人能把这个操作在前端、网关与各服务的日志里串成一条线；
+    // 服务端（ai-service）还拿它做请求级幂等 —— 同一个标识重复到达时只执行一次。
+    //
+    // 挂在 config 上而不是每次都生成：重试（axios 的 config 会被复用）必须带同一个标识，
+    // 否则「重试」在服务端看来就是一次全新的提问，幂等无从谈起。
+    const cfg = config as typeof config & { __requestId?: string }
+    if (!cfg.__requestId) {
+      cfg.__requestId =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+          : Math.random().toString(16).slice(2, 18)
+    }
+    config.headers['X-Request-Id'] = cfg.__requestId
     return config
   },
   (err) => Promise.reject(err)
@@ -35,6 +48,9 @@ instance.interceptors.response.use(
     // 收口在这里改一处，六个页面同时正确
     const error = new Error(res.data.msg || '服务异常') as Error & { code?: number }
     error.code = res.data.code
+    // 标记「这条错误已经给过用户提示」：全局兜底据此去重，
+    // 否则同一个失败会先弹一次这里、再由 unhandledrejection 弹第二次
+    ;(error as Error & { __notified?: boolean }).__notified = true
     return Promise.reject(error)
   },
   (err) => {
@@ -44,6 +60,8 @@ instance.interceptors.response.use(
       userStore.clearSession()
       router.push('/login')
     }
+    // 同上：网络/HTTP 错误也标记为已提示
+    ;(err as { __notified?: boolean }).__notified = true
     return Promise.reject(err)
   }
 )

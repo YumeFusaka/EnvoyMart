@@ -17,6 +17,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Plus, RefreshRight, Delete } from '@element-plus/icons-vue'
 import { createSpu, getSpu, updateSpu } from '@/api/admin/product'
+import { uploadProductImage } from '@/api/admin/media'
 import { listAttributes, listBrands, listCategoryTree } from '@/api/admin/catalog'
 import { formatPrice, formatPriceRange } from '@/api/product'
 import { parseYuan, toYuan } from '@/utils/format'
@@ -449,6 +450,45 @@ function buildAttributes(): AttributeRequest[] {
 
 // ==================== 图片 ====================
 
+/**
+ * 正在上传的目标：`main` 表示主图，数字表示图集里的第几张。
+ * 它是「哪一行在转圈」的唯一依据 —— 不给按钮做 loading 时，用户会连点三次，
+ * 传上去三张只有文件名不同的图，还得自己删两张。
+ */
+const uploading = ref<'main' | number | null>(null)
+
+/**
+ * 上传一张图并回填到目标位置。
+ *
+ * 不做「上传即保存」：这里只把返回的 URL 写进表单，真正的落库仍在保存按钮那一步。
+ * 否则传一张图就改一次数据库，用户点「取消」时已经改了一半。
+ */
+async function handleUpload(target: 'main' | number, event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  // 先清空 input 的 value：不清的话，连续选同一个文件不会触发 change，
+  // 表现是「第二次上传没反应」，而文件其实一模一样、没有任何报错
+  input.value = ''
+  if (!file) {
+    return
+  }
+  uploading.value = target === 'main' ? 'main' : target
+  try {
+    const url = await uploadProductImage(file)
+    if (target === 'main') {
+      form.mainImage = url
+    } else if (target < form.images.length) {
+      // 再次校验下标：上传是异步的，期间用户可能已经删掉了那一行
+      form.images[target] = url
+    }
+    ElMessage.success('图片已上传')
+  } catch {
+    // 错误提示由 axios 拦截器统一弹出，这里只需保证 loading 归位
+  } finally {
+    uploading.value = null
+  }
+}
+
 function addImage() {
   form.images.push('')
 }
@@ -573,7 +613,20 @@ const priceRange = computed(() => {
           </el-form-item>
 
           <el-form-item label="主图 URL" class="edit-grid__wide">
-            <el-input v-model="form.mainImage" placeholder="https://…" />
+            <div class="image-input">
+              <el-input v-model="form.mainImage" placeholder="https://… 或点右侧上传" />
+              <label class="image-input__upload">
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  :disabled="uploading !== null"
+                  @change="handleUpload('main', $event)"
+                />
+                <el-button :loading="uploading === 'main'" :disabled="uploading !== null">
+                  上传图片
+                </el-button>
+              </label>
+            </div>
           </el-form-item>
 
           <el-form-item label="详情 HTML" class="edit-grid__wide">
@@ -596,7 +649,18 @@ const priceRange = computed(() => {
               <div class="image-row__thumb image-row__thumb--blank" aria-hidden="true">无图</div>
             </template>
           </el-image>
-          <el-input v-model="form.images[index]" placeholder="https://…" />
+          <el-input v-model="form.images[index]" placeholder="https://… 或点右侧上传" />
+          <label class="image-input__upload">
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              :disabled="uploading !== null"
+              @change="handleUpload(index, $event)"
+            />
+            <el-button :loading="uploading === index" :disabled="uploading !== null" text>
+              上传
+            </el-button>
+          </label>
           <el-button :disabled="index === 0" text @click="moveImage(index, -1)">上移</el-button>
           <el-button :disabled="index === form.images.length - 1" text @click="moveImage(index, 1)"
             >下移</el-button
@@ -769,6 +833,25 @@ const priceRange = computed(() => {
   align-items: center;
   gap: var(--ys-space-2);
   margin-bottom: var(--ys-space-2);
+}
+
+/* 上传按钮 = 一个被样式化的 label，包着真正隐藏的 file input。
+   不直接给 input 套按钮样式：各浏览器对 file 控件内部结构的可控程度不同，
+   label 转发点击则是标准行为，稳定且可键盘聚焦 */
+.image-input {
+  display: flex;
+  align-items: center;
+  gap: var(--ys-space-2);
+  width: 100%;
+}
+
+.image-input__upload {
+  flex: none;
+  cursor: pointer;
+}
+
+.image-input__upload input {
+  display: none;
 }
 
 .image-row__thumb {

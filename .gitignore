@@ -33,6 +33,9 @@ dist/
 # Env
 .env
 .env.local
+# 变体（备份、临时切换）同样含真实密钥，一并忽略：只忽略 .env.local 时，
+# 一次「先 cp 再改」的操作就会把 .env.local.bak 带进待提交列表
+.env.local*
 
 # Generated docs
 backend/HELP.md
@@ -47,3 +50,6 @@ backend/HELP.md
 /frontend/.screenshots/
 # 从 scripts/ 目录里跑脚本时相对路径落在这里的同一批产物
 /frontend/scripts/.screenshots/
+
+# 商品图片上传目录（运行期产物）
+/backend/product-service/data/

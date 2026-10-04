@@ -62,8 +62,22 @@ create table if not exists product_spu (
     sales int not null default 0,
     -- 评分聚合冗余在这里，而不是每次从评价表实时算：
     -- 商品列表要按评分排序，聚合查询落不到索引上
-    rating_avg decimal(3,2) not null default 5.00,
+    --
+    -- 默认值是 0.00 而不是 5.00：两者的语义不同 —— 0.00 是「还没有人评过」，
+    -- 5.00 是「所有人打了满分」。用 5.00 作默认值时，从没被评价过的商品会排在
+    -- 全部真实好评之前，而「被评价过又全部删掉」的商品拿到的是 0.00 沉在末尾 ——
+    -- 同一件事两种表示。排序侧另有 review_count > 0 的显式过滤，不靠默认值兜。
+    -- 注意：本文件全是 create table if not exists，对已有库不会改列。老库需要手工执行一次
+    --   alter table product_spu modify column rating_avg decimal(3,2) not null default 0.00;
+    --   update product_spu set rating_avg = 0.00 where review_count = 0 and rating_avg = 5.00;
+    rating_avg decimal(3,2) not null default 0.00,
     review_count int not null default 0,
+    -- 评价聚合快照的版本号，取 review 表里该商品已发布评价的最大 id（单调不减）。
+    -- 全量快照 + 无版本时，两条几乎同时发出的聚合消息乱序到达，后到的旧快照会盖掉新值，
+    -- 且商品页从此停在错值上。消费者只在 incoming > 已存版本时才写。
+    -- 老库需要手工执行一次
+    --   alter table product_spu add column aggregate_version bigint not null default 0;
+    aggregate_version bigint not null default 0,
     created_at datetime not null,
     updated_at datetime not null,
     index idx_spu_category_status (category_id, status),
@@ -196,7 +210,19 @@ create table if not exists stock_log (
     remark varchar(255),
     created_at datetime not null,
     index idx_stock_log_sku (sku_id, created_at),
-    index idx_stock_log_biz (biz_type, biz_id)
+    index idx_stock_log_biz (biz_type, biz_id),
+    -- 回补幂等由这条唯一约束裁决，而不是由代码里的「先查再插」。
+    --
+    -- 它是实打实踩出来的：订单关闭回补走 MQ，消费抛异常会自动重试，
+    -- 而 product-service 对每个 (bizType, bizId, skuId) 没有任何去重，
+    -- 于是同一条回补消息重试 4 次就把库存补了 4 遍（实测 stock_log 里
+    -- 同单同 SKU 四条 RESTORE），库存越补越多且不报错。
+    --
+    -- change_type 必须进键：同一张订单先 DEDUCT 再 RESTORE 是两次合法动作，
+    -- 只按 (bizType, bizId, skuId) 去重会把正常的回补当成重复挡掉。
+    -- 只约束 RESTORE 不够（唯一索引无法带条件），但 DEDUCT 侧本就由
+    -- 条件更新 + 库存不足兜底，重复扣减会直接失败，不会静默多扣。
+    unique key uk_stock_log_biz_action (biz_type, biz_id, sku_id, change_type)
 );
 
 -- ==================== 收藏 ====================

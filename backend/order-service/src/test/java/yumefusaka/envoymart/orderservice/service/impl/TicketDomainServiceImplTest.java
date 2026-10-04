@@ -15,6 +15,7 @@ import yumefusaka.envoymart.orderservice.mapper.SupportTicketMessageMapper;
 import yumefusaka.envoymart.orderservice.model.TicketMessageView;
 import yumefusaka.envoymart.orderservice.model.TicketSenderType;
 import yumefusaka.envoymart.orderservice.model.TicketStatus;
+import yumefusaka.envoymart.orderservice.service.TicketNotifier;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -69,7 +70,7 @@ class TicketDomainServiceImplTest {
     void setUp() {
         ticketMapper = mock(SupportTicketMapper.class);
         messageMapper = mock(SupportTicketMessageMapper.class);
-        domain = new TicketDomainServiceImpl(ticketMapper, messageMapper);
+        domain = new TicketDomainServiceImpl(ticketMapper, messageMapper, mock(TicketNotifier.class));
     }
 
     // ==================== 状态转移 ====================

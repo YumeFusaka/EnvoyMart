@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
+  Collection,
   ChatLineSquare,
   Expand,
   Files,
@@ -76,6 +77,7 @@ const navGroups: { title: string; items: NavItem[] }[] = [
     title: '运营',
     items: [
       { to: '/admin/reviews', label: '评价管理', icon: ChatLineSquare },
+      { to: '/admin/knowledge', label: '知识库', icon: Collection },
       { to: '/admin/users', label: '用户管理', icon: User },
       { to: '/admin/tickets', label: '客服工单', icon: Service, badge: 'pendingTicket' },
     ],

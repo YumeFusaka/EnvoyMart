@@ -41,6 +41,24 @@ public class OrderEventConsumer {
         orderDomainService.markPaid(event.getOrderId());
     }
 
+    /**
+     * 库存回补补偿 —— <b>第一次没补成的库存，在这里重试</b>。
+     * <p>
+     * 这条路径的存在理由是「回补失败只记日志」是不可接受的：日志会被重启覆盖，
+     * 而库存差额是永久的。回补动作本身是幂等的（product-service 按
+     * {@code (bizType, bizId, skuId)} 去重），所以重投不会把库存补两遍。
+     * <p>
+     * <b>失败必须抛出去</b>：这是「我必须做成」类型的消息，抛出去会 nack、重试，
+     * 耗尽后进死信队列等人处理。吞掉它就等于把这条待办删掉，
+     * 而那正是我们要修的病。
+     */
+    @RabbitListener(queues = OrderEventConfig.STOCK_RESTORE_QUEUE)
+    public void handleStockRestore(StockRestoreRequest request) {
+        log.warn("[MQ.Consumer] 收到库存回补补偿请求: orderNo={}, skuId={}, quantity={}",
+                request.orderNo(), request.skuId(), request.quantity());
+        orderDomainService.compensateStockRestore(request);
+    }
+
     // 死信队列（order.dlx.queue）**刻意没有消费者**：消费掉只剩一行日志，
     // 而日志会被下次重启覆盖——实测一次真死信，靠的正是"消息还躺在队列里"才追出源头。
     // 死信该留在队列里等人看（跨批验收断言"死信队列必须为空"会红着提醒），

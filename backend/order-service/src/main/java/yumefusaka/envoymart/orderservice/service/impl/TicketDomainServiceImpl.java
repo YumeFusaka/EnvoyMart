@@ -14,6 +14,7 @@ import yumefusaka.envoymart.orderservice.model.TicketMessageView;
 import yumefusaka.envoymart.orderservice.model.TicketSenderType;
 import yumefusaka.envoymart.orderservice.model.TicketStatus;
 import yumefusaka.envoymart.orderservice.service.TicketDomainService;
+import yumefusaka.envoymart.orderservice.service.TicketNotifier;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -28,11 +29,14 @@ public class TicketDomainServiceImpl implements TicketDomainService {
 
     private final SupportTicketMapper ticketMapper;
     private final SupportTicketMessageMapper messageMapper;
+    private final TicketNotifier notifier;
 
     public TicketDomainServiceImpl(SupportTicketMapper ticketMapper,
-                                   SupportTicketMessageMapper messageMapper) {
+                                   SupportTicketMessageMapper messageMapper,
+                                   TicketNotifier notifier) {
         this.ticketMapper = ticketMapper;
         this.messageMapper = messageMapper;
+        this.notifier = notifier;
     }
 
     @Override
@@ -190,6 +194,10 @@ public class TicketDomainServiceImpl implements TicketDomainService {
                 // 不会给一条已经关掉的工单补"自动关闭"的解释
                 transit(ticket, TicketStatus.CLOSED, CLOSE_BY_TIMEOUT);
                 appendSystemMessage(ticket, AUTO_CLOSE_NOTICE);
+                // 自动关闭把工单移出「等你回应」集合。不推的话，用户的角标会一直挂着一个
+                // 实际已经关闭的工单，直到他下次手动刷新 —— 而这条链路的全部意义就是
+                // 不让用户靠刷新去发现状态已经变了
+                notifier.notifyAwaiting(ticket.getUserId());
                 closed++;
             } catch (IllegalStateException e) {
                 log.info("[Ticket] 自动关闭跳过（已被并发处理）ticketNo={} reason={}",

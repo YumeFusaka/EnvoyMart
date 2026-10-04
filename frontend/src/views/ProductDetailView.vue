@@ -7,6 +7,8 @@ import ReviewSection from '@/components/review/ReviewSection.vue'
 import FavoriteButton from '@/components/shop/FavoriteButton.vue'
 import { useCartStore } from '@/stores'
 import { ensureLogin } from '@/utils/login'
+import { sanitizeRichHtml } from '@/utils/markdown'
+import ErrorState from '@/components/ui/ErrorState.vue'
 import type { ProductDetail, SkuView } from '@/types/models'
 
 // 加购必须走 store，不能直接调 API：顶栏角标读的是 store 里的状态，
@@ -19,6 +21,8 @@ const router = useRouter()
 
 const detail = ref<ProductDetail | null>(null)
 const loading = ref(false)
+/** 加载失败的停留态。与「加载中」「商品确实不存在」是三种不同的界面 */
+const loadError = ref('')
 const adding = ref(false)
 const quantity = ref(1)
 const activeImage = ref(0)
@@ -27,6 +31,15 @@ const activeImage = ref(0)
 const selected = ref<Record<number, number>>({})
 
 const spuId = computed(() => Number(route.params.id))
+
+/**
+ * 详情富文本经过消毒再交给 v-html。
+ * <p>
+ * 这一段内容由运营在管理端自由输入，渲染给的是所有浏览者；
+ * 直接 v-html 等于把详情页变成存储型 XSS 的投放点（token 在 localStorage，
+ * 一条 onerror 就能把 JWT 发走）。消毒必须发生在渲染前。
+ */
+const detailHtmlSafe = computed(() => sanitizeRichHtml(detail.value?.detailHtml ?? ''))
 
 /**
  * 当前选中的规格组合对应的 SKU。
@@ -116,15 +129,40 @@ function pickSpecValue(specId: number, valueId: number) {
   quantity.value = 1
 }
 
+/**
+ * 请求序号 —— 丢弃过期响应。
+ * <p>
+ * 从商品 A 快速跳到商品 B（或点推荐位跳转）时两个请求并发，
+ * A 的慢响应后到会覆盖 B 的数据，页面短暂显示「B 的地址、A 的商品」。
+ * 判据必须是「这次响应还是不是最新那次」，而不是「它有没有返回」。
+ */
+let loadSeq = 0
+
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
+  loadError.value = ''
   selected.value = {}
   activeImage.value = 0
   quantity.value = 1
   try {
-    detail.value = await getProductDetail(spuId.value)
+    const loaded = await getProductDetail(spuId.value)
+    if (seq !== loadSeq) {
+      return
+    }
+    detail.value = loaded
+  } catch (e) {
+    if (seq !== loadSeq) {
+      return
+    }
+    // 失败时必须清掉旧数据：留着上一个商品的内容配一句错误提示，
+    // 用户会以为出错的是上一个商品
+    detail.value = null
+    loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
-    loading.value = false
+    if (seq === loadSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -159,6 +197,7 @@ onMounted(load)
 
 <template>
   <div v-loading="loading" class="page detail">
+    <ErrorState v-if="loadError" :message="loadError" :on-retry="load" />
     <template v-if="detail">
       <nav class="crumb">
         <el-button link @click="router.back()">← 返回</el-button>
@@ -289,11 +328,11 @@ onMounted(load)
 
       <ReviewSection :spu-id="detail.id" />
 
-      <section v-if="detail.detailHtml" class="surface">
+      <section v-if="detailHtmlSafe" class="surface">
         <h2 class="section-title">商品详情</h2>
         <!-- 详情正文来自后台维护的商品描述。当前没有开放给外部录入的入口，
              且管理端尚未落地，因此这里直接渲染；管理端上线前必须补上服务端净化 -->
-        <div class="detail__html" v-html="detail.detailHtml"></div>
+        <div class="detail__html" v-html="detailHtmlSafe"></div>
       </section>
     </template>
   </div>

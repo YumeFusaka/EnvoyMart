@@ -50,15 +50,15 @@ public class ReviewAggregatePublisher {
     private void send(Long spuId) {
         ReviewAggregateReader.Snapshot snapshot = aggregateReader.read(spuId);
         ReviewAggregateEvent event = new ReviewAggregateEvent(
-                spuId, snapshot.average(), snapshot.total());
+                spuId, snapshot.average(), snapshot.total(), snapshot.version());
         try {
             rabbitTemplate.convertAndSend(
                     ReviewEventConfig.REVIEW_EXCHANGE,
                     ReviewEventConfig.AGGREGATE_CHANGED_KEY,
                     event,
                     new CorrelationData("review-aggregate-" + spuId));
-            log.info("[MQ] 评价聚合事件已发布: spuId={}, avg={}, count={}",
-                    spuId, snapshot.average(), snapshot.total());
+            log.info("[MQ] 评价聚合事件已发布: spuId={}, avg={}, count={}, version={}",
+                    spuId, snapshot.average(), snapshot.total(), snapshot.version());
         } catch (Exception e) {
             // 这里只能记日志。用户的评价**已经落库了** —— 抛出去回滚不了它，
             // 只会把一次成功的提交变成一个 500 报给用户，而消息照样没发出去。

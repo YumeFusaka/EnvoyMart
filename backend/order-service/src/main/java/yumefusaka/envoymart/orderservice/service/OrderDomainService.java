@@ -61,6 +61,18 @@ public interface OrderDomainService {
      */
     OrderResponse orderById(Long orderId);
 
+    /**
+     * 内部接口：某用户最早一次「已收货」订单的时间。
+     * <p>
+     * <b>给评价侧判「新账号刷评」用</b>（见 {@code review-service} 的
+     * {@code ReviewNewAccountGuard}）。它不读调用方身份 —— 与 {@code orderById} 同属
+     * 服务间通道，网关对 {@code /orders/internal/} 一律 404，只有 Feign 直连可达。
+     * <p>
+     * 返回 200 + 体里 {@code data} 为 null 表示「该用户从未有过收货」，
+     * 与「用户不存在」不做区分 —— 调用方对两者的处理完全一样（按新账号对待）。
+     */
+    java.time.LocalDateTime firstReceivedAt(String userId);
+
     /** 同上，物流轨迹的管理侧读取：归属校验在用户侧入口，这里只做映射 */
     LogisticsResponse logisticsOf(Long orderId);
 
@@ -111,4 +123,15 @@ public interface OrderDomainService {
      */
     void addDeliveryTrace(Long orderId, DeliveryStatus status, String description,
                           String location, LocalDateTime happenAt, String operatorId);
+
+    /**
+     * 重试一次失败的库存回补（补偿路径）。
+     * <p>
+     * 由 {@code stock.restore.compensation.queue} 的消费者驱动。补库存是幂等的
+     * （product-service 按 {@code (bizType, bizId, skuId)} 去重），所以重投安全。
+     * <p>
+     * <b>失败必须抛出去</b>：这是「我必须做成」类型的消息，抛出去才会走 nack 重试、
+     * 耗尽后进死信；吞掉等于把待办删了。
+     */
+    void compensateStockRestore(yumefusaka.envoymart.orderservice.mq.StockRestoreRequest request);
 }

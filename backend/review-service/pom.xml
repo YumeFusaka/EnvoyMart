@@ -56,6 +56,18 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>
         </dependency>
+        <!--
+            同 (商品, IP) 的短窗口评价计数（刷评治理①）。
+            为什么这里用 Redis 而上面的「每日 5 条」仍用数据库计数：
+            每日 5 条查的是评价表本身（权威来源，按 user_id 一次索引命中）；
+            而对于 IP 维度，评价表里**根本没有 IP 这个字段**，现算无从谈起 ——
+            短窗口、允许过期、只作限流用的计数正是 Redis 的适用场景。
+            Redis 不可用时该计数 fail-open（放行），见 ReviewFloodGuard。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot4-starter</artifactId>

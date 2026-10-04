@@ -37,6 +37,16 @@ public class McpAuthFilter extends OncePerRequestFilter {
     private static final String API_KEY_HEADER = "X-MCP-API-Key";
 
     /**
+     * API Key 客户端的配额身份（因为它没有 userId）。
+     * <p>
+     * 常量字符串即可：本服务的 API Key 只有一把（{@code envoymart.mcp.api-key}），
+     * 鉴权已经常量时间比较过，所以走到这里的 API Key 调用天然同属一个主体。
+     * 作用是把「机器客户端」与所有 JWT 用户分开计数——否则只要有任意一个用户
+     * 在刷，机器客户端的配额也会被一起吃掉（不同身份必须互不影响）。
+     */
+    public static final String API_KEY_PRINCIPAL = "api-key";
+
+    /**
      * 认证结果在 request 上的键 —— 供 MCP 的 contextExtractor 取走。
      * <p>
      * <b>为什么不能只靠 {@link BaseContext}</b>：MCP 传输把工具执行调度到 Reactor 的
@@ -87,6 +97,9 @@ public class McpAuthFilter extends OncePerRequestFilter {
             if (provided != null && MessageDigest.isEqual(
                     apiKey.getBytes(StandardCharsets.UTF_8),
                     provided.getBytes(StandardCharsets.UTF_8))) {
+                // API Key 是机器凭证、不带用户身份，但配额要按「调用方」算。
+                // request 属性带不过线程，必须走鉴权结果这条通道送进 transportContext。
+                request.setAttribute(USER_ID_ATTRIBUTE, API_KEY_PRINCIPAL);
                 return true;
             }
         }

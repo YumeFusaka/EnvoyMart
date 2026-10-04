@@ -8,7 +8,12 @@ import yumefusaka.envoymart.reviewservice.model.ReviewStatistics;
 
 public interface ReviewService {
 
-    ReviewResponse create(String userId, CreateReviewRequest request);
+    /**
+     * 发表评价。
+     *
+     * @param clientIp 调用方 IP，用于同商品短窗口的刷评计数。可为空（判不了时放行）
+     */
+    ReviewResponse create(String userId, CreateReviewRequest request, String clientIp);
 
     /**
      * 按商品分页列评价。

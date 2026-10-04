@@ -75,10 +75,11 @@ class RetrievalEvalRunnerTest {
 
         // 夹具与检索管线未变时实测 0.633 / 0.565 / 0.572；区间放宽容差防的是
         // 「数据被悄悄改了」或「检索路退化」，不是防正常波动（关键词路是确定性的）
-        assertThat(run.overallAt3().hitRate()).isCloseTo(0.633, org.assertj.core.data.Offset.offset(0.01));
-        assertThat(run.overallAt3().mrr()).isCloseTo(0.565, org.assertj.core.data.Offset.offset(0.01));
-        assertThat(run.overallAt3().ndcg()).isCloseTo(0.572, org.assertj.core.data.Offset.offset(0.01));
-        assertThat(run.overallAt5().hitRate()).isCloseTo(0.675, org.assertj.core.data.Offset.offset(0.01));
+        // 补入中文单字通道后实测 0.692 / 0.604 / 0.617，@5 为 0.750
+        assertThat(run.overallAt3().hitRate()).isCloseTo(0.692, org.assertj.core.data.Offset.offset(0.01));
+        assertThat(run.overallAt3().mrr()).isCloseTo(0.604, org.assertj.core.data.Offset.offset(0.01));
+        assertThat(run.overallAt3().ndcg()).isCloseTo(0.617, org.assertj.core.data.Offset.offset(0.01));
+        assertThat(run.overallAt5().hitRate()).isCloseTo(0.750, org.assertj.core.data.Offset.offset(0.01));
 
         assertThat(run.baseline().hitRateAt3()).isCloseTo(0.036, org.assertj.core.data.Offset.offset(0.005));
         assertThat(run.baseline().hitRateAt5()).isCloseTo(0.059, org.assertj.core.data.Offset.offset(0.005));

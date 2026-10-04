@@ -66,6 +66,28 @@ await page.goto(`${BASE}/#/knowledge/graph`, { waitUntil: 'networkidle' })
 await page.reload({ waitUntil: 'networkidle' })
 await page.locator('svg.canvas').waitFor({ state: 'visible', timeout: 20000 })
 
+// 默认中心实体必须来自图谱自己的数据，而不是写死的演示名。
+// 写死过一次（SAMPLES[0]='SPU7'），SPU 改名后它把整页带进「图谱里没有收录」的空态——
+// 页面看着像坏了，实际只是默认值过期。这条断言把「默认值不得指向不存在的实体」钉住：
+// 它不检查具体挑到谁（那会随语料变），只要求挑到的那个在图谱里真的存在。
+// 默认值由 resolveDefaultRoot() 异步挑出并 router.replace 写进 URL，所以等的是
+// 「URL 上真的出现 root 且它在图谱里存在」，不是一个固定时长——固定 sleep 在机器忙时
+// 会读到还没写进 URL 的那一版，红灯就成了一次假失败。
+const resolvedRoot = await poll(
+  () => new URLSearchParams(new URL(page.url()).hash.split('?')[1] ?? '').get('root') ?? '',
+  (r) => Boolean(r),
+  15000,
+)
+const rootExists = resolvedRoot
+  ? ((await (await fetch(`${GW}/knowledge/graph/search?keyword=${encodeURIComponent(resolvedRoot)}`)).json()).data ?? [])
+      .some((h) => h.name.toLowerCase() === resolvedRoot.toLowerCase())
+  : false
+ck(
+  `默认中心实体在图谱里真实存在（root=${resolvedRoot}）`,
+  Boolean(resolvedRoot) && rootExists,
+  `root=${resolvedRoot} 查不到——默认值写死了过期实体，页面会空转`,
+)
+
 // 与接口对账，而不是比对写死的数字。
 // 原先钉的是「39 实体 / 37 关系」——图谱重建过一次之后就一直是红的，
 // 而页面上写的与接口给的完全一致。钉死数据量的断言，坏掉的是断言不是产品，

@@ -20,7 +20,7 @@ public interface ReviewMapper extends BaseMapper<ReviewEntity> {
      * 更要紧的是它让三个数字（均分、总数、分布）出自同一次查询：
      * 分三次查同一批数据，就给了它们在同一个页面上互相对不上的机会。
      */
-    @Select("select rating, count(*) as cnt from review "
+    @Select("select rating, count(*) as cnt, max(id) as max_id from review "
             + "where spu_id = #{spuId} and status = 'PUBLISHED' group by rating")
     List<Map<String, Object>> ratingDistribution(@Param("spuId") Long spuId);
 

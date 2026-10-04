@@ -24,8 +24,6 @@ public class OrderDeliveryEntity {
     private String carrierCode;
     private String carrierName;
     private String trackingNo;
-    /** CREATED / PICKED_UP / IN_TRANSIT / DELIVERING / SIGNED */
-    private String status;
     private LocalDateTime shippedAt;
     private LocalDateTime signedAt;
 }

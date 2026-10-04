@@ -81,6 +81,11 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 是这组数字可信的全部理由；报告里没有一条用户数据。
             // 真跑要花模型配额，在 /ai/admin/ 段下，由 ADMIN_SEGMENT 强制登录
             PublicRule.of("GET", "/ai/eval/grounding/report"),
+            // 上传的商品图片：与商品本身同为公开读。
+            // <img> 标签不会带 Authorization 头，要求登录只会让图片全部加载失败，
+            // 而图片里没有任何用户数据。上传接口在 /products/admin/media 下，由
+            // ADMIN_SEGMENT 强制登录 + 管理员角色，不受这条放行影响
+            PublicRule.of("GET", "/media/**"),
             PublicRule.of("POST", "/payments/callback")
     );
 
@@ -145,6 +150,9 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             "/payments/internal/",
             // 优惠券核销：让用户能自己核销等于让他自己改优惠金额
             "/coupons/internal/",
+            // 用户收货历史：评价侧判「新账号刷评」用。它读的是别人的交易时间线，
+            // 公开出去等于给每个匿名请求一个「这个账号什么时候第一次收货」的探测口
+            "/orders/internal/",
             // 知识库内部接口：语料下发与种子重导。上面刚把 /knowledge/** 开了公开读，
             // 这一条就是那份必须存在的反向排除——不做的话，同前缀下的内部接口会被静默放行
             "/knowledge/internal/",

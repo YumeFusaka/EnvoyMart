@@ -1,13 +1,11 @@
 package yumefusaka.envoymart.productservice.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.productservice.entity.ProductSalesLedgerEntity;
-import yumefusaka.envoymart.productservice.entity.ProductSpuEntity;
 import yumefusaka.envoymart.productservice.mapper.ProductSalesLedgerMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSpuMapper;
 import yumefusaka.envoymart.productservice.mq.OrderPaidEvent;
@@ -16,7 +14,6 @@ import yumefusaka.envoymart.productservice.mq.ReviewAggregateEvent;
 import java.math.BigDecimal;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -57,6 +54,12 @@ public class ProductAggregateService {
      * <b>商品不存在时只记日志、不抛异常。</b>抛出去会让消息进死信队列，而这类消息
      * 永远处理不了——商品删了就是删了。死信队列该装的是"本该能处理但失败了"的消息，
      * 混进一批注定失败的消息，真正需要人看的那些会被淹掉。
+     * <p>
+     * <b>写入带版本判据，而不是先查再改。</b>全量快照消除了「重投算两次」，但消除不了
+     * 「乱序」：同一商品的两条消息几乎同时发出时，后到的可能是旧值。这里把
+     * {@code aggregate_version < incoming} 写进 UPDATE 的 where，由数据库在一次原子操作里
+     * 裁决，旧快照自然被丢弃。写成「先 select 比一下版本、再 update」在并发下两个线程都会
+     * 读到同一个旧版本、都判定自己更新，等于没有判据。
      */
     @Transactional
     public void applyReviewAggregate(ReviewAggregateEvent event) {
@@ -65,28 +68,21 @@ public class ProductAggregateService {
             return;
         }
         Long spuId = event.spuId();
-        ProductSpuEntity spu = spuMapper.selectById(spuId);
-        if (spu == null) {
-            log.warn("[MQ] 评价聚合指向的商品不存在，跳过: spuId={} avg={} count={}",
-                    spuId, event.ratingAvg(), event.reviewCount());
-            return;
-        }
-
         BigDecimal incomingAvg = event.ratingAvg() == null ? BigDecimal.ZERO : event.ratingAvg();
         int incomingCount = (int) Math.min(Integer.MAX_VALUE, Math.max(0, event.reviewCount()));
-        // 全量快照的幂等：重投一次带的是同一个数，直接短路，连 UPDATE 都不发。
-        // 也顺带挡住了「评价数没变但消息重复」这类空转写
-        if (same(spu.getRatingAvg(), incomingAvg) && Objects.equals(spu.getReviewCount(), incomingCount)) {
-            log.debug("[MQ] 评价聚合无变化，跳过: spuId={}", spuId);
+        long incomingVersion = Math.max(0L, event.version());
+
+        int updated = spuMapper.applyReviewAggregate(spuId, incomingAvg, incomingCount, incomingVersion);
+        if (updated == 0) {
+            // 两种可能，都不该报错也不该刷缓存：
+            // ① 商品不存在（删了就是删了，重试不会变好）
+            // ② 版本没更新 —— 乱序到达的旧快照，或同一条消息重投（版本相等，不满足 < ）
+            log.debug("[MQ] 评价聚合未写入，可能商品不存在或快照版本未变新: spuId={} avg={} count={} version={}",
+                    spuId, incomingAvg, incomingCount, incomingVersion);
             return;
         }
-
-        spuMapper.update(null, new LambdaUpdateWrapper<ProductSpuEntity>()
-                .eq(ProductSpuEntity::getId, spuId)
-                .set(ProductSpuEntity::getRatingAvg, incomingAvg)
-                .set(ProductSpuEntity::getReviewCount, incomingCount));
-        log.info("[MQ] 商品评分聚合已更新: spuId={} avg={} count={} (原 {} / {})",
-                spuId, incomingAvg, incomingCount, spu.getRatingAvg(), spu.getReviewCount());
+        log.info("[MQ] 商品评分聚合已更新: spuId={} avg={} count={} version={}",
+                spuId, incomingAvg, incomingCount, incomingVersion);
         derivedRefresh.afterCommit(spuId);
     }
 
@@ -155,11 +151,4 @@ public class ProductAggregateService {
         }
     }
 
-    /** 均分比较不能直接 equals：{@code 5.0} 与 {@code 5.00} 数值相等但 scale 不同 */
-    private static boolean same(BigDecimal a, BigDecimal b) {
-        if (a == null) {
-            return b == null || b.compareTo(BigDecimal.ZERO) == 0;
-        }
-        return a.compareTo(b) == 0;
-    }
 }

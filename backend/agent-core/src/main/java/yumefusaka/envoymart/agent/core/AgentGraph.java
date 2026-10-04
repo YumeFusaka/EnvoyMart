@@ -88,6 +88,24 @@ public class AgentGraph {
     private static final String KEY_ANSWER = "answer";
     private static final String KEY_ROUND = "round";
     private static final String KEY_ROUTE = "route";
+    /**
+     * 当前任务阶段，见 {@link TaskStage}。
+     * <p>
+     * 放进图状态而不是从路由反推：路由是「下一步去哪」，阶段是「现在在哪」。
+     * 两者在多数节点上恰好对应，但 {@code route} 到了 END 之后就不再更新，
+     * 而 END 可能是「回答完了」也可能是「等你确认」——从路由区分不出来。
+     */
+    private static final String KEY_STAGE = "stage";
+    /**
+     * 本轮任务的「核心意图」—— 首次规划完成后冻结，重规划不再改写。
+     * <p>
+     * <b>为什么要冻结。</b>重规划会产出新计划并覆盖 {@code KEY_PLAN}，而新计划的
+     * reason 描述的是「接下来怎么做」，不是「用户到底要什么」。如果任由它覆盖，
+     * 一次重规划就能把「查一下订单物流」悄悄漂移成「查订单」，而这两个目标的
+     * 完成标准不同——前者要运单号，后者只要能证明订单存在。冻结首轮意图，
+     * 才有一把不随执行过程移动的尺子去判断「有没有跑偏」。
+     */
+    private static final String KEY_CORE_INTENT = "coreIntent";
 
     private final LLMProvider llmProvider;
     private final LLMConfig llmConfig;
@@ -125,6 +143,7 @@ public class AgentGraph {
         initial.put(KEY_STEPS, new ArrayList<GraphStep>());
         initial.put(KEY_PENDING, List.of());
         initial.put(KEY_ROUND, 1);
+        initial.put(KEY_STAGE, TaskStage.PLANNING);
 
         GraphState finalState = invoke(compile(ctx), initial);
 
@@ -136,6 +155,8 @@ public class AgentGraph {
                 .toolExecutions(ctx.executions())
                 .pendingActions(pending.isEmpty() ? null : pending)
                 .loops(ctx.guard().summary())
+                .stage(finalState.get(KEY_STAGE, TaskStage.DONE))
+                .coreIntent(finalState.get(KEY_CORE_INTENT, null))
                 .build();
     }
 
@@ -191,11 +212,98 @@ public class AgentGraph {
     /** 规划：产出显式计划；计划为空说明没有工具能帮上忙。 */
     private Map<String, Object> planNode(GraphContext ctx, GraphState state) {
         ctx.progress().throwIfCancelled();
+        String context = planContext(ctx);
         List<PlanStep> plan = filterRegistered(
-                llmProvider.plan(ctx.message(), toolRegistry.listDefinitions(), planContext(ctx)));
+                llmProvider.plan(ctx.message(), toolRegistry.listDefinitions(), context));
+        // 计划里引用了「本步或更晚的步骤」= 缺了一步。这是模型最典型的一种漏步：
+        // 用户说「先搜一下再把它加购」，它只写了加购那步、参数写成 $0.skuId 指望
+        // 前面的搜索「本来就在」。
+        //
+        // 只重规划一次、且把话说清楚，不做更复杂的自动补步：该补哪一步取决于
+        // 「哪个工具能产出这个字段」，而那是模型的判断——由我们猜，猜错了会补出一个
+        // 用户没要的调用；由模型改，它手上有完整的工具表。
+        if (hasUnresolvableReference(plan) && ctx.guard().allowPlanRound()) {
+            log.info("[Graph] 计划含无法解析的引用（引用了本步或更晚的步骤），带着说明重规划一次");
+            String hint = context + """
+
+                    【重要】上一次的计划里，有步骤的参数写成了 "$N.字段" 但 N 不小于那一步自己的序号。
+                    那意味着「产出这个字段的步骤没有写进计划」。
+                    请把产出该值的步骤补进前面（例如先 product_search 拿到 skuId，再 cart_add 引用它），
+                    并把引用指向那个步骤的正确序号。""";
+            List<PlanStep> repaired = filterRegistered(
+                    llmProvider.plan(ctx.message(), toolRegistry.listDefinitions(), hint));
+            if (!hasUnresolvableReference(repaired)) {
+                plan = repaired;
+            }
+        }
         log.debug("[Graph] plan: {}", plan.stream().map(PlanStep::getTool).toList());
+        // 首轮意图只在这里写一次：planNode 只在图的入口被调用，重规划走的是
+        // replanNode，不会回到这里。于是「冻结」是结构保证的，不靠一个 if 判断
+        String coreIntent = plan.isEmpty() ? null : intentOf(plan);
         return updates(KEY_PLAN, plan, KEY_ROUND, 1,
+                KEY_CORE_INTENT, coreIntent,
+                // 计划定下来了：无论下一步是执行还是直接作答，规划阶段都已经走完。
+                // 直接作答那条路（没有可用工具）在 answerNode 里会立刻改成 DONE
+                KEY_STAGE, TaskStage.EXECUTING,
                 KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
+    }
+
+    /**
+     * 计划里有没有「解析不出来」的引用 —— 引用的下标不小于它自己所在的下标。
+     * <p>
+     * 这类引用的共同点是<b>那一步还没跑、也不会有值</b>。它不会在规划阶段报错，
+     * 只会在执行时被原样传给工具，然后以两种难看的方式失败：integer 参数抛
+     * {@code NumberFormatException} 并把 JVM 原文转给用户；字符串参数把占位句
+     * 当值用（收货人填成「待用户提供」）。在这里判出来，才有机会让模型补上那一步。
+     */
+    private static boolean hasUnresolvableReference(List<PlanStep> plan) {
+        for (int i = 0; i < plan.size(); i++) {
+            for (String reference : referencesOf(plan.get(i).getArguments())) {
+                int referenced = Integer.parseInt(reference);
+                if (referenced >= i) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 递归找出参数里所有 {$N} 引用的下标（字符串、列表、对象三种形态都要下钻） */
+    private static List<String> referencesOf(Object value) {
+        List<String> found = new ArrayList<>();
+        if (value instanceof String text) {
+            java.util.regex.Matcher m = STEP_REF.matcher(text);
+            while (m.find()) {
+                found.add(m.group(1));
+            }
+        } else if (value instanceof List<?> list) {
+            list.forEach(item -> found.addAll(referencesOf(item)));
+        } else if (value instanceof Map<?, ?> map) {
+            map.values().forEach(item -> found.addAll(referencesOf(item)));
+        }
+        return found;
+    }
+
+    /**
+     * 把计划里各步的 reason 汇成一句话意图。
+     * <p>
+     * <b>不调模型来总结。</b>为一句「用户想干什么」再花一次模型调用，成本与收益
+     * 不成比例——而 reason 本来就是规划器自己写的目标描述，拼起来已经能表达意图。
+     * 截断到 200 字：它是给人看与做一致性判断的摘要，不是要喂回模型的上下文。
+     */
+    private static String intentOf(List<PlanStep> plan) {
+        String joined = plan.stream()
+                .map(PlanStep::getReason)
+                .filter(reason -> reason != null && !reason.isBlank())
+                .distinct()
+                .reduce((a, b) -> a + "；" + b)
+                .orElse("");
+        if (joined.isBlank()) {
+            // reason 缺失时退回工具名序列：它至少说明了「打算用哪些能力」，
+            // 比一个空串有用，也不会让人误以为「这一轮没有意图」
+            joined = plan.stream().map(PlanStep::getTool).reduce((a, b) -> a + "、" + b).orElse("");
+        }
+        return abbreviate(joined, 200);
     }
 
     /** 执行：按依赖分层，同层并发；调用工具前拦截高危操作。 */
@@ -206,6 +314,8 @@ public class AgentGraph {
         List<PendingAction> pending = executePlan(plan, state.get(KEY_ROUND, 1), ctx, steps);
 
         return updates(KEY_STEPS, steps, KEY_PENDING, pending,
+                // 有待确认操作 = 图在这里停下等人；否则交给评估节点
+                KEY_STAGE, pending.isEmpty() ? TaskStage.CHECKING : TaskStage.WAITING_USER,
                 KEY_ROUTE, pending.isEmpty() ? ROUTE_EVALUATE : ROUTE_END);
     }
 
@@ -232,6 +342,7 @@ public class AgentGraph {
         log.debug("[Graph] evaluate blocked={} canReplan={} {}", blocked, canReplan, ctx.guard().summary());
 
         return updates(KEY_ROUND, state.get(KEY_ROUND, 1) + 1,
+                KEY_STAGE, canReplan ? TaskStage.PLANNING : TaskStage.CHECKING,
                 KEY_ROUTE, canReplan ? ROUTE_REPLAN : ROUTE_ANSWER);
     }
 
@@ -242,7 +353,9 @@ public class AgentGraph {
         List<GraphStep> steps = state.get(KEY_STEPS, List.<GraphStep>of());
         List<PlanStep> plan = filterRegistered(replan(ctx, steps));
         log.debug("[Graph] replanned: {}", plan.stream().map(PlanStep::getTool).toList());
-        return updates(KEY_PLAN, plan, KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
+        return updates(KEY_PLAN, plan,
+                KEY_STAGE, plan.isEmpty() ? TaskStage.CHECKING : TaskStage.EXECUTING,
+                KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
     }
 
     /** 合成回答：有工具结果就基于结果作答；没有则直接对话（ReAct 所在的位置）。 */
@@ -255,9 +368,13 @@ public class AgentGraph {
         // 少了这一支，被拦的取消订单会变成一句「工具执行失败」：
         // 把「等你批准」说成了「出错了」，而且永远批不了
         if (!ctx.pendingActions().isEmpty()) {
-            return updates(KEY_ANSWER, answer, KEY_PENDING, List.copyOf(ctx.pendingActions()));
+            // ReAct 路径的高危拦截发生在工具循环里，图本身走到了 answer——但对外
+            // 它是一次中断，不是一次完成。阶段必须写 WAITING_USER，否则前端会把
+            // 确认卡片的容器渲染成「已完成」的语气
+            return updates(KEY_ANSWER, answer, KEY_PENDING, List.copyOf(ctx.pendingActions()),
+                    KEY_STAGE, TaskStage.WAITING_USER);
         }
-        return updates(KEY_ANSWER, answer);
+        return updates(KEY_ANSWER, answer, KEY_STAGE, TaskStage.DONE);
     }
 
     // ==================== 执行细节 ====================
@@ -289,10 +406,17 @@ public class AgentGraph {
             // 同一条理由：还没开始的副作用绝不放行
             ctx.progress().throwIfCancelled();
 
-            // 调用工具前的拦截：发生在执行之前，这是 ReAct 结构上做不到的位置。
-            // 没有「已确认就放行」这一支——确认后要执行的东西不再经过图（见 PendingAction）
+            // 参数解析必须在「拦截高危」之前：待确认卡片上要显示的是**真正会被执行的参数**。
+            // 如果先出卡片再解析，用户看到的是 "skuId=$0.skuId" 这种模板串——他就不知道
+            // 自己到底在批准什么，而那正是确认卡片存在的全部意义
+            List<PlanStep> resolved = resolveBatch(plan, ready, ctx);
+            // <b>只拦本批。</b>曾经这里扫的是整份计划，于是「先 product_search 再 cart_add」
+            // 这种两步计划在第一批就被整个拦下——第一步还没跑，加购卡片的参数自然是
+            // 没解析的引用串，而且检索那一步永远没机会执行。用户看到的是一张参数是
+            // "$0.skuId" 的确认卡片，点确认后必然失败。
+            // 拦截的粒度必须与执行的粒度一致：这一批要执行的，才是此刻要用户批准的。
             List<PendingAction> risky = ready.stream()
-                    .map(plan::get)
+                    .map(resolved::get)
                     .filter(this::requiresConfirmation)
                     .map(AgentGraph::pendingAction)
                     .distinct()
@@ -301,11 +425,175 @@ public class AgentGraph {
                 return risky;
             }
 
-            invokeBatch(plan, ready, round, ctx, steps);
+            invokeBatch(resolved, ready, round, ctx, steps);
             ready.forEach(i -> done[i] = true);
             finished += ready.size();
         }
         return List.of();
+    }
+
+    /**
+     * 把计划里带引用的参数解析成真实值 —— <b>「上一步查到的值」到「下一步的参数」之间
+     * 此前根本没有通道。</b>
+     * <p>
+     * <b>为什么要有这一步。</b>规划器给的是静态 JSON：它知道「加购要 skuId」，
+     * 也知道「skuId 来自前一步的检索」，但计划里没有表达「取值」的语法，
+     * 于是模型只能写一句描述（「$0.skuId」或「上一步的 skuId」），而那句描述会
+     * 被原样当成参数传给工具。实测到的表现有两种，都很难看：
+     * 一种是参数是 integer 时抛 {@code NumberFormatException}，工具把 JVM 异常原文
+     * 转给用户（「For input string: "{{上一步的 skuId}}"」）；另一种是字符串参数时
+     * 把占位句直接当值用（收货人填成「待用户提供」）。
+     * <p>
+     * <b>为什么不在规划侧解决。</b>让模型把「前一步会返回什么」也写进计划，等于要求它
+     * 预知工具的返回结构——它没有依据，只能编。真正确定的是<b>执行时</b>：那一步已经跑完，
+     * rawData 就在手上。所以引用在规划里是<b>符号</b>，在执行时才是<b>值</b>。
+     * <p>
+     * <b>解析不出来的引用保持原样。</b>把 {@code $0.skuId} 替换成空串会让工具收到
+     * 「参数存在但为空」，失败信息里看不出成因；保持原样，工具的报错会直接带上
+     * 那串没解析出来的文本，排查时一眼能看出是「第 0 步没产出这个字段」。
+     */
+    private List<PlanStep> resolveBatch(List<PlanStep> plan, List<Integer> batch, GraphContext ctx) {
+        // 返回<b>与 plan 等长</b>的列表、索引对齐：invokeBatch 与拦截逻辑都按 plan 下标
+        // 取步骤，返回一个只含本批的紧凑列表会让下标整体错位（实测直接 IndexOutOfBounds）
+        List<PlanStep> resolved = new ArrayList<>(plan);
+        for (Integer index : batch) {
+            PlanStep step = plan.get(index);
+            Map<String, Object> arguments = step.getArguments();
+            if (arguments == null || arguments.isEmpty()) {
+                continue;
+            }
+            Map<String, Object> filled = new LinkedHashMap<>();
+            boolean changed = false;
+            for (Map.Entry<String, Object> entry : arguments.entrySet()) {
+                Object resolvedValue = resolveValue(entry.getValue(), ctx, index);
+                changed |= resolvedValue != entry.getValue();
+                filled.put(entry.getKey(), resolvedValue);
+            }
+            if (changed) {
+                resolved.set(index, step.toBuilder().arguments(filled).build());
+            }
+        }
+        return resolved;
+    }
+
+    /**
+     * 递归解析一个参数值里的引用。嵌套结构也要走：模型完全可能把列表或对象
+     * 当作参数值（例如 {@code items:[{"skuId":"$0.skuId"}]}），只处理顶层字符串
+     * 会让里面那层占位串照样漏过去。
+     */
+    private Object resolveValue(Object value, GraphContext ctx, int currentIndex) {
+        if (value instanceof String text) {
+            return resolveString(text, ctx, currentIndex);
+        }
+        if (value instanceof List<?> list) {
+            List<Object> out = new ArrayList<>(list.size());
+            for (Object item : list) {
+                out.add(resolveValue(item, ctx, currentIndex));
+            }
+            return out;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                out.put(String.valueOf(entry.getKey()), resolveValue(entry.getValue(), ctx, currentIndex));
+            }
+            return out;
+        }
+        return value;
+    }
+
+    /** 引用语法：{@code $N.field}（N 是更早步骤的序号） */
+    private static final java.util.regex.Pattern STEP_REF =
+            java.util.regex.Pattern.compile("\\$(\\d+)\\.([A-Za-z_][A-Za-z0-9_]*)");
+
+    /**
+     * 把整串就是一个引用的值换成<b>它原本的类型</b>，而不是拼成字符串。
+     * <p>
+     * 这一点很要紧：{@code skuId} 在工具签名里是 integer，若解析成 {@code "29"}，
+     * 大多数工具还能靠 {@code Long.valueOf(String)} 兜住，但任何做 {@code instanceof Number}
+     * 判断的地方就会静默走错分支。整串引用是最常见的形式，所以单独走这条精确路径。
+     */
+    private Object resolveString(String text, GraphContext ctx, int currentIndex) {
+        java.util.regex.Matcher whole = STEP_REF.matcher(text);
+        if (whole.matches()) {
+            return lookup(ctx, Integer.parseInt(whole.group(1)), whole.group(2), text, currentIndex);
+        }
+        // 混合文本（如 "订单 $0.orderNo 的物流"）：逐段替换，得到的仍是字符串
+        StringBuilder sb = new StringBuilder();
+        java.util.regex.Matcher m = STEP_REF.matcher(text);
+        int last = 0;
+        boolean any = false;
+        while (m.find()) {
+            any = true;
+            sb.append(text, last, m.start());
+            Object value = lookup(ctx, Integer.parseInt(m.group(1)), m.group(2), m.group(), currentIndex);
+            sb.append(value);
+            last = m.end();
+        }
+        if (!any) {
+            return text;
+        }
+        sb.append(text.substring(last));
+        return sb.toString();
+    }
+
+    /**
+     * 取值。取不到时<b>返回原串</b>（并记一条日志）而不是 null 或空串——
+     * 让工具带着那串没解析出来的文本失败，比带着一个「参数存在但是空」的谜面失败好排查。
+     */
+    private Object lookup(GraphContext ctx, int stepIndex, String field, String raw, int currentIndex) {
+        if (stepIndex >= currentIndex) {
+            log.warn("[Graph] 步骤 {} 引用了不早于自己的步骤 {}（{}），保持原样", currentIndex, stepIndex, raw);
+            return raw;
+        }
+        Object source = ctx.stepOutputs().get(stepIndex);
+        if (source == null) {
+            log.warn("[Graph] 步骤 {} 引用的 {} 无可取值（第 {} 步没有成功输出）", currentIndex, raw, stepIndex);
+            return raw;
+        }
+        Object value = readField(source, field);
+        if (value == null) {
+            log.warn("[Graph] 步骤 {} 引用的字段 {}.{} 不存在", currentIndex, stepIndex, field);
+            return raw;
+        }
+        return value;
+    }
+
+    /**
+     * 从任意业务对象上读一个字段。
+     * <p>
+     * 反射而不是让各工具自己实现取值接口：工具在 ai-service，这一步在 agent-core，
+     * 要求每个业务 DTO 知道 agent-core 的存在会把依赖方向搞反。读的是 getter
+     * （{@code getXxx}/{@code isXxx}）与 record 的访问器，两者覆盖了本项目全部 DTO 形态。
+     */
+    private static Object readField(Object source, String field) {
+        // 列表：取第一个元素。检索类工具天然返回一串结果，而「把第一个加入购物车」
+        // 这种请求指向的就是第一条——模型写 $0.skuId 时心里想的也是「第一条的那个字段」。
+        // 不这么处理的话，列表上永远取不到标量字段，引用只能原样失败。
+        if (source instanceof List<?> list) {
+            return list.isEmpty() ? null : readField(list.get(0), field);
+        }
+        if (source instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (field.equals(String.valueOf(entry.getKey()))) {
+                    return entry.getValue();
+                }
+            }
+            return null;
+        }
+        String capitalized = Character.toUpperCase(field.charAt(0)) + field.substring(1);
+        for (String methodName : List.of("get" + capitalized, "is" + capitalized, field)) {
+            try {
+                java.lang.reflect.Method method = source.getClass().getMethod(methodName);
+                return method.invoke(source);
+            } catch (NoSuchMethodException ignored) {
+                // 换下一个命名约定
+            } catch (Exception e) {
+                log.warn("[Graph] 读取 {}.{} 失败: {}", source.getClass().getSimpleName(), field, e.getMessage());
+                return null;
+            }
+        }
+        return null;
     }
 
     private void invokeBatch(List<PlanStep> plan, List<Integer> batch, int round, GraphContext ctx,
@@ -395,6 +683,13 @@ public class AgentGraph {
                 ? String.valueOf(result.getOutput())
                 : "工具执行失败：" + result.getErrorMessage();
 
+        // 这一步的结构化结果留给后面的步骤引用（$N.field）。只在成功时留：
+        // 失败的结果引用起来只会让下一步拿一个空值去调用，不如让它带着占位串原样失败，
+        // 至少日志里看得见是哪一步没成
+        if (result.isSuccess() && result.getRawData() != null) {
+            ctx.stepOutputs().put(index, result.getRawData());
+        }
+
         // 调用轨迹带 rawData（可能是任意业务 DTO），放在上下文里而非图状态，
         // 避免图保存快照时序列化失败
         ctx.executions().add(ToolExecution.builder()
@@ -435,10 +730,39 @@ public class AgentGraph {
         }
         context.append("\n\n已知背景：\n").append(ctx.systemPrompt());
 
+        // 自我诊断：先让模型说清「为什么失败」，再据此规划。
+        // 与重规划分成两次调用，是因为两件事的默认反应相反——诊断倾向于「换个说法再试」，
+        // 而这恰恰是要被证伪的那个假设：数据缺失时必须停手。先强制归一次类，
+        // 再让重规划带着这个结论走，才能避免「换十种说法查同一件不存在的事」。
+        String critique = llmProvider.critique(ctx.message(), traceOf(steps), toolRegistry.listDefinitions());
+        if (critique != null && !critique.isBlank()) {
+            context.append("\n\n失败诊断（上一轮的分析结论，请据此决定改法；结论是「数据缺失」时不要重试，直接给不出结论）：\n")
+                    .append(critique).append("\n");
+            log.debug("[Graph] critique: {}", critique);
+        }
+
         // 第三个参数是给规划器的「已知背景」，带上最近对话——
         // 重规划最常见的触发是「上一步没查到」，而用户上一轮说过的话
         // 往往正是换个什么参数再查的线索
         return llmProvider.plan(context.toString(), toolRegistry.listDefinitions(), planContext(ctx));
+    }
+
+    /**
+     * 把执行轨迹压成给诊断器看的一段文本。
+     * <p>
+     * 与重规划自己那段上下文<b>刻意分开构造</b>：诊断器要的是「哪一步、什么结局、工具原话」，
+     * 不需要「请基于以上信息重新给出可执行计划」这类指令；把两者揉成一段，
+     * 模型会分不清哪些是事实、哪些是待办。工具原话保留但截断，
+     * 因为诊断的依据往往是下游那句具体的拒绝（「库存不足」与「订单不存在」要求不同的改法）。
+     */
+    private static String traceOf(List<GraphStep> steps) {
+        StringBuilder trace = new StringBuilder();
+        for (GraphStep step : steps) {
+            trace.append("- ").append(step.getTool())
+                    .append(" → ").append(verdict(step))
+                    .append("：").append(abbreviate(step.getOutput())).append("\n");
+        }
+        return trace.toString();
     }
 
     /** 步骤的结局，用于重规划上下文。三种，不能压成两种——模型据此决定换不换策略。 */
@@ -463,11 +787,7 @@ public class AgentGraph {
     }
 
     private String synthesize(GraphContext ctx, List<GraphStep> steps) {
-        StringBuilder observations = new StringBuilder();
-        for (GraphStep step : steps) {
-            observations.append("【").append(step.getTool()).append("】\n")
-                    .append(step.getOutput()).append("\n\n");
-        }
+        String observations = renderObservations(steps);
 
         List<ChatMessage> messages = new ArrayList<>();
         if (!ctx.systemPrompt().isEmpty()) {
@@ -483,6 +803,59 @@ public class AgentGraph {
                 .content("用户问：" + ctx.message() + "\n\n查询结果：\n" + observations)
                 .build());
         return call(ctx, messages);
+    }
+
+    /**
+     * 工具观测的**总字符上界**。
+     * <p>
+     * 单条输出已被 {@link ToolRegistry#MAX_TOOL_OUTPUT_CHARS}（4000）截过，但那是<b>逐条</b>的界：
+     * 一次请求最多调 8 次工具（{@code LoopBudget}），最坏 8 × 4000 = 32000 字符一起进 prompt，
+     * 而这一段此前<b>完全不在预算内</b>——{@code ContextBudget} 只裁历史。
+     * 结果是「单条有界、总量无界」：模型能跑，账单在涨，而且没有任何一处会提示已经超了。
+     * <p>
+     * 定 12000 而不是更小：正常一次问答的工具结果合计在 1000 字符上下，这个值拦的是
+     * 「八连查 + 每条都接近上限」这种异常形态，不是日常。真触发时丢的是**后面的观测**——
+     * 收口回答最需要的是最近一次查询的结果，而更早的步骤在 {@code evaluate} 阶段已经被
+     * 消化成了「成功/失败」的判断，不必原样再喂一遍。
+     */
+    private static final int MAX_OBSERVATION_CHARS = 12000;
+
+    /**
+     * 拼装给模型的工具观测，并守住总长度上界。
+     * <p>
+     * <b>超限时截断而不是丢弃整条。</b>被丢弃的那条工具结果里可能正好有用户要的数字
+     * （订单号、金额、库存），整条丢掉会让回答退回「查到了但说不出细节」；
+     * 截断至少把头部——工具的编号、状态、前几行——留了下来。
+     * <p>
+     * 末尾必须写明「还有 N 条未展示」。不写的话，模型看到的是一个自洽但残缺的列表，
+     * 它会基于这份残缺数据给出毫无保留的结论，而用户与排查者都看不出它少了东西。
+     */
+    /** 包级可见：单测直接验证上界行为，不必为了构造 8 次工具调用去拖一整个图 */
+    static String renderObservations(List<GraphStep> steps) {
+        StringBuilder observations = new StringBuilder();
+        int omitted = 0;
+        for (GraphStep step : steps) {
+            String header = "【" + step.getTool() + "】\n";
+            String output = step.getOutput() == null ? "" : step.getOutput();
+            int remaining = MAX_OBSERVATION_CHARS - observations.length();
+            if (remaining <= header.length()) {
+                // 连标题都放不下：这条与后面所有的都不再进上下文
+                omitted++;
+                continue;
+            }
+            int room = remaining - header.length();
+            if (output.length() <= room) {
+                observations.append(header).append(output).append("\n\n");
+                continue;
+            }
+            observations.append(header)
+                    .append(output, 0, Math.max(0, room - 24))
+                    .append("\n…（本条因观测总量超限被截断）\n\n");
+        }
+        if (omitted > 0) {
+            observations.append("…（另有 ").append(omitted).append(" 条观测因总量超限未展示）\n");
+        }
+        return observations.toString();
     }
 
     /**
@@ -655,12 +1028,16 @@ public class AgentGraph {
      */
     private record GraphContext(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                 LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
-                                List<ToolExecution> executions, List<PendingAction> pendingActions) {
+                                List<ToolExecution> executions, List<PendingAction> pendingActions,
+                                java.util.concurrent.ConcurrentMap<Integer, Object> stepOutputs) {
 
         static GraphContext of(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
             return new GraphContext(userId, message, systemPrompt, conversation, guard, onChunk, progress,
-                    Collections.synchronizedList(new ArrayList<>()), new ArrayList<>());
+                    Collections.synchronizedList(new ArrayList<>()), new ArrayList<>(),
+                    // 步骤输出表：让后面的步骤能引用前面步骤查出来的值。
+                    // 用 ConcurrentMap 是因为同批次步骤是并发执行的
+                    new java.util.concurrent.ConcurrentHashMap<>());
         }
     }
 
@@ -713,5 +1090,22 @@ public class AgentGraph {
          * 那必然与护栏里的计数重复，而重复的两份计数迟早会分叉，读的人不知道该信哪个。
          */
         private String loops;
+        /**
+         * 本次请求收尾时所在的阶段，见 {@link TaskStage}。
+         * <p>
+         * 它不是从 {@code pendingActions} 反推的重复字段：{@code pendingActions} 非空
+         * 只是中断的<b>一种</b>形态（高危确认），而阶段还要区分「规划中 / 执行中 /
+         * 核对中 / 已完成」。前端据此选择措辞与容器，把「还在跑」和「跑完了」分开——
+         * 早了会说漏，晚了会让人白等。
+         */
+        private TaskStage stage;
+        /**
+         * 本轮任务的核心意图（首次规划冻结的那一句）。
+         * <p>
+         * 用于回答两件事：给用户展示「这一轮打算做什么」，以及给观测侧一个
+         * 不随重规划移动的基准——重规划后拿它和最终实际用到的工具集合比一比，
+         * 就能看出这轮有没有跑偏。它是<b>观测字段</b>，不参与任何执行决策。
+         */
+        private String coreIntent;
     }
 }

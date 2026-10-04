@@ -11,6 +11,7 @@ import yumefusaka.envoymart.agent.rag.ConflictReporter;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.aiservice.llm.ModelPricing;
 import yumefusaka.envoymart.aiservice.memory.ChatHistoryStore;
+import yumefusaka.envoymart.aiservice.memory.ChatIdempotencyStore;
 import yumefusaka.envoymart.aiservice.model.ChatRequest;
 import yumefusaka.envoymart.aiservice.model.ChatResponse;
 import yumefusaka.envoymart.aiservice.model.KnowledgeSnippet;
@@ -35,11 +36,14 @@ public class AiAssistantServiceImpl implements AiAssistantService {
     private final Agent agent;
     private final ModelPricing pricing;
     private final ChatHistoryStore history;
+    private final ChatIdempotencyStore idempotency;
 
-    public AiAssistantServiceImpl(Agent agent, ModelPricing pricing, ChatHistoryStore history) {
+    public AiAssistantServiceImpl(Agent agent, ModelPricing pricing, ChatHistoryStore history,
+                                 ChatIdempotencyStore idempotency) {
         this.agent = agent;
         this.pricing = pricing;
         this.history = history;
+        this.idempotency = idempotency;
     }
 
     /**
@@ -55,10 +59,26 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         log.info("[AiService] chat userId={} sessionId={} msg={}",
                 userId, request.getSessionId(), request.getMessage());
 
+        String requestId = RequestId.current();
+        // 同一个请求号在窗口内重复到达 = 同一次提问被送了两遍（双击、超时重试、代理重放），
+        // 直接回上一次的结果，不再跑一遍 Agent。判据只能是请求号而不是消息内容：
+        // 用户过一会儿想再问一遍同样的话，那是一次新的提问，必须允许
+        if (requestId != null && !idempotency.tryAcquire(userId, requestId)) {
+            var previous = idempotency.previous(userId, requestId, ChatResponse.class);
+            if (previous.isPresent()) {
+                log.info("[AiService] 幂等命中，复用上一次结果 requestId={}", requestId);
+                return previous.get();
+            }
+            // 占位在、结果还没写完（上一次还在执行中）。这不重跑，也不编一个假回答——
+            // 如实告诉调用方「同一请求正在处理」，让前端等或换一次新请求
+            throw new IllegalStateException("相同请求正在处理中，请勿重复提交");
+        }
+
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             ChatResponse response = toChatResponse(request, agent.chat(
                     userId, request.getSessionId(), request.getMessage(), request.getApprovalToken()), ledger);
             recordTurn(userId, request, response);
+            idempotency.complete(userId, requestId, response);
             return response;
         }
     }
@@ -68,6 +88,21 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                                    ToolProgressListener progress) {
         log.info("[AiService] chatStream userId={} sessionId={} msg={}",
                 userId, request.getSessionId(), request.getMessage());
+
+        String requestId = RequestId.current();
+        // 流式这条路的幂等**只挡「同一请求号正在处理中」的并发重放，不复用上次结果**。
+        // 与非流式（chat）的差别不是疏忽，是两条路的交付形态不同：
+        //   - 非流式返回一个完整对象，复用它是无损的；
+        //   - 流式的价值全在「逐块送达」这个过程里。若把上一次的结果在这里整块回吐，
+        //     调用方拿到的虽是一份正确内容，却失去了一次流式交互应有的形态——
+        //     界面会表现为「这次没有逐字输出」，而它无从区分这与「模型这次答得快」。
+        // 所以这里的正确行为是**拒绝**（让重复的那次请求失败，前端按自己的重试策略决定），
+        // 而不是伪造一次假的流式。真正的防重复由下面这行 tryAcquire 保证：
+        // 占位成功才往下跑，Agent 与工具只执行一次。
+        if (requestId != null && !idempotency.tryAcquire(userId, requestId)) {
+            log.info("[AiService] 流式幂等命中，拒绝同一请求号的并发重放 requestId={}", requestId);
+            throw new IllegalStateException("相同请求正在处理中，请勿重复提交");
+        }
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             // 旁录一份已交付文本。正常收尾时它与 response.getReply() 相同（甚至更短——
@@ -91,6 +126,11 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                         },
                         effective), ledger);
                 recordTurn(userId, request, response);
+                // 正常收尾后把占位换成结果。**必须替换**，不能留在 "PENDING"：
+                // 占位在窗口内会让同一个请求号一律被拒，而「这一轮已经成功交付完了」之后
+                // 再来的重复请求（前端收完 done 帧又因网络抖动重发一次）应当被认成已完成、
+                // 直接复用结果，而不是被判成「还在处理中」。非流式那条路同一处理。
+                idempotency.complete(userId, requestId, response);
                 return response;
             } catch (AgentCancelledException e) {
                 log.info("[AiService] 本轮已取消，按已交付的 {} 字落历史 userId={} sessionId={}",
@@ -145,12 +185,20 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .sessionId(request.getSessionId())
                 .reply(agentResp.getReply())
                 .retrievalQuery(agentResp.getRetrievalQuery())
+                .expansion(expandView(agentResp.getExpansion()))
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
                 .recommendedProducts(extractProducts(executions))
                 .pendingActions(agentResp.getPendingActions())
                 .approvalToken(agentResp.getApprovalToken())
                 .evidenceLevel(agentResp.getEvidenceLevel())
+                // 阶段用 name() 而不是 toString()：枚举名是稳定契约，toString 可能被人
+                // 重写成中文标签，那时前端的判断会静默失效
+                .stage(agentResp.getStage() == null ? null : agentResp.getStage().name())
+                // 任务状态按「对外字段名」投影，而不是把 record 原样丢出去：
+                // 契约字段名是这条链的稳定面，直接序列化 record 会让一次字段重命名
+                // 静默改掉前端读到的东西（Jackson 不会报错，只会换个 key）
+                .taskState(taskStateOf(agentResp.getTaskState()))
                 .unsupportedClaims(agentResp.getUnsupportedClaims())
                 .unsupportedStripped(agentResp.isUnsupportedStripped())
                 .ungrounded(agentResp.isUngrounded())
@@ -158,6 +206,54 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .factStripped(agentResp.isFactStripped())
                 .conflicts(convertConflicts(agentResp.getConflicts()))
                 .build();
+    }
+
+    /**
+     * 任务状态投影 —— 把 agent-core 的 {@link TaskState} 翻成对外的下划线字段名。
+     * <p>
+     * <b>为什么不直接把 record 交给 Jackson。</b>record 的组件名就是 JSON key，
+     * 一次字段重命名（哪怕只是内部整理）会静默改掉前端读到的 key——Jackson 不会报错，
+     * 前端只是某块显示空白。这里手工列出契约字段，改名会变成一次编译错误，
+     * 而不是一次线上静默失效。
+     * <p>
+     * 字段名与 objective/前端约定一致：{@code task_id}、{@code core_intent}、
+     * {@code current_subtask}、{@code pending_tools}、{@code completed_steps}、
+     * {@code context_snapshot}、{@code stage}、{@code round}。
+     * <p>
+     * 用 {@link java.util.LinkedHashMap} 而不是 {@code Map.of}：后者不接受 null 值，
+     * 而 {@code core_intent}/{@code current_subtask} 在 ReAct 路径下就是 null。
+     */
+    private java.util.Map<String, Object> taskStateOf(yumefusaka.envoymart.agent.core.task.TaskState state) {
+        if (state == null) {
+            return null;
+        }
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("task_id", state.taskId());
+        out.put("user_id", state.userId());
+        out.put("session_id", state.sessionId());
+        out.put("core_intent", state.coreIntent());
+        out.put("current_subtask", state.currentSubtask());
+        out.put("pending_tools", state.pendingTools());
+        out.put("completed_steps", state.completedSteps());
+        out.put("context_snapshot", state.contextSnapshot());
+        out.put("stage", state.stage() == null ? null : state.stage().name());
+        out.put("round", state.round());
+        out.put("updated_at", state.updatedAtEpochMs());
+        return out;
+    }
+    /**
+     * 扩写视图的搬运 —— 空产出统一归到 {@link ChatResponse.ExpansionView#textOnly()}。
+     * <p>
+     * 不把 agent-core 的 record 直接序列化出去，理由与 {@code taskStateOf} 相同：
+     * 内部字段名不是对外契约，一次内部整理不该静默改掉前端读到的 key。
+     */
+    private ChatResponse.ExpansionView expandView(
+            yumefusaka.envoymart.agent.rag.QueryExpansions expansions) {
+        if (expansions == null || expansions.isEmpty()) {
+            return ChatResponse.ExpansionView.textOnly();
+        }
+        return new ChatResponse.ExpansionView(
+                expansions.hypothetical(), expansions.angles(), true);
     }
 
     /**
@@ -193,7 +289,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
             return List.of();
         }
         return conflicts.stream()
-                .map(c -> new ChatResponse.Conflict(c.refs(), c.detail()))
+                .map(c -> new ChatResponse.Conflict(c.refs(), c.detail(), c.resolved()))
                 .toList();
     }
 

@@ -17,6 +17,7 @@ import yumefusaka.envoymart.orderservice.model.TicketSenderType;
 import yumefusaka.envoymart.orderservice.model.TicketStatus;
 import yumefusaka.envoymart.orderservice.model.admin.AdminTicketDetail;
 import yumefusaka.envoymart.orderservice.model.admin.AdminTicketQuery;
+import yumefusaka.envoymart.orderservice.service.TicketNotifier;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -59,7 +60,8 @@ class TicketAdminServiceImplTest {
         messageMapper = mock(SupportTicketMessageMapper.class);
         when(messageMapper.selectList(any())).thenReturn(List.of());
         service = new TicketAdminServiceImpl(ticketMapper,
-                new TicketDomainServiceImpl(ticketMapper, messageMapper));
+                new TicketDomainServiceImpl(ticketMapper, messageMapper, mock(TicketNotifier.class)),
+                mock(TicketNotifier.class));
     }
 
     // ==================== 回复 ====================

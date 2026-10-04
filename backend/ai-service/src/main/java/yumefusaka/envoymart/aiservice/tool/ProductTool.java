@@ -8,7 +8,9 @@ import yumefusaka.envoymart.agent.tool.ToolResult;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.knowledge.KnowledgeGraphBuilder;
 import yumefusaka.envoymart.common.result.PageResult;
+import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.contract.ProductSummary;
+import yumefusaka.envoymart.contract.SkuView;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -40,6 +42,9 @@ public class ProductTool implements Tool {
      * 商品编号。撇号位置与大小写都容忍，前导零吃掉——
      * {@code SPU7}、{@code spu007}、{@code SPU 7} 都是同一个商品。
      */
+    /** 工具输出里最多印几个规格。再多会挤掉真正的候选列表，而模型只需要知道「有哪些规格可选」 */
+    private static final int SKU_LIMIT = 6;
+
     private static final java.util.regex.Pattern SPU_KEY =
             java.util.regex.Pattern.compile("(?i)^spu\\s*0*(\\d+)$");
 
@@ -150,6 +155,16 @@ public class ProductTool implements Tool {
                     sb.append("（").append(p.getSubtitle()).append("）");
                 }
                 sb.append("，价格 ").append(Money.yuanRange(p.getMinPrice(), p.getMaxPrice()));
+                // 类目 / 品牌 / 标签：模型据此判断"这条候选够不够格"，而不是只知道名字与价格。
+                // 只给名字和价格的旧版工具，模型没有依据评价候选质量，于是它最常见的反应是
+                // 「就这一个是结果」——哪怕返回了 8 条它也会挑第一条，因为其余几条在它眼里
+                // 没有任何可比较的维度。这三个字段在 ProductSummary 上本来就有，工具没输出而已。
+                if (p.getCategoryName() != null && !p.getCategoryName().isBlank()) {
+                    sb.append("，类目 ").append(p.getCategoryName());
+                }
+                if (p.getBrandName() != null && !p.getBrandName().isBlank()) {
+                    sb.append("，品牌 ").append(p.getBrandName());
+                }
                 if (p.getTotalStock() != null) {
                     sb.append("，").append(p.getTotalStock() > 0 ? "有货" : "暂时无货");
                 }
@@ -158,14 +173,29 @@ public class ProductTool implements Tool {
                 }
                 if (p.getRatingAvg() != null && p.getRatingAvg().doubleValue() > 0) {
                     sb.append("，评分 ").append(p.getRatingAvg());
+                    if (p.getReviewCount() != null && p.getReviewCount() > 0) {
+                        sb.append("（").append(p.getReviewCount()).append(" 条评价）");
+                    }
+                }
+                // 标签是"这个商品能解决什么"的最短表述（如"补钙""孕妇适用"），
+                // 与用户给出的 attributes 条件直接对应——模型靠它对账"这条满足不满足用户说的条件"，
+                // 不必再为每个候选单独调一次详情接口
+                if (p.getTags() != null && !p.getTags().isEmpty()) {
+                    sb.append("，标签 ").append(String.join("、", p.getTags()));
                 }
                 sb.append("\n");
+                // 规格编号必须印出来：加购/下单认的是 SKU，不是商品名。
+                // 检索摘要是 SPU 级的，光有名字，模型只能猜一个编号——实测它猜的是 0。
+                appendSkus(sb, p.getId(), limit);
             }
 
             return ToolResult.builder()
                     .success(true)
                     .output(sb.toString())
-                    .rawData(products)
+                    // rawData 带上每条商品的默认 skuId（第一个规格），让后续步骤能写
+                    // {$0.skuId} 直接引用——文字输出里的「规格：SKU29」是给人/模型读的，
+                    // 而引用解析走的是这份结构化数据，两者必须都拿得到同一个值
+                    .rawData(withDefaultSku(products))
                     .build();
         } catch (Exception e) {
             return Downstream.failure("商品检索", e);
@@ -184,14 +214,161 @@ public class ProductTool implements Tool {
     }
 
     /**
+     * 给每条商品补一个 {@code skuId}（第一个规格），供后续步骤用 {@code $N.skuId} 引用。
+     * <p>
+     * <b>为什么是「第一个」。</b>用户说「把第一个加入购物车」时指向的就是检索结果的第一条；
+     * 而一个 SPU 可能有多个规格，工具无法替用户选——它给的是一个**默认起点**，
+     * 模型据此发起确认，用户在实际下单前仍会看到规格描述。给不出默认值才是不负责任的：
+     * 那时模型只能编一个编号（实测编的是 0）。
+     * <p>
+     * 拿不到规格（下游抖动）时这个字段就是 null，引用解析会原样保留占位串，
+     * 失败信息里看得见是哪一步没成——不假装「这个商品没有规格」。
+     */
+    private List<Map<String, Object>> withDefaultSku(List<ProductSummary> products) {
+        List<Map<String, Object>> enriched = new java.util.ArrayList<>(products.size());
+        for (ProductSummary product : products) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", product.getId());
+            item.put("name", product.getName());
+            item.put("minPrice", product.getMinPrice());
+            item.put("maxPrice", product.getMaxPrice());
+            item.put("skuId", defaultSkuId(product.getId()));
+            enriched.add(item);
+        }
+        return enriched;
+    }
+
+    /** 取某个 SPU 的第一个规格编号；查不到返回 null（不猜、不编） */
+    private Long defaultSkuId(Long spuId) {
+        if (spuId == null) {
+            return null;
+        }
+        try {
+            ProductDetail detail = Downstream.read("商品服务", () -> productClient.getProduct(spuId));
+            if (detail == null || detail.getSkus() == null || detail.getSkus().isEmpty()) {
+                return null;
+            }
+            return detail.getSkus().get(0).getId();
+        } catch (Exception e) {
+            log.warn("[ProductTool] 取商品 {} 的默认规格失败: {}", spuId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 把某个 SPU 的规格（SKU 编号 + 规格文字 + 价格 + 库存）追加到输出里。
+     * <p>
+     * <b>为什么必须输出 SKU 编号。</b>检索摘要停在 SPU 粒度，而加购、下单认的都是 SKU——
+     * 同一个商品不同规格是不同的价格和库存。摘要里没有规格编号时，模型要完成
+     * 「帮我加两件」就只剩商品名可用，于是它<b>编一个编号</b>（实测编的是 0），
+     * 而那个编号在加购接口上表现为「加入了错误的规格」或者直接失败，
+     * 用户看到的是「操作没成功」，成因却埋在两步之前。
+     * <p>
+     * <b>失败不降级成「没有规格」。</b>详情接口挂了就少印这一段，商品本身照常返回——
+     * 让一次可选的信息补充失败吞掉整条检索结果，是用一个小故障换一次答不上来。
+     * 但也不能对它撒谎说「这个商品没有规格」，所以失败时干脆不打印这一段。
+     * <p>
+     * <b>限制条数。</b>一个 SPU 下规格可能有几十个，全部铺开会让工具输出膨胀、
+     * 挤掉真正的候选列表。只印前若干个，并在截断时说明还有更多——让模型知道
+     * 「这里没列全」，而不是以为规格就这么多。
+     */
+    private void appendSkus(StringBuilder sb, Long spuId, int limit) {
+        if (spuId == null) {
+            return;
+        }
+        ProductDetail detail;
+        try {
+            detail = Downstream.read("商品服务", () -> productClient.getProduct(spuId));
+        } catch (Exception e) {
+            log.warn("[ProductTool] 取商品 {} 的规格失败，本次不输出规格: {}", spuId, e.getMessage());
+            return;
+        }
+        if (detail == null || detail.getSkus() == null || detail.getSkus().isEmpty()) {
+            return;
+        }
+        List<SkuView> skus = detail.getSkus();
+        int shown = Math.min(skus.size(), SKU_LIMIT);
+        sb.append("    规格：");
+        for (int i = 0; i < shown; i++) {
+            SkuView sku = skus.get(i);
+            if (i > 0) {
+                sb.append("；");
+            }
+            sb.append("SKU").append(sku.getId());
+            if (sku.getSpecText() != null && !sku.getSpecText().isBlank()) {
+                sb.append("（").append(sku.getSpecText()).append("）");
+            }
+            sb.append(" ").append(Money.yuan(sku.getPrice()));
+            if (sku.getStock() != null) {
+                sb.append(" ").append(sku.getStock() > 0 ? "有货" : "无货");
+            }
+        }
+        if (skus.size() > shown) {
+            sb.append("；还有 ").append(skus.size() - shown).append(" 个规格");
+        }
+        sb.append("\n");
+    }
+
+    /**
      * 按编号精确查一个商品。查不到收敛成空列表，由调用方渲染成「没有」。
      * <p>
      * 下游报错不再收敛成空列表：那与「已下架」是同一句话，而它说的是一件没发生过的事。
      * 现在那条路会抛出，由 {@link Downstream} 翻成「暂时不可用」。
      */
     private List<ProductSummary> lookupByKey(Long id) {
-        ProductSummary product = Downstream.read("商品服务", () -> productClient.getProduct(id));
-        return product == null ? List.of() : List.of(product);
+        // 详情接口回的是 ProductDetail（SPU 摘要 + SKU 列表），它没有实现 ProductSummary，
+        // 所以这里手工投影成摘要。投影是**有损的**——规格信息在这一步被丢掉，
+        // 由 appendSkus 单独按需再取一次；两处各取所需，而不是把两种粒度揉进一个类型
+        ProductDetail detail = Downstream.read("商品服务", () -> productClient.getProduct(id));
+        return detail == null ? List.of() : List.of(summaryOf(detail));
+    }
+
+    /**
+     * 详情 → 摘要的有损投影，只填检索渲染真正会读的那几个字段。
+     * <p>
+     * 之所以不把 ProductDetail 直接当 ProductSummary 用：两者是不同契约，
+     * 让详情去实现摘要接口会把「详情有哪些字段」和「检索要哪些字段」绑死，
+     * 以后任一方增删字段都会牵动另一方。
+     */
+    private static ProductSummary summaryOf(ProductDetail detail) {
+        // 详情契约没有 minPrice/maxPrice（那是检索摘要层的聚合），但渲染要读它们。
+        // 从 SKU 价格现算：不补这一步，按编号查出来的商品会显示「暂无报价」——
+        // 而「查到了商品却没有价格」比查不到更难解释，用户会以为这个商品下架了
+        Long min = null;
+        Long max = null;
+        if (detail.getSkus() != null) {
+            for (SkuView sku : detail.getSkus()) {
+                if (sku.getPrice() == null) {
+                    continue;
+                }
+                min = min == null ? sku.getPrice() : Math.min(min, sku.getPrice());
+                max = max == null ? sku.getPrice() : Math.max(max, sku.getPrice());
+            }
+        }
+        Integer stock = null;
+        if (detail.getSkus() != null) {
+            stock = detail.getSkus().stream()
+                    .map(SkuView::getStock)
+                    .filter(java.util.Objects::nonNull)
+                    .mapToInt(Integer::intValue).sum();
+        }
+        return ProductSummary.builder()
+                .minPrice(min)
+                .maxPrice(max)
+                .totalStock(stock)
+                .id(detail.getId())
+                .name(detail.getName())
+                .subtitle(detail.getSubtitle())
+                .categoryId(detail.getCategoryId())
+                .categoryName(detail.getCategoryName())
+                .brandId(detail.getBrandId())
+                .brandName(detail.getBrandName())
+                .mainImage(detail.getMainImage())
+                .sales(detail.getSales())
+                .ratingAvg(detail.getRatingAvg())
+                .reviewCount(detail.getReviewCount())
+                .tags(detail.getTags())
+                .build();
     }
 
     /** limit 由模型给出，可能是 "3"、3 或缺失；越界一律夹紧而不是报错 */

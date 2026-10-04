@@ -280,9 +280,23 @@ public class GraphService {
 
         // 同一个切片上前几条边只是同一句话支撑的不同三元组，对检索而言是一片依据。
         // 去重放在这里而不是让调用方做：切片粒度是这一层的概念
+        //
+        // <b>「有边返回」不等于「用户问的那件事有依据」。</b>实体链接是按名字做子串匹配，
+        // 用户问「K2 和鱼油能一起吃吗」时命中的是<b>鱼油</b>，返回的全是鱼油自己的边——
+        // 一条都不涉及 K2。把这种结果当成「有图谱依据」提级，等于把「K2 未收录」
+        // 说成「K2 有图谱支撑」。所以这里与 interactions 那条路径用同一个判据：
+        // <b>边的至少一端必须能从用户链接到的实体（或其展开物质）到达</b>，
+        // 并把这条可达链写进 chain，让下游看得见「为什么这条边和用户有关」。
         Map<String, GraphEdge> unique = new LinkedHashMap<>();
         for (GraphEdge e : edges) {
-            unique.putIfAbsent(e.docId() + '\u0000' + e.chunkId() + '\u0000' + e.relation(), e);
+            List<String> chain = chainOf(substances, e);
+            boolean reachableFromLinked = !chain.isEmpty()
+                    || linked.contains(e.head().name()) || linked.contains(e.tail().name());
+            if (!reachableFromLinked) {
+                continue;
+            }
+            unique.putIfAbsent(e.docId() + '\u0000' + e.chunkId() + '\u0000' + e.relation(),
+                    chain.isEmpty() ? e : e.withChain(chain));
         }
         return withTitles(List.copyOf(unique.values())).stream()
                 .limit(Math.max(1, limit))

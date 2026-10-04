@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { EvidenceLevel, KnowledgeSnippet } from '@/types/models'
+import type { ChatResponse, EvidenceLevel, KnowledgeSnippet } from '@/types/models'
 import { relevanceText, sourceLabel } from '@/utils/knowledge'
 import { computed } from 'vue'
 
@@ -18,6 +18,12 @@ const props = defineProps<{
    * 「依据 0 条」到底是库里没有，还是那句「那它呢」没被读懂，两者在这里分得开。
    */
   retrievalQuery?: string | null
+  /**
+   * 本轮检索扩写实际生效的变体。与 retrievalQuery 是两件事：
+   * 那个是「最终拿哪句话去检索」，这个是「检索前这句话被扩写成什么」。
+   * 用户问「太贵了怎么办」时前者为 null、后者有内容。
+   */
+  expansion?: ChatResponse['expansion']
 }>()
 
 /**
@@ -40,6 +46,14 @@ const title = computed(() => (weak.value ? '参考' : '依据'))
  * 用户看到「没有找到相关内容」，无从分辨是库里没有，还是他那句「那它呢」没被读懂。
  */
 const empty = computed(() => props.items.length === 0)
+
+/**
+ * 本轮扩写是否真的产出了内容。
+ *
+ * 判据用后端的 `applied`，不用「字段非空」——空产出（关开关、模型降级、
+ * 判定无需扩写）必须老实地显示为「没有扩写」，而不是留一块空标题。
+ */
+const hasExpansion = computed(() => !!props.expansion?.applied)
 
 /**
  * 卡片整块就是去原文的链接 —— 不再单放一个「查看原文」按钮。
@@ -67,6 +81,22 @@ function toChunk(item: KnowledgeSnippet) {
       改写过才显示：这一句解释的是「资料按什么检回来的」，与本轮问句不同才有信息量，
       相同的时候显示它只是把用户刚说的话重复一遍。
     -->
+    <!--
+      扩写与「按…检索」并列：前者说检索前这句话被补成什么样，后者说最终拿哪句去查。
+      两行都出现时，读者能完整还原「用户原话 → 扩写 → 检索句」这条链路，
+      而这正是调召回率时唯一能逐轮核对的东西。
+    -->
+    <div v-if="hasExpansion" class="citations__expansion">
+      <p class="citations__expansion-label">检索前先做了扩写</p>
+      <p v-if="expansion?.hypothetical" class="citations__expansion-item">
+        <span class="citations__expansion-kind">假想答案</span>
+        <span class="citations__expansion-text">{{ expansion.hypothetical }}</span>
+      </p>
+      <p v-if="expansion?.angles?.length" class="citations__expansion-item">
+        <span class="citations__expansion-kind">角度改写</span>
+        <span class="citations__expansion-text">{{ expansion.angles.join(' / ') }}</span>
+      </p>
+    </div>
     <p v-if="retrievalQuery" class="citations__query">
       按「<span class="citations__query-text">{{ retrievalQuery }}</span>」检索
     </p>
@@ -139,6 +169,44 @@ function toChunk(item: KnowledgeSnippet) {
   margin: calc(var(--ys-space-2) * -1) 0 var(--ys-space-3);
   color: var(--color-text-muted);
   font-size: var(--ys-font-xs);
+}
+
+/* 扩写块与检索句同属「来路」注解，用同一档字号，但用左侧竖线把它和检索句区分开 */
+.citations__expansion {
+  margin: calc(var(--ys-space-2) * -1) 0 var(--ys-space-3);
+  padding-inline-start: var(--ys-space-3);
+  border-inline-start: 2px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+}
+
+.citations__expansion-label {
+  margin: 0 0 var(--ys-space-1);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.citations__expansion-item {
+  margin: 0 0 var(--ys-space-1);
+  line-height: 1.5;
+}
+
+.citations__expansion-item:last-child {
+  margin-bottom: 0;
+}
+
+.citations__expansion-kind {
+  display: inline-block;
+  margin-inline-end: var(--ys-space-2);
+  padding: 0 var(--ys-space-1);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-surface-muted);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.citations__expansion-text {
+  color: var(--color-text-secondary);
 }
 
 .citations__query-text {

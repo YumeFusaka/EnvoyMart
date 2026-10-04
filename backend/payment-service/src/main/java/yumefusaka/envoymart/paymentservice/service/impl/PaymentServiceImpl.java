@@ -3,8 +3,6 @@ package yumefusaka.envoymart.paymentservice.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.connection.CorrelationData;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import yumefusaka.envoymart.common.result.Result;
@@ -16,6 +14,7 @@ import yumefusaka.envoymart.paymentservice.model.CreatePaymentRequest;
 import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.paymentservice.model.PaymentCallbackRequest;
 import yumefusaka.envoymart.paymentservice.model.PaymentResponse;
+import yumefusaka.envoymart.paymentservice.mq.OutboxWriter;
 import yumefusaka.envoymart.paymentservice.service.CallbackLogService;
 import yumefusaka.envoymart.paymentservice.service.PaymentService;
 
@@ -44,16 +43,16 @@ public class PaymentServiceImpl implements PaymentService {
 
     private final PaymentMapper paymentMapper;
     private final CallbackLogService callbackLogService;
-    private final RabbitTemplate rabbitTemplate;
+    private final OutboxWriter outboxWriter;
     private final OrderClient orderClient;
 
     public PaymentServiceImpl(PaymentMapper paymentMapper,
                               CallbackLogService callbackLogService,
-                              RabbitTemplate rabbitTemplate,
+                              OutboxWriter outboxWriter,
                               OrderClient orderClient) {
         this.paymentMapper = paymentMapper;
         this.callbackLogService = callbackLogService;
-        this.rabbitTemplate = rabbitTemplate;
+        this.outboxWriter = outboxWriter;
         this.orderClient = orderClient;
     }
 
@@ -173,18 +172,27 @@ public class PaymentServiceImpl implements PaymentService {
             entity.setPaidAt(Times.now());
         }
 
-        // 只在这里发布：重复回调已在前面的幂等分支返回，并发重复则在 updated=0 分支返回，
-        // 两条路径都不会重复投递下游
+        // 事件发布改为**写发件箱，与状态变更同一个事务**（U60）。
+        //
+        // 原先它是在这个方法体内直接 convertAndSend。Spring 的事务提交发生在方法
+        // 返回之后，而发送是立即生效的网络动作 —— 存在这个窗口：事件已经投出去、
+        // 事务还没提交，此刻崩溃或提交失败，钱的状态没有落库、下游却已经按
+        // 「支付完成」转了订单。资金路径上最贵的一种分叉。
+        //
+        // 现在只写 event_outbox（随事务一起提交或回滚），由 OutboxRelay 在提交后
+        // 扫描投递。并发重复回调仍然由上面那条条件更新拦住：updated=0 的分支
+        // 直接抛异常退出，走不到这里，发件箱里不会多出一行。
         if (PAY_SUCCESS.equals(incoming)) {
-            rabbitTemplate.convertAndSend(ORDER_EXCHANGE, PAYMENT_COMPLETED_KEY,
+            outboxWriter.append(PAYMENT_COMPLETED_KEY, request.getOrderId() + "",
+                    ORDER_EXCHANGE, PAYMENT_COMPLETED_KEY,
                     new PaymentCompletedEventPayload(entity.getOrderId(), entity.getOrderNo(),
-                            request.getTransactionNo(), entity.getAmount(), entity.getPaidAt()),
-                    new CorrelationData(entity.getOrderNo()));
-            log.info("支付成功事件已发布: orderNo={}, txNo={}", entity.getOrderNo(), request.getTransactionNo());
+                            request.getTransactionNo(), entity.getAmount(), entity.getPaidAt()));
+            log.info("支付成功事件已登记待发布: orderNo={}, txNo={}", entity.getOrderNo(), request.getTransactionNo());
         }
 
         return toResponse(entity, null);
     }
+
 
     @Override
     public PaymentResponse getPayment(String userId, Long orderId) {

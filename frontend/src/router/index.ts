@@ -272,6 +272,15 @@ const router = createRouter({
           component: () => import('@/views/admin/AdminTicketView.vue'),
           meta: { admin: true, title: '客服工单' },
         },
+        {
+          // 知识库：上传文档 → 自动切分 → 重建索引进向量库与图谱。
+          // 放在 admin 段下是因为「谁都能看依据」（/knowledge/documents 公开只读）
+          // 与「谁来写依据」是两件事 —— 读的门开着，写必须换一扇门
+          path: 'knowledge',
+          name: 'admin-knowledge',
+          component: () => import('@/views/admin/AdminKnowledgeView.vue'),
+          meta: { admin: true, title: '知识库' },
+        },
       ],
     },
     {

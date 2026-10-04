@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -154,7 +154,22 @@ function onCreated(id: number) {
 // 详情页之间互相跳（点列表再进来）时组件会被复用，params 变了要重拉
 watch(ticketId, () => load())
 
-onMounted(load)
+// 挂载期间订阅推送：用户可能正开着这一页等客服回话，推送到了就静默重拉，
+// 会话流自己长出新消息 —— 不必手动点「刷新」。离开即断开
+let stopAwaiting: (() => void) | null = null
+onMounted(() => {
+  load()
+  stopAwaiting = ticketStore.subscribe()
+})
+onUnmounted(() => stopAwaiting?.())
+
+// 计数变化 = 有工单的状态/球权变了。静默重拉，保留屏幕上已有的内容直到新数据到位
+watch(
+  () => ticketStore.awaitingMe,
+  (next, prev) => {
+    if (prev !== null && next !== prev) load({ silent: true })
+  }
+)
 </script>
 
 <template>

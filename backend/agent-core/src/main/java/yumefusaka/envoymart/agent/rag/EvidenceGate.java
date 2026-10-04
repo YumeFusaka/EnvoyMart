@@ -74,17 +74,45 @@ public final class EvidenceGate {
     }
 
     public static Decision evaluate(List<DocumentChunk> chunks, Thresholds thresholds) {
+        return evaluate(chunks, thresholds, java.util.Set.of());
+    }
+
+    /**
+     * 带请求级图谱事实的判定。
+     * <p>
+     * @param graphChunkIds 本轮图谱路<b>触达过</b>的切片 key（可能已被重排截断、不在
+     *                      {@code chunks} 里）。空表示本轮无图谱依据。
+     *                      <p>
+     *                      这个参数存在的理由见 U76 第三层：图谱切片正文是「图谱推导：…」
+     *                      的转述，字面与问题不像，重排分天然低，topK 截断会把它整条丢掉。
+     *                      只看 {@code chunks} 的话，豁免分支在真实链路里永远没有输入——
+     *                      <b>不是没触发，是判据根本没送到。</b>
+     */
+    public static Decision evaluate(List<DocumentChunk> chunks, Thresholds thresholds,
+                                    java.util.Set<String> graphChunkIds) {
         if (chunks == null || chunks.isEmpty()) {
             return new Decision(Level.NONE, null, "未召回任何切片");
         }
 
+        boolean requestLevelGraph = graphChunkIds != null && !graphChunkIds.isEmpty();
+
         DocumentChunk top = null;
         boolean hasGraph = false;
+        DocumentChunk topGraph = null;
         for (DocumentChunk chunk : chunks) {
             if (chunk == null) {
                 continue;
             }
-            if (DocumentChunk.SOURCE_GRAPH.equals(chunk.getSource())) {
+            // 判定依据是「本轮图谱路命中过某一片」，不是「这条切片本身的 source 是 graph」。
+            // 后者是 U76 的病根：图谱边与知识库切片归一到同一个 chunkId，融合留的是先到的
+            // 文本版（source=manual），图谱身份在这一步就蒸发了——单测里手动构造
+            // source=graph 的切片能过，真实链路里永远构造不出来。
+            if (Boolean.TRUE.equals(chunk.getGraphBacked())
+                    || DocumentChunk.SOURCE_GRAPH.equals(chunk.getSource())) {
+                if (chunk.getScore() != null
+                        && (topGraph == null || chunk.getScore() > topGraph.getScore())) {
+                    topGraph = chunk;
+                }
                 hasGraph = true;
             }
             if (chunk.getScore() == null) {
@@ -100,17 +128,41 @@ public final class EvidenceGate {
                     "召回 " + chunks.size() + " 条但未提供相关性分，按放行处理");
         }
 
+        // 请求级图谱事实：图谱路本轮触达过某片依据，而那片可能已经被重排截掉。
+        // 它与「切片自带 graphBacked 标记」是同一件事的两个来源——后者描述结果列表里
+        // 能看见的，前者描述检索过程里发生过的。两者任一成立都算「图谱依据在场」。
+        hasGraph = hasGraph || requestLevelGraph;
+
         boolean reranked = Boolean.TRUE.equals(top.getReranked());
         double threshold = reranked ? thresholds.minRerankScore() : thresholds.minSimilarity();
         String scale = reranked ? "重排分" : "余弦相似度";
         double score = top.getScore();
 
         if (score < threshold) {
-            // 图谱依据在场时分数照报（日志要如实记下这一轮文本路有多弱），但判定提到 SUFFICIENT
-            if (hasGraph) {
+            // 图谱依据在场时分数照报（日志要如实记下这一轮文本路有多弱），但判定提到 SUFFICIENT。
+            //
+            // <b>「在场」还不够，它还必须是本轮最强的那条。</b>实测反例：用户问「K2 和鱼油能
+            // 一起吃吗」，图上没有 K2，实体链接只命中鱼油，召回的全是鱼油的边；这些边带着
+            // graphBacked 标记把判定从 WEAK 抬成 SUFFICIENT，于是「K2 未收录」被说成了
+            // 「有图谱依据」。判据收窄后，只有被重排器认可（分数不低于最强文本切片）的图谱
+            // 依据才有资格替整轮背书——转述文本的字面相似度低是正常的，但低到连候选里都
+            // 不是最强的，说明它并没有回答用户的问题
+            //
+            // <b>请求级事实走一条不同的判据。</b>图谱切片被重排截掉时它连分数都没有，
+            // 自然「不是最强的那条」——但被截掉的原因是它的正文是转述、字面分天然低，
+            // 与「它没回答用户的问题」是两回事。这种情形由图谱路自己的召回决定：
+            // 能进图谱路的边，已经过实体链接与关系过滤，且引文必须逐字出现在事实源文档里
+            // （见 knowledge-service 的 TripleValidator）——门槛在检索之前就已经把过了。
+            // 因此「图谱触达过、且本轮文本路确实弱」→ 按足够处理。
+            // K2 反例（图上没有 K2、只召回鱼油的边）不落在这里：那种情形下图谱切片
+            // 仍在结果列表里（不是被截掉的），走 graphIsTop 那半条判据。
+            boolean graphIsTop = topGraph != null && topGraph.getScore() >= score;
+            boolean graphTruncated = requestLevelGraph && topGraph == null;
+            if (hasGraph && (graphIsTop || graphTruncated)) {
                 return new Decision(Level.SUFFICIENT, score,
                         "%s %.4f 低于阈值 %.2f，但本轮有图谱依据在场，按足够处理"
-                                .formatted(scale, score, threshold));
+                                .formatted(scale, score, threshold)
+                                + (graphTruncated ? "（图谱切片被重排截断，依据来自检索过程记录）" : ""));
             }
             return new Decision(Level.WEAK, score,
                     "%s %.4f 低于阈值 %.2f".formatted(scale, score, threshold));

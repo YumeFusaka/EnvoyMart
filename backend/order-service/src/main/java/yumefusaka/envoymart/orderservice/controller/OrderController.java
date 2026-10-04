@@ -116,4 +116,19 @@ public class OrderController {
             @PathVariable("id") Long id) {
         return Result.success(orderDomainService.getLogistics(userId, id));
     }
+
+    /**
+     * 内部接口：某用户最早一次已收货订单的时间，给评价侧判「新账号刷评」用。
+     * <p>
+     * <b>不带身份头、也不读身份</b>：它是服务间通道，网关对 {@code /orders/internal/}
+     * 一律 404（见 {@code JwtGatewayFilter.INTERNAL_ONLY_PREFIXES}），只有 Feign 直连可达。
+     * 参数是 userId 而不是「当前用户」：调用方（review-service）要判的是「写评价的那个人」，
+     * 而它手上已经有经过鉴权的 userId，不需要也不能让订单服务再猜一次。
+     * <p>
+     * 返回 {@code data} 为 null 表示「从未有过收货」，调用方按新账号对待。
+     */
+    @GetMapping("/internal/users/{userId}/first-received")
+    public Result<java.time.LocalDateTime> firstReceivedAt(@PathVariable("userId") String userId) {
+        return Result.success(orderDomainService.firstReceivedAt(userId));
+    }
 }

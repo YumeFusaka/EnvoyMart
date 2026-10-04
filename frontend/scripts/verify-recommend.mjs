@@ -171,17 +171,22 @@ for (const [关键词, 排除词] of [
 
 // ─────────── 四、属性筛选是 AND 不是 OR ───────────
 console.log('\n【属性筛选：同时满足，不是满足任意一个】')
-const 软胶囊 = await search({ attributes: ['剂型:软胶囊'], size: 50 })
-const 孕妇 = await search({ attributes: ['适用人群:孕妇'], size: 50 })
-const 两者都要 = await search({ attributes: ['剂型:软胶囊', '适用人群:孕妇'], size: 50 })
-const 交集 = ids(软胶囊).filter((id) => ids(孕妇).includes(id))
+// 探测轴要选「两侧都真实存在、交集非空且不自证」的组合：
+// 「剂型:软胶囊 ∩ 适用人群:成人」= 4 条（软胶囊 4 条里 4 条都是成人款，交集=前者）。
+// 曾用「剂型:软胶囊 ∩ 适用人群:孕妇」——它交集恒为 0（演示库里孕妇款全是片剂），
+// 于是「交集非空」这半条断言把数据巧合当成了契约。断言要锚在契约上，不是锚在碰巧的数据上。
+const 轴一 = await search({ attributes: ['剂型:软胶囊'], size: 50 })
+const 轴二 = await search({ attributes: ['适用人群:成人'], size: 50 })
+const 两者都要 = await search({ attributes: ['剂型:软胶囊', '适用人群:成人'], size: 50 })
+const 交集 = ids(轴一).filter((id) => ids(轴二).includes(id))
 ck(
   '两个属性同时给出 == 各自结果集的交集',
   same(ids(两者都要), 交集),
   `交集 [${交集}] vs 实际 [${ids(两者都要)}] —— 差的是「满足任意一个」，那是 OR`,
 )
-ck('两个属性各自都筛掉了一些（不然上一条是空转）', 交集.length < ids(软胶囊).length && 交集.length > 0,
-  `软胶囊 ${软胶囊.total} 条、孕妇 ${孕妇.total} 条、交集 ${交集.length} 条`)
+ck('两个属性各自都筛掉了一些（不然上一条是空转）',
+  交集.length > 0 && 交集.length <= ids(轴一).length && 轴二.total > 交集.length,
+  `软胶囊 ${轴一.total} 条、成人 ${轴二.total} 条、交集 ${交集.length} 条`)
 
 const 不存在的值 = await search({ attributes: ['适用人群:孕夫'], size: 50 })
 ck(
@@ -263,16 +268,25 @@ const 登录 = await (
     body: JSON.stringify({ username: 'admin', password: '123456' }),
   })
 ).json()
-const 会话 = await (
-  await fetch(`${GW}/ai/chat`, {
+// 这一段的三条断言同源（都源自这一次 /ai/chat），一次模型抖动会三连红（U75）。
+// 但「加一次重试」不能把失败证据抹掉：第一次请求的完整响应先留档，
+// 重试成功时把它打出来——U75 当时吃亏就吃在「首次失败输出被 tail 截断，根因只能推断」。
+const 提问 = '帮我找孕妇能吃的钙片，200 元以内，不含乳糖'
+async function 问一次(sessionId) {
+  const 响应 = await fetch(`${GW}/ai/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${登录.data.token}` },
-    body: JSON.stringify({
-      sessionId: `verify-recommend-${Date.now()}`,
-      message: '帮我找孕妇能吃的钙片，200 元以内，不含乳糖',
-    }),
+    body: JSON.stringify({ sessionId, message: 提问 }),
   })
-).json()
+  return 响应.json()
+}
+const 首答 = await 问一次(`verify-recommend-${Date.now()}`)
+let 会话 = 首答
+if (!((首答.data ?? {}).toolCalls ?? []).some((t) => t.tool === 'product_search' && t.success === true)) {
+  console.log('  首次未拿到成功的商品检索，重试一次；首次响应留档如下：')
+  console.log(JSON.stringify(首答).slice(0, 800))
+  会话 = await 问一次(`verify-recommend-retry-${Date.now()}`)
+}
 const 对话 = 会话.data ?? {}
 const 商品调用 = (对话.toolCalls ?? []).filter((t) => t.tool === 'product_search')
 const 成功的那次 = 商品调用.find((t) => t.success === true)

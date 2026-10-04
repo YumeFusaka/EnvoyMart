@@ -383,7 +383,7 @@ class CitationVerifierTest {
     }
 
     /**
-     * 同一份文档切成多片是常态（本项目 16 篇 / 132 片）。
+     * 同一份文档切成多片是常态（本项目 47 篇 / 408 片）。
      * <p>
      * 取最靠前的那条：模型写《文档名》时本来就没指明是哪个切片，指向该文档最相关
      * ——即排在前面——的那条，不比一个不能点的书名号更错，而它让用户有得点。
@@ -405,5 +405,147 @@ class CitationVerifierTest {
                 .title(title)
                 .position(position)
                 .build();
+    }
+
+    // ==================== 无依据横幅：寒暄 vs 平台陈述 ====================
+    // 横幅的判据原先只有「没有引用、没有工具记录」，于是纯寒暄轮也挂上一条
+    // 「无平台依据」的橙色警示。收紧成「至少有一句被 needsCitation 判为断言」是错的：
+    // 「平台支持七天无理由退货」既没有数字也没有 FACT_SIGNAL 的词，
+    // 那一改会让整段编造的政策条款不再被标注 —— 用可见但无害的提示换静默幻觉漏洞。
+    // 下面两个用例就是这条边界的两侧，必须同时成立。
+
+    @Test
+    void 纯寒暄不标为无依据() {
+        String[] 寒暄 = {
+                "你好！有什么可以帮你的吗？",
+                "不客气，随时找我。",
+                "好的，我这就为你处理。",
+        };
+
+        for (String reply : 寒暄) {
+            var verdict = CitationVerifier.verify(reply, 3, false);
+            assertThat(verdict.ungrounded())
+                    .as("「%s」没有任何关于平台的陈述，挂无依据横幅是误报", reply)
+                    .isFalse();
+            assertThat(verdict.reply()).isEqualTo(reply);
+            assertThat(verdict.unsupported()).isEmpty();
+        }
+    }
+
+    /**
+     * <b>真实形态</b>：模型对「你好」不是回一句「你好」，而是回一段带能力清单的自我介绍。
+     * <p>
+     * 这段文本里「订单 / 物流 / 售后 / 商品」这些领域名词一个不少，第一版判据
+     * （领域名词出现即算平台陈述）因此把整篇判成「无平台依据」，橙色横幅照挂——
+     * 端到端实测就是这么漏的。清单描述的是<b>助手能做什么</b>，不是<b>平台有什么规则</b>。
+     */
+    @Test
+    void 带能力清单的自我介绍不标为无依据() {
+        String reply = """
+                你好！我是你的电商助手，可以帮你：
+
+                - **找商品**：按需求、价格、适用人群等帮你筛选
+                - **查订单**：订单状态、金额、商品明细、收货信息
+                - **查物流**：包裹到哪了、每一步的轨迹
+                - **售后咨询**：退换货规则、商品说明书相关问题
+                - **搭配检查**：几样东西能不能一起吃/一起用
+
+                有什么想了解的，直接告诉我就行～""";
+
+        // 走意图门槛这一版：用户问的是「你好」，不是平台的事
+        var verdict = CitationVerifier.verify(reply, 3, false, java.util.Set.of(), "你好");
+
+        assertThat(verdict.ungrounded())
+                .as("自我介绍里的领域名词说的是助手能做什么，不是平台规则，挂横幅是误报")
+                .isFalse();
+        assertThat(verdict.reply()).isEqualTo(reply);
+    }
+
+    /**
+     * 意图门槛不能把真正的编造放过去 —— 用户问的就是退货政策，
+     * 模型给一段没有出处的政策条款，横幅必须挂。
+     */
+    @Test
+    void 用户问了平台的事时编造的政策陈述仍然标为无依据() {
+        var verdict = CitationVerifier.verify("平台支持七天无理由退货。", 3, false,
+                java.util.Set.of(), "你们平台支持七天无理由退货吗？");
+
+        assertThat(verdict.ungrounded())
+                .as("问的是退货政策，答的是没有出处的政策条款，必须标出来")
+                .isTrue();
+    }
+
+    /** 意图门槛本身：只有明确认出是纯寒暄才收回提示，其余一律按「问了平台的事」处理 */
+    @Test
+    void 意图门槛只对明确的纯寒暄放行() {
+        for (String chitchat : new String[] {"你好", "您好！", "谢谢", "好的", "再见", "你能做什么？"}) {
+            assertThat(CitationVerifier.asksAboutPlatform(chitchat))
+                    .as("「%s」是纯寒暄，不该被当作平台提问", chitchat)
+                    .isFalse();
+        }
+        for (String question : new String[] {
+                "你们平台支持七天无理由退货吗？",
+                "这个订单什么时候到？",
+                "维生素 D3 每天吃多少？",
+                "会员有什么权益？",
+                "这个东西怎么样？",
+                "维生素和钙片能一起吃吗？"}) {
+            assertThat(CitationVerifier.asksAboutPlatform(question))
+                    .as("「%s」在问平台/商品的事，必须按平台提问处理", question)
+                    .isTrue();
+        }
+        // 站外话题同样不是「在问平台的事」：模型答「我查不了天气」并附能力介绍是正确行为。
+        // 但必须整句没有平台领域词才算，混合提问仍按平台问题处理。
+        for (String offTopic : new String[] {"今天天气怎么样？", "现在几点了？", "讲个笑话吧"}) {
+            assertThat(CitationVerifier.asksAboutPlatform(offTopic))
+                    .as("「%s」只能由站外知识回答，不该挂「无平台依据」", offTopic)
+                    .isFalse();
+        }
+        assertThat(CitationVerifier.asksAboutPlatform("天气这么热，这个保健品需要冷藏吗？"))
+                .as("混合提问里有平台领域词，仍按平台问题处理")
+                .isTrue();
+    }
+
+    /**
+     * <b>U39 的核心反例 —— 这条断言丢了，U39 就修错了。</b>
+     * 建模出的政策条款既没有数字也不含 {@code FACT_SIGNAL} 的词，
+     * 它必须仍然被标成「整篇无依据」，否则编造的平台政策会静默通过。
+     */
+    @Test
+    void 没有数字没有信号词的政策陈述仍然标为无依据() {
+        String[] 编造的政策 = {
+                "平台支持七天无理由退货。",
+                "本店所有商品均支持货到付款。",
+                "会员可以享受双倍积分。",
+                "该商品适合孕妇服用。",
+        };
+
+        for (String reply : 编造的政策) {
+            var verdict = CitationVerifier.verify(reply, 3, false);
+            assertThat(verdict.ungrounded())
+                    .as("「%s」是在陈述平台的事，没有依据时必须标出来", reply)
+                    .isTrue();
+        }
+    }
+
+    /**
+     * 规则谓词的优先级 —— 一条真正的规则断言即便戴着「帮你」的帽子，
+     * 也不能被「助手自我描述」的排除规则放过去。
+     */
+    @Test
+    void 戴着帮你帽子的政策陈述仍然标为无依据() {
+        var verdict = CitationVerifier.verify("平台支持七天无理由退货，帮你省去后顾之忧。", 3, false);
+
+        assertThat(verdict.ungrounded())
+                .as("句子里有规则谓词「支持」，「帮你」不能把它变成自我介绍")
+                .isTrue();
+    }
+
+    /** 反向边界：有工具依据时，同样一段政策陈述不该被标 —— 事实来自工具返回 */
+    @Test
+    void 有工具依据时政策陈述不标为无依据() {
+        assertThat(CitationVerifier.verify("平台支持七天无理由退货。", 3, true).ungrounded())
+                .as("这一轮事实来自工具返回，没有引用是正常的")
+                .isFalse();
     }
 }

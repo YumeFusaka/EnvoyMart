@@ -10,7 +10,7 @@ import java.util.Map;
  * 计划中的一步 —— 由规划阶段产出，执行阶段按它调用工具。
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 public class PlanStep implements java.io.Serializable {
     private String tool;
     private Map<String, Object> arguments;

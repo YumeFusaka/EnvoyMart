@@ -9,6 +9,7 @@ import {
   updateAddress,
   type AddressPayload,
 } from '@/api/address'
+import ErrorState from '@/components/ui/ErrorState.vue'
 import { useTicketStore, useUserStore } from '@/stores'
 import type { UserAddress } from '@/types/models'
 
@@ -18,6 +19,12 @@ const profile = computed(() => userStore.profile)
 
 const addresses = ref<UserAddress[]>([])
 const loading = ref(false)
+/**
+ * 加载失败的原因。与 addresses 为空必须分开：
+ * 此前只有 try/finally，接口挂了 addresses 停在 []，界面显示「还没有收货地址」——
+ * 用户会以为地址被删了。空态不该带重试，失败态必须带。
+ */
+const error = ref<string | null>(null)
 
 const dialogOpen = ref(false)
 const saving = ref(false)
@@ -61,6 +68,11 @@ async function loadAddresses() {
   loading.value = true
   try {
     addresses.value = await listAddresses()
+    error.value = null
+  } catch (e) {
+    // 拦截器已经弹过一次全局提示，这里只留页面内的停留态与重试入口
+    error.value = e instanceof Error ? e.message : '加载失败'
+    addresses.value = []
   } finally {
     loading.value = false
   }
@@ -186,7 +198,15 @@ onMounted(() => {
       </div>
 
       <div v-loading="loading" class="address-wrap">
-        <el-empty v-if="!loading && addresses.length === 0" description="还没有收货地址" />
+        <ErrorState
+          v-if="!loading && error"
+          :message="error"
+          :on-retry="loadAddresses"
+        />
+        <el-empty
+          v-else-if="!loading && addresses.length === 0"
+          description="还没有收货地址"
+        />
         <ul v-else class="address-list">
           <li
             v-for="item in addresses"

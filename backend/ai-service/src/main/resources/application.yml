@@ -38,6 +38,7 @@ services:
   product-service-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
   order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
   knowledge-service-url: ${KNOWLEDGE_SERVICE_URL:http://127.0.0.1:9008}
+  auth-service-url: ${AUTH_SERVICE_URL:http://127.0.0.1:9001}
 
 jwt:
   token-name: token
@@ -95,7 +96,12 @@ envoymart:
     endpoint: ${MCP_ENDPOINT:/mcp}
     server-name: envoymart-mcp
     server-version: 1.0.0
-    instructions: EnvoyMart 电商业务工具（订单查询、物流追踪、商品搜索），供外部 Agent 调用。
+    instructions: >-
+      EnvoyMart 电商业务工具，供外部 Agent 调用。查询类：商品搜索与多条件筛选（product_search）、
+      订单查询（order_query）、物流追踪（logistics_query）、药物-营养素相互作用检查
+      （interaction_check）、知识库检索（knowledge_search）。
+      写操作类（**均需用户确认，调用时必须带 approvalToken**）：加购（cart_add）、
+      下单（cart_checkout）、售后申请（after_sale_apply）、取消订单（order_cancel）。
   rerank:
     # 重排与向量化同属百炼（DeepSeek 无 rerank 端点），默认复用 embedding 的 Key
     api-key: ${RERANK_API_KEY:${EMBEDDING_API_KEY:}}

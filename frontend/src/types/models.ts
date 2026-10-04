@@ -566,6 +566,17 @@ export interface ChatResponse {
    */
   approvalToken: string | null
   /**
+   * 本轮任务阶段，由后端的 TaskStage 以枚举名下发的字符串。
+   *
+   * 它回答的是「这次请求现在处在哪一步」：`WAITING_USER` 表示图在高危操作处
+   * 停下了、在等人确认；`DONE` 表示这一轮已经收尾。与 `pendingActions` 相比，
+   * 阶段还能表达「正在规划 / 正在执行 / 正在核对」这几种没有卡片可渲染的中间态。
+   *
+   * 用字符串而不是联合类型：这是跨版本契约，新增一个阶段时旧前端应当把它当作
+   * 未知值忽略，而不是让类型断言在运行时失效。
+   */
+  stage?: string | null
+  /**
    * 本轮证据门的判定，决定 `knowledge` 该被说成什么。
    *
    * - `SUFFICIENT`：相关度达标，可以称「依据」
@@ -582,6 +593,21 @@ export interface ChatResponse {
    * 检回来的——「依据 0 条」到底是库里没有，还是那句追问没被读懂，两者在这里分得开。
    */
   retrievalQuery?: string | null
+  /**
+   * 本轮检索**扩写**实际生效的变体（假想答案 HyDE + 角度改写）。
+   *
+   * 与 `retrievalQuery` 不是一回事：那个是「最终拿哪句话去检索」（指代消解后的结果），
+   * 这个是「检索前这句话被扩写成什么」。用户问「太贵了怎么办」时前者为 null、后者有内容，
+   * 只看 `retrievalQuery` 永远看不出扩写跑没跑。
+   *
+   * `applied` 为 false 表示本轮没有扩写——它同时覆盖「开关关掉」「模型降级」
+   * 与「判定无需扩写」三种情况，展示时不必区分，但不要把它读成「扩写失败了」。
+   */
+  expansion?: {
+    hypothetical: string | null
+    angles: string[]
+    applied: boolean
+  } | null
   /**
    * 讲了一条事实却没交代出处、已被后端从 `reply` 里剔除的句子。
    *
@@ -639,6 +665,14 @@ export type EvidenceLevel = 'SUFFICIENT' | 'WEAK' | 'NONE'
 export interface KnowledgeConflict {
   refs: number[]
   detail: string
+  /**
+   * 后端能否依据版本信息定夺。
+   *
+   * `true` 表示已按较新版本给出结论（普通提示即可）；`false` 表示无法判定先后、
+   * 必须人工确认——只有这一种才值得把原文链接摆到最显眼的位置。
+   * 缺省按 `false` 处理：老响应没有这个字段时，宁可多让用户看一眼原文。
+   */
+  resolved?: boolean
 }
 
 export interface ChatMessage {
@@ -654,10 +688,14 @@ export interface ChatMessage {
   pendingActions?: string[]
   /** 确认这张卡片要带回服务端的令牌，与 `pendingActions` 同生共死 */
   approvalToken?: string
+  /** 本轮任务阶段，见 `ChatResponse.stage` 的说明。仅用于展示与状态判定 */
+  stage?: string | null
   /** 证据门判定，随 `knowledge` 一起透传给引用区，决定标题措辞 */
   evidenceLevel?: EvidenceLevel
   /** 本轮检索实际使用的查询句（发生过指代消解改写时才有），透传给引用区标明来路 */
   retrievalQuery?: string
+  /** 本轮检索扩写（HyDE + 角度改写），透传给引用区，与 retrievalQuery 是两件事 */
+  expansion?: ChatResponse['expansion']
   /**
    * 讲了一条事实却没交代出处、已被后端从正文里剔除的句子。
    *

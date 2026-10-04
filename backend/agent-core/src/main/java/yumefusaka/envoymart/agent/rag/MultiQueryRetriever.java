@@ -49,4 +49,27 @@ public class MultiQueryRetriever implements Retriever {
         }
         return base.retrieve(query, expansions == null ? QueryExpansions.none() : expansions, topK);
     }
+
+    /**
+     * 同一条路径，但保留 {@link RetrievalOutcome} 里的请求级事实。
+     * <p>
+     * 这一层是装饰器，它不该让任何事实在包装时丢失——图谱依据是不是在场，
+     * 与「有没有先扩写」完全无关，包装不该改变它。
+     */
+    @Override
+    public RetrievalOutcome retrieveWithOutcome(String query, int topK) {
+        QueryExpansions expansions;
+        try {
+            expansions = expander.expand(query);
+        } catch (RuntimeException e) {
+            log.warn("[QueryExpand] 扩写失败，本次按原句检索：{}", e.toString());
+            expansions = QueryExpansions.none();
+        }
+        // 这一层负责把扩写事实带出去，不是靠 base 反推——base 只知道自己收到了什么，
+        // 不知道「本来该扩却没扩」（比如 expander 抛了）。这两件事在排查时指向完全不同的方向：
+        // 前者是检索侧的问题，后者是扩写器或模型侧的问题。
+        // 传下去的 null 归一成 none()，与传出去的那个必须是同一个对象语义
+        QueryExpansions effective = expansions == null ? QueryExpansions.none() : expansions;
+        return base.retrieveWithOutcome(query, effective, topK);
+    }
 }

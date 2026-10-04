@@ -27,6 +27,8 @@ import yumefusaka.envoymart.reviewservice.model.ReviewResponse;
 import yumefusaka.envoymart.reviewservice.model.ReviewStatistics;
 import yumefusaka.envoymart.reviewservice.mq.ReviewAggregatePublisher;
 import yumefusaka.envoymart.reviewservice.service.ReviewAggregateReader;
+import yumefusaka.envoymart.reviewservice.service.ReviewFloodGuard;
+import yumefusaka.envoymart.reviewservice.service.ReviewNewAccountGuard;
 import yumefusaka.envoymart.reviewservice.service.ReviewService;
 
 import java.time.LocalDateTime;
@@ -41,6 +43,8 @@ import java.util.stream.Collectors;
 public class ReviewServiceImpl implements ReviewService {
 
     private static final String STATUS_PUBLISHED = "PUBLISHED";
+    /** 新账号保护期内的评价先进这个状态，由管理端复用已有的隐藏/审核能力处理 */
+    private static final String STATUS_PENDING = "PENDING";
     /** 可以评价的订单状态：收到货之后才有资格 */
     private static final Set<String> REVIEWABLE_ORDER_STATUS = Set.of("RECEIVED", "COMPLETED");
     private static final int MAX_IMAGES = 9;
@@ -66,6 +70,8 @@ public class ReviewServiceImpl implements ReviewService {
     private final ProductClient productClient;
     private final ReviewAggregateReader aggregateReader;
     private final ReviewAggregatePublisher aggregatePublisher;
+    private final ReviewFloodGuard floodGuard;
+    private final ReviewNewAccountGuard newAccountGuard;
 
     public ReviewServiceImpl(ReviewMapper reviewMapper,
                              ReviewImageMapper reviewImageMapper,
@@ -73,7 +79,9 @@ public class ReviewServiceImpl implements ReviewService {
                              OrderClient orderClient,
                              ProductClient productClient,
                              ReviewAggregateReader aggregateReader,
-                             ReviewAggregatePublisher aggregatePublisher) {
+                             ReviewAggregatePublisher aggregatePublisher,
+                             ReviewFloodGuard floodGuard,
+                             ReviewNewAccountGuard newAccountGuard) {
         this.reviewMapper = reviewMapper;
         this.reviewImageMapper = reviewImageMapper;
         this.reviewUsefulMapper = reviewUsefulMapper;
@@ -81,19 +89,28 @@ public class ReviewServiceImpl implements ReviewService {
         this.productClient = productClient;
         this.aggregateReader = aggregateReader;
         this.aggregatePublisher = aggregatePublisher;
+        this.floodGuard = floodGuard;
+        this.newAccountGuard = newAccountGuard;
     }
 
     @Override
     @Transactional
-    public ReviewResponse create(String userId, CreateReviewRequest request) {
+    public ReviewResponse create(String userId, CreateReviewRequest request, String clientIp) {
         // 防刷放在回查订单**之前**：它只查本地两张表，而回查要跨服务一次往返。
         // 拦不住的请求不该先花掉一次下游调用
         requireNotFlooding(userId, request.getContent());
 
+        // 同 (商品, IP) 的短窗口计数。放在回查订单之前是同一个理由：它只碰 Redis。
+        // 这一步需要 spuId，而 spuId 要从订单行反查 —— 所以真正判的位置在下面拿到 item 之后，
+        // 这里先不做（见 requireNotSameIpFlooding）
+
         // 评价必须来自一次真实且已完成的购买。此前这里完全不校验：
         // orderId 只标了 @NotNull，填什么都不管 —— 实测填一个不存在的订单号、
         // 填别人的订单号、给从没买过的商品打分，三种情况全部被接受
-        OrderItemResponse item = requirePurchased(userId, request.getOrderId(), request.getOrderItemId());
+        PurchasedItem purchased = requirePurchased(userId, request.getOrderId(), request.getOrderItemId());
+        OrderItemResponse item = purchased.item();
+
+        requireNotSameIpFlooding(item.getSpuId(), clientIp, userId);
 
         List<String> images = normalizeImages(request.getImages());
 
@@ -107,7 +124,10 @@ public class ReviewServiceImpl implements ReviewService {
         entity.setRating(request.getRating());
         entity.setContent(request.getContent());
         entity.setIsAnonymous(Boolean.TRUE.equals(request.getAnonymous()) ? 1 : 0);
-        entity.setStatus(STATUS_PUBLISHED);
+        // 新账号（首次收货不满 7 天）的评价先进待审。判定放行的代价只是一次比对，
+        // 但它依赖一次跨服务查询 —— 而这次查询与 requirePurchased 走的是同一个下游，
+        // 所以放在已经确认订单确实存在、且属于本人之后
+        entity.setStatus(decideStatus(userId, purchased.receivedAt()));
         entity.setUsefulCount(0);
         entity.setCreatedAt(Times.now());
 
@@ -317,7 +337,7 @@ public class ReviewServiceImpl implements ReviewService {
      * 注意判的是<b>业务码</b>而不是 HTTP 状态码：order-service 的异常被统一包成
      * HTTP 200 + {@code code=500}，而 Feign 只按状态码判断成败、不会抛异常。
      */
-    private OrderItemResponse requirePurchased(String userId, Long orderId, Long orderItemId) {
+    private PurchasedItem requirePurchased(String userId, Long orderId, Long orderItemId) {
         Result<OrderResponse> result;
         try {
             result = orderClient.getOrder(userId, orderId);
@@ -335,10 +355,52 @@ public class ReviewServiceImpl implements ReviewService {
             throw new IllegalStateException("订单尚未完成，收货后才能评价");
         }
 
-        return order.getItems() == null ? null : order.getItems().stream()
-                .filter(item -> orderItemId.equals(item.getId()))
+        OrderItemResponse item = order.getItems() == null ? null : order.getItems().stream()
+                .filter(orderItem -> orderItemId.equals(orderItem.getId()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("该订单中不含此商品，无法评价"));
+        // 连同订单的收货时间一起带出来：新账号判据要用它作对照，
+        // 而它就在刚取回的这份响应里 —— 再查一次订单只是同一份数据的第二次往返
+        return new PurchasedItem(item, order.getReceivedAt());
+    }
+
+    /**
+     * 评价的前置事实：命中的订单行 + 这笔订单的收货时间。
+     * <p>
+     * 合在一起返回而不是让调用方再查一次：两份数据必须来自<b>同一次</b>订单读取，
+     * 否则「校验过的那一单」与「用来判收货时间的那一单」可能是两笔不同的订单。
+     */
+    private record PurchasedItem(OrderItemResponse item, LocalDateTime receivedAt) {
+    }
+
+    /**
+     * 同 (商品, IP) 的短窗口刷评计数。
+     * <p>
+     * <b>超限时拒绝而不是转待审</b>：这里拦的是「同一台机器短时间内在同一个商品下灌评价」，
+     * 那是机器行为，没有「先收下再判」的价值 —— 收下来只会把待审队列灌满。
+     * 而新账号保护期不同，它可能是一次真实的首购，所以那边是转待审。
+     */
+    private void requireNotSameIpFlooding(Long spuId, String clientIp, String userId) {
+        var count = floodGuard.recordAndCheck(spuId, clientIp);
+        if (count.isEmpty()) {
+            return;
+        }
+        if (count.getAsInt() > ReviewFloodGuard.MAX_SAME_SPU_PER_IP) {
+            log.warn("[Review] 同商品同 IP 短窗口评价超限，已拒绝: spuId={} ip={} user={} count={}",
+                    spuId, clientIp, userId, count.getAsInt());
+            throw new IllegalStateException("操作过于频繁，请稍后再试");
+        }
+    }
+
+    /**
+     * 决定这条评价的初始状态。
+     * <p>
+     * 正常账号直接 {@code PUBLISHED}（老行为不变）；被保护的账号写 {@code PENDING}。
+     * 判不了时按 {@code PUBLISHED} 放行 —— 见 {@link ReviewNewAccountGuard}。
+     */
+    private String decideStatus(String userId, LocalDateTime orderReceivedAt) {
+        return newAccountGuard.shouldHoldForReview(userId, orderReceivedAt)
+                ? STATUS_PENDING : STATUS_PUBLISHED;
     }
 
     // ==================== 装配 ====================

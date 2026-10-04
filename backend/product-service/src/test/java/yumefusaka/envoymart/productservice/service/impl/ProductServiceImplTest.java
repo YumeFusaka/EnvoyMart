@@ -98,6 +98,28 @@ class ProductServiceImplTest {
         assertThat(capturedSql(new ProductQuery())).doesNotContain("product_sku");
     }
 
+    /**
+     * U57：零评价商品的 rating_avg 是 0.00（「没有评分」），按评分排序时必须显式排除它们，
+     * 不能靠默认值兜。
+     * <p>
+     * 这条钉的是一类<b>不会报错</b>的排序缺陷：建表默认值曾经是 5.00，那样零评价商品会排到
+     * 全部真实好评之前；后来统一到 0.00 又会沉底。两种表现都由默认值决定，
+     * 而正确判据只应是 review_count > 0 —— 与那个默认值叫什么无关。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void 按评分排序时零评价商品必须被显式排除() {
+        ProductQuery query = new ProductQuery();
+        query.setSort("rating");
+
+        String sql = capturedSql(query);
+
+        assertThat(sql)
+                .as("判据必须落在 review_count 上（过滤 + 排序），而不是依赖 rating_avg 的默认值")
+                .contains("review_count > ?")
+                .contains("rating_avg desc");
+    }
+
     @SuppressWarnings("unchecked")
     private String capturedSql(ProductQuery query) {
         service.list(query);

@@ -7,6 +7,8 @@ import org.apache.ibatis.annotations.Select;
 import yumefusaka.envoymart.orderservice.entity.SupportTicketEntity;
 import yumefusaka.envoymart.orderservice.model.TicketSummary;
 
+import java.util.List;
+
 @Mapper
 public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
 
@@ -33,4 +35,20 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
             where user_id = #{userId}
             """)
     TicketSummary countByUser(@Param("userId") String userId);
+
+    /**
+     * 「等你回应」的工单 id，与 {@link #countByUser} 里的 {@code awaiting_me} 用同一段谓词。
+     * <p>
+     * 这两段 SQL 必须逐字一致 —— 「角标显示 3、点进去只有 2 条」正是那种两边单看都正常、
+     * 合起来才穿帮的错。SSE 推送同时带计数与 id 列表，靠的就是它们同出一源。
+     */
+    @Select("""
+            select id
+            from support_ticket
+            where user_id = #{userId}
+              and status <> 'CLOSED'
+              and (last_reply_by = 'ADMIN' or status = 'RESOLVED')
+            order by updated_at desc
+            """)
+    List<Long> selectAwaitingIds(@Param("userId") String userId);
 }

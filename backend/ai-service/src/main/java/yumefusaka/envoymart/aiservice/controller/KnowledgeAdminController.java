@@ -2,6 +2,7 @@ package yumefusaka.envoymart.aiservice.controller;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -52,6 +53,27 @@ public class KnowledgeAdminController {
     @PostMapping("/reindex")
     public Result<KnowledgeIndexer.Status> reindex() {
         return Result.success(indexer.rebuildAsync());
+    }
+
+    /**
+     * 单篇增量重建：管理台上传/编辑/停用一篇文档后调用，让这一篇立刻生效。
+     * <p>
+     * <b>为什么需要它</b>：全量 {@code /reindex} 是「清空 + 整库 embedding + 全量图谱抽取」，
+     * 实测七十几秒、十几次模型调用。上传一篇文档就付这个代价，等于把「改一条规则」
+     * 变成「等一分钟、按整库计费」——于是管理台要么很慢，要么（更糟）让人干脆不点重建，
+     * 让「知识库改了但 AI 不知道」变成常态。
+     * <p>
+     * <b>为什么是同步返回</b>：单篇只需一次 embedding 调用 + 一次图谱抽取，
+     * 是秒级操作，没有超出 HTTP 超时的风险。全量那边异步是因为它会超时，不是因为
+     * 「管理动作都该异步」——给秒级操作套异步只会让调用方多写一轮轮询。
+     * <p>
+     * <b>停用/删除也走这里</b>：传进来的 {@code docNo} 若已不在语料中（停用的文档不在语料里），
+     * 会执行「只删不写」，把它的向量与图谱边清掉。
+     */
+    @PostMapping("/reindex/{docNo}")
+    public Result<KnowledgeIndexer.IncrementalResult> reindexOne(
+            @PathVariable("docNo") String docNo) {
+        return Result.success(indexer.rebuildOne(docNo));
     }
 
     /**

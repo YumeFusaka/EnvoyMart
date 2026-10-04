@@ -176,6 +176,17 @@ public class ProductSearchService {
             }
         }
 
+        // 按评分排序时，**零评价商品必须被排除在外**，而不是靠 rating_avg 的默认值兜。
+        // 零评价的 rating_avg 是 0.00（「没有评分」而非「评分满分」），单按它降序排会沉底——
+        // 看着无害，但一旦默认值回到 5.00（历史上建表就是 5.00），从没被评价的商品
+        // 就会排到全部真实好评之前。「按评分选」的结果里本来就不该有没被评过的商品，
+        // 所以判据落在 reviewCount > 0 上，与 rating_avg 存的是什么值无关。
+        if ("rating".equals(query.getSort())) {
+            bool.filter(Query.of(q -> q.range(r -> r.number(n -> n
+                    .field("reviewCount")
+                    .gt(0.0)))));
+        }
+
         NativeQueryBuilder builder = new NativeQueryBuilder()
                 .withQuery(bool.build()._toQuery())
                 .withPageable(PageRequest.of(page, size))
@@ -321,6 +332,10 @@ public class ProductSearchService {
             case "price_asc" -> List.of(fieldSort("minPrice", SortOrder.Asc));
             case "price_desc" -> List.of(fieldSort("minPrice", SortOrder.Desc));
             case "newest" -> List.of(fieldSort("createdAt", SortOrder.Desc));
+            // 评分降序，同分看评价数（评价多更可信）。零评价商品已在上面的 filter 里排除
+            case "rating" -> List.of(
+                    fieldSort("ratingAvg", SortOrder.Desc),
+                    fieldSort("reviewCount", SortOrder.Desc));
             default -> List.of(
                     SortOptions.of(s -> s.score(score -> score.order(SortOrder.Desc))),
                     fieldSort("sales", SortOrder.Desc));

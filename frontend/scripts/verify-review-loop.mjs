@@ -212,6 +212,21 @@ ck('销量落的是台账而不是直接改数——按订单行记了 3 行', l
 // ════ 二、防刷：夹具 + 上限 + 重复内容 ════
 console.log('\n== 二、防刷（每日上限 / 当日重复内容） ==')
 
+// 同一 (商品, IP) 的短窗口刷评计数由 ReviewFloodGuard 用 Redis 计数，窗口 10 分钟、阈值 5 条。
+// 本脚本要在同一个 SPU 上连发 4 条评价验证「每日上限」，正好顶到这个 IP 窗口的上沿；
+// 上一轮跑完 10 分钟内再跑第二遍时，计数从 4 起步，第 2 条就被判成刷评——
+// 症状是「第 5 条评价」回 409「操作过于频繁」，看起来像每日上限坏了，其实是验收脚本不可重复。
+// 跑前清掉本 SPU 的窗口键：它只是防刷计数，清它是为了**让这一轮从零开始**，
+// 不改变任何被测行为（清空后 Guard 照常工作，本轮的 4 条照样会把它顶到阈值附近）。
+try {
+  execSync(
+    `docker exec envoymart-redis redis-cli del "review:flood:spu-ip:${SPU}:127.0.0.1"`,
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  )
+} catch (e) {
+  console.log(`  （清理同 IP 刷评窗口键失败，忽略：${e.message.split('\n')[0]}）`)
+}
+
 // 夹具注入 2 条「今天」的评价，让额度从 3 起步而不是从 0 起步。
 // order_item_id 用负数与真实订单行隔开（与 data.sql 的种子同一约定）。
 // **status 取 HIDDEN**：额度计数不看状态（被隐藏的不该把额度还回来），
@@ -231,8 +246,37 @@ const newReview = (item, rating, content, extra = {}) =>
     body: { orderId: order.id, orderItemId: item.id, rating, content, ...extra },
   })
 
+
+/**
+ * 提交评价并把「新账号保护期」引入的待审审掉。
+ * <p>
+ * 本脚本每轮新注册用户，ReviewNewAccountGuard 会把「人生第一单」的评价判成 PENDING
+ * ——这是产品行为（刷评治理③），不是缺陷。但脚本后续断言（1 星筛选、均分聚合、
+ * 「有用」计数）全都只看得到 PUBLISHED 的评价，直接提交而不审核就会取不到，
+ * 症状是「提交成功但列表里没有」，看起来像评价丢了。
+ * 走一遍管理员审核正是真实流程，顺带把这条保护期能力也覆盖到了。
+ */
+async function newReviewPublished(item, rating, content, extra = {}) {
+  const submitted = await newReview(item, rating, content, extra);
+  if (submitted.code !== 200 || !submitted.data?.id) {
+    return submitted;
+  }
+  if (submitted.data.status === 'PUBLISHED') {
+    return submitted;
+  }
+  const approved = await call(`/reviews/admin/reviews/${submitted.data.id}/status`, {
+    method: 'PUT',
+    token: A,
+    body: { status: 'PUBLISHED' },
+  });
+  if (approved.code !== 200) {
+    throw new Error(`审核放行评价 ${submitted.data.id} 失败：${approved.msg}`);
+  }
+  return { ...submitted, data: { ...submitted.data, status: 'PUBLISHED' } };
+}
+
 const ratingA = await detail(SPU)
-const reviewA = await newReview(itemA, 1, 'verify-review-loop 差评：包装破损，客服也没人接')
+const reviewA = await newReviewPublished(itemA, 1, 'verify-review-loop 差评：包装破损，客服也没人接')
 ck('第 3 条评价提交成功（额度未满）', reviewA.code === 200, `code=${reviewA.code} msg=${reviewA.msg}`)
 ck(
   '商品信息由服务端从订单行反查，不采信请求体',
@@ -248,12 +292,12 @@ ck(
 )
 ck('拒绝原因说得清是「内容完全相同」', (duplicated.msg ?? '').includes('完全相同'), duplicated.msg)
 
-const reviewB = await newReview(itemB, 5, 'verify-review-loop 好评：吃着不错，物流也快', {
+const reviewB = await newReviewPublished(itemB, 5, 'verify-review-loop 好评：吃着不错，物流也快', {
   images: ['/images/review/demo-1.jpg', '/images/review/demo-2.jpg'],
 })
 ck('第 4 条评价提交成功', reviewB.code === 200, `code=${reviewB.code} msg=${reviewB.msg}`)
 
-const reviewC = await newReview(itemC, 4, 'verify-review-loop 中评：还行，价格偏高')
+const reviewC = await newReviewPublished(itemC, 4, 'verify-review-loop 中评：还行，价格偏高')
 ck('第 5 条评价提交成功（正好用满今天的额度）', reviewC.code === 200, `code=${reviewC.code} msg=${reviewC.msg}`)
 
 const overLimit = await newReview(itemA, 3, 'verify-review-loop 第六条')

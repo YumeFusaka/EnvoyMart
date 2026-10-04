@@ -12,6 +12,15 @@ management:
 spring:
   application:
     name: product-service
+  # 上传图片的大小上限。
+  # Spring Boot 默认 multipart 单文件 1MB —— 小于业务规则里的 5MB，
+  # 于是运营传一张 3MB 的图会在**进入控制器之前**被容器拒掉，报的还是框架层的
+  # MaxUploadSizeExceededException，与「5MB」这条业务口径对不上。
+  # 这里把它抬到业务上限之上留一点余量，真正的类型与大小校验仍由 MediaStorageService 做
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
   # 缓存读停顿时长。
   #
   # **默认值是 60 秒**，这是个坑：Redis 挂掉时每个请求都要等满 60 秒才抛异常，

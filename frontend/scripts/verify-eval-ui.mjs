@@ -98,12 +98,12 @@ await openEval(anon)
 ck('页面标题渲染', (await anon.locator('.eval-header h1').textContent())?.includes('评测'))
 
 const hero = (await anon.locator('.metric-card--hero').textContent()) ?? ''
-ck('Hit Rate@3 = 63.3%（与夹具基线逐位一致）', hero.includes('63.3'), hero.replace(/\s+/g, ' ').trim())
+ck('Hit Rate@3 = 69.2%（与夹具基线逐位一致）', hero.includes('69.2'), hero.replace(/\s+/g, ' ').trim())
 
 const metrics = (await anon.locator('.metric-grid').textContent()) ?? ''
-ck('MRR@3 = 0.565', metrics.includes('0.565'))
-ck('NDCG@3 = 0.572', metrics.includes('0.572'))
-ck('Hit Rate@5 = 67.5%', metrics.includes('67.5'))
+ck('MRR@3 = 0.604', metrics.includes('0.604'))
+ck('NDCG@3 = 0.617', metrics.includes('0.617'))
+ck('Hit Rate@5 = 75.0%', metrics.includes('75.0'))
 
 const meta = (await anon.locator('.eval-meta').textContent()) ?? ''
 ck('语料口径 = 90 篇 × 120 条', meta.includes('90') && meta.includes('120'), meta.replace(/\s+/g, ' ').trim())
@@ -112,8 +112,8 @@ const strata = anon.locator('.stratum')
 ck('三档分层齐备', (await strata.count()) === 3, `count=${await strata.count()}`)
 const strataText = (await anon.locator('.strata-panel').textContent()) ?? ''
 ck('字面档 97.5%', strataText.includes('97.5'))
-ck('口语档 70.0%', strataText.includes('70.0'))
-ck('难例档 22.5%', strataText.includes('22.5'))
+ck('口语档 75.0%', strataText.includes('75.0'))
+ck('难例档 35.0%', strataText.includes('35.0'))
 
 const bars = anon.locator('.stratum__bar')
 const barLabels = await bars.evaluateAll((nodes) => nodes.map((n) => n.getAttribute('aria-label')))
@@ -131,11 +131,11 @@ const expansionRows = anon.locator('.expansion-row')
 ck('扩写对照三档齐备', (await expansionRows.count()) === 3, `count=${await expansionRows.count()}`)
 
 const expansionText = (await expansion.textContent()) ?? ''
-ck('全量扩写前 63.3%', expansionText.includes('63.3'))
-ck('全量扩写后 75.8%', expansionText.includes('75.8'))
-ck('口语档扩写前 70.0%', expansionText.includes('70.0'))
+ck('全量扩写前 69.2%', expansionText.includes('69.2'))
+ck('全量扩写后 76.7%', expansionText.includes('76.7'))
+ck('口语档扩写前 75.0%', expansionText.includes('75.0'))
 ck('口语档扩写后 85.0%', expansionText.includes('85.0'))
-ck('语义档扩写前 22.5%', expansionText.includes('22.5'))
+ck('语义档扩写前 35.0%', expansionText.includes('35.0'))
 ck('语义档扩写后 45.0%', expansionText.includes('45.0'))
 
 const expansionBars = anon.locator('.expansion-row__bar')
@@ -163,30 +163,28 @@ ck(
 const deltas = await anon
   .locator('.expansion-delta')
   .evaluateAll((nodes) => nodes.map((n) => n.textContent?.trim()))
-// 零增益那个徽标刻意写成 `0.0pp` 而不是 `+0.0pp`——字面档是 97.5 → 97.5，
-// 给它加个加号会让「没有变化」读起来像「涨了一点」。所以这里断言的是
-// 「增益带 +、零增益不带符号」，而不是「每个都带符号」。
-const deltaPattern = /^[+-]?\d+\.\d+pp$/
+// 零增益那个徽标刻意写成 `0.0pp` 而不是 `+0.0pp`——若某一档扩写前后不变，
+// 给它加个加号会让「没有变化」读起来像「涨了一点」。本轮检索改进后字面档也涨了
+// （97.5 → 100.0），四档全是正增益，所以断言收紧成「每个都带 +」：
+// 一旦将来某档回落到零增益，这条会红，提醒人回去把徽标的符号语义补齐。
+const deltaPattern = /^\+\d+\.\d+pp$/
 ck(
-  '增益徽标：正增益带 +，零增益如实显示 0.0pp',
-  deltas.length === 4 &&
-    deltas.every((text) => deltaPattern.test(text ?? '')) &&
-    deltas.some((text) => (text ?? '').startsWith('+')) &&
-    deltas.some((text) => (text ?? '').startsWith('0.0')),
+  '增益徽标：四档均为正增益且带 + 号',
+  deltas.length === 4 && deltas.every((text) => deltaPattern.test(text ?? '')),
   JSON.stringify(deltas),
 )
 
 const rows = anon.locator('.case-row')
 ck('逐条明细 120 条全列', (await rows.count()) === 120, `count=${await rows.count()}`)
 const missRows = anon.locator('.case-row.is-miss')
-ck('未命中 44 条且已标注', (await missRows.count()) === 44, `count=${await missRows.count()}`)
+ck('未命中 37 条且已标注', (await missRows.count()) === 37, `count=${await missRows.count()}`)
 
 await anon.locator('.cases-filter').getByText('仅未命中', { exact: true }).click()
-await poll(() => anon.locator('.case-row').count(), (n) => n === 44, 8000)
-ck('筛选「仅未命中」后只剩未命中行', (await anon.locator('.case-row').count()) === 44)
+await poll(() => anon.locator('.case-row').count(), (n) => n === 37, 8000)
+ck('筛选「仅未命中」后只剩未命中行', (await anon.locator('.case-row').count()) === 37)
 ck(
   '计数文案跟随筛选',
-  ((await anon.locator('.cases-count').textContent()) ?? '').includes('44 / 120'),
+  ((await anon.locator('.cases-count').textContent()) ?? '').includes('37 / 120'),
   (await anon.locator('.cases-count').textContent()) ?? '',
 )
 

@@ -15,6 +15,12 @@ const isDev = import.meta.env.DEV
 
 const formRef = ref<FormInstance>()
 const submitting = ref(false)
+/**
+ * 提交失败的原因。拦截器会把失败弹成右上角的 toast，但页面本身没有任何反应：
+ * 按钮从 loading 复原、表单还是原来那样，用户分不清「没点上」还是「被拒了」。
+ * 密码错误是最常见的失败，更要留在页面上而不是飘一下就走。
+ */
+const submitError = ref<string | null>(null)
 
 const form = reactive({
   username: '',
@@ -33,6 +39,7 @@ async function handleSubmit() {
   if (!valid) return
 
   submitting.value = true
+  submitError.value = null
   try {
     const data = await login({ username: form.username, password: form.password })
     userStore.setToken(data.token)
@@ -42,6 +49,8 @@ async function handleSubmit() {
     // 回跳到被守卫拦下的那一页；没有就回商城
     const redirect = route.query.redirect
     router.push(typeof redirect === 'string' && redirect ? redirect : '/shop')
+  } catch (e) {
+    submitError.value = e instanceof Error ? e.message : '登录失败'
   } finally {
     submitting.value = false
   }
@@ -56,6 +65,13 @@ async function handleSubmit() {
     foot-link-text="立即注册"
     foot-link-to="/register"
   >
+    <!-- 失败留在页面上，不只靠右上角那一下。包一层 div 而不是给 el-alert 加 class：
+         Element Plus 的 el-alert 会渲染自己的根类并丢掉透传的自定义 class，
+         直接写 class 定位不到，间距也无处可加 -->
+    <div v-if="submitError" class="submit-error">
+      <el-alert type="error" :closable="false" show-icon :title="submitError" />
+    </div>
+
     <el-form
       ref="formRef"
       :model="form"
@@ -103,6 +119,10 @@ async function handleSubmit() {
 <style scoped>
 .submit {
   width: 100%;
+}
+/* 失败提示与表单之间留一档间距，与 AuthShell 的 gap 一致 */
+.submit-error {
+  margin-bottom: var(--ys-space-4);
 }
 
 .demo-hint {

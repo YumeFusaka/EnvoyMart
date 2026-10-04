@@ -6,13 +6,16 @@ import yumefusaka.envoymart.agent.core.AgentCancelledException;
 import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.aiservice.llm.ModelPricing;
 import yumefusaka.envoymart.aiservice.memory.ChatHistoryStore;
+import yumefusaka.envoymart.aiservice.memory.ChatIdempotencyStore;
 import yumefusaka.envoymart.aiservice.model.ChatRequest;
+import yumefusaka.envoymart.aiservice.model.ChatResponse;
 import yumefusaka.envoymart.aiservice.service.impl.AiAssistantServiceImpl;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -43,7 +46,11 @@ class AiAssistantServiceTest {
     }
 
     private AiAssistantServiceImpl service(Agent agent, ChatHistoryStore history) {
-        return new AiAssistantServiceImpl(agent, mock(ModelPricing.class), history);
+        ChatIdempotencyStore idempotency = mock(ChatIdempotencyStore.class);
+        // 这几条用例钉的是「历史怎么记」，不是幂等；让占位一律成功，避免 mock 的默认
+        // 返回值（false）把流程引到「相同请求正在处理中」那条分支上
+        when(idempotency.tryAcquire(anyString(), any())).thenReturn(true);
+        return new AiAssistantServiceImpl(agent, mock(ModelPricing.class), history, idempotency);
     }
 
     @Test
@@ -157,5 +164,37 @@ class AiAssistantServiceTest {
 
         verify(history).recordTurn(eq("u1"), eq("s1"), eq("原问题"),
                 eq("用户看到的前半句"), any());
+    }
+
+    /**
+     * 同一请求号重复到达时，不再跑一遍 Agent —— 这是幂等真正要挡住的事。
+     * <p>
+     * 钉子钉在「模型调用次数」上而不是返回值上：返回值可以靠缓存伪造，
+     * 而重复执行一轮 Agent 的代价（重复计费、工具重复执行）只有调用次数能证明。
+     */
+    @Test
+    void 相同请求号重复到达时不重复执行() {
+        Agent agent = mock(Agent.class);
+        ChatHistoryStore history = mock(ChatHistoryStore.class);
+        ChatIdempotencyStore idempotency = mock(ChatIdempotencyStore.class);
+        when(idempotency.tryAcquire(anyString(), any())).thenReturn(false);
+        ChatResponse cached = ChatResponse.builder().reply("上一次的回答").build();
+        when(idempotency.previous(anyString(), any(), eq(ChatResponse.class)))
+                .thenReturn(java.util.Optional.of(cached));
+        AiAssistantServiceImpl service =
+                new AiAssistantServiceImpl(agent, mock(ModelPricing.class), history, idempotency);
+
+        // 幂等的判据是当前请求号；单测没有请求上下文，得显式摆一个
+        org.slf4j.MDC.put(yumefusaka.envoymart.common.web.RequestId.MDC_KEY, "req-1");
+        ChatResponse response;
+        try {
+            response = service.chat("u1", request(false));
+        } finally {
+            org.slf4j.MDC.remove(yumefusaka.envoymart.common.web.RequestId.MDC_KEY);
+        }
+
+        assertThat(response.getReply()).isEqualTo("上一次的回答");
+        verify(agent, never()).chat(anyString(), anyString(), anyString(), any());
+        verify(history, never()).recordTurn(anyString(), anyString(), anyString(), any(), any());
     }
 }

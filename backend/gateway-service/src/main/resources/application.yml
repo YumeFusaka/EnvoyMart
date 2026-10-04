@@ -56,6 +56,13 @@ spring:
               uri: lb://product-service
               predicates:
                 - Path=/favorites/**
+            # 上传的商品图片。单独一条路由、且**必须在 JwtGatewayFilter 里公开** ——
+            # 浏览器加载 <img src="/media/..."> 不会带 Authorization 头，
+            # 若要求登录，商品详情页对游客就是一片破图。图片里没有用户数据
+            - id: product-service-media
+              uri: lb://product-service
+              predicates:
+                - Path=/media/**
             - id: order-service-cart
               uri: lb://order-service
               predicates:

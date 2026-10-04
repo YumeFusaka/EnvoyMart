@@ -19,6 +19,7 @@ import yumefusaka.envoymart.orderservice.model.TicketStatus;
 import yumefusaka.envoymart.orderservice.model.TicketSummary;
 import yumefusaka.envoymart.orderservice.service.SupportTicketService;
 import yumefusaka.envoymart.orderservice.service.TicketDomainService;
+import yumefusaka.envoymart.orderservice.service.TicketNotifier;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -33,12 +34,14 @@ public class SupportTicketServiceImpl implements SupportTicketService {
     private final SupportTicketMapper ticketMapper;
     private final OrderMapper orderMapper;
     private final TicketDomainService domain;
+    private final TicketNotifier notifier;
 
     public SupportTicketServiceImpl(SupportTicketMapper ticketMapper, OrderMapper orderMapper,
-                                    TicketDomainService domain) {
+                                    TicketDomainService domain, TicketNotifier notifier) {
         this.ticketMapper = ticketMapper;
         this.orderMapper = orderMapper;
         this.domain = domain;
+        this.notifier = notifier;
     }
 
     @Override
@@ -121,6 +124,8 @@ public class SupportTicketServiceImpl implements SupportTicketService {
         SupportTicketEntity ticket = domain.requireOwned(ticketId, userId);
         domain.requireOpenForConversation(ticket, "补充说明");
         domain.appendMessage(ticket, TicketSenderType.USER, userId, content.trim());
+        // 用户一开口，球权回到客服侧，本用户的「等你回应」可能就此清零 —— 推一次
+        notifier.notifyAwaiting(userId);
         return TicketDetailResponse.of(ticket, domain.messagesOf(ticketId));
     }
 
@@ -135,6 +140,7 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                 ? TicketDomainService.CLOSE_BY_USER_CONFIRMED
                 : TicketDomainService.CLOSE_BY_USER_CANCELLED;
         domain.transit(ticket, TicketStatus.CLOSED, reason);
+        notifier.notifyAwaiting(userId);
         return TicketDetailResponse.of(ticket, domain.messagesOf(ticketId));
     }
 
@@ -157,6 +163,7 @@ public class SupportTicketServiceImpl implements SupportTicketService {
             // 客服那边却看不见它 —— 一条不出声的工单，而两边都以为对方在处理
             domain.handOver(ticket, TicketSenderType.USER);
         }
+        notifier.notifyAwaiting(userId);
         return TicketDetailResponse.of(ticket, domain.messagesOf(ticketId));
     }
 

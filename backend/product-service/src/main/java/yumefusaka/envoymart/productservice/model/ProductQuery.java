@@ -39,7 +39,8 @@ public class ProductQuery {
     private Long minPrice;
     private Long maxPrice;
     /**
-     * relevance（综合，默认）/ sales / price_asc / price_desc / newest，见两条实现里的白名单。
+     * relevance（综合，默认）/ sales / price_asc / price_desc / newest / rating，
+     * 见两条实现里的白名单。
      * <p>
      * <b>综合 = 相关性优先、同分看销量</b>，其余几项都是纯字段排序——ES 按字段排序时
      * <b>不计算得分</b>，相关性就整个没了。所以「不传」与「传 sales」不是同一件事：

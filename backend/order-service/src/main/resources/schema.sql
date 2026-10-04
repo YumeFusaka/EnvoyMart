@@ -127,8 +127,6 @@ create table if not exists order_delivery (
     carrier_code varchar(32) not null,
     carrier_name varchar(64) not null,
     tracking_no varchar(64) not null unique,
-    -- CREATED / PICKED_UP / IN_TRANSIT / DELIVERING / SIGNED
-    status varchar(24) not null,
     shipped_at datetime not null,
     signed_at datetime,
     constraint uk_delivery_order unique (order_id)
@@ -256,4 +254,34 @@ create table if not exists support_ticket_message (
     content varchar(2000) not null,
     created_at datetime not null,
     index idx_support_ticket_msg (ticket_id, id)
+);
+
+-- ==================== 事务性发件箱 ====================
+-- 事件发布与业务状态变更必须原子。没有它时，「状态已改、事件没发」（发送失败或
+-- 提交前崩溃）与「事件发了、状态没改」（提交前发出去）两种分叉都会发生，
+-- 而它们的表现都是「某个下游永远少听到了这一次变更」——无声、不可自愈。
+--
+-- 写法：业务事务内**只写这张表**（与业务行同一个事务），提交后由投递器发出去并标记。
+-- 这样「写状态」与「记下要发什么」是一体的，而「真的发出去」是幂等可重试的。
+--
+-- 未发送的行留在表里等人看：sent_at 为空且超过一定时长的行数就是积压，
+-- 它比日志耐久 —— 这正是本项目「日志会被重启覆盖，队列才是证据」那条经验的延续。
+create table if not exists event_outbox (
+    id bigint auto_increment primary key,
+    -- 事件类型，取路由键（order.paid / order.created …）
+    event_type varchar(64) not null,
+    -- 分区键：同一条业务记录的多个事件保序，且并发投递时不会互相插队
+    aggregate_id varchar(64) not null,
+    -- 交换机与路由键。与事件一起存下来，投递器不必内置一张"事件类型 → 目的地"的表 ——
+    -- 那张表会在新增事件时漏改，而漏改的表现是消息发去了错误的地方
+    exchange_name varchar(128) not null,
+    routing_key varchar(128) not null,
+    payload text not null,
+    created_at datetime not null,
+    -- 已投递时刻。为空 = 待投递；这个字段是投递器唯一的筛选条件
+    sent_at datetime null,
+    attempts int not null default 0,
+    last_error varchar(512),
+    index idx_outbox_pending (sent_at, id),
+    index idx_outbox_aggregate (aggregate_id)
 );

@@ -16,6 +16,7 @@ import yumefusaka.envoymart.orderservice.mapper.SupportTicketMessageMapper;
 import yumefusaka.envoymart.orderservice.model.TicketDetailResponse;
 import yumefusaka.envoymart.orderservice.model.TicketSenderType;
 import yumefusaka.envoymart.orderservice.model.TicketStatus;
+import yumefusaka.envoymart.orderservice.service.TicketNotifier;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -63,7 +64,8 @@ class SupportTicketServiceImplTest {
         messageMapper = mock(SupportTicketMessageMapper.class);
         when(messageMapper.selectList(any())).thenReturn(List.of());
         service = new SupportTicketServiceImpl(ticketMapper, mock(OrderMapper.class),
-                new TicketDomainServiceImpl(ticketMapper, messageMapper));
+                new TicketDomainServiceImpl(ticketMapper, messageMapper, mock(TicketNotifier.class)),
+                mock(TicketNotifier.class));
     }
 
     // ==================== 重开 ====================

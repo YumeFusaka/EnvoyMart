@@ -13,7 +13,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search, Star, StarFilled } from '@element-plus/icons-vue'
 import { changeReviewStatus, getReviewDetail, listReviews, replyReview } from '@/api/admin/review'
-import { useAdminList } from '@/composables/useAdminList'
+import { useAdminList, useResponsiveColumns } from '@/composables/useAdminList'
 import { formatDateTime } from '@/utils/format'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import type { AdminReviewDetail, AdminReviewQuery, AdminReviewSummary } from '@/types/admin'
@@ -50,6 +50,22 @@ const {
     size: 20,
   },
   { immediate: false },
+)
+
+
+/** 表格容器：列宽按它实测的宽度算，窄屏时等比例收缩 */
+const tableRef = ref<HTMLElement | null>(null)
+const { widths: colW } = useResponsiveColumns(
+  [
+    { width: 260, min: 240 },
+    { width: 150, min: 130 },
+    { width: 180, min: 160 },
+    { width: 100, min: 90 },
+    { width: 70, min: 70 },
+    { width: 150, min: 130 },
+    { width: 90, min: 80 },
+  ],
+  tableRef,
 )
 
 const createdRange = ref<[string, string] | null>(null)
@@ -362,9 +378,9 @@ function spuLabel(review: AdminReviewSummary): string {
     <ErrorState v-if="error" :message="error" :on-retry="() => load()" />
 
     <template v-else>
-      <div class="admin-table">
+      <div ref="tableRef" class="admin-table">
         <el-table v-loading="loading" :data="records" style="width: 100%">
-          <el-table-column label="评价" min-width="260">
+          <el-table-column label="评价" :width="colW[0]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span class="review-stars" :aria-label="`${row.rating} 星`">
@@ -384,7 +400,7 @@ function spuLabel(review: AdminReviewSummary): string {
             </template>
           </el-table-column>
 
-          <el-table-column label="用户" width="150">
+          <el-table-column label="用户" :width="colW[1]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span class="admin-cell--tiny">{{ row.userId }}</span>
@@ -395,7 +411,7 @@ function spuLabel(review: AdminReviewSummary): string {
             </template>
           </el-table-column>
 
-          <el-table-column label="商家回复" min-width="180">
+          <el-table-column label="商家回复" :width="colW[2]">
             <template #default="{ row }">
               <div v-if="row.replyContent" class="admin-stack">
                 <span class="admin-cell--ellipsis">{{ row.replyContent }}</span>
@@ -407,7 +423,7 @@ function spuLabel(review: AdminReviewSummary): string {
             </template>
           </el-table-column>
 
-          <el-table-column label="状态" width="100">
+          <el-table-column label="状态" :width="colW[3]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <el-tag :type="statusTagType(row.status)" effect="plain" size="small">
@@ -420,19 +436,19 @@ function spuLabel(review: AdminReviewSummary): string {
             </template>
           </el-table-column>
 
-          <el-table-column label="有用" width="70" align="right">
+          <el-table-column   align="right" label="有用" :width="colW[4]">
             <template #default="{ row }">
               <span class="admin-cell--num">{{ row.usefulCount }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="时间" width="150">
+          <el-table-column label="时间" :width="colW[5]">
             <template #default="{ row }">
               <span class="admin-cell--tiny">{{ formatDateTime(row.createdAt) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="90" fixed="right">
+          <el-table-column   fixed="right" label="操作" :width="colW[6]">
             <template #default="{ row }">
               <el-button link type="primary" @click="openDetail(row)">处理</el-button>
             </template>

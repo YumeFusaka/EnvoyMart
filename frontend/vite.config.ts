@@ -12,10 +12,15 @@ import Icons from 'unplugin-icons/vite'
 import IconsResolver from 'unplugin-icons/resolver'
 
 // https://vite.dev/config/
-export default defineConfig({
+// 不用对象式配置是因为插件列表要按环境变量算：默认不挂 Vue DevTools。
+export default defineConfig(() => ({
   plugins: [
     vue(),
-    vueDevTools(),
+    // Vue DevTools 的**悬浮面板**会自己创建并常驻页面角落，投屏演示时正好压住内容。
+    // 试过 appendTo（只换 overlay 的注入点，面板照样自建），插件也没有隐藏开关 ——
+    // 所以改成显式开关：默认不挂，需要时 `DEVTOOLS=1 pnpm dev` 再启用。
+    // 13a 那批为了绕开它把演示链路换成 build + preview，现在 dev 也干净了。
+    ...(process.env.DEVTOOLS == '1' ? [vueDevTools()] : []),
       AutoImport({
       // Auto import functions from Vue, e.g. ref, reactive, toRef...
       // 自动导入 Vue 相关函数，如：ref, reactive, toRef 等
@@ -68,4 +73,4 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
-})
+}))

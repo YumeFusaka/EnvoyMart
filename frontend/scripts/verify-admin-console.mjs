@@ -29,6 +29,7 @@
  *   node scripts/verify-admin-console.mjs
  */
 import { chromium } from 'playwright-core'
+import { poll, uniqueRow } from './lib/verify-util.mjs'
 
 const BASE = process.env.VERIFY_BASE ?? 'http://localhost:5173'
 const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
@@ -54,19 +55,6 @@ function ck(name, condition, detail = '') {
 }
 function skip(name, why) {
   console.log(`  \x1b[33mSKIP\x1b[0m ${name}：${why}`)
-}
-
-/** 轮询到条件成立为止。等待的是「状态真的变了」，不是「大概过了多久」 */
-async function poll(fn, predicate, timeoutMs = 12000) {
-  let last
-  for (let waited = 0; waited <= timeoutMs; waited += 400) {
-    last = await fn()
-    if (predicate(last)) {
-      return last
-    }
-    await new Promise((resolve) => setTimeout(resolve, 400))
-  }
-  return last
 }
 
 async function apiLogin(credentials) {
@@ -116,6 +104,10 @@ async function newPage(session) {
   page.__errors = []
   page.on('console', (m) => m.type() === 'error' && page.__errors.push(m.text()))
   page.on('pageerror', (e) => page.__errors.push('pageerror: ' + e.message))
+  // 预置会话要写成 pinia-plugin-persistedstate 实际落盘的形状：它把整个 state
+  // 序列化成一条 JSON 存进 localStorage[storeId]，也就是 {"token":"...","profile":{...}}。
+  // 形状对不上时 token 读不出来，页面会以匿名身份加载 —— 这件事本身不报错，
+  // 但「权限门」那几条断言就会悄悄测到别的东西。
   await page.addInitScript(
     ([key, value]) => localStorage.setItem(key, value),
     ['user', JSON.stringify({ token: session.token, profile: session.user })],
@@ -131,12 +123,16 @@ async function newPage(session) {
  * 之后标题仍是上一页的），于是后面的断言全都在错误的页面上跑。
  */
 async function openAdmin(page, path) {
-  await page.goto(`${BASE}/#/admin${path}`, { waitUntil: 'networkidle' })
-  await page.reload({ waitUntil: 'networkidle' })
+  // 等 `domcontentloaded` 而不是 `networkidle`：dev server 首次访问某个视图时要做一次
+  // 按需编译，这一下的耗时不受脚本控制（实测重载一次要 7s，冷启动更久），
+  // 而 networkidle 把「所有请求都停下来」当条件，编译器一忙就撞满 30s 超时。
+  // 真正要等的「页面渲染好了」由下面那条 loading 遮罩的轮询负责。
+  await page.goto(`${BASE}/#/admin${path}`, { waitUntil: 'domcontentloaded' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
   await page
     .locator('.el-loading-mask')
     .first()
-    .waitFor({ state: 'hidden', timeout: 15000 })
+    .waitFor({ state: 'hidden', timeout: 30000 })
     .catch(() => {})
   await page.waitForTimeout(300)
 }
@@ -144,7 +140,43 @@ async function openAdmin(page, path) {
 /** 打开某一页，并按行内唯一文字定位到一行 */
 async function openRow(page, path, text) {
   await openAdmin(page, path)
-  const row = page.locator('.admin-table tbody tr', { hasText: text }).first()
+  const rows = page.locator('.admin-table tbody tr', { hasText: text })
+  const count = await poll(
+    async () => rows.count(),
+    (n) => n >= 1,
+    { timeoutMs: 20000 },
+  )
+  if (count < 1) {
+    throw new Error(`按「${text}」定位没有命中任何行`)
+  }
+  const row = rows.first()
+  await row.waitFor({ state: 'visible', timeout: 15000 })
+  return row
+}
+
+/**
+ * 按行内文字定位**唯一**一行，命中多于一条就抛错。
+ * <p>
+ * `openRow` 用的是 `.first()`：文字在全库不唯一时它会静默选中第一条，
+ * 而选错行之后的等待/点击会以「功能坏了」的形式报出来（实测踩过评价的孪生数据）。
+ * 定位到唯一一行的地方改用这个函数，把「选错行」当场变成一条能看懂的错。
+ */
+async function uniqueTableRow(page, path, text) {
+  await openAdmin(page, path)
+  const rows = page.locator('.admin-table tbody tr', { hasText: text })
+  // 轮询到「恰好 1 行」为止，而不是读完一次就断言：表格的 body 由接口回包后异步填充，
+  // count() 立刻读会撞在「页面在、行还没渲染」的窗口上，报成「实际 0 行」——
+  // 看起来像定位失败，其实是读早了。等待条件写成 n >= 1 而不是 n === 1，
+  // 这样才能把「多行」当成真问题在超时后报出来，而不是被轮询掩盖成超时。
+  const count = await poll(
+    async () => rows.count(),
+    (n) => n >= 1,
+    { timeoutMs: 20000 },
+  )
+  if (count !== 1) {
+    throw new Error(`按「${text}」定位应当恰好命中 1 行，实际 ${count} 行`)
+  }
+  const row = rows.first()
   await row.waitFor({ state: 'visible', timeout: 15000 })
   return row
 }
@@ -322,14 +354,17 @@ await section('订单备注', async () => {
 
 // ── 3.2 商品上下架：下架 → 核对 → 上架 ──
 await section('商品上下架', async () => {
-  const spu = (await api('/products/admin/spus?page=0&size=1&status=1')).records[0]
+  // 必须自己选一个**当前处于上架**的商品：上一轮若在还原前中断，被下架的那件还留在
+  // 下架态，此时按 status=1 过滤拿到的仍是别的商品，而还原闭包会把另一件又动一次。
+  const spu = (await api('/products/admin/spus?page=0&size=20&status=1')).records[0]
   const statusOf = async () =>
     (
       await api(`/products/admin/spus?page=0&size=1&keyword=${encodeURIComponent(spu.spuCode)}`)
     ).records[0].status
 
   const click = async (label) => {
-    const row = await openRow(page, '/products', spu.spuCode)
+    // 商品编码是唯一自然键，用严格定位：命中多行说明数据有问题，当场报出来
+    const row = await uniqueTableRow(page, '/products', spu.spuCode)
     await row.getByRole('button', { name: label, exact: true }).click()
     await page.waitForTimeout(1200)
   }
@@ -341,12 +376,16 @@ await section('商品上下架', async () => {
   // 列表没做状态过滤，行不该消失；按钮换成了「上架」才说明这一行真的刷新过。
   // 这里轮询 DOM 而不是读一次：接口改完到表格重渲染之间还有「回包 → load() 重拉 →
   // 重新挂载行」几跳，读一次会拿到改动前的行 —— 一次假失败比不测更费时间
+  // 超时给足：这一跳要等「PUT 回包 → load() 重拉列表 → el-table 重渲染行」，
+  // 而 dev server 首次访问这个视图时还在按需编译，整条链比常驻时慢一个量级。
+  // 12 秒在本机常驻状态下够用，在冷启动那一轮不够 —— 而假失败比不测更费时间。
   const labels = await poll(
     async () => {
       const row = page.locator('.admin-table tbody tr', { hasText: spu.spuCode }).first()
       return (await row.locator('button').allInnerTexts()).map((t) => t.trim())
     },
     (texts) => texts.includes('上架'),
+    { timeoutMs: 40000 },
   )
   ck(
     '下架后行内的按钮变成「上架」（说明列表确实刷新了）',
@@ -355,7 +394,11 @@ await section('商品上下架', async () => {
   )
 
   restores.push(async () => {
-    await click('上架')
+    // 自愈：先看实际状态。上一轮若在还原前中断，这件商品可能已经是上架的，
+    // 此时列表里根本没有「上架」按钮可点 —— 直接确认即可，不必硬点一次。
+    if ((await statusOf()) !== 1) {
+      await click('上架')
+    }
     const up = await poll(statusOf, (v) => v === 1)
     ck('商品已恢复上架', up === 1, `实际 status=${up}`)
   })
@@ -363,26 +406,16 @@ await section('商品上下架', async () => {
 
 // ── 3.3 评价隐藏与恢复 ──
 await section('评价隐藏与恢复', async () => {
-  // 行里没有 id 列，只能按内容定位 —— 内容必须**在全库唯一**，而不只是在「已发布」
-  // 那一页里唯一：列表默认展示全部状态，一条已隐藏的评价完全可能与它同内容（自动化
-  // 夹具的孪生数据），那时 `.first()` 选中的是隐藏的那条，抽屉里的按钮是「恢复发布」，
-  // 于是等「隐藏」等到超时 —— 看起来像功能坏了，其实是定位错了行。
-  // 用 keyword 反查全库命中数，只有命中唯一的那条才拿来定位
-  const list = await api('/reviews/admin/reviews?page=0&size=50&status=PUBLISHED')
-  let review = null
-  for (const candidate of list.records) {
-    if (!candidate.content) continue
-    const hits = await api(
-      `/reviews/admin/reviews?page=0&size=5&keyword=${encodeURIComponent(candidate.content)}`,
-    )
-    if (hits.total === 1 && hits.records[0]?.id === candidate.id) {
-      review = candidate
-      break
-    }
-  }
-  if (!review) {
-    throw new Error('没有内容全库唯一的已发布评价可用来定位')
-  }
+  // 候选**不按状态过滤**：脚本自己隐藏掉的那条若上一轮没还原成功，它在库里就是 HIDDEN，
+  // 用 status=PUBLISHED 取候选会换一条评价，而还原闭包仍按旧内容去找 —— 表现为
+  // 「搜索结果里应恰好 1 行，实际 0 行」，坏的是脚本不是产品。
+  const list = await api('/reviews/admin/reviews?page=0&size=50')
+  // 行里没有 id 列，只能按内容定位 —— 内容必须**在全库唯一**（理由见 uniqueRow 的说明）
+  const review = await uniqueRow(
+    list.records,
+    (r) => r.content,
+    (content) => api(`/reviews/admin/reviews?page=0&size=5&keyword=${encodeURIComponent(content)}`),
+  )
   const read = async () => (await api(`/reviews/admin/reviews/${review.id}`)).review
 
   // 定位不能依赖「行恰好在第一页」。默认列表混全部状态、按时间倒序，而验收夹具
@@ -393,13 +426,32 @@ await section('评价隐藏与恢复', async () => {
     await openAdmin(page, '/reviews')
     await page.locator('#review-keyword').fill(review.content)
     await page.getByRole('button', { name: '查询' }).click()
-    const row = page.locator('.admin-table tbody tr', { hasText: review.content }).first()
+    // 已用 uniqueRow 保证 review.content 全库唯一；这里再要求表格里恰好命中一行，
+    // 把「关键词搜索没把列表收窄」这类问题当场暴露出来，而不是等超时
+    const rows = page.locator('.admin-table tbody tr', { hasText: review.content })
+    // 与 uniqueTableRow 同一个理由：点完「查询」到表格填充之间隔着一次请求，
+    // 立刻 count() 会读到旧表（关键词还没生效的那一版），于是「应恰好 1 行」变成
+    // 「实际 20 行」——一次典型的读早了。轮询到非空再断言唯一性。
+    const count = await poll(
+      async () => rows.count(),
+      (n) => n >= 1,
+      { timeoutMs: 20000 },
+    )
+    if (count !== 1) {
+      throw new Error(
+        `评价「${review.content.slice(0, 20)}…」在搜索结果里应恰好 1 行，实际 ${count} 行`,
+      )
+    }
+    const row = rows.first()
     await row.waitFor({ state: 'visible', timeout: 15000 })
     return openDrawer(page, row, '处理')
   }
 
-  await (await open()).getByRole('button', { name: '隐藏', exact: true }).click()
-  await answerMessageBox(page, { text: REASON, button: '隐藏' })
+  // 自愈：上一轮若把它留在 HIDDEN，这一轮就不该再点一次「隐藏」（按钮不存在）
+  if ((await read()).status !== 'HIDDEN') {
+    await (await open()).getByRole('button', { name: '隐藏', exact: true }).click()
+    await answerMessageBox(page, { text: REASON, button: '隐藏' })
+  }
   const hidden = await poll(read, (v) => v.status === 'HIDDEN')
   ck(
     `评价 ${review.id} 隐藏后 status=HIDDEN 且落下了原因`,
@@ -408,7 +460,10 @@ await section('评价隐藏与恢复', async () => {
   )
 
   restores.push(async () => {
-    await (await open()).getByRole('button', { name: '恢复发布', exact: true }).click()
+    // 自愈：已经是 PUBLISHED 就不必点（按钮不存在），直接确认结果
+    if ((await read()).status !== 'PUBLISHED') {
+      await (await open()).getByRole('button', { name: '恢复发布', exact: true }).click()
+    }
     const back = await poll(read, (v) => v.status === 'PUBLISHED')
     ck(
       '评价已恢复发布，隐藏痕迹被清空',
@@ -460,17 +515,28 @@ await section('工单回复与关闭', async () => {
   // SupportTicketServiceImpl.reopen 的状态守卫），而工单没有删除接口 ——
   // 每跑一次新建一张的话，演示库里会堆一排同名的死单。
   // 所以本节结束时把它停在「已解决」，下一轮开头用户重开它，闭环且不新增数据
-  const reusable = mine.find((t) => t.status === 'RESOLVED')
+  // 复用面要比「已解决」更宽：脚本每轮要把这张单停在「已解决」，下一轮才重开它；
+  // 而一旦某一轮在收尾前中断，它会停在 PROCESSING / OPEN —— 那时只认 RESOLVED
+  // 就会去新建一张，而 CLOSED 没有重开入口、工单也没有删除接口，**每中断一次就多
+  // 一张再也清不掉的死单**（实测已经积了两张，且消息堆了 30 多轮）。
+  // 所以按「还能继续用的」优先挑：RESOLVED > PROCESSING/OPEN，最后才是新建。
+  const reusable =
+    mine.find((t) => t.status === 'RESOLVED') ??
+    mine.find((t) => t.status === 'PROCESSING' || t.status === 'OPEN')
+  // 历史遗留的 CLOSED 死单清不掉，但也不能让它们混进队列断言里 —— 后面按工单号定位。
   let ticketId
   if (reusable) {
     ticketId = reusable.id
+    // 只有「已解决」才需要重开；停在 PROCESSING/OPEN 的那种本来就在队列里。
     // 重开要带一句内容：队列默认只显示「最后一条消息来自用户」的工单，
-    // 不带内容的话重开后那张单不会出现在待回复队列里
-    await api(`/tickets/${ticketId}/reopen`, {
-      method: 'POST',
-      headers: asUser,
-      body: { content: '自动化验收：重开一次' },
-    })
+    // 不带内容的话重开后那张单不会出现在待回复队列里。
+    if (reusable.status === 'RESOLVED') {
+      await api(`/tickets/${ticketId}/reopen`, {
+        method: 'POST',
+        headers: asUser,
+        body: { content: '自动化验收：重开一次' },
+      })
+    }
   } else {
     const created = await api('/tickets', {
       method: 'POST',
@@ -487,7 +553,21 @@ await section('工单回复与关闭', async () => {
   const ticketNo = (await read()).ticket.ticketNo
 
   await openAdmin(page, '/tickets')
-  await page.locator('.queue__item', { hasText: ticketNo }).first().click()
+  // 工单号是唯一键。队列里可能同时挂着同名工单（脚本每轮复用同一张，但历史轮次可能有别的），
+  // 按工单号定位并确认唯一，避免点到别人的工单上
+  // 等队列里出现这张单，而不是读完一次就断言：新建 / 重开之后列表要多一次加载，
+  // dev server 冷启动时那一次要几秒 —— 读一次会撞在「页面刚打开、列表还没来」的窗口上。
+  // 超时后再断言「恰好 1 项」，把「没出现」与「出现两张」区分开报出来。
+  const queueItems = page.locator('.queue__item', { hasText: ticketNo })
+  const count = await poll(
+    async () => queueItems.count(),
+    (n) => n >= 1,
+    { timeoutMs: 30000 },
+  )
+  if (count !== 1) {
+    throw new Error(`工单 ${ticketNo} 在客服队列里应恰好 1 项，实际 ${count} 项`)
+  }
+  await queueItems.first().click()
   await page.waitForTimeout(600)
 
   const compose = page.locator('.compose__actions')

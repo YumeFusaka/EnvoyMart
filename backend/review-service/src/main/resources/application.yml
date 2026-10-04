@@ -12,6 +12,14 @@ spring:
   sql:
     init:
       mode: always
+  # 同 (商品, IP) 的短窗口评价计数（刷评治理①）。Redis 不可用时该计数 fail-open，
+  # 评价本身照常写入 —— 见 ReviewFloodGuard
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      timeout: 1s
+      connect-timeout: 1s
   rabbitmq:
     host: ${RABBITMQ_HOST:127.0.0.1}
     port: ${RABBITMQ_PORT:5672}

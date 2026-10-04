@@ -4,6 +4,7 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
+import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
@@ -13,8 +14,20 @@ import java.util.List;
 @FeignClient(name = "product-service", url = "${services.product-service-url:http://127.0.0.1:9002}")
 public interface ProductClient {
 
+    /**
+     * 商品详情 —— SPU 摘要 + <b>全部 SKU（含规格编号）</b>。
+     * <p>
+     * <b>为什么检索接口不够用。</b>{@code /products/search} 返回的是 SPU 级摘要：
+     * 有价格区间，却没有任何规格编号。而加购认的是 SKU——同一个 SPU 下不同规格
+     * 是不同的价格、不同的库存，选错规格等于下错单。少了这一步，
+     * 「帮我加进购物车」就只剩一个商品名可用，模型只能猜一个编号（实测它猜的是 0）。
+     * <p>
+     * 路径与检索下游一致（{@code GET /products/{id}}），返回体是更完整的详情；
+     * 调用方按需取 SKU 列表。
+     */
     @GetMapping("/products/{id}")
-    Result<ProductSummary> getProduct(@PathVariable("id") Long id);
+    Result<ProductDetail> getProduct(@PathVariable("id") Long id);
+
 
     /**
      * 商品检索 —— <b>推荐链路唯一的一条路</b>。

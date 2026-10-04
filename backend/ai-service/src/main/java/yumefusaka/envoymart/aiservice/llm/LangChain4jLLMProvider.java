@@ -15,6 +15,8 @@ import dev.langchain4j.model.output.TokenUsage;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
@@ -71,15 +73,27 @@ public class LangChain4jLLMProvider implements LLMProvider {
     private final LLMConfig defaultConfig;
     /** 模型调用的耗时与 token 走指标而不是只写日志——日志适合排查单次，指标才能看出趋势与成本 */
     private final MeterRegistry meterRegistry;
+    /**
+     * 模型调用的 trace 通道（U13）。可为 null，此时所有观测退化为无操作——
+     * 单测与无监控环境不需要额外装配分支。
+     */
+    private final ObservationRegistry observationRegistry;
 
     public LangChain4jLLMProvider(ChatModel chatModel, StreamingChatModel streamingChatModel,
                                   ToolRegistry toolRegistry, LLMConfig defaultConfig,
                                   MeterRegistry meterRegistry) {
+        this(chatModel, streamingChatModel, toolRegistry, defaultConfig, meterRegistry, null);
+    }
+
+    public LangChain4jLLMProvider(ChatModel chatModel, StreamingChatModel streamingChatModel,
+                                  ToolRegistry toolRegistry, LLMConfig defaultConfig,
+                                  MeterRegistry meterRegistry, ObservationRegistry observationRegistry) {
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
         this.toolRegistry = toolRegistry;
         this.defaultConfig = defaultConfig;
         this.meterRegistry = meterRegistry;
+        this.observationRegistry = observationRegistry;
     }
 
     // ==================== 单次调用（不驱动工具循环） ====================
@@ -509,6 +523,19 @@ public class LangChain4jLLMProvider implements LLMProvider {
                                 dependsOn 填「本步骤依赖的步骤序号」（从 0 开始）：
                                 只有需要用到前面某一步的结果时才填，互不依赖的步骤留空数组，
                                 这样它们会被并发执行。例如先查订单再取消，取消那步就要依赖查询步。
+                                **当某一步的参数要用到前面步骤查出来的值时，写成
+                                "$步骤序号.字段名"**（字段名照抄前一步输出里的字段，例如
+                                "$0.skuId"、"$1.orderId"），执行器会在那一步查完之后把真实值填进去。
+                                绝不要写「上一步的 XX」「来自第 0 步搜索结果的 XX」这类描述性文字——
+                                它们不会被替换，会被原样当成参数传给工具，然后失败。
+                                **引用的那个步骤必须真的写进计划里**：写 "$0.skuId" 就意味着
+                                数组的第 0 个元素是把 skuId 查出来的那一步。只写引用它的那一步、
+                                不写产出这个值的那一步，是错的——执行时没有第 0 步可以取值，
+                                引用会原样传下去然后失败。用户说「先搜一下再把它加购」时，
+                                计划应该有两个元素：先 product_search，再 cart_add(dependsOn:[0])。
+                                例：先 product_search 查到商品、再 cart_add 加购，加购那步写
+                                {"tool":"cart_add","arguments":{"skuId":"$0.skuId","quantity":1},
+                                 "dependsOn":[0]}。
                                 arguments 的键必须逐字照抄工具说明里列出的参数名，不要改写大小写、
                                 不要把驼峰改成下划线——工具按声明名取参数，写错的键取不到值。
                                 只输出 JSON，不要任何解释。
@@ -531,6 +558,63 @@ public class LangChain4jLLMProvider implements LLMProvider {
         } catch (Exception e) {
             log.warn("[LangChain4jLLMProvider] plan failed, fallback to rule-based: {}", e.getMessage());
             return List.of();
+        }
+    }
+
+/**
+     * 执行失败后的自我诊断：让模型先说清「为什么会失败」，再决定换什么策略。
+     * <p>
+     * <b>与 plan() 的分工</b>：plan() 产出可执行计划，本方法只产出<b>一句诊断</b>，
+     * 两者各自的提示词只包含自己需要的信息——诊断要的是「失败的性质」，
+     * 不需要工具签名，也不需要已知背景。合成一次调用既降低推理质量、又让
+     * 「哪一步错了」的诊断被「下一步该调什么」的想法挤掉。
+     * <p>
+     * 温度取 0：诊断要稳定，同一段轨迹跑两次不该给出相反结论。
+     *
+     * @return 诊断句；模型调用失败时返回 null，调用方退回通用重规划上下文
+     */
+    @Override
+    public String critique(String userMessage, String executionTrace,
+                           List<yumefusaka.envoymart.agent.tool.ToolDefinition> availableTools) {
+        List<ChatMessage> messages = List.of(
+                ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
+                        .content("""
+                                你是电商客服任务的失败诊断器。下面给出用户请求与已经执行过的步骤，
+                                其中至少一步没有拿到可用结果。请用一句话说清失败的**性质**，并给出改法方向。
+                                只输出这一句诊断，不要复述步骤，不要输出 JSON。
+
+                                归类时必须从这四类里选一类，并说明理由：
+                                - 「参数不当」：查询条件写窄了/写错了/用了数据里不存在的取值。
+                                  改法是换个更宽或更常见的条件。
+                                - 「工具选错」：该问题是另一个工具能答的。改法是指明换哪个工具。
+                                - 「数据缺失」：平台数据里确实没有这条信息。改法是**停止重试**，
+                                  如实告诉用户查不到，不要继续换词硬查。
+                                - 「下游故障」：接口报错或超时。改法是稍后重试或降级说明。
+
+                                区分「参数不当」和「数据缺失」是关键：前者还能救，后者必须承认。
+                                数据里从来没有的东西，换十个说法也查不出来——把它说成「参数不当」
+                                只会让系统继续空转。
+                                """)
+                        .build(),
+                ChatMessage.builder().role(ChatMessage.Role.USER)
+                        .content("用户请求：" + userMessage + "\n\n已执行步骤：\n" + executionTrace)
+                        .build()
+        );
+
+        try {
+            LLMConfig critiqueConfig = LLMConfig.builder()
+                    .model(defaultConfig.getModel())
+                    .temperature(0.0)
+                    .maxTokens(256)
+                    .build();
+            LLMResponse response = chat(messages, critiqueConfig);
+            String content = response.getContent();
+            return content == null || content.isBlank() ? null : content.trim();
+        } catch (Exception e) {
+            // 诊断是给重规划加质量的一层，不是必经之路：它失败时退回通用重规划，
+            // 而不是让整个请求失败——多花一次调用换更好的改法，不该换来更高的失败率
+            log.warn("[LangChain4jLLMProvider] critique failed, fallback to generic replan: {}", e.getMessage());
+            return null;
         }
     }
 
@@ -696,6 +780,10 @@ public class LangChain4jLLMProvider implements LLMProvider {
      */
     private void recordLlmMetrics(String model, boolean stream, long latencyMs,
                                   int promptTokens, int completionTokens) {
+        // trace 通道（U13）：一次模型调用 = 一段 Observation，挂在四个入口共同的汇聚点上。
+        // 导出开关默认关，这里只是把 span 生成好——指标按模型聚合，回答不了"这一次为什么贵"，
+        // 而 Observation 上的 model / token / 方向 正是复盘个案要的粒度。
+        recordLlmTrace(model, stream, latencyMs, promptTokens, completionTokens);
         // 账本在指标之前：这里的三个调用点是全部模型调用的唯一汇聚处
         // （chat / chatWithTools 走 toLLMResponse，两条流式各一处），
         // 记在这里等于一次覆盖四个入口；指标那边没配 registry 就整段跳过，
@@ -727,6 +815,28 @@ public class LangChain4jLLMProvider implements LLMProvider {
         }
         Integer value = input ? usage.inputTokenCount() : usage.outputTokenCount();
         return value == null ? 0 : value;
+    }
+
+    /**
+     * 一次模型调用的 trace 观测（U13）。
+     * <p>
+     * observation 名统一 {@code model.chat}，方向用 tag 区分 sync/stream——
+     * 名字里带上方向会让两边的聚合被割裂，而"同一个模型、两种调用方式"恰恰是要一起看的。
+     * token 与工具数作为 attributes 挂上去，是为了在不导出（默认）时也能在
+     * Observation 的 metrics 侧留下可以查的量。
+     */
+    private void recordLlmTrace(String model, boolean stream, long latencyMs,
+                                int promptTokens, int completionTokens) {
+        Observation observation = ModelTracing.start(observationRegistry, "model.chat");
+        try {
+            ModelTracing.lowCardinality(observation, "model", model);
+            ModelTracing.lowCardinality(observation, "mode", stream ? "stream" : "sync");
+            ModelTracing.highCardinality(observation, "promptTokens", String.valueOf(promptTokens));
+            ModelTracing.highCardinality(observation, "completionTokens", String.valueOf(completionTokens));
+            ModelTracing.highCardinality(observation, "latencyMs", String.valueOf(latencyMs));
+        } finally {
+            observation.stop();
+        }
     }
 
     /** 把 ToolRegistry 里的工具转成 LangChain4j 的工具规格，由模型理解签名。 */

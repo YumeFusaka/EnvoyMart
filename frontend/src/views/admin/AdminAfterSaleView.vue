@@ -23,7 +23,7 @@ import {
   retryRefund,
 } from '@/api/admin/afterSale'
 import { formatPrice } from '@/api/product'
-import { useAdminList } from '@/composables/useAdminList'
+import { useAdminList, useResponsiveColumns } from '@/composables/useAdminList'
 import { formatDateTime } from '@/utils/format'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import type { AdminAfterSaleDetail, AdminAfterSaleQuery, StatusLogView } from '@/types/admin'
@@ -54,6 +54,22 @@ const {
     size: 20,
   },
   { immediate: false },
+)
+
+
+/** 表格容器：列宽按它实测的宽度算，窄屏时等比例收缩 */
+const tableRef = ref<HTMLElement | null>(null)
+const { widths: colW } = useResponsiveColumns(
+  [
+    { width: 200, min: 190 },
+    { width: 100, min: 90 },
+    { width: 160, min: 150 },
+    { width: 120, min: 110 },
+    { width: 100, min: 90 },
+    { width: 150, min: 130 },
+    { width: 90, min: 80 },
+  ],
+  tableRef,
 )
 
 const appliedRange = ref<[string, string] | null>(null)
@@ -343,9 +359,9 @@ function operatorText(log: StatusLogView): string {
     <ErrorState v-if="error" :message="error" :on-retry="() => load()" />
 
     <template v-else>
-      <div class="admin-table">
+      <div ref="tableRef" class="admin-table">
         <el-table v-loading="loading" :data="records" style="width: 100%">
-          <el-table-column label="售后单" min-width="200">
+          <el-table-column label="售后单" :width="colW[0]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span class="admin-cell--strong">{{ row.afterSaleNo }}</span>
@@ -355,13 +371,13 @@ function operatorText(log: StatusLogView): string {
             </template>
           </el-table-column>
 
-          <el-table-column label="类型" width="100">
+          <el-table-column label="类型" :width="colW[1]">
             <template #default="{ row }">
               <el-tag effect="plain" size="small">{{ row.typeText }}</el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column label="原因" min-width="160">
+          <el-table-column label="原因" :width="colW[2]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span class="admin-cell--ellipsis">{{ row.reason }}</span>
@@ -372,7 +388,7 @@ function operatorText(log: StatusLogView): string {
             </template>
           </el-table-column>
 
-          <el-table-column label="退款金额" width="120" align="right">
+          <el-table-column   align="right" label="退款金额" :width="colW[3]">
             <template #default="{ row }">
               <div class="admin-stack admin-stack--end">
                 <span class="admin-cell--num">{{ formatPrice(row.refundAmount) }}</span>
@@ -383,7 +399,7 @@ function operatorText(log: StatusLogView): string {
             </template>
           </el-table-column>
 
-          <el-table-column label="状态" width="100">
+          <el-table-column label="状态" :width="colW[4]">
             <template #default="{ row }">
               <el-tag :type="statusTagType(row.status)" effect="plain" size="small">{{
                 row.statusText
@@ -391,13 +407,13 @@ function operatorText(log: StatusLogView): string {
             </template>
           </el-table-column>
 
-          <el-table-column label="申请时间" width="150">
+          <el-table-column label="申请时间" :width="colW[5]">
             <template #default="{ row }">
               <span class="admin-cell--tiny">{{ formatDateTime(row.appliedAt) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="90" fixed="right">
+          <el-table-column   fixed="right" label="操作" :width="colW[6]">
             <template #default="{ row }">
               <el-button link type="primary" @click="openDetail(row)">处理</el-button>
             </template>

@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.reviewservice.controller;
 
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -31,8 +32,38 @@ public class ReviewController {
     @PostMapping
     public Result<ReviewResponse> create(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @Valid @RequestBody CreateReviewRequest request) {
-        return Result.success(reviewService.create(userId, request));
+            @Valid @RequestBody CreateReviewRequest request,
+            HttpServletRequest httpRequest) {
+        return Result.success(reviewService.create(userId, request, clientIpOf(httpRequest)));
+    }
+
+    /**
+     * 取调用方 IP，用于同商品短窗口刷评计数。
+     * <p>
+     * <b>这里是服务实例，不是网关</b>：{@code getRemoteAddr()} 拿到的是网关的地址 ——
+     * 所有请求都变成同一个 IP，那道闸会退化成「全站共享一个计数器」，几个人同时评价
+     * 就把彼此拦下。所以优先取网关透传的真实 IP（{@code X-Forwarded-For} 第一段 /
+     * {@code X-Real-IP}）。
+     * <p>
+     * <b>这些头可被伪造</b>，因此它只用作「限流的维度」，不用作任何授权判据：
+     * 伪造 IP 的代价是攻击者把自己和别人的计数搅在一起，而拦不拦得住的最后一道闸
+     * （已收货订单 + 每日条数）不受影响。
+     * <p>
+     * 直连服务端口的本地调用（无网关头）退化为 {@code getRemoteAddr()}，
+     * 那是开发环境的常态，不影响正确性。
+     */
+    private static String clientIpOf(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            // 取第一段：X-Forwarded-For 是「客户端, 代理1, 代理2」的顺序
+            int comma = forwarded.indexOf(',');
+            return (comma < 0 ? forwarded : forwarded.substring(0, comma)).trim();
+        }
+        String realIp = request.getHeader("X-Real-IP");
+        if (realIp != null && !realIp.isBlank()) {
+            return realIp.trim();
+        }
+        return request.getRemoteAddr();
     }
 
     /**

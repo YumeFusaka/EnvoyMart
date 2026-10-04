@@ -165,20 +165,27 @@ start_one() {
   # 链路追踪：SkyWalking javaagent 是**不改一行业务代码**就能覆盖全部服务的方式，
   # 这正是选它而不是给六个服务逐个加 OTel 依赖的原因。
   # agent 不存在时静默跳过——没装追踪不该妨碍把服务跑起来。
-  # 关掉 SkyWalking 的 Neo4j 插件（插件名取自它自己的 skywalking-plugin.def）。
-  #
-  # 它是给 neo4j-java-driver 4.x 写的，本项目用 5.26.0。插桩之后，凡是<b>真的写进去关系</b>
-  # 的事务都会抛 "RuntimeException: Can not do async finish for the span repeatedly."，
-  # 而同一个 Cypher 在 cypher-shell 里手工跑完全正常——所以极易误判成 Cypher 语法或连接超时。
-  # 症状是知识图谱一条边都进不去，且只发生在「有边可写」的文档上：
-  # 只跑一条 DELETE 的事务反而成功，看起来像随机失败。
-  #
-  # 代价：Neo4j 调用不再作为独立出口 span 出现在链路里，服务级与 HTTP 链路追踪不受影响。
-  # 要拿回 Neo4j span 的办法是升级插件，不是打开它——打开就是上面那条报错。
   local agent_args=()
   if [ -n "$AGENT_JAR" ]; then
     local sw_args="-javaagent:$AGENT_JAR -Dskywalking.agent.service_name=$svc -Dskywalking.collector.backend_service=$SW_OAP"
-    [ "$svc" = "knowledge-service" ] && sw_args="$sw_args -Dskywalking.plugin.exclude_plugins=neo4j-4.x"
+    # 关掉 SkyWalking 的 Neo4j 插件（插件名取自它自己的 skywalking-plugin.def）。
+    #
+    # 它是给 neo4j-java-driver 4.x 写的，本项目用 5.26.0。插桩之后，凡是真的写进去关系的事务
+    # 都会抛 "RuntimeException: Can not do async finish for the span repeatedly."，
+    # 而同一个 Cypher 在 cypher-shell 里手工跑完全正常——极易误判成 Cypher 语法或连接超时。
+    # 症状是知识图谱一条边都进不去，且只发生在「有边可写」的文档上：只跑一条 DELETE 的事务
+    # 反而成功，看起来像随机失败。
+    #
+    # 代价：Neo4j 调用不再作为独立出口 span 出现在链路里，服务级与 HTTP 链路追踪不受影响。
+    # 要拿回 Neo4j span 的办法是升级插件，不是打开它——打开就是上面那条报错。
+    #
+    # 排除项必须走环境变量，不能写成 `-Dskywalking.plugin.exclude_plugins` ——
+    # agent 读的配置键是 `plugin.exclude_plugins`（配置里展开为 `${SW_EXCLUDE_PLUGINS:}`），
+    # 带 `skywalking.` 前缀的 system property **不存在这个键**，写了也不报错、只是静默不生效。
+    # 这个错法最阴的地方是：参数看起来在、日志里也能 grep 到，而图谱照样一条边都进不去。
+    if [ "$svc" = "knowledge-service" ]; then
+      extra+=(SW_EXCLUDE_PLUGINS=neo4j-4.x)
+    fi
     agent_args+=(-Dspring-boot.run.jvmArguments="$sw_args")
   else
     echo "  （未找到 SkyWalking agent，$svc 将不带链路追踪启动）" >&2
@@ -187,7 +194,23 @@ start_one() {
   mkdir -p "$LOG_DIR"
   rotate_log "$svc"
   echo "启动 $svc (端口 $(port_of "$svc")) → $LOG_DIR/$svc.log"
+  # 启动前强制重编（U71）：VSCode 的 Java 扩展（ECJ）编译失败时照样往 target/classes 写桩 class，
+  # 而 Maven 增量编译按时间戳判断"class 比源码新"于是跳过重编，直接跑那个坏 class——
+  # 三种面孔都见过：接口 500、启动即 NoClassDefFoundError、以及最阴的"代码改了但行为没变"。
+  # clean 会删掉 ECJ 写的桩，compile 保证目标目录里的 class 一定来自这次源码。
+  mvn -q -B -pl "$svc" clean compile >> "$LOG_DIR/$svc.log" 2>&1 || {
+    echo "  ⚠ $svc 编译失败，跳过启动（详见 $LOG_DIR/$svc.log）" >&2
+    return 1
+  }
   env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run "${agent_args[@]}" > "$LOG_DIR/$svc.log" 2>&1 &
+  # disown 不是可选项：只写 nohup ... & 时，MSYS/Git Bash 会在脚本退出时
+  # 回收整个作业组，服务随之被杀——而日志里只留下 Spring 正常关闭的样子，
+  # 看起来像服务自己崩了。加上 disown，进程才真正不属于这个 shell。
+  #
+  # 这个坑的判据很明确：**手工在交互 shell 里跑同一个脚本，服务活得好好的；
+  # 由子进程（验收脚本 spawnSync）调用时它就活不过启动脚本的退出**。
+  # 差别不在命令，在父 shell 何时消失。
+  disown 2>/dev/null || true
 }
 
 # 服务日志按次归档。
@@ -512,8 +535,9 @@ frontend_up() {
   fi
   mkdir -p "$LOG_DIR"
   if [ "$mode" = "prod" ]; then
-    # 演示走生产产物而不是 dev server：dev 模式会注入 Vue DevTools 悬浮面板
-    # （插件没有隐藏开关），投屏演示时它一直飘在页面角落；首屏还要现编译，比静态产物慢。
+    # 演示走生产产物而不是 dev server：首屏不用现编译，比 dev 快，也不带 HMR 的抖动。
+    # （Vue DevTools 的悬浮面板已被 vite.config.ts 的 appendTo 关掉，不再是理由，
+    #  生产产物本来就干净——这条注释按事实更正，避免下一个人以为它还飘着。）
     # 前端 API 地址是写死的 http://localhost:8080（本项目不用 vite proxy），preview 无需额外配置
     if [ -n "${FE_BUILD_PID:-}" ]; then
       # 构建已在 demo_up 开头后台发起，这里只等它收尾（通常早已完成）
@@ -532,10 +556,12 @@ frontend_up() {
     echo "启动前端 (端口 5173, 生产产物) → $LOG_DIR/frontend.log"
     rotate_log frontend
     nohup pnpm -C ../frontend preview --port 5173 --strictPort > "$LOG_DIR/frontend.log" 2>&1 &
+    disown 2>/dev/null || true
   else
     echo "启动前端 (端口 5173) → $LOG_DIR/frontend.log"
     rotate_log frontend
     nohup pnpm -C ../frontend dev > "$LOG_DIR/frontend.log" 2>&1 &
+    disown 2>/dev/null || true
   fi
   if wait_ready frontend 60 http_ok http://127.0.0.1:5173/; then
     return 0

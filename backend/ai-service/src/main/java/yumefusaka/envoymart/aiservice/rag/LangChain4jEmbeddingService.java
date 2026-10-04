@@ -4,9 +4,12 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
 import yumefusaka.envoymart.agent.llm.TokenLedger;
 import yumefusaka.envoymart.agent.rag.EmbeddingService;
+import yumefusaka.envoymart.aiservice.llm.ModelTracing;
 
 import java.util.List;
 
@@ -18,14 +21,27 @@ import java.util.List;
 public class LangChain4jEmbeddingService implements EmbeddingService {
 
     private final EmbeddingModel embeddingModel;
+    /** trace 通道（U13）。可为 null，观测退化为无操作。 */
+    private final ObservationRegistry observationRegistry;
 
     public LangChain4jEmbeddingService(EmbeddingModel embeddingModel) {
+        this(embeddingModel, null);
+    }
+
+    public LangChain4jEmbeddingService(EmbeddingModel embeddingModel, ObservationRegistry observationRegistry) {
         this.embeddingModel = embeddingModel;
+        this.observationRegistry = observationRegistry;
     }
 
     @Override
     public float[] embed(String text) {
-        return record(embeddingModel.embed(text == null ? "" : text)).vector();
+        Observation observation = ModelTracing.start(observationRegistry, "model.embed");
+        try {
+            ModelTracing.lowCardinality(observation, "model", modelName());
+            return record(embeddingModel.embed(text == null ? "" : text)).vector();
+        } finally {
+            observation.stop();
+        }
     }
 
     @Override
@@ -33,12 +49,23 @@ public class LangChain4jEmbeddingService implements EmbeddingService {
         if (texts == null || texts.isEmpty()) {
             return List.of();
         }
-        List<TextSegment> segments = texts.stream()
-                .map(text -> TextSegment.from(text == null ? "" : text))
-                .toList();
-        return record(embeddingModel.embedAll(segments)).stream()
-                .map(Embedding::vector)
-                .toList();
+        Observation observation = ModelTracing.start(observationRegistry, "model.embed");
+        try {
+            ModelTracing.lowCardinality(observation, "model", modelName());
+            ModelTracing.highCardinality(observation, "batchSize", String.valueOf(texts.size()));
+            List<TextSegment> segments = texts.stream()
+                    .map(text -> TextSegment.from(text == null ? "" : text))
+                    .toList();
+            return record(embeddingModel.embedAll(segments)).stream()
+                    .map(Embedding::vector)
+                    .toList();
+        } finally {
+            observation.stop();
+        }
+    }
+
+    private String modelName() {
+        return embeddingModel.modelName() == null ? "embedding" : embeddingModel.modelName();
     }
 
     /**

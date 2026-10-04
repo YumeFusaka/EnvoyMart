@@ -1,11 +1,13 @@
 package yumefusaka.envoymart.productservice.config;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
 import yumefusaka.envoymart.productservice.cache.ProductLocalCache;
 
 import java.nio.charset.StandardCharsets;
@@ -47,10 +49,27 @@ public class ProductCacheInvalidationConfig {
     /**
      * 订阅失效通知并清掉本实例的本地缓存。
      * <p>
-     * 容器由 Spring 托管生命周期、自动启停；Redis 不可用时它会自行重连，
-     * 期间收到的失效会丢——这正是本地 TTL 存在的理由。
+     * <b>启动不由容器自动完成，而是等应用就绪后手动 start()。</b>
+     * 原因是这里的连接超时（{@code spring.data.redis.connect-timeout}）全局只有 1 秒，
+     * 那是给<b>读路径</b>定的降级速度，却同时管着启动期握手：机器忙的时候（同时启多个服务、
+     * 跑 mvn install）握手可能超过 1 秒，自动启动的容器会当场抛
+     * {@code RedisConnectionFailureException} 并让整个进程退出——症状看着像"Redis 挂了"，
+     * 实际 Redis 好好的。而这条链路本来就只是"加速层"的跨实例失效广播，
+     * 丢了还有本地 TTL 兜底，没有任何理由让它决定进程生死。
+     * <p>
+     * {@code setRecoveryInterval} 是配套的第二重保险：即使 start() 时 Redis 不可用，
+     * 容器也只是记日志、按周期自己重连，不再把异常抛到启动流程里。
+     * <p>
+     * 订阅端断连期间的消息仍然会丢——这正是本地 TTL 存在的理由，与启动方式无关。
      */
-    @Bean
+    /**
+     * 失效监听容器的 bean 名。<b>唯一来源</b>：{@code startInvalidationListener} 按它取容器，
+     * 测试也按它注册——两边各写一份字符串必然分叉（U66 修完就漏改过测试，
+     * 于是测试一直在验一个不存在的 bean 名）。
+     */
+    public static final String CONTAINER_BEAN_NAME = "productCacheInvalidationContainer";
+
+    @Bean(CONTAINER_BEAN_NAME)
     public RedisMessageListenerContainer productCacheInvalidationContainer(
             RedisConnectionFactory connectionFactory,
             ProductLocalCache localCache,
@@ -58,6 +77,12 @@ public class ProductCacheInvalidationConfig {
 
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
+        // 关键：从 Spring 的自动启动管理里摘出来。留在里面时，容器的启动异常会顺着
+        // DefaultLifecycleProcessor 冒到 SpringApplication.run()，把整个进程带下去——
+        // 这正是 U66 的现象。摘出来之后，启动时机由下面的就绪事件接管。
+        container.setAutoStartup(false);
+        // 周期性重连：Redis 暂时不可用时不把异常抛给启动流程，容器自己恢复
+        container.setRecoveryInterval(5_000L);
         container.addMessageListener((message, pattern) -> {
             String body = new String(message.getBody(), StandardCharsets.UTF_8).trim();
             // 去掉可能存在的 JSON 引号：发布端如果误用了带 Jackson 序列化器的 RedisTemplate，
@@ -75,5 +100,34 @@ public class ProductCacheInvalidationConfig {
             }
         }, productCacheInvalidationTopic);
         return container;
+    }
+
+    /**
+     * 应用就绪后再拉起监听容器，并把启动期失败降级为一行日志。
+     * <p>
+     * 用 {@link ApplicationReadyEvent} 而不是 {@code SmartLifecycle} 的自动启动：
+     * 只要容器还留在 Spring 的自动启动管理里，它的启动异常就会顺着
+     * {@code DefaultLifecycleProcessor} 冒到 {@code SpringApplication.run()}，
+     * 照样终止进程。从自动启动名单里摘出来、在就绪事件里自己 start，
+     * 异常才真正落在我们可以接住的位置。
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void startInvalidationListener(ApplicationReadyEvent event) {
+        // 按**名字**取，不能按类型取：容器里同时存在 Spring Boot 自动配置的那个
+        // RedisMessageListenerContainer，按类型取会撞 NoUniqueBeanDefinitionException——
+        // 报的是「找到两个候选」，而真正要做的事只是「把这一条我们自己建的那一个拉起来」。
+        // 按名字取还顺带保证了拿到的一定是这里定义的、绑定本主题的那个容器
+        RedisMessageListenerContainer container =
+                event.getApplicationContext().getBean(
+                        CONTAINER_BEAN_NAME, RedisMessageListenerContainer.class);
+        try {
+            container.start();
+            log.info("[LocalCache] 失效广播监听已启动");
+        } catch (RuntimeException e) {
+            // 降级不是失败：本地 TTL 是这条链路唯一的最终兜底，
+            // 监听器晚一点起来只意味着这段时间内的跨实例失效要多等一个 TTL
+            log.warn("[LocalCache] 失效广播监听启动失败，本实例按本地 TTL 兜底（不影响服务可用）: {}",
+                    e.getMessage());
+        }
     }
 }

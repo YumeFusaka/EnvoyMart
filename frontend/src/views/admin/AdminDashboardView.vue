@@ -79,14 +79,36 @@ function open(card: PendingCard) {
   router.push({ path: card.to, query: card.query })
 }
 
-onMounted(async () => {
-  adminStore.refresh()
-  await Promise.allSettled(
+/**
+ * 在途分布是否已加载完成。
+ *
+ * 四个状态是四次独立请求，任何一次失败都不该让整页报错——其余三格的数据照样有用。
+ * 但「加载中」和「查不到」必须分得开：不加这个标志，两者都表现为 `total` 为 null、
+ * 界面上同样是一串「—」，用户无从判断该等一等还是该点重试。
+ *
+ * 这正是「看起来正常的空」的典型形态：接口挂了与还没回来长得一模一样。
+ */
+const stagesLoading = ref(true)
+
+/** 有几个状态没查回来。> 0 时页面必须显式提示，不能让它静静地少几格数字 */
+const stagesFailed = ref(0)
+
+async function loadStages() {
+  stagesLoading.value = true
+  stagesFailed.value = 0
+  const results = await Promise.allSettled(
     stages.value.map(async (stage) => {
       const result = await listOrders({ status: stage.status, page: 0, size: 1 })
       stage.total = result.total
     }),
   )
+  stagesFailed.value = results.filter((r) => r.status === 'rejected').length
+  stagesLoading.value = false
+}
+
+onMounted(async () => {
+  adminStore.refresh()
+  await loadStages()
 })
 </script>
 
@@ -115,15 +137,32 @@ onMounted(async () => {
         <h2 class="admin-toolbar__title">订单在途</h2>
         <span class="admin-toolbar__count">按状态统计，点任意一格进对应的订单列表</span>
       </div>
+      <div
+        v-if="stagesFailed > 0"
+        class="stage-alert"
+        role="status"
+        aria-label="在途统计加载不完整"
+      >
+        <span class="stage-alert__text">
+          有 {{ stagesFailed }} 个状态的统计没取回来，下面的数字可能不全
+        </span>
+        <button type="button" class="stage-alert__retry" @click="loadStages">重试</button>
+      </div>
       <div class="stage-strip">
         <button
           v-for="stage in stages"
           :key="stage.status"
           type="button"
           class="stage"
+          :class="{ 'stage--loading': stagesLoading }"
+          :disabled="stagesLoading"
           @click="router.push({ path: '/admin/orders', query: { status: stage.status } })"
         >
-          <span class="stage__value">{{ stage.total ?? '—' }}</span>
+          <span class="stage__value">
+            <!-- 加载中用骨架条而不是「—」：破折号是「没有」，加载中是「还不知道」 -->
+            <span v-if="stagesLoading" class="stage__skeleton" aria-hidden="true" />
+            <template v-else>{{ stage.total ?? '—' }}</template>
+          </span>
           <span class="stage__label">{{ stage.label }}</span>
         </button>
       </div>
@@ -256,6 +295,74 @@ onMounted(async () => {
   font-size: var(--ys-font-xl);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+/* 加载中的骨架条：与数字同高，避免数据回来时整行跳动 */
+.stage__skeleton {
+  display: inline-block;
+  width: 2.2em;
+  height: 1em;
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-sunken);
+  animation: stage-skeleton-pulse 1.2s ease-in-out infinite;
+}
+
+.stage--loading {
+  cursor: progress;
+}
+
+@keyframes stage-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 部分统计失败时的提示条。用 warning 语义色而不是 danger：
+   四格里有几格没回来，其余仍然可用，整页并没有坏掉 */
+.stage-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ys-space-3);
+  margin-block-end: var(--ys-space-3);
+  padding: var(--ys-space-3) var(--ys-space-4);
+  border: 1px solid var(--color-warning-strong);
+  border-radius: var(--ys-radius-md);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning-strong);
+  font-size: var(--ys-font-sm);
+}
+
+.stage-alert__retry {
+  flex: none;
+  padding: var(--ys-space-1) var(--ys-space-3);
+  border: 1px solid currentColor;
+  border-radius: var(--ys-radius-sm);
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.stage-alert__retry:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.stage-alert__retry:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 动效降级：脉动只是「正在加载」的修饰，关掉它不影响可读性 */
+@media (prefers-reduced-motion: reduce) {
+  .stage__skeleton {
+    animation: none;
+    opacity: 0.8;
+  }
 }
 
 .stage__label {

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import yumefusaka.envoymart.productservice.entity.StockLogEntity;
 
 import java.util.List;
@@ -26,4 +27,20 @@ public interface StockLogMapper extends BaseMapper<StockLogEntity> {
             + "<foreach collection='skuIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>"
             + "</script>")
     int countOrderedSkus(@Param("skuIds") List<Long> skuIds);
+
+    /**
+     * 回填一条已认领流水的变动前后值。
+     *
+     * <p>回补的幂等认领必须先于库存更新写入（否则并发下认领不到），
+     * 而那一刻 {@code afterStock} 还不知道，所以先用占位行认领、再回来更新它。
+     * 两步同事务，中途失败一起回滚，不会留下数字不对的流水。
+     *
+     * @return 影响行数；0 说明认领时写的行不见了，属异常，调用方应据此报警
+     */
+    @Update("update stock_log set before_stock = #{beforeStock}, after_stock = #{afterStock} "
+            + "where biz_type = #{bizType} and biz_id = #{bizId} "
+            + "and sku_id = #{skuId} and change_type = #{changeType}")
+    int updateAfterStock(@Param("bizType") String bizType, @Param("bizId") String bizId,
+                         @Param("skuId") Long skuId, @Param("changeType") String changeType,
+                         @Param("beforeStock") int beforeStock, @Param("afterStock") int afterStock);
 }

@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.productservice.service.impl;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -61,14 +62,67 @@ public class StockServiceImpl implements StockService {
         Long skuId = request.getSkuId();
         int quantity = request.getQuantity();
 
+        // 回补必须先过幂等闸，再去加库存。
+        //
+        // 顺序不能反。反过来的话，「消息重试」与「并发重投」这两个场景在
+        // 扣减已经发生、日志还没写下的窗口里都读不到记录，于是各自补一遍——
+        // 实测就是这么把同一笔订单补了 4 次。
+        // 先写流水则相反：谁先插进唯一键谁就是唯一的执行者，
+        // 后到的插入会撞 key 抛异常，整个事务回滚，库存一行都没动。
+        if (!claimRestore(skuId, request)) {
+            log.info("[Stock] 回补已执行过，本次跳过（幂等）skuId={} bizType={} bizId={}",
+                    skuId, request.getBizType(), request.getBizId());
+            return;
+        }
+
         int updated = skuMapper.restoreStock(skuId, quantity);
         if (updated == 0) {
             // 回补丢目标比扣减更危险：货已经退回来了，库存却没加回去，
-            // 系统此后会一直少卖。所以这里必须让调用方看见，不能只打日志
+            // 系统此后会一直少卖。所以这里必须让调用方看见，不能只打日志。
+            // 抛异常会连带回滚上面那条流水占位，下一次重投能重新认领
             throw new IllegalArgumentException("商品规格不存在，库存回补失败：skuId=" + skuId);
         }
-        writeLog(skuId, RESTORE, quantity, request);
+        updateLogAfterStock(skuId, RESTORE, quantity, request);
         syncIndexAfterCommit(skuId);
+    }
+
+    /**
+     * 认领这次回补 —— 用唯一键裁决「谁是第一个」，而不是先查一次再说。
+     *
+     * <p><b>为什么不能写「select 一下有没有，没有就补」。</b>那是典型的
+     * check-then-act：两个并发消费者都在对方写入前查到「没有」，于是都去补，
+     * 唯一键在这里不是优化而是正确性的前提。DuplicateKeyException 不是错误，
+     * 它正是「这件事已经有人做过了」的答案。
+     *
+     * <p><b>没有 bizType/bizId 的回补直接放行。</b>手工调库存这类请求不带业务标识，
+     * 去重没有依据；硬凑一个 key 会把两次独立的人工调整判成一次。
+     */
+    private boolean claimRestore(Long skuId, StockChangeRequest request) {
+        if (request.getBizType() == null || request.getBizId() == null) {
+            return true;
+        }
+        try {
+            writeLog(skuId, RESTORE, request.getQuantity(), request);
+            return true;
+        } catch (DuplicateKeyException e) {
+            return false;
+        }
+    }
+
+    /**
+     * 认领成功后，把这条流水的变动前后值补成真实数字。
+     *
+     * <p>占位必须先于库存更新写入（见 {@link #claimRestore}），而那时
+     * {@code afterStock} 还没发生，只能先写一个占位；这里再按事务内回读到的
+     * 真实值更新它。两步都在同一个事务里，中途失败会一起回滚，
+     * 不会留下一条数字不对的流水。
+     */
+    private void updateLogAfterStock(Long skuId, String changeType, int quantity, StockChangeRequest request) {
+        Integer after = skuMapper.selectStock(skuId);
+        int afterStock = after == null ? 0 : after;
+        int beforeStock = DEDUCT.equals(changeType) ? afterStock + quantity : afterStock - quantity;
+        stockLogMapper.updateAfterStock(request.getBizType(), request.getBizId(), skuId, changeType,
+                beforeStock, afterStock);
     }
 
     /**

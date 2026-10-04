@@ -4,6 +4,7 @@ import yumefusaka.envoymart.contract.KnowledgeDocumentPayload;
 import yumefusaka.envoymart.knowledgeservice.model.ChunkDetail;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentDetail;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentSummary;
+import yumefusaka.envoymart.knowledgeservice.model.DocumentUpsertRequest;
 
 import java.util.List;
 
@@ -52,4 +53,26 @@ public interface KnowledgeDocumentService {
      * @return 本次真正新建或更新的文档编号
      */
     List<String> seed();
+
+    /**
+     * 新建或更新一篇文档，并重切它的切片。
+     * <p>
+     * 与 {@link #seed()} 共用同一条 upsert 路径：两者的差别只在「文档从哪来」
+     * （打包在 jar 里的种子 md / 管理端提交的正文），而「怎么落库、要不要重切」
+     * 必须只有一份实现。分成两份的话，种子那边改了重切判据、上传这边不改，
+     * 于是同一种情况在两个入口下行为不同——而它们写的是同一张表。
+     *
+     * @return 文档编号
+     * @throws IllegalArgumentException 参数不合法（编号格式、范围取值、正文为空等）
+     */
+    String upsert(DocumentUpsertRequest request);
+
+    /**
+     * 停用 / 启用一篇文档。
+     * <p>
+     * 停用是「不再被检索到」而不是删除：引用是跨会话存在的历史事实，
+     * 删掉文档会让已经发出去的 {@code [3]} 点开是 404。停用只让它不再进入
+     * 检索索引（{@link #corpus()} 只下发启用状态的文档）。
+     */
+    void changeStatus(String docNo, int status);
 }

@@ -18,6 +18,7 @@ import yumefusaka.envoymart.knowledgeservice.model.ChunkDetail;
 import yumefusaka.envoymart.knowledgeservice.model.ChunkRef;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentDetail;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentSummary;
+import yumefusaka.envoymart.knowledgeservice.model.DocumentUpsertRequest;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocumentService;
 
 import java.time.LocalDateTime;
@@ -33,6 +34,20 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
     private final KnowledgeChunkMapper chunkMapper;
     /** 与 ai-service 建索引时用的是同一个实现、同一组参数，见 StructuralSplitter.standard() */
     private final TextSplitter splitter = StructuralSplitter.standard();
+
+    /**
+     * 允许的来源与领域取值。
+     * <p>
+     * 这些不是「随便填个字符串」，它们会进到文档记录里、被检索侧按 scope 做领域筛选、
+     * 被图谱侧按来源判断权威度。放进一个自由文本字段的后果是同一个领域出现
+     * {@code nutrition} / {@code Nutrition} / {@code 营养} 三种写法，
+     * 而筛选是等值匹配——三种写法谁也筛不到谁。
+     */
+    private static final java.util.Set<String> SOURCES =
+            java.util.Set.of("manual", "policy", "regulation", "spec", "guide");
+    private static final java.util.Set<String> SCOPES =
+            java.util.Set.of("nutrition", "after_sale", "logistics", "payment",
+                    "promotion", "food_safety");
 
     public KnowledgeDocumentServiceImpl(KnowledgeDocumentMapper documentMapper,
                                         KnowledgeChunkMapper chunkMapper) {
@@ -146,45 +161,10 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
     public List<String> seed() {
         List<Document> seeds = CorpusLoader.load();
         List<String> touched = new ArrayList<>();
-        LocalDateTime now = LocalDateTime.now();
-
         for (Document seed : seeds) {
-            KnowledgeDocumentEntity existing = documentMapper.selectOne(Wrappers.<KnowledgeDocumentEntity>lambdaQuery()
-                    .eq(KnowledgeDocumentEntity::getDocNo, seed.getId()));
-
-            KnowledgeDocumentEntity doc;
-            boolean rowChanged;
-            if (existing == null) {
-                KnowledgeDocumentEntity created = new KnowledgeDocumentEntity();
-                created.setDocNo(seed.getId());
-                apply(created, seed);
-                created.setStatus(1);
-                created.setCreatedAt(now);
-                created.setUpdatedAt(now);
-                documentMapper.insert(created);
-                doc = created;
-                rowChanged = true;
-            } else {
-                KnowledgeDocumentEntity updated = new KnowledgeDocumentEntity();
-                updated.setDocNo(seed.getId());
-                apply(updated, seed);
-                updated.setUpdatedAt(now);
-                // 判断「要不要重切」交给数据库：先查出来比对再写回是读-改-写，两个实例同时启动会各写一次
-                rowChanged = documentMapper.updateIfChanged(updated) > 0;
-                doc = rowChanged ? requireDocument(seed.getId()) : existing;
+            if (upsertInternal(seed, true)) {
+                touched.add(seed.getId());
             }
-
-            List<DocumentChunk> expected = splitter.split(toDocument(doc));
-            // 文档行没变、切片却对不上，只有一种可能：切分参数改过了。
-            // 这时必须重切——ai-service 每次启动都按**当前**参数重建索引，
-            // 而这里若只看文档行，库里就会留着旧边界的切片。
-            if (!rowChanged && chunksMatch(doc, expected)) {
-                continue;
-            }
-            rebuildChunks(doc, expected);
-            touched.add(seed.getId());
-            log.info("[Knowledge] 种子{} {} 《{}》 切片 {} 片",
-                    existing == null ? "新建" : "更新", seed.getId(), seed.getTitle(), expected.size());
         }
 
         if (touched.isEmpty()) {
@@ -193,6 +173,158 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             log.info("[Knowledge] 种子语料 {} 篇，本次重建 {} 篇：{}", seeds.size(), touched.size(), touched);
         }
         return touched;
+    }
+
+    @Override
+    @Transactional
+    public String upsert(DocumentUpsertRequest request) {
+        Document document = toDocument(request);
+        Document stored = document;
+        if (stored.getId() == null || stored.getId().isBlank()) {
+            stored = Document.builder()
+                    .id(nextDocNo())
+                    .title(document.getTitle())
+                    .source(document.getSource())
+                    .scope(document.getScope())
+                    .version(document.getVersion())
+                    .tags(document.getTags())
+                    .content(document.getContent())
+                    .build();
+        }
+        upsertInternal(stored, false);
+        return stored.getId();
+    }
+
+    @Override
+    @Transactional
+    public void changeStatus(String docNo, int status) {
+        if (status != 0 && status != 1) {
+            throw new IllegalArgumentException("status 只能是 0（停用）或 1（启用）");
+        }
+        KnowledgeDocumentEntity doc = requireDocument(docNo);
+        KnowledgeDocumentEntity updated = new KnowledgeDocumentEntity();
+        updated.setId(doc.getId());
+        updated.setStatus(status);
+        updated.setUpdatedAt(LocalDateTime.now());
+        documentMapper.updateById(updated);
+        log.info("[Knowledge] 文档 {} 状态改为 {}", docNo, status == 1 ? "启用" : "停用");
+    }
+
+    /**
+     * 落库并（必要时）重切一篇文档。
+     *
+     * @param seedMode 种子导入模式：文档编号必须来自种子，缺失即报错。
+     *                 管理端上传走 false，此时编号已由调用方分配好
+     * @return 是否真的发生了新建或重切
+     */
+    private boolean upsertInternal(Document seed, boolean seedMode) {
+        LocalDateTime now = LocalDateTime.now();
+        KnowledgeDocumentEntity existing = documentMapper.selectOne(Wrappers.<KnowledgeDocumentEntity>lambdaQuery()
+                .eq(KnowledgeDocumentEntity::getDocNo, seed.getId()));
+
+        KnowledgeDocumentEntity doc;
+        boolean rowChanged;
+        if (existing == null) {
+            // 守卫的判据是「种子文档有没有带编号」，不是「库里有没有这一篇」。
+            // 原先写在 existing == null 分支里，于是**每一篇新增的种子文档都会撞上它**——
+            // 而「新增一篇种子」恰恰是这条链路最正常的用法。
+            // 触发条件写错位置时，它平时不响（没人加过新文档），一响就报一个与真实原因无关的错
+            if (seedMode && (seed.getId() == null || seed.getId().isBlank())) {
+                throw new IllegalStateException("种子文档缺少编号：" + seed.getTitle());
+            }
+            KnowledgeDocumentEntity created = new KnowledgeDocumentEntity();
+            created.setDocNo(seed.getId());
+            apply(created, seed);
+            created.setStatus(1);
+            created.setCreatedAt(now);
+            created.setUpdatedAt(now);
+            documentMapper.insert(created);
+            doc = created;
+            rowChanged = true;
+        } else {
+            KnowledgeDocumentEntity updated = new KnowledgeDocumentEntity();
+            updated.setDocNo(seed.getId());
+            apply(updated, seed);
+            updated.setUpdatedAt(now);
+            // 判断「要不要重切」交给数据库：先查出来比对再写回是读-改-写，两个实例同时启动会各写一次
+            rowChanged = documentMapper.updateIfChanged(updated) > 0;
+            doc = rowChanged ? requireDocument(seed.getId()) : existing;
+        }
+
+        List<DocumentChunk> expected = splitter.split(toDocument(doc));
+        // 文档行没变、切片却对不上，只有一种可能：切分参数改过了。
+        // 这时必须重切——ai-service 每次启动都按**当前**参数重建索引，
+        // 而这里若只看文档行，库里就会留着旧边界的切片。
+        if (!rowChanged && chunksMatch(doc, expected)) {
+            return false;
+        }
+        rebuildChunks(doc, expected);
+        log.info("[Knowledge] {} {} 《{}》 切片 {} 片",
+                seedMode ? "种子" + (existing == null ? "新建" : "更新") : (existing == null ? "上传新建" : "上传更新"),
+                seed.getId(), seed.getTitle(), expected.size());
+        return true;
+    }
+
+    /**
+     * 分配下一个文档编号。
+     * <p>
+     * 取当前库里的最大编号顺延，而不是数行数——行数在删过文档之后会与编号错位，
+     * 分配出一个已经被用过的号，撞在 {@code doc_no} 的唯一约束上。
+     */
+    private String nextDocNo() {
+        String max = documentMapper.selectList(Wrappers.<KnowledgeDocumentEntity>lambdaQuery()
+                        .select(KnowledgeDocumentEntity::getDocNo)
+                        .orderByDesc(KnowledgeDocumentEntity::getDocNo)
+                        .last("limit 1"))
+                .stream().findFirst().map(KnowledgeDocumentEntity::getDocNo).orElse(null);
+        int number = 1;
+        if (max != null && max.matches("KB-\\d+")) {
+            number = Integer.parseInt(max.substring(3)) + 1;
+        }
+        return "KB-%04d".formatted(number);
+    }
+
+    private static Document toDocument(DocumentUpsertRequest request) {
+        // 校验不放 Bean Validation：取值清单是检索侧与图谱侧共用的契约，
+        // 写在这里能让「哪些值合法」与「谁在用这些值」待在同一个文件里。
+        //
+        // 与 FrontMatterParser 同一条纪律：不合法就抛，不补默认值。
+        // 少一个 title 的后果不是「这篇文档差一点」，而是它被引用时用户看到
+        // 「依据：《null》」——错在源头、却在几屏之外的对话里现形，中间没有任何一处会报错。
+        String title = requireText(request.getTitle(), "标题");
+        String content = requireText(request.getContent(), "正文");
+        String source = requireOneOf(request.getSource(), SOURCES, "来源(source)");
+        String scope = requireOneOf(request.getScope(), SCOPES, "领域(scope)");
+        String docNo = request.getDocNo();
+        if (docNo != null && !docNo.isBlank() && !docNo.matches("KB-\\d{4,}")) {
+            throw new IllegalArgumentException("文档编号格式应为 KB-0001：" + docNo);
+        }
+        return Document.builder()
+                .id(docNo == null || docNo.isBlank() ? null : docNo.strip())
+                .title(title)
+                .source(source)
+                .scope(scope)
+                .version(request.getVersion() == null || request.getVersion().isBlank()
+                        ? "v1" : request.getVersion().strip())
+                .tags(request.getTags())
+                .content(content)
+                .build();
+    }
+
+    private static String requireText(String value, String label) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(label + "不能为空");
+        }
+        return value.strip();
+    }
+
+    private static String requireOneOf(String value, java.util.Set<String> allowed, String label) {
+        String stripped = requireText(value, label);
+        if (!allowed.contains(stripped)) {
+            throw new IllegalArgumentException(
+                    "%s 取值不合法：%s；允许 %s".formatted(label, stripped, allowed));
+        }
+        return stripped;
     }
 
     private static void apply(KnowledgeDocumentEntity target, Document seed) {

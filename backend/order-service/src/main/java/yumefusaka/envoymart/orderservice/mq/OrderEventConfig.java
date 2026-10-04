@@ -29,10 +29,23 @@ public class OrderEventConfig {
     public static final String ORDER_CREATED_QUEUE = "order.created.queue";
     public static final String PAYMENT_COMPLETED_QUEUE = "payment.completed.queue";
     public static final String ORDER_DLX_QUEUE = "order.dlx.queue";
+    /**
+     * 库存回补补偿队列。
+     * <p>
+     * <b>是队列，不是一张「待办表」。</b>本服务自己发、自己收 —— 看起来绕，
+     * 但换来的正是「持久、可重试、会进死信」这三件重试必须具备的性质：
+     * 内存里的重试队列重启就没了，而「订单关了、库存没还」丢了就是永久的库存差额。
+     * <p>
+     * 独立于 payment.completed 那条线：那条是「通知下游」，这条是「我必须做成」，
+     * 语义不同，重试策略也就不该共用。
+     */
+    public static final String STOCK_RESTORE_QUEUE = "stock.restore.compensation.queue";
 
     // ========== 路由键 ==========
     public static final String ORDER_CREATED_KEY = "order.created";
     public static final String PAYMENT_COMPLETED_KEY = "payment.completed";
+    /** 回补库存的补偿路由键。见 {@link StockRestoreRequest} */
+    public static final String STOCK_RESTORE_KEY = "stock.restore.compensation";
 
     /**
      * 订单真的变成「已支付」了 —— 与 {@code payment.completed} 的方向相反：
@@ -86,11 +99,19 @@ public class OrderEventConfig {
         return QueueBuilder.durable(ORDER_DLX_QUEUE).build();
     }
 
-    // 下面三个 Binding 的**每个参数都显式 @Qualifier**，不靠形参名消歧。
-    // 这里有两个 TopicExchange（orderExchange / deadLetterExchange）与三个 Queue，
-    // 原本第一个参数只写形参名，那是依赖字节码里的 MethodParameters 属性——
-    // Maven 传了 -parameters 所以能跑，IDE 用自己的编译设置写同一份 target/classes 时
-    // 不传这个标志，参数名就丢了，启动直接报「expected single matching bean but found 2」。
+    @Bean
+    public Queue stockRestoreQueue() {
+        return QueueBuilder.durable(STOCK_RESTORE_QUEUE)
+                .withArgument("x-dead-letter-exchange", DEAD_LETTER_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", "dead.stock.restore")
+                .build();
+    }
+
+    // 下面几个 Binding 的**每个参数都显式 @Qualifier**，不靠形参名消歧。
+    // 这里有多个 TopicExchange 与多个 Queue，只写形参名是依赖字节码里的
+    // MethodParameters 属性——Maven 传了 -parameters 所以能跑，IDE 用自己的
+    // 编译设置写同一份 target/classes 时不传这个标志，参数名就丢了，
+    // 启动直接报「expected single matching bean but found 2」。
     // 症状是"时好时坏、mvn clean 有时能修"，取决于最后写 class 的是谁。
 
     @Bean
@@ -112,5 +133,12 @@ public class OrderEventConfig {
             @Qualifier("deadLetterExchange") TopicExchange deadLetterExchange,
             @Qualifier("orderDlxQueue") Queue orderDlxQueue) {
         return BindingBuilder.bind(orderDlxQueue).to(deadLetterExchange).with("dead.#");
+    }
+
+    @Bean
+    public Binding stockRestoreBinding(
+            @Qualifier("orderExchange") TopicExchange orderExchange,
+            @Qualifier("stockRestoreQueue") Queue stockRestoreQueue) {
+        return BindingBuilder.bind(stockRestoreQueue).to(orderExchange).with(STOCK_RESTORE_KEY);
     }
 }

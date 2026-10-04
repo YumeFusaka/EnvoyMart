@@ -20,7 +20,15 @@ import { useRoute, useRouter } from 'vue-router'
 const route = useRoute()
 const router = useRouter()
 
-/** 演示用入口。图谱里收录了这些，点一下就有东西可看，不必先猜名字 */
+/**
+ * 演示用入口。图谱里收录了这些，点一下就有东西可看，不必先猜名字。
+ *
+ * 这几个名字是**快捷入口**，不是「图谱里一定有」的承诺 —— 图谱随语料重建，
+ * 某个演示实体被重命名或删掉是可能的。所以它们只用于下拉与快捷按钮；
+ * **首次进入的默认中心实体不取这里**，而是从图谱自己的数据里挑（见 pickDefaultRoot），
+ * 否则一个写死的演示名会把整页带进「图谱里没有收录」的空态：页面看上去是坏的，
+ * 实际只是默认值过期了。
+ */
 const SAMPLES = ['SPU7', '深海鱼油', '华法林', '维生素D3']
 
 const edges = ref<GraphEdge[]>([])
@@ -77,9 +85,10 @@ function reasonOf(e: unknown, fallback: string): string {
 
 async function load() {
   if (!root.value) {
-    // 没指定中心就挑一个演示实体，让页面一进来就有东西可看。
+    // 没指定中心就挑一个实体，让页面一进来就有东西可看。
     // 这里用 replace：它是一次自动跳转，不该在浏览器的后退栈里留一格
-    router.replace({ query: { ...route.query, root: SAMPLES[0] } })
+    const fallback = await resolveDefaultRoot()
+    router.replace({ query: { ...route.query, root: fallback } })
     return
   }
   loading.value = true
@@ -96,6 +105,41 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * 首次进入时的默认中心实体 —— **从图谱自己的数据里挑，不写死名字**。
+ *
+ * 写死一个演示名的代价不是「偶尔空一次」：默认值过期后，用户每次打开这页
+ * 看到的都是一个没有画布的空态，页面上还写着「图谱里没有收录『SPU7』」——
+ * 那读起来是「这个知识库有问题」，而不是「默认值该换了」。
+ *
+ * 挑选顺序：先按 SAMPLES 找仍然在册的那个（保住演示体验），都找不到就用
+ * 图谱里第一个实体兜底。用 search 而不是直接拿 stats：stats 只有数量，
+ * 拿不到实体名；search 传空串会按 limit 返回一批实体。
+ */
+async function resolveDefaultRoot(): Promise<string> {
+  for (const candidate of SAMPLES) {
+    try {
+      const hits = await searchEntities(candidate, 5)
+      if (hits.some((h) => h.name.toLowerCase() === candidate.toLowerCase())) {
+        return candidate
+      }
+    } catch {
+      // 单个候选查不到就试下一个；全试完还有兜底，不让这一步把整页拖垮
+    }
+  }
+  try {
+    // 兜底优先挑商品：这页的主题是「每个商品沿成分连出去」，拿一个营养素当中心
+    // 画出来的图与用户对「商品图谱」的预期对不上。取一批再筛，比多问接口一次便宜
+    const any = await searchEntities('', 20)
+    const product = any.find((h) => h.kind === 'PRODUCT')
+    if (product) return product.name
+    if (any.length) return any[0]!.name
+  } catch {
+    // 连兜底都拿不到：回一个空串，页面按「没有中心实体」提示，并让用户自己搜
+  }
+  return ''
 }
 
 /** 「这几样能不能一起吃」。只在用户主动点的时候发请求 —— 它要带商品与药物，不是每次都要看 */

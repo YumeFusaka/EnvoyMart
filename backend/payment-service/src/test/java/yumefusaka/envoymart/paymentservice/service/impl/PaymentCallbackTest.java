@@ -6,8 +6,6 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.amqp.rabbit.connection.CorrelationData;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.paymentservice.client.OrderClient;
 import yumefusaka.envoymart.paymentservice.entity.PaymentEntity;
@@ -15,6 +13,7 @@ import yumefusaka.envoymart.paymentservice.mapper.PaymentMapper;
 import yumefusaka.envoymart.paymentservice.model.CreatePaymentRequest;
 import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.paymentservice.model.PaymentCallbackRequest;
+import yumefusaka.envoymart.paymentservice.mq.OutboxWriter;
 
 import yumefusaka.envoymart.paymentservice.service.CallbackLogService;
 
@@ -44,7 +43,7 @@ class PaymentCallbackTest {
 
     private PaymentMapper paymentMapper;
     private CallbackLogService callbackLogService;
-    private RabbitTemplate rabbitTemplate;
+    private OutboxWriter outboxWriter;
     private OrderClient orderClient;
     private PaymentServiceImpl service;
 
@@ -64,9 +63,9 @@ class PaymentCallbackTest {
         paymentMapper = mock(PaymentMapper.class);
         // 回调流水走独立事务，所以它是一个独立的 bean —— 单测里 mock 掉即可
         callbackLogService = mock(CallbackLogService.class);
-        rabbitTemplate = mock(RabbitTemplate.class);
+        outboxWriter = mock(OutboxWriter.class);
         orderClient = mock(OrderClient.class);
-        service = new PaymentServiceImpl(paymentMapper, callbackLogService, rabbitTemplate, orderClient);
+        service = new PaymentServiceImpl(paymentMapper, callbackLogService, outboxWriter, orderClient);
         // 默认：条件更新命中一行（即“这次回调成功迁移了状态”）
         when(paymentMapper.update(any(), any())).thenReturn(1);
     }
@@ -100,7 +99,7 @@ class PaymentCallbackTest {
         var response = service.processCallback(callback("SUCCESS", "TX-1"));
 
         assertThat(response.getStatus()).isEqualTo("SUCCESS");
-        verify(rabbitTemplate, times(1)).convertAndSend(anyString(), anyString(), any(Object.class), any(CorrelationData.class));
+        verify(outboxWriter, times(1)).append(anyString(), anyString(), anyString(), anyString(), any());
         verify(paymentMapper, times(1)).update(any(), any());
     }
 
@@ -111,8 +110,8 @@ class PaymentCallbackTest {
         var response = service.processCallback(callback("SUCCESS", "TX-1"));
 
         assertThat(response.getStatus()).isEqualTo("SUCCESS");
-        verify(rabbitTemplate, never())
-                .convertAndSend(anyString(), anyString(), any(Object.class), any(CorrelationData.class));
+        verify(outboxWriter, never())
+                .append(anyString(), anyString(), anyString(), anyString(), any());
         verify(paymentMapper, never()).update(any(), any());
     }
 
@@ -163,8 +162,8 @@ class PaymentCallbackTest {
         var response = service.processCallback(callback("SUCCESS", "TX-1"));
 
         assertThat(response.getStatus()).isEqualTo("SUCCESS");
-        verify(rabbitTemplate, never())
-                .convertAndSend(anyString(), anyString(), any(Object.class), any(CorrelationData.class));
+        verify(outboxWriter, never())
+                .append(anyString(), anyString(), anyString(), anyString(), any());
     }
 
     /**
@@ -182,8 +181,8 @@ class PaymentCallbackTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("并发");
 
-        verify(rabbitTemplate, never())
-                .convertAndSend(anyString(), anyString(), any(Object.class), any(CorrelationData.class));
+        verify(outboxWriter, never())
+                .append(anyString(), anyString(), anyString(), anyString(), any());
     }
 
     /**

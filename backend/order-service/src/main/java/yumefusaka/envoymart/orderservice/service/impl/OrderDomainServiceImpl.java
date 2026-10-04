@@ -54,7 +54,11 @@ import yumefusaka.envoymart.contract.RefundResponse;
 import yumefusaka.envoymart.contract.SkuSnapshot;
 import yumefusaka.envoymart.contract.StockChangeRequest;
 import yumefusaka.envoymart.orderservice.mq.OrderCreatedEvent;
+import yumefusaka.envoymart.orderservice.mq.OrderEventConfig;
 import yumefusaka.envoymart.orderservice.mq.OrderEventPublisher;
+import yumefusaka.envoymart.orderservice.mq.OutboxWriter;
+import yumefusaka.envoymart.orderservice.mq.StockRestoreRequest;
+
 import yumefusaka.envoymart.orderservice.mq.OrderItemEvent;
 import yumefusaka.envoymart.orderservice.mq.OrderPaidEvent;
 import yumefusaka.envoymart.orderservice.service.OrderDomainService;
@@ -94,6 +98,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     private final PromotionClient promotionClient;
     private final StockLockService stockLockService;
     private final OrderEventPublisher eventPublisher;
+    private final OutboxWriter outboxWriter;
 
     public OrderDomainServiceImpl(CartItemMapper cartItemMapper,
                                   OrderMapper orderMapper,
@@ -106,7 +111,8 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                                   PaymentClient paymentClient,
                                   PromotionClient promotionClient,
                                   StockLockService stockLockService,
-                                  OrderEventPublisher eventPublisher) {
+                                  OrderEventPublisher eventPublisher,
+                                  OutboxWriter outboxWriter) {
         this.cartItemMapper = cartItemMapper;
         this.orderMapper = orderMapper;
         this.orderItemMapper = orderItemMapper;
@@ -119,6 +125,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         this.promotionClient = promotionClient;
         this.stockLockService = stockLockService;
         this.eventPublisher = eventPublisher;
+        this.outboxWriter = outboxWriter;
     }
 
     @Override
@@ -522,6 +529,11 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    public LocalDateTime firstReceivedAt(String userId) {
+        return userId == null || userId.isBlank() ? null : orderMapper.firstReceivedAt(userId);
+    }
+
+    @Override
     public LogisticsResponse logisticsOf(Long orderId) {
         OrderEntity order = orderId == null ? null : orderMapper.selectById(orderId);
         if (order == null) {
@@ -787,19 +799,43 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         List<OrderItemEntity> items = orderItemMapper.selectList(
                 new LambdaQueryWrapper<OrderItemEntity>().eq(OrderItemEntity::getOrderId, order.getId()));
         for (OrderItemEntity item : items) {
-            try {
-                requireSuccess(productClient.restoreStock(StockChangeRequest.builder()
-                                .skuId(item.getSkuId())
-                                .quantity(item.getQuantity())
-                                .bizType(BIZ_TYPE_ORDER)
-                                .bizId(order.getOrderNo())
-                                .remark("订单关闭回补")
-                                .build()),
-                        "回补库存 skuId=" + item.getSkuId());
-            } catch (Exception e) {
-                log.error("回补库存失败，订单已关闭但库存未归还 orderId={} skuId={} quantity={}: {}",
-                        order.getId(), item.getSkuId(), item.getQuantity(), e.getMessage());
-            }
+            restoreOneQuietly(order, item, "订单关闭回补");
+        }
+    }
+
+    /**
+     * 回补一条 SKU 的库存，失败登记补偿事件。
+     * <p>
+     * <b>为什么不抛异常、也不只记日志（U60 第三层）。</b>抛异常会把订单状态退回去，
+     * 而多件商品时前面的可能已经回补成功 —— 变成「库存凭空多出来」。所以不能抛。
+     * 但只记日志同样不行：日志会被下次重启覆盖，而库存差额是<b>永久</b>的，
+     * 没有任何人会发现。实测的形态就是「订单关了、库存没还」，越差越多。
+     * <p>
+     * 出路是把补偿登记成一条待办：写进发件箱（等价的持久待办），由消费者重试。
+     * 它不再是「日志里的一句话」，而是一条能被重放、能被统计、失败了还能再失败的记录。
+     * <p>
+     * 补偿事件本身也走发件箱，于是它与订单状态变更共享同一个事务 —— 状态回滚了，
+     * 补偿请求跟着回滚，不会出现「订单还是原状态、库存却已经被补回」的反向分叉。
+     */
+    private void restoreOneQuietly(OrderEntity order, OrderItemEntity item, String remark) {
+        try {
+            requireSuccess(productClient.restoreStock(StockChangeRequest.builder()
+                            .skuId(item.getSkuId())
+                            .quantity(item.getQuantity())
+                            .bizType(BIZ_TYPE_ORDER)
+                            .bizId(order.getOrderNo())
+                            .remark(remark)
+                            .build()),
+                    "回补库存 skuId=" + item.getSkuId());
+        } catch (Exception e) {
+            log.error("[Order] 回补库存失败，已登记补偿事件等待重试 orderId={} skuId={} quantity={}: {}",
+                    order.getId(), item.getSkuId(), item.getQuantity(), e.getMessage());
+            // 补偿事件走独立路由键，由本服务自己的消费者重试 —— 不复用订单事件那条线，
+            // 因为两者的语义与重试策略不同：订单事件是「通知下游」，这条是「我必须做成」
+            outboxWriter.append(OrderEventConfig.STOCK_RESTORE_KEY, order.getOrderNo(),
+                    OrderEventConfig.ORDER_EXCHANGE, OrderEventConfig.STOCK_RESTORE_KEY,
+                    new StockRestoreRequest(order.getId(), order.getOrderNo(), item.getSkuId(),
+                            item.getQuantity(), remark));
         }
     }
 
@@ -843,7 +879,6 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         delivery.setCarrierCode(carrierCode);
         delivery.setCarrierName(carrierName);
         delivery.setTrackingNo(trackingNo);
-        delivery.setStatus(DeliveryStatus.PICKED_UP.name());
         delivery.setShippedAt(now);
         deliveryMapper.insert(delivery);
 
@@ -886,7 +921,6 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         // 同一订单只该有一条履约单，但万一日后支持拆单，这里也不会误伤别的包裹
         deliveryMapper.update(null, new LambdaUpdateWrapper<OrderDeliveryEntity>()
                 .eq(OrderDeliveryEntity::getOrderId, orderId)
-                .set(OrderDeliveryEntity::getStatus, DeliveryStatus.SIGNED.name())
                 .set(OrderDeliveryEntity::getSignedAt, now));
 
         OrderDeliveryEntity delivery = deliveryMapper.selectOne(
@@ -973,6 +1007,26 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
         log.info("[Order] 补录物流节点 orderNo={} status={} location={} at={} operator={}",
                 order.getOrderNo(), status.name(), location, at, operatorId);
+    }
+
+    /**
+     * 补偿一条回补失败记录 —— 消费者驱动，重试到成功或进死信。
+     * <p>
+     * 它不做业务判断：request 里带着当时要补的全部输入。之所以不复查订单行，
+     * 是因为订单行可能已经被改过，而重试要还原的是「当时要补多少」。
+     */
+    @Override
+    public void compensateStockRestore(StockRestoreRequest request) {
+        requireSuccess(productClient.restoreStock(StockChangeRequest.builder()
+                        .skuId(request.skuId())
+                        .quantity(request.quantity())
+                        .bizType(BIZ_TYPE_ORDER)
+                        .bizId(request.orderNo())
+                        .remark(request.remark() == null ? "订单关闭回补（补偿重试）" : request.remark())
+                        .build()),
+                "补偿回补库存 skuId=" + request.skuId());
+        log.info("[Order] 库存补偿回补成功 orderNo={} skuId={} quantity={}",
+                request.orderNo(), request.skuId(), request.quantity());
     }
 
     @Override

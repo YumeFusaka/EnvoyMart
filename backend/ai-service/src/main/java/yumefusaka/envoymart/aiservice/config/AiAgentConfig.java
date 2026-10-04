@@ -22,6 +22,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import yumefusaka.envoymart.agent.core.Agent;
 import yumefusaka.envoymart.agent.core.AgentGraph;
+import yumefusaka.envoymart.agent.core.task.TaskStateStore;
 import yumefusaka.envoymart.agent.flow.FlowRegistry;
 import yumefusaka.envoymart.agent.flow.IntentRouter;
 import yumefusaka.envoymart.agent.llm.LLMConfig;
@@ -47,13 +48,21 @@ import yumefusaka.envoymart.aiservice.rag.GraphEvidenceRetriever;
 import yumefusaka.envoymart.aiservice.rag.LangChain4jEmbeddingService;
 import yumefusaka.envoymart.aiservice.rag.MilvusVectorStore;
 import yumefusaka.envoymart.aiservice.llm.LangChain4jLLMProvider;
+import yumefusaka.envoymart.aiservice.client.AuthClient;
+import yumefusaka.envoymart.aiservice.tool.AddToCartTool;
+import yumefusaka.envoymart.aiservice.tool.AddressTool;
+import yumefusaka.envoymart.aiservice.tool.AfterSaleTool;
 import yumefusaka.envoymart.aiservice.tool.CancelOrderTool;
+import yumefusaka.envoymart.aiservice.tool.CheckoutTool;
 import yumefusaka.envoymart.aiservice.tool.InteractionCheckTool;
 import yumefusaka.envoymart.aiservice.tool.KnowledgeSearchTool;
 import yumefusaka.envoymart.aiservice.tool.LogisticsTool;
 import yumefusaka.envoymart.aiservice.tool.OrderTool;
 import yumefusaka.envoymart.aiservice.tool.ProductTool;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.ObservationRegistry;
+import yumefusaka.envoymart.aiservice.llm.TracingQueryExpander;
+import yumefusaka.envoymart.aiservice.llm.TracingReranker;
 import yumefusaka.envoymart.aiservice.tool.MicrometerToolCallListener;
 import yumefusaka.envoymart.common.web.RequestId;
 
@@ -165,8 +174,10 @@ public class AiAgentConfig {
     public LLMProvider langChain4jLLMProvider(ChatModel chatModel,
                                               @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel,
                                               ToolRegistry toolRegistry, LLMConfig llmConfig,
-                                              MeterRegistry meterRegistry) {
-        return new LangChain4jLLMProvider(chatModel, streamingChatModel, toolRegistry, llmConfig, meterRegistry);
+                                               MeterRegistry meterRegistry,
+                                               ObservationRegistry observationRegistry) {
+        return new LangChain4jLLMProvider(chatModel, streamingChatModel, toolRegistry, llmConfig, meterRegistry,
+                observationRegistry);
     }
 
     @Bean
@@ -195,7 +206,7 @@ public class AiAgentConfig {
      * 埋点放这里才能一次覆盖全部；挂在某一条路的实现上会漏掉其余路径。
      */
     @Bean
-    public ToolRegistry toolRegistry(OrderClient orderClient, ProductClient productClient,
+    public ToolRegistry toolRegistry(OrderClient orderClient, ProductClient productClient, AuthClient authClient,
                                      KnowledgeClient knowledgeClient,
                                      SimpleRAGEngine ragEngine,
                                      MeterRegistry meterRegistry) {
@@ -205,6 +216,12 @@ public class AiAgentConfig {
                 new LogisticsTool(orderClient),
                 new ProductTool(productClient),
                 new CancelOrderTool(orderClient),
+                // 「能做复杂任务」的四把工具：加购、下单、售后提交都要用户确认——
+                // 它们改变交易状态，做错了得用户自己去收尾
+                new AddressTool(authClient),
+                new AddToCartTool(orderClient),
+                new CheckoutTool(orderClient),
+                new AfterSaleTool(orderClient),
                 new InteractionCheckTool(knowledgeClient),
                 // 再检索把开头那一次的单次机会变成 ReAct 途中的按需机会，
                 // 检索句质量由 QueryRewriter 的指代消解兜底（两者是同一条链路的两个时刻）
@@ -269,8 +286,9 @@ public class AiAgentConfig {
     /** 配了模型 Key 就用百炼/OpenAI 的 EmbeddingModel（语义召回才有意义）。 */
     @Bean
     @ConditionalOnExpression("'${envoymart.embedding.api-key:}'.length() > 0")
-    public EmbeddingService langChain4jEmbeddingService(EmbeddingModel embeddingModel) {
-        return new LangChain4jEmbeddingService(embeddingModel);
+    public EmbeddingService langChain4jEmbeddingService(EmbeddingModel embeddingModel,
+                                                        ObservationRegistry observationRegistry) {
+        return new LangChain4jEmbeddingService(embeddingModel, observationRegistry);
     }
 
     /** 无 Key 时退回本地 Ollama（nomic-embed-text），不可用再降级到哈希向量。 */
@@ -357,8 +375,12 @@ public class AiAgentConfig {
     public Reranker dashScopeReranker(@Value("${envoymart.rerank.api-key}") String apiKey,
                                       @Value("${envoymart.rerank.model:gte-rerank-v2}") String model,
                                       @Value("${envoymart.rerank.endpoint:}") String endpoint,
-                                      @Value("${envoymart.rerank.timeout-ms:5000}") long timeoutMs) {
-        return new DashScopeReranker(apiKey, model, endpoint, java.time.Duration.ofMillis(timeoutMs));
+                                      @Value("${envoymart.rerank.timeout-ms:5000}") long timeoutMs,
+                                      ObservationRegistry observationRegistry) {
+        // 装饰器只加一层 trace，不改重排行为——导出开关仍默认关（见 application.yml）
+        return new TracingReranker(
+                new DashScopeReranker(apiKey, model, endpoint, java.time.Duration.ofMillis(timeoutMs)),
+                observationRegistry);
     }
 
     @Bean
@@ -463,8 +485,9 @@ public class AiAgentConfig {
      * 且不污染运行时代码的那一侧。
      */
     @Bean
-    public QueryExpander queryExpander(@Lazy LLMProvider llmProvider, LLMConfig llmConfig) {
-        return new LlmQueryExpander(llmProvider, llmConfig);
+    public QueryExpander queryExpander(@Lazy LLMProvider llmProvider, LLMConfig llmConfig,
+                                       ObservationRegistry observationRegistry) {
+        return new TracingQueryExpander(new LlmQueryExpander(llmProvider, llmConfig), observationRegistry);
     }
 
     /**
@@ -583,13 +606,18 @@ public class AiAgentConfig {
                        SimpleRAGEngine ragEngine,
                        MemoryConsolidator memoryConsolidator,
                        QueryRewriter queryRewriter,
+                       TaskStateStore taskStateStore,
+                       LLMProvider llmProvider,
+                       LLMConfig llmConfig,
                        @Value("${envoymart.agent.approval-secret:}") String approvalSecret) {
         return new Agent(
                 Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3)
-                        .consolidationEveryTurns(3).approvalSecret(approvalSecret).build(),
+                        .consolidationEveryTurns(3).approvalSecret(approvalSecret)
+                        // 冲突核对另起一次干净调用时用它自己的模型名；留空则沿用 provider 默认
+                        .llmModel(llmConfig.getModel()).build(),
                 toolRegistry, intentRouter, agentGraph,
                 shortTermMemory, episodicMemory, userProfileStore, ragEngine,
-                memoryConsolidator, queryRewriter
+                memoryConsolidator, queryRewriter, taskStateStore, llmProvider
         );
     }
 }

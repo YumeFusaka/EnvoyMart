@@ -15,7 +15,7 @@ import { ElMessage } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { addOrderTrace, getOrderDetail, listOrders, remarkOrder, shipOrder } from '@/api/admin/order'
 import { formatPrice } from '@/api/product'
-import { useAdminList } from '@/composables/useAdminList'
+import { useAdminList, useResponsiveColumns } from '@/composables/useAdminList'
 import { formatDate, formatDateTime } from '@/utils/format'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import type {
@@ -52,6 +52,23 @@ const {
     size: 20,
   },
   { immediate: false },
+)
+
+
+/** 表格容器：列宽按它实测的宽度算，窄屏时等比例收缩 */
+const tableRef = ref<HTMLElement | null>(null)
+const { widths: colW } = useResponsiveColumns(
+  [
+    { width: 220, min: 220 },
+    { width: 110, min: 100 },
+    { width: 170, min: 140 },
+    { width: 120, min: 110 },
+    { width: 100, min: 90 },
+    { width: 150, min: 130 },
+    { width: 150, min: 130 },
+    { width: 90, min: 80 },
+  ],
+  tableRef,
 )
 
 /** 日期区间在页面上是一个控件、在协议里是两个字段，转换只在这一处 */
@@ -388,9 +405,9 @@ async function copy(value: string) {
     <ErrorState v-if="error" :message="error" :on-retry="() => load()" />
 
     <template v-else>
-      <div class="admin-table">
+      <div ref="tableRef" class="admin-table">
         <el-table v-loading="loading" :data="records" style="width: 100%" @row-click="openDetail">
-          <el-table-column label="订单" min-width="220">
+          <el-table-column label="订单" :width="colW[0]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span class="admin-cell--strong">{{ row.orderNo }}</span>
@@ -405,13 +422,13 @@ async function copy(value: string) {
             </template>
           </el-table-column>
 
-          <el-table-column label="用户" width="110">
+          <el-table-column label="用户" :width="colW[1]">
             <template #default="{ row }">
               <span class="admin-cell--tiny">{{ row.userId }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="收货人" width="170">
+          <el-table-column label="收货人" :width="colW[2]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span>{{ row.receiverName }}</span>
@@ -420,7 +437,7 @@ async function copy(value: string) {
             </template>
           </el-table-column>
 
-          <el-table-column label="金额" width="120" align="right">
+          <el-table-column label="金额" :width="colW[3]" align="right">
             <template #default="{ row }">
               <div class="admin-stack admin-stack--end">
                 <span class="admin-cell--num">{{ formatPrice(row.payAmount) }}</span>
@@ -431,7 +448,7 @@ async function copy(value: string) {
             </template>
           </el-table-column>
 
-          <el-table-column label="状态" width="100">
+          <el-table-column label="状态" :width="colW[4]">
             <template #default="{ row }">
               <el-tag :type="statusTagType(row.status)" effect="plain" size="small">{{
                 row.statusText
@@ -439,7 +456,7 @@ async function copy(value: string) {
             </template>
           </el-table-column>
 
-          <el-table-column label="物流" width="150">
+          <el-table-column label="物流" :width="colW[5]">
             <template #default="{ row }">
               <div v-if="row.trackingNo" class="admin-stack">
                 <span class="admin-cell--tiny">{{ row.carrierName ?? '—' }}</span>
@@ -449,13 +466,13 @@ async function copy(value: string) {
             </template>
           </el-table-column>
 
-          <el-table-column label="下单时间" width="150">
+          <el-table-column label="下单时间" :width="colW[6]">
             <template #default="{ row }">
               <span class="admin-cell--tiny">{{ formatDate(row.createdAt) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="90" fixed="right">
+          <el-table-column label="操作" :width="colW[7]" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click.stop="openDetail(row)">详情</el-button>
             </template>

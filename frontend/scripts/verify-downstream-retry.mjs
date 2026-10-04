@@ -152,8 +152,56 @@ function killPort(port) {
 
 /** 起服务走 run-local.sh：数据库地址、JWT 密钥、SkyWalking 参数都在它那儿，
  *  复制一份就等于制造第二个会写错的地方 */
+/**
+ * 找到能用的 bash —— **不能只写 'bash'**。
+ *
+ * <p>Windows 上 PATH 里的 `bash` 是 `C:\Windows\System32\bash.exe`，
+ * 也就是 WSL。WSL 有自己的文件系统命名空间与网络栈，所以：
+ * <ul>
+ *   <li>它看不见 `E:\...`（要写成 `/mnt/e/...`），报 "No such file or directory"；</li>
+ *   <li>它连不上宿主机的 127.0.0.1:3306/9002，`run-local.sh` 的中间件握手必然失败。</li>
+ * </ul>
+ * 两个症状都指向「脚本有问题」，而真正的问题在「调用了另一个 bash」。
+ *
+ * <p>项目其余脚本（以及本仓库全部 run-local 用法）都默认 Git Bash。
+ * 这里优先用 `git --exec-path` 推出 Git 安装目录，回退到常见安装位置。
+ */
+function findGitBash() {
+  const candidates = [
+    process.env.GIT_BASH,
+    'E:/Tool/Git/bin/bash.exe',
+    'C:/Program Files/Git/bin/bash.exe',
+    'C:/Program Files (x86)/Git/bin/bash.exe',
+  ].filter(Boolean)
+  for (const c of candidates) {
+    try {
+      if (readFileSync(c)) return c
+    } catch {
+      /* 试下一个 */
+    }
+  }
+  try {
+    const r = spawnSync('git', ['--exec-path'], { encoding: 'utf8' })
+    if (r.status === 0 && r.stdout) {
+      // <git>/mingw64/libexec/git-core → <git>/bin/bash.exe
+      const gitRoot = resolve(r.stdout.trim(), '..', '..')
+      const guess = resolve(gitRoot, 'bin/bash.exe')
+      try {
+        if (readFileSync(guess)) return guess
+      } catch {
+        /* 落空 */
+      }
+    }
+  } catch {
+    /* 没装 git */
+  }
+  return 'bash'
+}
+
 function startProductService() {
-  const r = spawnSync('bash', [resolve(BACKEND, 'run-local.sh'), 'product-service'], {
+  const bash = findGitBash()
+  const scriptPath = resolve(BACKEND, 'run-local.sh')
+  const r = spawnSync(bash, [scriptPath, 'product-service'], {
     stdio: 'inherit',
   })
   if (r.error) {
@@ -372,7 +420,11 @@ try {
   ck('回答没有把「查不成」说成「没有」', !absence,
     `回答里出现了「${absence}」——下游只是暂时不可用，商品并没有下架`)
 
-  const HONEST = /暂时|稍后再试|稍后重试|稍等|不可用|无法(查询|完成|获取|检索)|服务.{0,6}(异常|故障|不可用)/
+  // 判据落在「用户能不能看出这只是一次瞬时失败、值不值得重来」上，所以除了
+  // 「稍后再试」这类连写，也要认「稍后（再）让我试一次」「等服务恢复」这两种
+  // 语义等价但中间插了字的说法——它们是同一个意思，卡字面会把正确的回答判成错的。
+  const HONEST =
+    /暂时|稍后|稍等|不可用|无法(查询|完成|获取|检索)|服务.{0,8}(异常|故障|不可用|恢复)|恢复(后|了).{0,6}(再|就|帮)/
   ck('回答明确说了这次没查成、稍后再试', HONEST.test(reply),
     `回答既没说「没有」也没说「稍后再试」，用户不知道该不该重来：${reply.slice(0, 200)}`)
 
@@ -401,8 +453,14 @@ const back = await waitFor(
     }
   },
   (ok) => ok,
-  180000,
-  3000,
+  // 恢复窗口必须覆盖 run-local.sh 的**全流程**，不只是 Spring 启动那几秒。
+  // run-local.sh 在起服务前会先跑一次 clean compile（U71 的构建防呆），
+  // 而 product-service 那一步实测约 3~5 分钟；原先的 180 秒卡在编译刚过半，
+  // 于是一条"服务其实能起来"的断言稳定报红。
+  // 这种红最坏的地方不是误报本身，而是它把「脚本自己的等待时间不够」
+  // 伪装成「服务起不来」——下一个人会去查服务，而问题在脚本里。
+  600000,
+  5000,
 )
 ck('product-service 已恢复（9002 重新提供真实数据）', back,
   `没起来的话手动执行：bash ${resolve(BACKEND, 'run-local.sh')} product-service`)

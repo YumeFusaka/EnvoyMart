@@ -1,6 +1,8 @@
 package yumefusaka.envoymart.aiservice.memory;
 
 import lombok.extern.slf4j.Slf4j;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -47,10 +49,48 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    /**
+     * 降级计数。写失败原先只有一行 WARN —— 日志适合排查"这一次发生了什么"，
+     * 却回答不了"最近是不是一直在降级"。Redis 抖动时用户只会觉得"它怎么不记得了"，
+     * 没有指标就没有任何可观测的迹象，也没有告警的挂点。
+     * <p>
+     * 可为 null（单测里直接 new 时不注入），此时不计数、不影响功能。
+     */
+    private final MeterRegistry meterRegistry;
 
     public RedisShortTermMemoryStore(StringRedisTemplate redis, ObjectMapper objectMapper) {
+        this(redis, objectMapper, null);
+    }
+
+    /**
+     * Spring 注入用的构造器。
+     * <p>
+     * <b>必须显式标注。</b>这里有两个构造器（两参的那个是给单测直接 new 的），
+     * 不标 {@code @Autowired} 时 Spring 无法在多个候选里选一个，
+     * 报的是 {@code No default constructor found} —— 一个听起来像「缺无参构造」、
+     * 实际是「构造器有歧义」的错误，很容易往错的方向排查。
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public RedisShortTermMemoryStore(StringRedisTemplate redis, ObjectMapper objectMapper,
+                                     MeterRegistry meterRegistry) {
         this.redis = redis;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
+    }
+
+    /**
+     * 记一次降级。{@code op} 区分读与写——读失败意味着"这一轮没有历史上下文"，
+     * 写失败意味着"这一轮的话没有留档"，两者的影响面不同，合成一个计数就分不开了。
+     */
+    private void recordDegraded(String op) {
+        if (meterRegistry == null) {
+            return;
+        }
+        Counter.builder("agent.stm.degraded")
+                .tag("op", op)
+                .description("会话窗口在 Redis 上读写失败而降级的次数")
+                .register(meterRegistry)
+                .increment();
     }
 
     /** 存储载体 —— 枚举按名字存取，避免依赖序号。 */
@@ -96,6 +136,7 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
         } catch (Exception e) {
             log.warn("[STM] 载入会话窗口失败，本轮按无历史上下文继续: session={} err={}",
                     sessionId, e.getMessage());
+            recordDegraded("load");
             return List.of();
         }
     }
@@ -112,6 +153,7 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
         } catch (Exception e) {
             log.warn("[STM] 写入会话窗口失败，本轮上下文不落盘: session={} err={}",
                     sessionId, e.getMessage());
+            recordDegraded("append");
         }
     }
 

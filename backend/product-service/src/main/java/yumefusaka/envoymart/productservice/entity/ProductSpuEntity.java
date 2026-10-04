@@ -32,6 +32,8 @@ public class ProductSpuEntity {
     /** 评分聚合冗余在这里：商品列表要按评分排序，聚合查询落不到索引上 */
     private BigDecimal ratingAvg;
     private Integer reviewCount;
+    /** 评分聚合快照的版本号，取「该商品已发布评价的最大 id」。见 ProductAggregateService */
+    private Long aggregateVersion;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

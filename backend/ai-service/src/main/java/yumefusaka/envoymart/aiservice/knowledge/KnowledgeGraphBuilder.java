@@ -183,6 +183,79 @@ public class KnowledgeGraphBuilder {
     }
 
     /**
+     * 只重建一篇文档的图谱 —— 单篇增量更新的图谱侧入口。
+     * <p>
+     * <b>为什么单篇可行</b>：写入语义本来就是「按文档整体替换」
+     * （{@code GraphService.replaceDocument(docNo, triples)}），换掉一篇不会碰其它篇的边。
+     * 全量重建要重抽十几篇、每篇一次模型调用，单篇只需一次。
+     * <p>
+     * <b>{@code doc == null} 表示「这篇已经不在语料里」</b>：发一条空 triples，
+     * 把它的边整体替换成空。没有这一步，停用或删掉的文档会继续在图上给答案——
+     * 而且它看起来比检索侧更可信，因为图上那几条边还带着逐字引文。
+     * <p>
+     * <b>失败时不发空请求</b>：抽取失败（返回 null）与「确实抽到零条」是两件事，
+     * 前者若发空列表，会把这篇文档已经建好的边全部清掉，而报告上失败数是 0。
+     * <p>
+     * <b>目录拿不到就整篇跳过</b>：与全量构建同一条理由——商品键对不上目录时，
+     * 那一类边会在这次替换里被删掉，而没有人会知道。
+     *
+     * @param docNo 文档编号
+     * @param doc   该文档的最新内容；为 null 表示它已不在语料中，需要清空其边
+     * @return 图谱是否更新成功。false 时图谱保持上一版，调用方不应把它当成致命错误
+     */
+    public boolean rebuildOne(String docNo, Document doc) {
+        List<ProductSummary> catalog = fetchCatalog();
+        if (catalog == null) {
+            log.error("[Graph] 商品目录不可用，文档 {} 的图谱不更新（保持上一版，不清空）", docNo);
+            return false;
+        }
+        if (doc == null) {
+            boolean ok = ingestRaw(docNo, List.of());
+            if (ok) {
+                runQuietly("孤立实体清理", () -> knowledgeClient.dropGraphOrphans());
+                log.info("[Graph] 文档 {} 已不在语料中，其图谱边已清空", docNo);
+            }
+            return ok;
+        }
+        List<GraphTriplePayload> triples = extract(doc, catalog);
+        if (triples == null) {
+            log.warn("[Graph] 文档 {} 单篇抽取失败，图谱保持上一版", docNo);
+            return false;
+        }
+        if (!ingestRaw(docNo, triples)) {
+            return false;
+        }
+        runQuietly("孤立实体清理", () -> knowledgeClient.dropGraphOrphans());
+        log.info("[Graph] 文档 {} 单篇图谱已更新（{} 条）", docNo, triples.size());
+        return true;
+    }
+
+    /**
+     * 把抽取结果写进图谱，只回成功与否。
+     * <p>
+     * 与 {@link #ingest(Document, List)} 的区别：那个要回 {@code GraphIngestResult} 供全量
+     * 构建统计 accepted/stored/rejected，单篇更新只关心「这一篇的边换掉了没有」，
+     * 多出来的计数没有使用场景。
+     */
+    private boolean ingestRaw(String docNo, List<GraphTriplePayload> triples) {
+        try {
+            Result<GraphIngestResult> result = knowledgeClient.ingestGraph(GraphIngestPayload.builder()
+                    .docNo(docNo)
+                    .triples(triples)
+                    .build());
+            if (result == null || result.getCode() == null || result.getCode() != 200) {
+                log.warn("[Graph] 文档 {} 写入失败：{}", docNo,
+                        result == null ? "无响应" : result.getMsg());
+                return false;
+            }
+            return true;
+        } catch (RuntimeException e) {
+            log.warn("[Graph] 文档 {} 写入异常：{}", docNo, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * 抽一篇文档的关系。<b>失败返回 {@code null}</b>，与「抽到了零条」区分开——
      * 前者不能写入，后者可以（这篇确实没有可用关系）。
      */

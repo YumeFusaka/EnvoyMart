@@ -158,6 +158,42 @@ select * from (
     union all select 27, 'SPU027', '孕期 DHA 藻油软胶囊', '每粒 DHA 200mg，藻油来源', 11, 4,
            '/img/photos/spu27-600.svg', '/img/photos/spu27a-800.svg', '孕期',
            '<h2>产品说明</h2><p>DHA 藻油来源，适合孕期与哺乳期补充。</p>', 1, now(), now()
+    union all select 28, 'SPU028', '维生素 B 族复合片', '覆盖 B1/B2/B6/B12 与叶酸', 2, 2,
+           '/img/photos/spu28-600.svg', '/img/photos/spu28a-800.svg', '维生素B,能量代谢',
+           '<h2>产品说明</h2><p>B 族维生素参与能量代谢与神经系统维护。</p><h2>注意事项</h2><p>服用后尿液呈亮黄色属正常现象。</p>', 1, now(), now()
+    union all select 29, 'SPU029', '维生素 C 咀嚼片', '每片 500mg，橙味', 2, 2,
+           '/img/photos/spu29-600.svg', '/img/photos/spu29a-800.svg', '维生素C,免疫',
+           '<h2>产品说明</h2><p>维生素 C 参与胶原蛋白合成与抗氧化。</p>', 1, now(), now()
+    union all select 30, 'SPU030', '铁叶酸片', '每片含铁 15mg 与叶酸 400μg', 2, 6,
+           '/img/photos/spu30-600.svg', '/img/photos/spu30a-800.svg', '补铁,孕期',
+           '<h2>产品说明</h2><p>铁与叶酸常用于孕期与备孕人群的补充。</p><h2>注意事项</h2><p>与钙剂同服可能影响吸收，建议间隔两小时。</p>', 1, now(), now()
+    union all select 31, 'SPU031', '锌硒宝片', '每片含锌 10mg、硒 50μg', 2, 6,
+           '/img/photos/spu31-600.svg', '/img/photos/spu31a-800.svg', '免疫,微量元素',
+           '<h2>产品说明</h2><p>锌与硒是免疫相关的重要微量元素。</p>', 1, now(), now()
+    union all select 32, 'SPU032', '镁维 B6 缓释片', '每片含镁 200mg 与维生素 B6 2mg', 2, 2,
+           '/img/photos/spu32-600.svg', '/img/photos/spu32a-800.svg', '镁,睡眠',
+           '<h2>产品说明</h2><p>镁参与肌肉与神经功能调节。</p><h2>注意事项</h2><p>肾功能不全者需遵医嘱。</p>', 1, now(), now()
+    union all select 33, 'SPU033', '深海鱼油胶丸（高纯度）', '每粒 EPA 360mg 与 DHA 240mg', 6, 5,
+           '/img/photos/spu33-600.svg', '/img/photos/spu33a-800.svg', '心脑血管,鱼油',
+           '<h2>产品说明</h2><p>高纯度配方，适合关注血脂与心脑血管的人群。</p><h2>注意事项</h2><p>正在服用抗凝药物者请咨询医师。</p>', 1, now(), now()
+    union all select 34, 'SPU034', '纳豆激酶胶囊', '每粒 2000FU 纳豆激酶', 6, 5,
+           '/img/photos/spu34-600.svg', '/img/photos/spu34a-800.svg', '心脑血管',
+           '<h2>产品说明</h2><p>纳豆激酶来源于纳豆发酵，常用于日常血管养护。</p><h2>注意事项</h2><p>手术前后与服用抗凝药期间不建议使用。</p>', 1, now(), now()
+    union all select 35, 'SPU035', '维生素 AD 滴剂', '每滴含维生素 A 与 D3，婴幼儿适用', 12, 2,
+           '/img/photos/spu35-600.svg', '/img/photos/spu35a-800.svg', '儿童,维生素A,维生素D',
+           '<h2>产品说明</h2><p>滴剂剂型便于按滴控制用量，适合婴幼儿补充。</p><h2>注意事项</h2><p>维生素 A 与 D 均为脂溶性，请勿超量服用。</p>', 1, now(), now()
+    union all select 36, 'SPU036', '儿童铁锌口服液', '每支含铁 5mg 与锌 3mg', 12, 6,
+           '/img/photos/spu36-600.svg', '/img/photos/spu36a-800.svg', '儿童,补铁',
+           '<h2>产品说明</h2><p>口服液剂型，适合挑食儿童补充铁与锌。</p>', 1, now(), now()
+    union all select 37, 'SPU037', '葡萄糖酸锌口服液', '每支含锌 5mg', 12, 6,
+           '/img/photos/spu37-600.svg', '/img/photos/spu37a-800.svg', '儿童,微量元素',
+           '<h2>产品说明</h2><p>锌参与味觉与食欲调节。</p><h2>注意事项</h2><p>长期大量服用可能影响铜吸收。</p>', 1, now(), now()
+    union all select 38, 'SPU038', '褪黑素片', '每片 3mg，睡前服用', 6, 6,
+           '/img/photos/spu38-600.svg', '/img/photos/spu38a-800.svg', '睡眠',
+           '<h2>产品说明</h2><p>褪黑素参与昼夜节律调节。</p><h2>注意事项</h2><p>孕期与哺乳期不建议使用；服用后请勿驾驶或操作机械。</p>', 1, now(), now()
+    union all select 39, 'SPU039', '氨糖维 D 钙片（中老年）', '氨糖 500mg、钙 300mg 与维生素 D3', 14, 4,
+           '/img/photos/spu39-600.svg', '/img/photos/spu39a-800.svg', '关节,骨骼健康,老年人',
+           '<h2>产品说明</h2><p>面向中老年人的关节与骨骼营养组合。</p><h2>注意事项</h2><p>对甲壳类过敏者慎用。</p>', 1, now(), now()
 ) as seed
 -- product_spu 的唯一键是 spu_code：运营改过商品编号之后，id 守卫会放行、spu_code 撞车
 where not exists (select 1 from product_spu where spu_code = seed.spu_code);
@@ -221,6 +257,8 @@ select * from (
     union all select 7, 10, '规格', 1
     union all select 8, 12, '规格', 1
     union all select 9, 15, '口味', 1
+    union all select 10, 29, '规格', 1
+    union all select 11, 33, '规格', 1
 ) as seed
 where not exists (select 1 from product_spec where id = seed.id);
 
@@ -245,6 +283,10 @@ select * from (
     union all select 17, 8, '90 包', 2
     union all select 18, 9, '草莓味', 1
     union all select 19, 9, '橙子味', 2
+    union all select 20, 10, '60 片', 1
+    union all select 21, 10, '120 片', 2
+    union all select 22, 11, '60 粒', 1
+    union all select 23, 11, '120 粒', 2
 ) as seed
 where not exists (select 1 from product_spec_value where id = seed.id);
 
@@ -288,6 +330,20 @@ select * from (
     union all select 34, 25, 'SKU034', 12900, 15900, 230, '/img/photos/sku34-400.svg', 1
     union all select 35, 26, 'SKU035', 8900, 10900, 340, '/img/photos/sku35-400.svg', 1
     union all select 36, 27, 'SKU036', 21800, 26800, 150, '/img/photos/sku36-400.svg', 1
+    union all select 37, 28, 'SKU037', 6900, 8900, 360, '/img/photos/sku37-400.svg', 1
+    union all select 38, 29, 'SKU038', 3900, 4900, 480, '/img/photos/sku38-400.svg', 1
+    union all select 39, 29, 'SKU039', 5900, 7900, 300, '/img/photos/sku39-400.svg', 1
+    union all select 40, 30, 'SKU040', 7900, 9900, 320, '/img/photos/sku40-400.svg', 1
+    union all select 41, 31, 'SKU041', 5900, 7900, 400, '/img/photos/sku41-400.svg', 1
+    union all select 42, 32, 'SKU042', 9900, 12900, 260, '/img/photos/sku42-400.svg', 1
+    union all select 43, 33, 'SKU043', 12900, 15900, 280, '/img/photos/sku43-400.svg', 1
+    union all select 44, 33, 'SKU044', 22900, 27900, 160, '/img/photos/sku44-400.svg', 1
+    union all select 45, 34, 'SKU045', 19800, 24800, 200, '/img/photos/sku45-400.svg', 1
+    union all select 46, 35, 'SKU046', 5900, 7900, 420, '/img/photos/sku46-400.svg', 1
+    union all select 47, 36, 'SKU047', 6900, 8900, 340, '/img/photos/sku47-400.svg', 1
+    union all select 48, 37, 'SKU048', 4900, 6900, 460, '/img/photos/sku48-400.svg', 1
+    union all select 49, 38, 'SKU049', 5900, 7900, 380, '/img/photos/sku49-400.svg', 1
+    union all select 50, 39, 'SKU050', 17800, 21800, 210, '/img/photos/sku50-400.svg', 1
 ) as seed
 -- product_sku 的唯一键是 sku_code。**这一条是最容易踩的**：规格组合重算会删掉旧 SKU、
 -- 按新 id 建回来（这正是 `verify-sku-regen.mjs` 盯着的那条路径），
@@ -319,6 +375,10 @@ select * from (
     union all select 20, 20, 8, 17
     union all select 21, 23, 9, 18
     union all select 22, 24, 9, 19
+    union all select 23, 38, 10, 20
+    union all select 24, 39, 10, 21
+    union all select 25, 43, 11, 22
+    union all select 26, 44, 11, 23
 ) as seed
 -- 这一条**已经真实挡住过一次启动**：某次重算把 sku 9/10 的规格行删了又建，
 -- id 从 13/14 变成 97/98，于是这两行的 id 守卫全部放行、插进去撞上 uk_sku_spec(sku_id, spec_id)，
@@ -438,6 +498,28 @@ select * from (
     union all select 11, 22, '胶囊'
     union all select 15, 13, '软糖'
     union all select 9, 1, '软胶囊'
+    union all select 28, 1, '片剂'
+    union all select 28, 2, '成人'
+    union all select 29, 1, '片剂'
+    union all select 29, 2, '成人,儿童'
+    union all select 30, 1, '片剂'
+    union all select 2, 3, '8000IU/粒'
+    union all select 30, 2, '成人,孕妇'
+    union all select 31, 1, '片剂'
+    union all select 31, 2, '成人,老年人,儿童'
+    union all select 32, 1, '片剂'
+    union all select 32, 2, '成人'
+    union all select 33, 6, '阴凉干燥处'
+    union all select 34, 6, '阴凉干燥处'
+    union all select 35, 13, '滴剂'
+    union all select 35, 12, '儿童'
+    union all select 36, 13, '口服液'
+    union all select 36, 12, '儿童'
+    union all select 37, 13, '口服液'
+    union all select 37, 12, '儿童'
+    union all select 38, 6, '阴凉干燥处'
+    union all select 39, 9, '成人,老年人'
+    union all select 39, 22, '片剂'
 ) as seed
 -- 唯一键是 uk_spu_attribute(spu_id, attribute_id)：同一个商品的同一个参数只该有一行
 where not exists (

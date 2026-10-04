@@ -61,7 +61,10 @@ public class ProductServiceImpl implements ProductService {
             "sales", "sales desc",
             "price_asc", "(select min(s.price) from product_sku s where s.spu_id = product_spu.id) asc",
             "price_desc", "(select min(s.price) from product_sku s where s.spu_id = product_spu.id) desc",
-            "newest", "created_at desc");
+            "newest", "created_at desc",
+            // 「评分排序」的排序键。零评价商品的排除在下面 applyRatingSort 里做（用 where），
+            // 不靠这里的 order by；排序键只负责「有评分的按分降序、同分按评价数」
+            "rating", "rating_avg desc, review_count desc");
 
     private static final String DEFAULT_SORT = "sales desc";
 
@@ -325,6 +328,17 @@ public class ProductServiceImpl implements ProductService {
         String orderBy = sortKey == null
                 ? DEFAULT_SORT
                 : SORT_CLAUSES.getOrDefault(sortKey, DEFAULT_SORT);
+        // 按评分排序时**把零评价商品排除在外**，而不是只让它们排到最后。
+        // 「按评分选」的结果里本来就不该出现没被评过的商品，而排除与排序必须分开表达：
+        // 排序键只决定次序，过滤条件决定谁进得来。只靠 order by 把它们踢到末尾时，
+        // 翻到最后一页仍会看到一堆 0.00 的商品，而用户以为自己筛的是「好评」。
+        //
+        // 判据落在 review_count 上而不是 rating_avg：后者是派生值，默认值改过（5.00→0.00），
+        // 用默认值兜就会写出「同一件事两种行为」的排序。ES 那条路有同样的 filter（见
+        // ProductSearchService.search），两条路的判据必须落在同一个字段上。
+        if ("rating".equals(sortKey)) {
+            wrapper.gt(ProductSpuEntity::getReviewCount, 0);
+        }
         wrapper.last("order by " + orderBy);
         return wrapper;
     }

@@ -60,7 +60,28 @@ public class HybridRetriever implements Retriever {
     private static final double B = 0.75;
     private static final int RRF_CONST = 60;
     /** 重排前多召回一些候选，给精排留出腾挪空间 */
+    /**
+     * 重排前多召回一些候选，给精排留出腾挪空间。
+     * <p>
+     * <b>实测过 3 / 5 / 8 三档（2026-10-04，真实向量+重排+扩写）：语义档 0.700 → 0.675 → 0.675，
+     * 口语档 0.975 → 1.000 → 0.950，全量 0.900 → 0.883 → 0.883。扩大候选池没有增益，
+     * 因此维持 3。</b>候选池不是这批失败样本的瓶颈——瓶颈在「意图→文档」那类
+     * 字面与语义都不重合的映射上（见 RetrievalQualityTest 的档位说明），
+     * 那种查询无论给重排器多少候选都排不出来。多给候选只是把更多噪声送进 cross-encoder。
+     */
     private static final int RERANK_CANDIDATES = 3;
+    /**
+     * 中文单字通道在融合时的权重。
+     * <p>
+     * 单字是<b>补充通道</b>，不是主通道：它对「钙片 ↔ 碳酸钙 D3 咀嚼片」这类跨词界查询
+     * 是唯一能命中的路，但单字没有词序、噪声远高于二元组——「二」「次」「重」「复」
+     * 这类高频字会在无关文档上凑出分。定成 0.35 是让它在「二元组一颗子都没有」时
+     * 足够把候选托进池子，又不至于在二元组已经有强命中时改写排序。
+     * <p>
+     * 这个值影响的是排序权重而不是召回门槛，所以调的余地很小；
+     * 真要动它，必须重跑 {@code RetrievalQualityTest} 三档并确认字面档不掉。
+     */
+    private static final double UNIGRAM_WEIGHT = 0.35;
 
     public HybridRetriever(VectorStore vectorStore, List<Document> localDocs) {
         this(vectorStore, localDocs, Reranker.NOOP);
@@ -118,6 +139,7 @@ public class HybridRetriever implements Retriever {
      * 索引是<b>派生数据</b>，随时可以从知识库重建——这正是把它做成一个动作而不是
      * 一份持久状态的理由。
      */
+
     public void rebuild(List<DocumentChunk> chunks) {
         // 先算统计再发布：读线程一旦看见新索引，它内部的一致性就已经成立。
         // 反过来（先换语料再算统计）会有一个窗口，查询拿着新语料、对着旧统计打分
@@ -172,6 +194,18 @@ public class HybridRetriever implements Retriever {
      * 融合 key、重排输入一个都没变。
      */
     public List<DocumentChunk> retrieve(String query, QueryExpansions expansions, int topK) {
+        return retrieveWithOutcome(query, expansions, topK).chunks();
+    }
+
+    /**
+     * 带请求级事实的检索 —— 与 {@link #retrieve(String, QueryExpansions, int)} 同一条路径，
+     * 只是把「本轮图谱路命中过哪几片」一起带出去。
+     * <p>
+     * <b>为什么这件事不能从返回的切片里推：</b>重排会按 topK 截断，图谱切片字面分低，
+     * 排在 topK 之外就被丢了；下游拿着截断后的列表，既看不到它也推不出「它来过」。
+     * 而拒答门的图谱豁免恰恰要的就是这个事实——U76 的第三层就死在这里。
+     */
+    public RetrievalOutcome retrieveWithOutcome(String query, QueryExpansions expansions, int topK) {
         QueryExpansions ex = expansions == null ? QueryExpansions.none() : expansions;
 
         // 各路结果按「向量 → 关键词 → 图谱」的顺序入池。这个顺序有意义：
@@ -191,13 +225,79 @@ public class HybridRetriever implements Retriever {
         }
         // ③ 图谱路：只认原句。它靠实体编号与实体名定位（SPU5 与华法林），
         //    而变体恰恰是把原句的说法换掉——改写过的句子在这条路上只会削弱它
-        ranked.add(graphRetrieve(query, topK));
+        List<DocumentChunk> graphChunks = graphRetrieve(query, topK);
+        ranked.add(graphChunks);
 
         // 全部候选汇入同一个 RRF，多留一些给重排腾挪
-        List<DocumentChunk> fused = rrfMerge(ranked, Math.max(topK * RERANK_CANDIDATES, topK));
+        List<DocumentChunk> fused = rrfMerge(ranked, graphChunks,
+                Math.max(topK * RERANK_CANDIDATES, topK));
+
+        // 图谱路的 key 集合在这里算一次、随结果带出，而不是让下游从截断后的列表反推。
+        // 用与融合同一把尺子取 key（切片级=chunkId，文档级=docId），否则「归一到同一把尺子」
+        // 会在打标这一步断掉
+        Set<String> graphKeys = new HashSet<>();
+        for (DocumentChunk chunk : graphChunks) {
+            if (chunk != null) {
+                graphKeys.add(keyOf(chunk));
+            }
+        }
 
         // 重排（未配置时是直接截断）
-        return reranker.rerank(query, fused, topK);
+        List<DocumentChunk> kept = reranker.rerank(query, fused, topK);
+        // 扩写随结果带出：它决定「这回检索到底用了哪几个查询」，
+        // 而这正是回答为什么对/为什么没查到时最先要问的一件事。
+        // 不带出去的话，扩写是否生效在链路上完全不可观测——
+        // 调召回率就成了盲调
+        return new RetrievalOutcome(kept, graphKeys, !graphChunks.isEmpty(), expansions);
+    }
+
+    @Override
+    public RetrievalOutcome retrieveWithOutcome(String query, int topK) {
+        return retrieveWithOutcome(query, QueryExpansions.none(), topK);
+    }
+    /**
+     * 重排查询可覆盖的同路径检索 —— <b>只给对照实验用</b>，生产调用方一律走
+     * {@link #retrieveWithOutcome(String, QueryExpansions, int)}（重排查询固定为原句）。
+     * <p>
+     * 存在的理由：重排器是 cross-encoder，它拿到的 query 决定「什么算相关」；
+     * 「重排查询该不该换成扩写句」是一个能被测量回答的问题，不该靠信念决定。
+     * 它与 {@code RetrievalComparisonTest} 里的 {@code AnglesOnlyExpander} 是同一类归因配置：
+     * 两种配置之间只差重排查询这一个变量，其余全同。
+     * <p>
+     * <b>实测结论（2026-10-04，真实向量+重排+扩写，120 条样本 / topK=3）：</b>
+     * <pre>
+     *   重排查询      字面   口语   语义   全量 Hit/MRR/NDCG
+     *   原句（生产）  1.000  1.000  0.700  0.900 / 0.774 / 0.793   ← 语义 Hit@3 最高
+     *   原句+假想答案 1.000  0.925  0.700  0.875 / 0.783 / 0.796
+     *   原句+角度     1.000  1.000  0.675  0.892 / 0.796 / 0.806   ← MRR/NDCG 最高，语义 Hit@3 掉 0.025
+     *   原句+假想+角度 1.000  0.975  0.675  0.883 / 0.782 / 0.797
+     * </pre>
+     * <b>没有任何一种严格更优</b>：换成扩写句能改善排序（MRR/NDCG），却在 Hit@3 上要么持平、
+     * 要么退步——而 Hit@3 才是「用户能不能看到正确依据」的判据，排序改善排在它后面。
+     * 因此生产维持原句。这个方法留在这里，是为了让下一个想改它的人先跑一遍再决定，
+     * 而不是重新猜一次。
+     */
+    public List<DocumentChunk> retrieveWithRerankQuery(String query, QueryExpansions expansions,
+                                                       String rerankQuery, int topK) {
+        QueryExpansions ex = expansions == null ? QueryExpansions.none() : expansions;
+
+        List<List<DocumentChunk>> ranked = new ArrayList<>(4 + ex.angles().size());
+        ranked.add(vectorStore.search(query, topK * 2));
+        if (hasText(ex.hypothetical())) {
+            ranked.add(vectorStore.search(ex.hypothetical(), topK * 2));
+        }
+        ranked.add(bm25Search(query));
+        for (String angle : ex.angles()) {
+            if (hasText(angle)) {
+                ranked.add(bm25Search(angle));
+            }
+        }
+        List<DocumentChunk> graphChunks = graphRetrieve(query, topK);
+        ranked.add(graphChunks);
+        List<DocumentChunk> fused = rrfMerge(ranked, graphChunks,
+                Math.max(topK * RERANK_CANDIDATES, topK));
+        return reranker.rerank(rerankQuery == null || rerankQuery.isBlank() ? query : rerankQuery,
+                fused, topK);
     }
 
     private static boolean hasText(String s) {
@@ -261,7 +361,10 @@ public class HybridRetriever implements Retriever {
     private record Bm25Index(List<DocumentChunk> chunks,
                              List<Map<String, Integer>> termFreqs,
                              double[] lens,
-                             double avgLen) {
+                             double avgLen,
+                             List<Map<String, Integer>> unigramFreqs,
+                             double[] unigramLens,
+                             double unigramAvgLen) {
 
         static Bm25Index of(List<DocumentChunk> chunks) {
             List<DocumentChunk> units = List.copyOf(chunks);
@@ -269,16 +372,29 @@ public class HybridRetriever implements Retriever {
             List<Map<String, Integer>> termFreqs = new ArrayList<>(n);
             double[] lens = new double[n];
             double totalLen = 0;
+            List<Map<String, Integer>> unigramFreqs = new ArrayList<>(n);
+            double[] unigramLens = new double[n];
+            double unigramTotalLen = 0;
             for (int i = 0; i < n; i++) {
+                String text = indexTextOf(units.get(i));
                 Map<String, Integer> termFreq = new HashMap<>();
-                for (String token : TextTokenizer.tokenize(indexTextOf(units.get(i)))) {
+                for (String token : TextTokenizer.tokenize(text)) {
                     termFreq.merge(token, 1, Integer::sum);
                 }
                 termFreqs.add(termFreq);
                 lens[i] = termFreq.values().stream().mapToInt(Integer::intValue).sum();
                 totalLen += lens[i];
+
+                Map<String, Integer> unigramFreq = new HashMap<>();
+                for (String token : TextTokenizer.unigrams(text)) {
+                    unigramFreq.merge(token, 1, Integer::sum);
+                }
+                unigramFreqs.add(unigramFreq);
+                unigramLens[i] = unigramFreq.values().stream().mapToInt(Integer::intValue).sum();
+                unigramTotalLen += unigramLens[i];
             }
-            return new Bm25Index(units, termFreqs, lens, totalLen > 0 ? totalLen / n : 1.0);
+            return new Bm25Index(units, termFreqs, lens, totalLen > 0 ? totalLen / n : 1.0,
+                    unigramFreqs, unigramLens, unigramTotalLen > 0 ? unigramTotalLen / n : 1.0);
         }
 
         int size() {
@@ -290,7 +406,10 @@ public class HybridRetriever implements Retriever {
             List<String> queryTerms = TextTokenizer.tokenize(query);
             int n = chunks.size();
             if (queryTerms.isEmpty() || n == 0) {
-                return List.of();
+                // 二元组切不出词元时要再给单字通道一次机会：
+                // 单字查询（「钙」「片」）或纯标点查询会走到这里，
+                // 直接返回空等于把单字通道关在门外
+                return unigramSearch(query, n);
             }
 
             // 文档频率：包含该词元的检索单元数
@@ -324,7 +443,85 @@ public class HybridRetriever implements Retriever {
             }
 
             scored.sort((a, b) -> Double.compare(b.score(), a.score()));
+            if (scored.isEmpty()) {
+                return unigramSearch(query, n);
+            }
+
+            // 二元组与单字按排名融合，而不是直接相加：两套分数量纲不同（二元组的 idf
+            // 比单字高一个数量级），直接相加会让单字通道完全不起作用。
+            // 用 RRF 融合后再按权重折算，是对「补一路候选」这件事更诚实的表达。
+            return fuseWithUnigrams(scored, query, n);
+        }
+
+        /** 纯单字通道检索：二元组一颗子都没命中时的兜底。 */
+        private List<DocumentChunk> unigramSearch(String query, int n) {
+            List<ScoredChunk> scored = scoreUnigrams(query, n);
+            scored.sort((a, b) -> Double.compare(b.score(), a.score()));
             return scored.stream().map(ScoredChunk::chunk).toList();
+        }
+
+        /** 按 BM25 公式给单字通道打分（词元为查询的单字集合）。 */
+        private List<ScoredChunk> scoreUnigrams(String query, int n) {
+            List<String> terms = TextTokenizer.unigrams(query);
+            if (terms.isEmpty()) {
+                return new ArrayList<>();
+            }
+            Map<String, Integer> unitFreq = new HashMap<>();
+            for (String term : terms) {
+                int df = 0;
+                for (Map<String, Integer> freq : unigramFreqs) {
+                    if (freq.containsKey(term)) {
+                        df++;
+                    }
+                }
+                unitFreq.put(term, df);
+            }
+            List<ScoredChunk> scored = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                Map<String, Integer> freq = unigramFreqs.get(i);
+                double score = 0;
+                for (String term : terms) {
+                    int tf = freq.getOrDefault(term, 0);
+                    if (tf == 0) {
+                        continue;
+                    }
+                    int df = unitFreq.get(term);
+                    double idf = Math.log((n - df + 0.5) / (df + 0.5) + 1.0);
+                    score += idf * (tf * (K1 + 1))
+                            / (tf + K1 * (1 - B + B * unigramLens[i] / unigramAvgLen));
+                }
+                if (score > 0) {
+                    scored.add(new ScoredChunk(chunks.get(i), score));
+                }
+            }
+            return scored;
+        }
+
+        /**
+         * 二元组与单字两路的 RRF 融合 —— 越靠前的两路都认，排名越靠前。
+         * <p>
+         * 权重只作用在单字那一路：二元组是主通道，权重恒为 1。这样当单字通道
+         * 在无关文档上凑分时，它最多只能在二元组已经排好的次序里做有限扰动。
+         */
+        private List<DocumentChunk> fuseWithUnigrams(List<ScoredChunk> bigramScored, String query, int n) {
+            List<ScoredChunk> unigramScored = scoreUnigrams(query, n);
+            if (unigramScored.isEmpty()) {
+                return bigramScored.stream().map(ScoredChunk::chunk).toList();
+            }
+            unigramScored.sort((a, b) -> Double.compare(b.score(), a.score()));
+
+            Map<DocumentChunk, Double> fused = new LinkedHashMap<>();
+            for (int rank = 0; rank < bigramScored.size(); rank++) {
+                fused.merge(bigramScored.get(rank).chunk(), 1.0 / (RRF_CONST + rank + 1), Double::sum);
+            }
+            for (int rank = 0; rank < unigramScored.size(); rank++) {
+                fused.merge(unigramScored.get(rank).chunk(),
+                        UNIGRAM_WEIGHT / (RRF_CONST + rank + 1), Double::sum);
+            }
+            return fused.entrySet().stream()
+                    .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
+                    .map(Map.Entry::getKey)
+                    .toList();
         }
     }
 
@@ -340,11 +537,34 @@ public class HybridRetriever implements Retriever {
      * 这一路就变成了「往候选池里塞重复项」，融合的语义就没了。
      */
     private List<DocumentChunk> rrfMerge(List<List<DocumentChunk>> ranked, int topK) {
+        return rrfMerge(ranked, List.of(), topK);
+    }
+
+    /**
+     * 互惠排名融合，并保留「这轮图谱路命中过哪几片」这一事实。
+     * <p>
+     * {@code graphChunks} 是图谱路<b>原始</b>的那份结果（尚未与其他路融合）。它单独传进来，
+     * 是因为融合会丢掉图谱身份：同一片被文本路与图谱路同时召回时，{@code byKey.putIfAbsent}
+     * 留的是先到的文本版，而它 {@code source=manual}。正文该留原文（转述不如原文），
+     * 但「图谱也认同这一片」这件事不能跟着一起消失——下游拒答门正是靠它决定要不要给
+     * 图谱依据提级（见 {@link EvidenceGate}）。把正文与来源压成一个字段，就是 U76。
+     */
+    private List<DocumentChunk> rrfMerge(List<List<DocumentChunk>> ranked,
+                                         List<DocumentChunk> graphChunks, int topK) {
         Map<String, Double> scores = new HashMap<>();
         Map<String, DocumentChunk> byKey = new LinkedHashMap<>();
 
         for (List<DocumentChunk> list : ranked) {
             mergeOnce(scores, byKey, list);
+        }
+
+        // 图谱路的 key 集合。注意按与融合同一把尺子取 key（切片级=chunkId，文档级=docId），
+        // 否则「归一到同一把尺子」这件事在打标这一步会断掉
+        Set<String> graphKeys = new HashSet<>();
+        for (DocumentChunk chunk : graphChunks) {
+            if (chunk != null) {
+                graphKeys.add(keyOf(chunk));
+            }
         }
 
         return scores.entrySet().stream()
@@ -354,8 +574,26 @@ public class HybridRetriever implements Retriever {
                 // 第 5 名 1/64，绝对大小不表达「有多相关」，拿它当阈值等于拿名次当置信度。
                 // 下游需要的相关性信号在别处——向量路由 VectorStore 写在 chunk.score 上，
                 // 重排器会再覆盖一次。这里原样带出去。
-                .map(e -> copyOf(byKey.get(e.getKey())))
+                .map(e -> withGraphFlag(copyOf(byKey.get(e.getKey())), graphKeys.contains(e.getKey())))
                 .toList();
+    }
+
+    /** 融合归一用的 key：与 {@link #mergeOnce} 保持同一套规则，两处不一致就是分叉的土壤 */
+    private String keyOf(DocumentChunk chunk) {
+        return groupByDocId ? chunk.getDocId() : chunk.getChunkId();
+    }
+
+    /**
+     * 给切片打上「本轮被图谱路命中」的标记。
+     * <p>
+     * 只写 true，不写 false：{@code null} 表示「这条来自文本路、与图谱无关」，与
+     * {@code false} 在语义上没有区别，写 false 只是给每个切片多加一个字段。
+     */
+    private static DocumentChunk withGraphFlag(DocumentChunk chunk, boolean graphBacked) {
+        if (chunk == null || !graphBacked) {
+            return chunk;
+        }
+        return chunk.toBuilder().graphBacked(true).build();
     }
 
     /**
@@ -385,6 +623,11 @@ public class HybridRetriever implements Retriever {
      * 于是图谱切片只在文本两路都没捞到这一片时才会被采用：这是图谱路唯一有价值的场景，
      * 也正是它该赢的场景。反过来，文本路捞到了就用原文切片——图谱那版正文是
      * 「图谱推导：… + 原文」的转述，作为给模型的证据不如原文本身。
+     * <p>
+     * <b>「先到者胜」丢掉的只是正文，不该丢掉来源。</b>文本版赢了这场取舍，但图谱路
+     * 同样召回了这一片这个事实，要被 {@link #rrfMerge} 单独记下来（{@code graphBacked}）——
+     * 下游拒答门据此判断本轮有没有图谱依据在场。同一片正文用原文、来源记住图谱，
+     * 两者本来就该分开存，见 {@link DocumentChunk#getGraphBacked()}。
      */
     private void mergeOnce(Map<String, Double> scores, Map<String, DocumentChunk> byKey,
                            List<DocumentChunk> list) {

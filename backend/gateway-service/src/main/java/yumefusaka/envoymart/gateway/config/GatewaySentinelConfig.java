@@ -67,6 +67,11 @@ public class GatewaySentinelConfig {
         // 收藏夹是登录用户的写+私有读，单表读写、代价低，但不与公开商品读共用配额：
         // 一个用户狂点收藏不该让别人的商品列表变慢
         rules.add(route("product-service-favorites", 50));
+        // 上传的商品图：纯静态文件读，代价比商品查询更低，桶可以宽。
+        // 但**必须独立成桶**：一次商品详情页会并发拉好几张图，与商品查询共用配额时，
+        // 图片加载会把商品接口的配额吃掉。没有这条规则的路由不会被限流，
+        // 而这件事在 Sentinel 控制台上也看不出来（没配规则的资源根本不出现）
+        rules.add(route("product-service-media", 200));
 
         GatewayRuleManager.loadRules(rules);
         log.info("[Sentinel] 网关限流规则已加载 {} 条: {}", rules.size(),

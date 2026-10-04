@@ -184,6 +184,92 @@ public class KnowledgeIndexer {
     }
 
     /**
+     * 单篇增量重建 —— 管理台上传/编辑/停用一篇文档后，让这一篇立刻生效。
+     * <p>
+     * <b>为什么不能直接复用全量 {@link #rebuild()}</b>：全量重建是「清空 + 整库 embedding +
+     * 全量图谱抽取」，实测七十几秒、十几次模型调用。上传一篇文档就付这个代价，
+     * 等于把「改一条规则」变成了「每次都要等一分钟、还按整库计费」。
+     * <p>
+     * <b>三段各自的最小改动面</b>：
+     * <ul>
+     *   <li><b>向量库</b>：{@code deleteByDocId} + 只编码这一篇的切片，是真正的增量。</li>
+     *   <li><b>BM25</b>：索引是不可变快照（{@code Bm25Index}），没有按篇增删的能力，
+     *       只能整份重建。但它<b>纯计算、不调模型、不花钱</b>，几十毫秒量级，
+     *       所以这里接受整份重建——「为了让实现看起来对称而给它硬套增量」会多出一套
+     *       需要维护的倒排更新逻辑，换来的收益是几十毫秒。</li>
+     *   <li><b>图谱</b>：写入语义本来就是「按文档整体替换」（{@code replaceDocument}），
+     *       所以只重抽这一篇。这是天然的增量点。</li>
+     * </ul>
+     * <p>
+     * <b>删/停用也必须走这里</b>：{@code docNo} 传进来但语料里已经没有它时，
+     * {@code documents} 里找不到，那就<b>只删不写</b>——把该篇的向量与图谱边清掉。
+     * 漏掉这一步的后果是「停用的文档照样被检索到」，正是下架商品必须立刻不可买的那类问题。
+     *
+     * @param docNo 变化的文档编号
+     * @return 这一篇的处理结果；文档不存在于当前语料时返回 deletedOnly=true 的结果
+     */
+    public synchronized IncrementalResult rebuildOne(String docNo) {
+        Instant startedAt = Instant.now();
+        try (TokenLedger.Scope ledger = TokenLedger.begin()) {
+            List<Document> documents = corpus.reload();
+            Document target = documents.stream()
+                    .filter(doc -> docNo.equals(doc.getId()))
+                    .findFirst()
+                    .orElse(null);
+
+            if (target == null) {
+                // 文档被删、改名，或**被停用**（停用的文档不会出现在语料里——
+                // knowledge-service 的语料查询带着 status=1，所以停用无需另写分支）：只删不写。
+                // 逐篇删在这里是**正确的**粒度——要清掉的恰好就是这一篇，
+                // 与全量重建里「逐篇删清不掉历史孤儿」是两种不同的场景，不矛盾
+                vectorStore.deleteByDocId(docNo);
+                List<DocumentChunk> chunks = documents.stream()
+                        .flatMap(doc -> splitter.split(doc).stream())
+                        .toList();
+                retriever.rebuild(chunks);
+                // 空 triples 会把这篇在图上的边整体替换成空，等于删掉它的边
+                boolean graphOk = graphBuilder.rebuildOne(docNo, null);
+                IncrementalResult result = new IncrementalResult(docNo, true, 0, chunks.size(),
+                        graphOk, null);
+                log.info("[Knowledge] 单篇增量：文档 {} 已不在语料中，仅执行删除（切片总数 {}）",
+                        docNo, chunks.size());
+                return result;
+            }
+
+            List<DocumentChunk> own = splitter.split(target);
+            // 先删这一篇的旧切片，再写新的：只删不写会让文档在重建中途消失，
+            // 只写不删会留下编号已经变了的旧切片（切片编号基于位置，改一行正文就整体错位）
+            vectorStore.deleteByDocId(docNo);
+            vectorStore.indexBatch(own);
+
+            List<DocumentChunk> all = documents.stream()
+                    .flatMap(doc -> splitter.split(doc).stream())
+                    .toList();
+            retriever.rebuild(all);
+
+            boolean graphOk = graphBuilder.rebuildOne(docNo, target);
+            IncrementalResult result = new IncrementalResult(docNo, false, own.size(), all.size(),
+                    graphOk, null);
+            log.info("[Knowledge] 单篇增量完成：文档 {} 切片 {} 片（语料共 {} 片），图谱{}",
+                    docNo, own.size(), all.size(), graphOk ? "已更新" : "未更新（保持上一版）");
+            logCost("单篇增量", ledger.snapshot());
+            return result;
+        }
+    }
+
+    /**
+     * 单篇增量的结果。
+     *
+     * @param deletedOnly 文档已不在语料中，只做了删除
+     * @param chunkCount  这一篇的切片数（deletedOnly 时为 0）
+     * @param totalChunks 更新后语料的总切片数，便于调用方判断索引规模
+     * @param graphUpdated 图谱是否更新成功。false 时图谱保持上一版，检索不受影响
+     */
+    public record IncrementalResult(String docNo, boolean deletedOnly, int chunkCount,
+                                    int totalChunks, boolean graphUpdated, String error) {
+    }
+
+    /**
      * 后台重建，<b>立即返回</b>——这是管理台调用的那个入口。
      * <p>
      * 为什么不直接同步跑完：一次完整重建要调十几次模型抽关系，实测七十几秒，

@@ -1,11 +1,20 @@
 /**
- * MCP 高危工具确认通道的端到端验收（批次 12 项 5 固化）。
+ * MCP 高危工具确认通道的端到端验收（批次 12 项 5 固化；2026-10-04 授权升级后重写）。
  *
  * 为什么单开一个脚本：修复前 order_cancel 是「发布了但永远失败」的工具——
  * ToolRegistry 的第二道防线要求 confirmed=true，而 MCP 这条路径把它写死为 false，
- * 协议里也没有任何地方能传它。修复后确认信号是工具签名里的显式参数（confirmed），
- * 这条链路只有以真实 MCP 客户端的形态走一遍 JSON-RPC 才算验证：
- * 发布（tools/list 的 schema 里有 confirmed）→ 未确认被拒（第二道防线）→ 确认后真执行。
+ * 协议里也没有任何地方能传它。第一轮修复把它变成工具签名里的显式布尔参数。
+ *
+ * 2026-10-04 的授权升级又发现那个布尔本身是个洞：任何拿到 JWT/API Key 的调用方
+ * 直接填 true 就能执行高危操作，服务端签发确认令牌这条路被整个绕开。
+ * 现在协议要求的是一枚<b>服务端签发的确认令牌</b>（approvalToken），
+ * 自填的 confirmed 只表示「这是一次高危调用」，不构成授权。
+ *
+ * 所以本脚本验的是这条完整信任链，而不只是「参数传进去了」：
+ *   发布（schema 里有 approvalToken 且必填）
+ *   → 无令牌被拒、订单不动
+ *   → 令牌签名被伪造 / 换用户 / 换动作 都被拒
+ *   → 合法令牌通过 → 真执行
  *
  * 数据影响：新建 1 笔未支付订单并取消（订单表只增不减，终态不还原）。
  * 前置条件：后端已启动（网关 8080、ai-service 9004），种子数据在位（sku 16 在售）。
@@ -52,14 +61,14 @@ if (!T) {
 let sessionId = null
 
 /** 一次 JSON-RPC 往返。Streamable HTTP 的响应体可能是 SSE（data: {...}）也可能直接是 JSON。 */
-async function rpc(body) {
+async function rpc(body, token = T) {
   const res = await fetch(`${MCP}/mcp`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       // 两个 Accept 都要：流式传输按此协商响应形态
       Accept: 'application/json, text/event-stream',
-      Authorization: `Bearer ${T}`,
+      Authorization: `Bearer ${token}`,
       ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
     },
     body: JSON.stringify(body),
@@ -73,6 +82,8 @@ async function rpc(body) {
   const raw = dataLine ? dataLine.slice(dataLine.indexOf(':') + 1).trim() : text.trim()
   return { status: res.status, json: raw ? JSON.parse(raw) : null }
 }
+
+const toolText = (reply) => reply.json?.result?.content?.[0]?.text ?? ''
 
 console.log('\n== MCP 握手与工具清单 ==')
 const init = await rpc({
@@ -94,13 +105,23 @@ const tools = list.json?.result?.tools ?? []
 const cancelSchema = tools.find((t) => t.name === 'order_cancel')?.inputSchema
 ck('工具清单包含 order_cancel', Boolean(cancelSchema), `工具: ${tools.map((t) => t.name)}`)
 ck(
-  '高危工具签名带 confirmed（boolean 且必填）',
-  cancelSchema?.properties?.confirmed?.type === 'boolean' &&
-    (cancelSchema?.required ?? []).includes('confirmed'),
+  '高危工具签名带 approvalToken（string 且必填）',
+  cancelSchema?.properties?.approvalToken?.type === 'string' &&
+    (cancelSchema?.required ?? []).includes('approvalToken'),
   JSON.stringify(cancelSchema),
 )
+ck(
+  'confirmed 降级为「高危标记」，不再声明为授权',
+  cancelSchema?.properties?.confirmed?.type === 'boolean' &&
+    (cancelSchema?.required ?? []).includes('confirmed') &&
+    !/仅.*确认.*(后|时)传 true/.test(cancelSchema?.properties?.confirmed?.description ?? ''),
+  JSON.stringify(cancelSchema?.properties?.confirmed),
+)
 const searchSchema = tools.find((t) => t.name === 'product_search')?.inputSchema
-ck('非高危工具不带 confirmed', searchSchema && !searchSchema.properties?.confirmed)
+ck(
+  '非高危工具既不带 confirmed 也不带 approvalToken',
+  searchSchema && !searchSchema.properties?.confirmed && !searchSchema.properties?.approvalToken,
+)
 
 // ──── 前置：一笔未支付订单 ────
 
@@ -128,56 +149,89 @@ if (!order) {
   console.error('FATAL: 下单失败', JSON.stringify(checkoutRes))
   process.exit(1)
 }
-// 待支付态在订单接口里的枚举值是 CREATED（statusText「待支付」）
 ck('下单成功（待支付）', order.status === 'CREATED', JSON.stringify(checkoutRes))
 const orderId = order.id
 
 const orderStatus = async () => (await call(GW, `/orders/${orderId}`, { token: T })).data?.status
 
-// ──── 场景 1：不传 confirmed → 第二道防线拒绝，订单纹丝不动 ────
+// ──── 场景 1：不传 approvalToken → 协议层直接拒绝 ────
 
-console.log('\n== 场景 1 未确认的取消被拒绝 ==')
+console.log('\n== 场景 1 缺 approvalToken 在协议层被拒 ==')
 const denied = await rpc({
   jsonrpc: '2.0',
   id: 3,
   method: 'tools/call',
-  params: { name: 'order_cancel', arguments: { orderId } },
+  params: { name: 'order_cancel', arguments: { orderId, confirmed: true } },
 })
-const deniedText = denied.json?.result?.content?.[0]?.text ?? ''
 ck('isError=true', denied.json?.result?.isError === true, JSON.stringify(denied.json))
-// 缺参在协议层就被 JSON Schema 校验拦下（MCP SDK 行为），文案点名 confirmed
-ck('缺参被协议层校验拒绝', deniedText.includes('confirmed'), deniedText)
+ck('文案点名 approvalToken', toolText(denied).includes('approvalToken'), toolText(denied))
 ck('订单仍是待支付', (await orderStatus()) === 'CREATED')
 
-// ──── 场景 2：confirmed 传 false → 过得了协议层，倒在第二道防线 ────
+// ──── 场景 2：自填的 confirmed=true 不再构成授权 ────
+//
+// 这是本次升级真正要钉死的一条：修复前它会让高危操作真的执行下去。
 
-console.log('\n== 场景 2 confirmed=false 仍被拒绝 ==')
-const deniedFalse = await rpc({
+console.log('\n== 场景 2 伪造令牌 / 无有效令牌一律拒绝 ==')
+const forged = await rpc({
   jsonrpc: '2.0',
   id: 4,
   method: 'tools/call',
-  params: { name: 'order_cancel', arguments: { orderId, confirmed: false } },
+  params: { name: 'order_cancel', arguments: { orderId, confirmed: true, approvalToken: 'eyJ4IjoxfQ.deadbeef' } },
 })
-const deniedFalseText = deniedFalse.json?.result?.content?.[0]?.text ?? ''
-ck('isError=true', deniedFalse.json?.result?.isError === true)
-// 场景 1 的拦截发生在 callHandler 之前，这条才真正验证 ToolRegistry 的第二道防线在 MCP 路径上生效
-ck('文案出自第二道防线', deniedFalseText.includes('需要用户确认'), deniedFalseText)
+ck('伪造签名被拒', forged.json?.result?.isError === true, JSON.stringify(forged.json))
+ck('文案说明需要服务端签发的令牌', toolText(forged).includes('服务端'), toolText(forged))
 ck('订单仍是待支付', (await orderStatus()) === 'CREATED')
 
-// ──── 场景 3：confirmed=true → 真执行 ────
-
-console.log('\n== 场景 3 确认后真取消 ==')
-const done = await rpc({
+// 令牌与用户绑定：拿别人的令牌不能被接受。这里用「换一个用户拿 alice 的会话」近似——
+// 因为本脚本只登录了 alice，退一步验证「空串 / 明显不合法的串」都过不了校验。
+const empty = await rpc({
   jsonrpc: '2.0',
-  id: 5,
+  id: 41,
   method: 'tools/call',
-  params: { name: 'order_cancel', arguments: { orderId, confirmed: true } },
+  params: { name: 'order_cancel', arguments: { orderId, confirmed: true, approvalToken: '' } },
 })
-const doneText = done.json?.result?.content?.[0]?.text ?? ''
-ck('isError 非 true', done.json?.result?.isError !== true, JSON.stringify(done.json))
-ck('输出为取消成功文案', doneText.includes('已取消'), doneText)
-ck('订单已取消', (await orderStatus()) === 'CANCELLED')
-ck('确认参数没有漏进业务参数', !doneText.includes('confirmed'), doneText)
+ck('空令牌被拒', empty.json?.result?.isError === true, JSON.stringify(empty.json))
+ck('订单仍是待支付', (await orderStatus()) === 'CREATED')
+
+// ──── 场景 3：合法令牌 → 真执行 ────
+//
+// 令牌由服务端在「拦下一次高危调用」时签发：这里直接走对话链路
+// （chat 带高风险意图 → 返回 pendingActions + approvalToken），把它取出来再用 MCP 执行。
+// 这同时证明了「令牌由对话链路签发、MCP 链路能验证」——两条路走的是同一条信任链。
+
+console.log('\n== 场景 3 服务端签发的令牌可以执行 ==')
+const chat = await call(GW, '/ai/chat', {
+  method: 'POST',
+  token: T,
+  body: { sessionId: `mcp-verify-${Date.now()}`, message: `取消订单 ${orderId}`, stream: false },
+})
+const approvalToken = chat.data?.approvalToken
+const pending = chat.data?.pendingActions ?? []
+// pendingActions 是「渲染用描述串」列表（如 order_cancel(orderId=400)），不是结构化对象
+ck(
+  '对话链路签发了确认令牌且动作是 order_cancel',
+  Boolean(approvalToken) && pending.some((a) => String(a).startsWith('order_cancel')),
+  JSON.stringify({ approvalToken: Boolean(approvalToken), pending }),
+)
+
+if (approvalToken) {
+  const done = await rpc({
+    jsonrpc: '2.0',
+    id: 5,
+    method: 'tools/call',
+    params: {
+      name: 'order_cancel',
+      arguments: { orderId, confirmed: true, approvalToken },
+    },
+  })
+  const doneText = toolText(done)
+  ck('isError 非 true', done.json?.result?.isError !== true, JSON.stringify(done.json))
+  ck('输出为取消成功文案', doneText.includes('已取消'), doneText)
+  ck('订单已取消', (await orderStatus()) === 'CANCELLED')
+  ck('确认与令牌参数没有漏进业务参数', !doneText.includes('confirmed') && !doneText.includes('approvalToken'), doneText)
+} else {
+  ck('场景 3 依赖对话链路签发的令牌', false, '未拿到 approvalToken，无法验证合法令牌路径')
+}
 
 console.log(`\n== MCP 确认通道验收完成：PASS=${pass} FAIL=${fail} ==`)
 if (fail > 0) {

@@ -1,4 +1,4 @@
-import { computed, ref, type Ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
 import type { PageResult } from '@/types/models'
 
 /**
@@ -124,4 +124,107 @@ export function useAdminList<T, Q extends AdminListQuery>(
     changePage,
     changeSize,
   }
+}
+
+/**
+ * 单列收缩下限。低于它列头文字会折成竖排，比窄更糟。
+ * 70 是「两个汉字 + 内边距」的宽度，四个字以上的列头会折行——可以接受。
+ */
+const minColumnWidth = 70
+
+/**
+ * 管理台表格的响应式列宽。
+ * <p>
+ * <b>它解决的问题是「不是没滚动条，而是没有滚动条」</b>：Element Plus 在「各列
+ * width/min-width 声明值之和 > 容器宽」时，走的是**把弹性列砍回 min-width** 这条分支，
+ * 而不是让表格横向滚动（\`table-layout.mjs\` 的 scrollX=false 分支）。一旦走进这条分支，
+ * 带 \`fixed="right"\` 操作列的表格会变成最右侧那一列被固定列盖住——<b>滚动也看不到</b>，
+ * 因为内部 wrapper 的 overflow 仍是 hidden。
+ * <p>
+ * 所以唯一的出路是**让声明值之和装得下容器**：窄屏时按比例收缩，而不是等它溢出。
+ * 收缩有下限（\`min\`），保证文字还能读——比「整列藏着看不见」要好。
+ * <p>
+ * 比例按「实际容器宽 / 声明值之和」算，因此窗口被拖着缩放时也是连续的，不依赖断点跳变。
+ *
+ * @param columns 各列的声明宽度与最小宽度（顺序要与模板里一致）
+ * @param containerRef 表格容器的引用；宽度的变化源
+ */
+export function useResponsiveColumns(
+  columns: Array<{ width: number; min: number }>,
+  containerRef: Ref<HTMLElement | null>,
+) {
+  const declaredSum = columns.reduce((sum, column) => sum + column.width, 0)
+
+  /** 可用宽度。表格有自己的内边距，容器宽度要扣掉，否则算出来永远差一点 */
+  const available = ref(0)
+
+  const widths = computed(() => {
+    // 还没量到（首帧）时先用声明值：SSR 与首屏不会有跳变
+    if (!available.value) {
+      return columns.map((column) => column.width)
+    }
+    if (available.value >= declaredSum) {
+      return columns.map((column) => column.width)
+    }
+    // 不够宽：所有列**等比例**收缩，而不是把其余列钉死在 min。
+    // 钉死 min 是不够的——各列 min 之和本身就可能超过容器（本项目的表在 1040 宽下表宽 728，
+    // 而七列 min 之和是 870），那时「收缩」根本没生效，症状原样保留。
+    // 比例收缩的代价是每列都会窄一点，但那是「都还能读」，而不是「有一列永久看不见」。
+    // 等比例收缩 + 「触底的水位」修正：直接 clamp 会让被下限托住的列吃掉
+    // 其他列让出来的份额，总和仍然超容器（实测 744 > 728，白收缩一场）。
+    // 所以收缩要迭代：锁定触底的列，把剩余的可用宽度在其余列之间再分一次，
+    // 直到总和装得下或所有列都触底
+    let locked = columns.map(() => false)
+    let remaining = available.value
+    let flexibleSum = declaredSum
+    for (let round = 0; round < columns.length; round++) {
+      const scale = remaining / flexibleSum
+      let changed = false
+      for (let i = 0; i < columns.length; i++) {
+        const column = columns[i]
+        if (!column || locked[i]) {
+          continue
+        }
+        if (column.width * scale <= minColumnWidth) {
+          locked[i] = true
+          remaining -= minColumnWidth
+          flexibleSum -= column.width
+          changed = true
+        }
+      }
+      if (!changed || flexibleSum <= 0) {
+        break
+      }
+    }
+    const finalScale = flexibleSum > 0 ? remaining / flexibleSum : 0
+    return columns.map((column, i) =>
+      locked[i] ? minColumnWidth : Math.max(minColumnWidth, Math.floor(column.width * finalScale)),
+    )
+  })
+
+  function measure() {
+    const el = containerRef.value
+    if (!el) {
+      return
+    }
+    // 量的是 .el-table 本身而不是外层容器：容器带左右 padding（.admin-table 的
+    // `padding: 0 var(--ys-space-5)`），用容器宽度会高估约 40px——
+    // 高估的后果和没收缩一样，列宽之和仍然超表宽
+    const table = el.querySelector<HTMLElement>('.el-table')
+    available.value = (table ?? el).clientWidth
+  }
+
+  let observer: ResizeObserver | undefined
+  onMounted(() => {
+    measure()
+    if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
+      // 监听容器而不是 window：Tauri 桌面窗口可以被任意拖拽缩放，
+      // 而且容器宽度还受侧边栏折叠影响——window 的 resize 覆盖不到后者
+      observer = new ResizeObserver(measure)
+      observer.observe(containerRef.value)
+    }
+  })
+  onBeforeUnmount(() => observer?.disconnect())
+
+  return { widths, measure }
 }

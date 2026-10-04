@@ -76,3 +76,26 @@ create table if not exists payment_callback_log (
     index idx_callback_log_order (order_no),
     index idx_callback_log_transaction (transaction_no)
 );
+
+-- ==================== 事务性发件箱 ====================
+-- 与 order-service 的 event_outbox 同构（两个服务各自持有自己的发件箱，
+-- 因为「原子性」的范围是各自的事务）。
+--
+-- 支付侧尤其需要它：支付状态与「订单该变已支付了」这个通知必须一致，
+-- 而原先的写法是在 @Transactional 方法体内直接 convertAndSend ——
+-- 事件离开进程与事务提交之间存在窗口，窗口里崩溃就是「钱的状态没了、
+-- 订单却已经按付过款动了」。发件箱把「要通知什么」和状态写进同一个事务。
+create table if not exists event_outbox (
+    id bigint auto_increment primary key,
+    event_type varchar(64) not null,
+    aggregate_id varchar(64) not null,
+    exchange_name varchar(128) not null,
+    routing_key varchar(128) not null,
+    payload text not null,
+    created_at datetime not null,
+    sent_at datetime null,
+    attempts int not null default 0,
+    last_error varchar(512),
+    index idx_outbox_pending (sent_at, id),
+    index idx_outbox_aggregate (aggregate_id)
+);

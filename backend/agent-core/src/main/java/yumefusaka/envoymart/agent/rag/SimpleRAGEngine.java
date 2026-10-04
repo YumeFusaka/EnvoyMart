@@ -62,6 +62,11 @@ public class SimpleRAGEngine implements RAGEngine {
         return retriever.retrieve(query, topK);
     }
 
+    @Override
+    public RetrievalOutcome retrieveWithOutcome(String query, int topK) {
+        return retriever.retrieveWithOutcome(query, topK);
+    }
+
     private List<DocumentChunk> chunk(Document doc) {
         return splitter.split(doc);
     }

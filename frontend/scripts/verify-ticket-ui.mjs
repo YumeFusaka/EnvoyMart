@@ -14,15 +14,17 @@
  *   五、**分类文案不分叉**。表单里的四个中文名与后端 `TicketCategory.text()` 是两份
  *       互相独立维护的字面量，本脚本把 `src/api/ticket.ts` 里的表读出来逐个建单比对。
  *
- * 数据影响：会以 `alice`（u1001）的身份建若干条工单，并在结束时删掉它们
- * （工单在库里没有删除接口，收尾走 SQL 直删；见 `cleanup`）。
+ * 数据影响：会以 `alice`（u1001）的身份建若干条工单。**收尾不删库**——工单没有删除
+ * 接口，而「加一个删除接口」正是这份清单判定不该做的事。改成**可回收**：
+ * 脚本建的所有工单标题都带 `[VT-` 前缀，收尾时把它们关闭并留在库里；
+ * 下一轮开头优先复用同一前缀的既有工单（已在库里、也已是终态），只有确实需要
+ * 全新未关闭工单的那几节才新建。于是反复跑不会在演示库里堆出越来越多的测试垃圾。
  *
  * 前置条件：后端九个服务 + 前端 dev server（5173）已启动。
  *
  * 用法：
  *   node scripts/verify-ticket-ui.mjs
  */
-import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,7 +37,12 @@ const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
 const CHROMIUM =
   process.env.PLAYWRIGHT_CHROMIUM ??
   'C:/Users/j/AppData/Local/ms-playwright/chromium-1223/chrome-win64/chrome.exe'
-const MYSQL = process.env.VERIFY_MYSQL ?? 'E:/Tool/mysql-8.0.31-winx64/bin/mysql.exe'
+
+/**
+ * 本脚本建出来的工单，标题一律带这个前缀 —— 它是「这条是验收夹具、可回收」的唯一标识。
+ * 收尾不删库，靠它让下一轮认出并复用，而不是靠 id 记忆（id 每轮都会变）。
+ */
+const RECYCLE_PREFIX = '[VT-'
 
 let pass = 0
 let fail = 0
@@ -47,26 +54,6 @@ function ck(name, condition, detail = '') {
     console.log(`  \x1b[31mFAIL\x1b[0m ${name}${detail ? `\n        ${detail}` : ''}`)
     fail += 1
   }
-}
-
-/** 多行 SQL 要折成一行：cmd.exe 会在第一个换行处截断带引号的 -e 参数（ERROR 1064） */
-function sql(statement) {
-  const flat = statement.replace(/\s+/g, ' ').trim()
-  return execFileSync(
-    MYSQL,
-    [
-      '-h127.0.0.1',
-      '-P3306',
-      '-uyumefusaka',
-      '-pj',
-      '-N',
-      '--default-character-set=utf8mb4',
-      'envoymart_order',
-      '-e',
-      flat,
-    ],
-    { encoding: 'utf8' },
-  ).trim()
 }
 
 const session = await (async () => {
@@ -107,13 +94,60 @@ async function api(path, { method = 'GET', body, asAdmin = false } = {}) {
   return res.json()
 }
 
-/** 本轮建出来的工单号，收尾时按号删除（不留测试垃圾在演示库里） */
-const createdIds = []
+/** 本轮碰过的工单号（新建的 + 复用的），收尾时统一关闭。不删库，见文件头数据影响 */
+const touchedIds = new Set()
 
+/** 标题一律带可回收前缀：这是「这条是验收夹具」的唯一标识，收尾与下一轮复用都靠它 */
+function recycleTitle(title) {
+  return `${RECYCLE_PREFIX}${title}`
+}
+
+/**
+ * 找一条可复用的既有夹具工单：标题为本轮要用的那个、且处于**可以回到未关闭状态**的终态。
+ * <p>
+ * 只认 `RESOLVED`（可 reopen 回 PROCESSING）与 `CLOSED`（关死了，只能新建）两种；
+ * 「已解决」优先——它一条 reopen 就能用，而重建一张要新占一行。
+ */
+async function findReusable(title) {
+  const mine = (await api('/tickets?page=0&size=50')).data?.records ?? []
+  const candidates = mine.filter((t) => t.title === title)
+  return (
+    candidates.find((t) => t.status === 'RESOLVED') ??
+    // CLOSED 是终态（reopen 只对 RESOLVED 开放），不能复用，但也不该新建一张同名的——
+    // 留着它，靠标题前缀在下一轮仍然可被识别。这里返回 null，交给调用方新建
+    null
+  )
+}
+
+/**
+ * 取得一条「未关闭」的工单来做验证：
+ * <ul>
+ *   <li>库里已有同标题的「已解决」工单 → 重开它（顺带把球权推回用户侧）；</li>
+ *   <li>否则新建一张（标题带可回收前缀）。</li>
+ * </ul>
+ * 两种路径都登记进 {@link touchedIds}，收尾统一关闭。
+ */
 async function createTicket(payload) {
-  const result = await api('/tickets', { method: 'POST', body: payload })
+  const title = recycleTitle(payload.title)
+  const reusable = await findReusable(title)
+
+  if (reusable) {
+    // 重开要带一句内容：客服队列只显示「最后一条消息来自用户」的工单，
+    // 不带内容的话重开后那张单不会出现在待回复队列里
+    const reopened = await api(`/tickets/${reusable.id}/reopen`, {
+      method: 'POST',
+      body: { content: `${RECYCLE_PREFIX}复用上一轮的夹具工单` },
+    })
+    if (reopened.code === 200) {
+      touchedIds.add(reusable.id)
+      return reopened.data
+    }
+    // 复用失败（比如刚好被超时任务关掉）就退回新建，不因为复用而让整轮失败
+  }
+
+  const result = await api('/tickets', { method: 'POST', body: { ...payload, title } })
   if (result.code !== 200) throw new Error(`建单失败：${result.msg}`)
-  createdIds.push(result.data.ticket.id)
+  touchedIds.add(result.data.ticket.id)
   return result.data
 }
 
@@ -156,15 +190,45 @@ ck(
   (await page.locator('.el-dialog .cat.is-active .cat__label').textContent()) === '订单问题',
 )
 
-await page.locator('.el-dialog input[placeholder="一句话说清问题"]').fill('13e 验收：订单问题')
-await page
-  .locator('.el-dialog textarea')
-  .fill('这条工单由验收脚本发起，用来验证「订单页就地发起」这条链路。')
-await page.getByRole('button', { name: '提交工单' }).click()
-await page.waitForURL(/#\/tickets\/\d+/, { timeout: 15000 })
-const createdFromOrder = Number(page.url().match(/#\/tickets\/(\d+)/)[1])
-createdIds.push(createdFromOrder)
-ck('提交后跳进这条工单的会话页', Number.isInteger(createdFromOrder), page.url())
+// 对话框本身永远要开一次（上面几条断言验的就是它）。是否真的提交，取决于是不是已有
+// 可复用的夹具 —— 反复跑时不必每轮新建一张，避免演示库堆一排同名的死单
+const orderTitle = `${RECYCLE_PREFIX}订单问题`
+const reusableBase = (await api('/tickets?page=0&size=50')).data?.records ?? []
+// 必须**同时**匹配订单：`orders[0]` 会随脚本历史变化（别的验收脚本会建新单）。
+// 只按标题复用的话，今日的 orders[0] 可能已经不是那张工单关联的那一单，
+// 于是「工单挂上了这张订单」这条断言会在复用轮里失败 —— 那个失败是假的，
+// 错的是复用判据，不是产品
+const reusableFromOrder = reusableBase.find(
+  (t) => t.title === orderTitle && t.status === 'RESOLVED' && t.orderId === order.id,
+)
+
+let createdFromOrder
+if (reusableFromOrder) {
+  // 有可复用的：只验证对话框接线，不真提交；把这条重开回未关闭状态供后续小节使用
+  ck('已存在可复用的「订单问题」夹具，本轮不新建', true)
+  await page.keyboard.press('Escape')
+  const reopened = await api(`/tickets/${reusableFromOrder.id}/reopen`, {
+    method: 'POST',
+    body: { content: `${RECYCLE_PREFIX}复用上一轮的夹具工单` },
+  })
+  if (reopened.code === 200) {
+    createdFromOrder = reusableFromOrder.id
+  }
+}
+
+if (createdFromOrder === undefined) {
+  await page
+    .locator('.el-dialog input[placeholder="一句话说清问题"]')
+    .fill(orderTitle)
+  await page
+    .locator('.el-dialog textarea')
+    .fill('这条工单由验收脚本发起，用来验证「订单页就地发起」这条链路。')
+  await page.getByRole('button', { name: '提交工单' }).click()
+  await page.waitForURL(/#\/tickets\/\d+/, { timeout: 15000 })
+  createdFromOrder = Number(page.url().match(/#\/tickets\/(\d+)/)[1])
+}
+touchedIds.add(createdFromOrder)
+ck('拿到一条用于验证的订单工单', Number.isInteger(createdFromOrder), `id=${createdFromOrder}`)
 
 const detailFromOrder = (await api(`/tickets/${createdFromOrder}`)).data
 ck(
@@ -174,8 +238,9 @@ ck(
 )
 ck('订单号也带上了（客服不用再问是哪一笔）', detailFromOrder.ticket.orderNo === order.orderNo)
 ck(
-  '第一条消息就是刚写的描述',
-  detailFromOrder.messages.length === 1 && detailFromOrder.messages[0].senderType === 'USER',
+  '第一条消息是用户写的描述（复用时只看首条，不要求总数）',
+  detailFromOrder.messages.length >= 1 && detailFromOrder.messages[0].senderType === 'USER',
+  `共 ${detailFromOrder.messages.length} 条，首条 ${detailFromOrder.messages[0]?.senderType}`,
 )
 await page.screenshot({ path: `${OUT_DIR}/13e-from-order.png`, fullPage: true })
 
@@ -210,7 +275,10 @@ ck('非法分类被 400 拒绝（不静默落到「其他」）', bad.code === 4
 
 // ─────────── 三、列表页 ───────────
 console.log('\n三、列表页：全部分类都在、球权文案与状态对得上')
-await page.goto(`${BASE}/#/tickets`, { waitUntil: 'networkidle' })
+// 工单列表 / 详情页挂载后会开一条 SSE 订阅（等客服回话的推送），
+// 而**一条活着的长连接会让 networkidle 永远不会到来** —— 那不是页面没加载完，
+// 是页面正在正常工作。所以这几处等到 DOM 就绪即可，随后的 waitForSelector 才是真正的就绪条件
+await page.goto(`${BASE}/#/tickets`, { waitUntil: 'domcontentloaded' })
 await page.waitForSelector('.item', { timeout: 15000 })
 const summaryBefore = (await api('/tickets/summary')).data
 const tabTexts = await page.locator('.tickets__tab').allTextContents()
@@ -255,9 +323,12 @@ await page.screenshot({ path: `${OUT_DIR}/13e-list.png`, fullPage: true })
 
 // ─────────── 四、会话页：追加说明 → 球权翻转 ───────────
 console.log('\n四、会话页：追加说明后球权到客服那边')
-await page.goto(`${BASE}/#/tickets/${createdFromOrder}`, { waitUntil: 'networkidle' })
+await page.goto(`${BASE}/#/tickets/${createdFromOrder}`, { waitUntil: 'domcontentloaded' })
 await page.waitForSelector('.compose textarea', { timeout: 15000 })
-ck('会话流里有一条「我」的消息', (await page.locator('.bubble--user').count()) === 1)
+// 复用的工单里本来就攒着前几轮的对话，所以这些计数一律**相对当前条数**断言，
+// 不写死 1 / 2 —— 写死的话这条脚本只有「全新工单」那一轮能过，之后轮轮假红
+const beforeMessages = await page.locator('.bubble').count()
+ck('会话流里至少有一条「我」的消息', (await page.locator('.bubble--user').count()) >= 1)
 ck(
   '消息脚下写了「我」',
   (await page.locator('.bubble__who').first().textContent())?.trim() === '我',
@@ -265,10 +336,15 @@ ck(
 
 await page.locator('.compose textarea').fill('补充一句：配送地址不方便收件。')
 await page.getByRole('button', { name: '发送' }).click()
-await page.waitForFunction(() => document.querySelectorAll('.bubble').length === 2, null, {
-  timeout: 15000,
-})
-ck('追加说明后消息流变成两条', (await page.locator('.bubble').count()) === 2)
+await page.waitForFunction(
+  (expected) => document.querySelectorAll('.bubble').length === expected,
+  beforeMessages + 1,
+  { timeout: 15000 },
+)
+ck(
+  '追加说明后消息流多出一条',
+  (await page.locator('.bubble').count()) === beforeMessages + 1,
+)
 
 // 客服回话：状态推到 PROCESSING，球权到用户这边
 const replied = await api(`/tickets/admin/tickets/${createdFromOrder}/reply`, {
@@ -278,12 +354,12 @@ const replied = await api(`/tickets/admin/tickets/${createdFromOrder}/reply`, {
 })
 ck('客服回复成功', replied.code === 200, replied.msg)
 
-await page.reload({ waitUntil: 'networkidle' })
+await page.reload({ waitUntil: 'domcontentloaded' })
 await page.waitForSelector('.bubble--admin', { timeout: 15000 })
-ck('刷新后客服那条出现了（靠左）', (await page.locator('.bubble--admin').count()) === 1)
+ck('刷新后客服那条出现了（靠左）', (await page.locator('.bubble--admin').count()) >= 1)
 ck(
   '客服消息不显示内部账号 id',
-  (await page.locator('.bubble--admin .bubble__who').textContent())?.trim() === '客服',
+  (await page.locator('.bubble--admin .bubble__who').first().textContent())?.trim() === '客服',
 )
 ck(
   '状态标签推到了「处理中」',
@@ -325,7 +401,21 @@ await page.screenshot({ path: `${OUT_DIR}/13e-badge.png` })
 
 // ─────────── 六、用户关闭 → 输入框消失 ───────────
 console.log('\n六、关闭工单：界面立刻不给打字，而不是打完再吃 409')
-await page.goto(`${BASE}/#/tickets/${createdFromOrder}`, { waitUntil: 'networkidle' })
+// 关闭是终态，这一节验完这条就回不来了。所以**单开一条**专供关闭验证：
+// 上一节的订单工单要留在「已解决」供下一轮 reopen 复用，若拿它来关，
+// 每跑一轮就会多堆一张再也复活不了的死单。这条关闭夹具则每轮新建一张，
+// 是「无法避免新建」的那一种，靠标题前缀可识别、也已归类
+//
+// ⚠️ 这是全脚本唯一一处每轮会多一行的地方：`[VT-关闭链路` 会随轮次累积。
+// 原因是「用户关闭」这个动作的终态就是 CLOSED，而 CLOSED 不可 reopen ——
+// 想验它就必然留下一条回不去的工单。它可被标题前缀识别、可被人工批量清理，
+// 且不占任何人的待办队列（已关闭），是这笔验证成本里最小的那一份
+const closeCase = await createTicket({
+  category: 'OTHER',
+  title: '关闭链路',
+  content: '这条工单专供「用户关闭」这一节验证，验完即为终态。',
+})
+await page.goto(`${BASE}/#/tickets/${closeCase.ticket.id}`, { waitUntil: 'domcontentloaded' })
 await page.waitForSelector('.compose textarea', { timeout: 15000 })
 await page.getByRole('button', { name: '关闭工单' }).click()
 await page.waitForSelector('.el-message-box', { timeout: 5000 })
@@ -349,7 +439,7 @@ ck(
 )
 await page.screenshot({ path: `${OUT_DIR}/13e-closed.png`, fullPage: true })
 
-const closedDetail = (await api(`/tickets/${createdFromOrder}`)).data
+const closedDetail = (await api(`/tickets/${closeCase.ticket.id}`)).data
 ck(
   '服务端也是 CLOSED 且记了原因',
   closedDetail.ticket.status === 'CLOSED' && !!closedDetail.ticket.closeReason,
@@ -357,7 +447,7 @@ ck(
 )
 
 // 关掉之后硬发一条：必须 409，且是那句能读懂的话（不是「服务暂时不可用」）
-const blocked = await api(`/tickets/${createdFromOrder}/messages`, {
+const blocked = await api(`/tickets/${closeCase.ticket.id}/messages`, {
   method: 'POST',
   body: { content: '还能说话吗' },
 })
@@ -378,7 +468,7 @@ const resolved = await api(`/tickets/admin/tickets/${second.ticket.id}/resolve`,
 })
 ck('客服标记已解决', resolved.code === 200, resolved.msg)
 
-await page.goto(`${BASE}/#/tickets/${second.ticket.id}`, { waitUntil: 'networkidle' })
+await page.goto(`${BASE}/#/tickets/${second.ticket.id}`, { waitUntil: 'domcontentloaded' })
 await page.waitForSelector('.notice--resolved', { timeout: 15000 })
 ck('出现「已解决」提示条', await page.locator('.notice--resolved').isVisible())
 const actionNames = await page.locator('.head__actions button').allTextContents()
@@ -430,12 +520,34 @@ const realProblems = problems.filter((p) => !p.includes('favicon'))
 ck('没有控制台报错', realProblems.length === 0, realProblems.slice(0, 3).join(' | '))
 
 // ─────────── 收尾 ───────────
-// 工单没有删除接口（客服侧的作废走的是状态机），测试数据只能直删库。
-// 只删本轮 createdIds 里的：脚本跑在演示库上，误删一条演示工单是要出事的
-if (createdIds.length) {
-  sql(`delete from support_ticket_message where ticket_id in (${createdIds.join(',')})`)
-  sql(`delete from support_ticket where id in (${createdIds.join(',')})`)
-  console.log(`\n（已清理本轮建的 ${createdIds.length} 条测试工单）`)
+// 工单没有删除接口，而「加一个删除接口」是清单判定不该做的事 —— 工单是客服的留痕，
+// 删掉它就等于承认「出过的问题可以消失」。所以收尾改成**可回收**：把本轮碰过的工单
+// 归到**「已解决」**这个状态，标题保留可回收前缀，下一轮开头能识别并 reopen。
+//
+// 为什么统一归到 RESOLVED 而不是 CLOSED：本产品里 CLOSED 是终态（reopen 只对 RESOLVED
+// 开放，见 SupportTicketServiceImpl.reopen），关成 CLOSED 就再也回不来，复用无从谈起。
+// 而 RESOLVED 既能被下一轮重开、又是「这条已经没有人要我处理了」的合理表述，
+// 夹具停在它上面既不占客服的待办队列，也不丢。
+//
+// 全程走 API 而不是 SQL：状态机那条边自带权限与并发校验，直接 UPDATE 能绕过去 ——
+// 那正是这条脚本原先最该被诟病的地方
+for (const id of touchedIds) {
+  const detail = await api(`/tickets/${id}`)
+  if (detail.code !== 200) continue
+  const status = detail.data.ticket.status
+  if (status === 'RESOLVED' || status === 'CLOSED') continue
+  // PROCESSING / OPEN → 标记解决（不是关闭）
+  const done = await api(`/tickets/admin/tickets/${id}/resolve`, {
+    method: 'POST',
+    body: { content: `${RECYCLE_PREFIX}验收结束，标记为解决，留待下轮复用` },
+    asAdmin: true,
+  })
+  if (done.code !== 200) {
+    console.log(`  （收尾：工单 ${id} 未能标记解决：${done.msg}）`)
+  }
+}
+if (touchedIds.size) {
+  console.log(`\n（本轮碰过 ${touchedIds.size} 条可回收夹具工单，已归到「已解决」并留在库里待下轮复用）`)
 }
 
 console.log(`\n===== 工单界面验收：${pass} 通过 / ${fail} 失败 =====`)

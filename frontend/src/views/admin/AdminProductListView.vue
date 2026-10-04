@@ -6,7 +6,7 @@ import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { formatPriceRange } from '@/api/product'
 import { changeSpuStatus, deleteSpu, listSpus } from '@/api/admin/product'
 import { listBrands, listCategoryTree } from '@/api/admin/catalog'
-import { useAdminList } from '@/composables/useAdminList'
+import { useAdminList, useResponsiveColumns } from '@/composables/useAdminList'
 import { formatDate } from '@/utils/format'
 import type { AdminBrand, AdminSpuQuery, AdminSpuSummary } from '@/types/admin'
 import type { CategoryNode } from '@/types/models'
@@ -45,6 +45,23 @@ const {
     size: 20,
   },
   { immediate: false },
+)
+
+
+/** 表格容器：列宽按它实测的宽度算，窄屏时等比例收缩 */
+const tableRef = ref<HTMLElement | null>(null)
+const { widths: colW } = useResponsiveColumns(
+  [
+    { width: 260, min: 240 },
+    { width: 150, min: 140 },
+    { width: 130, min: 120 },
+    { width: 110, min: 100 },
+    { width: 80, min: 70 },
+    { width: 90, min: 80 },
+    { width: 150, min: 130 },
+    { width: 180, min: 150 },
+  ],
+  tableRef,
 )
 
 onMounted(async () => {
@@ -162,9 +179,9 @@ const statusOptions = [
     <ErrorState v-if="error" :message="error" :on-retry="() => load()" />
 
     <template v-else>
-      <div class="admin-table">
+      <div ref="tableRef" class="admin-table">
         <el-table v-loading="loading" :data="records" row-key="id" style="width: 100%">
-          <el-table-column label="商品" min-width="260">
+          <el-table-column label="商品" :width="colW[0]">
             <template #default="{ row }">
               <div class="spu-cell">
                 <el-image class="spu-cell__img" :src="row.mainImage ?? undefined" fit="cover">
@@ -181,7 +198,7 @@ const statusOptions = [
             </template>
           </el-table-column>
 
-          <el-table-column label="类目 / 品牌" min-width="150">
+          <el-table-column label="类目 / 品牌" :width="colW[1]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span>{{ row.categoryName ?? '—' }}</span>
@@ -190,7 +207,7 @@ const statusOptions = [
             </template>
           </el-table-column>
 
-          <el-table-column label="价格" min-width="130" align="right">
+          <el-table-column   align="right" label="价格" :width="colW[2]">
             <template #default="{ row }">
               <span class="admin-cell--num">{{
                 formatPriceRange(row.minPrice, row.maxPrice)
@@ -198,7 +215,7 @@ const statusOptions = [
             </template>
           </el-table-column>
 
-          <el-table-column label="SKU / 库存" min-width="110" align="right">
+          <el-table-column   align="right" label="SKU / 库存" :width="colW[3]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span class="admin-cell--num">{{ row.skuCount }} 个 SKU</span>
@@ -212,13 +229,13 @@ const statusOptions = [
             </template>
           </el-table-column>
 
-          <el-table-column prop="sales" label="销量" width="80" align="right">
+          <el-table-column prop="sales"   align="right" label="销量" :width="colW[4]">
             <template #default="{ row }">
               <span class="admin-cell--num">{{ row.sales }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="状态" width="90">
+          <el-table-column label="状态" :width="colW[5]">
             <template #default="{ row }">
               <el-tag :type="row.status === 1 ? 'success' : 'info'" effect="plain" size="small">
                 {{ row.status === 1 ? '已上架' : '已下架' }}
@@ -226,13 +243,13 @@ const statusOptions = [
             </template>
           </el-table-column>
 
-          <el-table-column label="更新时间" width="150">
+          <el-table-column label="更新时间" :width="colW[6]">
             <template #default="{ row }">
               <span class="admin-cell--tiny">{{ formatDate(row.updatedAt) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="180" fixed="right">
+          <el-table-column   fixed="right" label="操作" :width="colW[7]">
             <template #default="{ row }">
               <div class="admin-table__actions">
                 <el-button

@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getTicketSummary, listMyTickets, ticketStatusTagType, ticketTurnText } from '@/api/ticket'
+import { useTicketStore } from '@/stores'
 import { formatDate } from '@/utils/format'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import CreateTicketDialog from '@/components/ticket/CreateTicketDialog.vue'
 import type { Ticket, TicketSummary } from '@/types/models'
 
 const router = useRouter()
+const ticketStore = useTicketStore()
 
 const records = ref<Ticket[]>([])
 const total = ref(0)
@@ -73,6 +75,28 @@ function onCreated(id: number) {
 }
 
 onMounted(load)
+
+// 挂载期间订阅「客服回了话」的推送：列表上某条工单的球权可能随时翻到用户这边，
+// 不订阅的话用户得手动刷新才知道 —— 而这一页正是最该实时的地方。
+// 离开即断开（下面 onUnmounted），长连接只在需要它的这一页占着。
+//
+// 只在「等你回应」的**计数**变化时重拉列表：推送里的 id 列表足以判断有没有变化，
+// 但真正要刷新的是这些行的状态标签与球权文案。用计数做键是为了让同一个事件
+// 在角标与列表两处只触发一次刷新
+let stopAwaiting: (() => void) | null = null
+onMounted(() => {
+  ticketStore.refresh()
+  stopAwaiting = ticketStore.subscribe()
+})
+onUnmounted(() => stopAwaiting?.())
+
+watch(
+  () => ticketStore.awaitingMe,
+  (next, prev) => {
+    // 首次拿到值（prev 为 null）不算变化：那是初始快照，列表自己刚拉过
+    if (prev !== null && next !== prev) load()
+  }
+)
 </script>
 
 <template>

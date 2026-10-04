@@ -128,6 +128,7 @@ function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[
       : undefined,
     evidenceLevel: response?.evidenceLevel ?? undefined,
     retrievalQuery: response?.retrievalQuery ?? undefined,
+    expansion: response?.expansion?.applied ? response.expansion : undefined,
     unsupportedClaims: response?.unsupportedClaims?.length ? response.unsupportedClaims : undefined,
     unsupportedStripped: response?.unsupportedStripped,
     ungrounded: response?.ungrounded,
@@ -373,7 +374,7 @@ async function regenerate(assistantId: string) {
   const target = messages.value[index]
   if (!target || target.role !== 'assistant') return
   // 这条回答对应的问题是它前面最近的一条用户消息
-  const prompt = [...messages.value.slice(0, index)].reverse().find((item) => item.role === 'user')
+  const prompt = messages.value.slice(0, index).reverse().find((item) => item.role === 'user')
   const sessionId = activeSessionId.value
   if (!prompt || !sessionId) return
 
@@ -447,8 +448,13 @@ async function runStream(
           assistantMessage.pendingActions = response.pendingActions ?? undefined
           // 卡片与令牌同生共死：只留卡片不留令牌，用户点确认时无从证明自己批的是哪一次
           assistantMessage.approvalToken = response.approvalToken ?? undefined
+          // 任务阶段。它与 pendingActions 表达同一件事的两个层次：阶段说「停在哪里」，
+          // 载荷说「停下的是哪几次调用」。两者都留一份，是为了将来新增
+          // 「正在核对」这类没有卡片的中间态时，前端不必再改一次数据流
+          assistantMessage.stage = response.stage ?? undefined
           assistantMessage.evidenceLevel = response.evidenceLevel ?? undefined
           assistantMessage.retrievalQuery = response.retrievalQuery ?? undefined
+          assistantMessage.expansion = response.expansion?.applied ? response.expansion : undefined
           // 后置校验的两项结果。流式下 delta 已经渲染过了，`content` 的赋值在上面
           // ——它会把没有出处的句子擦掉，用户看到的最终文本与校验结果是一致的
           assistantMessage.unsupportedClaims = response.unsupportedClaims ?? undefined

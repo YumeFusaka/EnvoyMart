@@ -78,6 +78,32 @@ function regenerable(message: ChatMessage, position: number, count: number, stre
 
 const userStore = useUserStore()
 
+/**
+ * 任务阶段 → 一句给用户看的话。
+ * <p>
+ * 只对「还没收尾」的阶段出文案：`DONE` 返回空串，因为它是默认结局，
+ * 给每一轮正常结束的回答挂一句「已完成」是纯噪音。
+ * 文案锚在后端下发的枚举名上，而不是从回复内容里猜——阶段是稳定的结构字段，
+ * 模型换个说法不会让它跟着变。
+ */
+function stageNotice(message: ChatMessage): string {
+  switch (message.stage) {
+    case 'PLANNING':
+      return '正在规划…'
+    case 'EXECUTING':
+      return '正在执行…'
+    case 'CHECKING':
+      return '正在核对结果…'
+    // 这一条与确认卡片同时出现：卡片说「批哪几次调用」，它说「为什么停在这」
+    case 'WAITING_USER':
+      return '等待你确认后才会继续'
+    default:
+      // DONE 与未知取值都返回空：前端不认识的新阶段不该被猜成一句话，
+      // 那会把一次后端新增的阶段显示成错误文案
+      return ''
+  }
+}
+
 /** 当前被点亮的引用角标。`[n]` 点下去要能一眼看到它对应的是哪张卡片 */
 const activeCite = ref<{ messageId: string; index: number } | null>(null)
 
@@ -186,6 +212,19 @@ async function handleCopy(message: ChatMessage) {
       -->
       <p v-if="message.error" class="message-notice is-error">{{ message.error }}</p>
       <p v-else-if="message.stopped" class="message-notice">已停止生成</p>
+      <!--
+        任务阶段。只在「还没跑完」时出现：DONE 是默认结局，为一轮正常结束的回答
+        挂一句「已完成」是噪音，用户关心的是「它还在做什么」或「它卡在等谁」。
+        文案取的是阶段本身而不是模型措辞——阶段是后端下发的稳定枚举，
+        不会因为模型换了个说法就跟着变。
+      -->
+      <p
+        v-if="stageNotice(message)"
+        class="message-notice is-stage"
+        :class="{ 'is-waiting': message.stage === 'WAITING_USER' }"
+      >
+        {{ stageNotice(message) }}
+      </p>
 
       <!--
         消息级操作。悬停浮现（触屏常显）：ChatGPT 的一排操作按钮是肌肉记忆，
@@ -320,6 +359,7 @@ async function handleCopy(message: ChatMessage) {
         :list-id="message.id"
         :evidence-level="message.evidenceLevel"
         :retrieval-query="message.retrievalQuery"
+        :expansion="message.expansion"
         :active-index="activeCite?.messageId === message.id ? activeCite.index : null"
       />
 
@@ -622,6 +662,23 @@ async function handleCopy(message: ChatMessage) {
 .message-notice.is-error {
   background: var(--color-danger-subtle);
   color: var(--color-danger);
+}
+
+/*
+  阶段提示。用主色而不是警示色：它不是错误，是「正在做/在等你」——
+  给它挂红色会让一次正常的中断看起来像出了故障。
+  等待确认那一档单独加重（左边一条竖线），因为它要求用户动作，
+  而其余几档只是让他知道系统还在跑。
+*/
+.message-notice.is-stage {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+.message-notice.is-stage.is-waiting {
+  border-inline-start: 3px solid var(--color-primary);
+  background: var(--color-bg-surface-muted);
+  color: var(--color-text-secondary);
 }
 
 .grounding {

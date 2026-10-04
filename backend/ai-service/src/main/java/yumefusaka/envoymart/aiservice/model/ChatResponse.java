@@ -25,6 +25,24 @@ public class ChatResponse {
     private String retrievalQuery;
 
     /**
+     * 本轮<b>检索扩写</b>实际生效的变体（假想答案 HyDE + 角度改写）。
+     * <p>
+     * <b>与 {@link #retrievalQuery} 不是一回事，也不能合并。</b>那一项回答「本轮拿哪句话去检索」，
+     * 指的是指代消解改写后的最终查询；它回答「检索之前，这句话被扩写成什么」。
+     * 用户整句问「太贵了怎么办」时，前者仍是原话，后者才有内容——
+     * <b>只看 retrievalQuery，扩写到底跑没跑、跑出了什么，界面上永远看不出来。</b>
+     * <p>
+     * 这是检索调优的唯一观测口：扩写覆盖率、角度变体质量、HyDE 与角度的增益各占多少，
+     * 都得靠它才能逐轮核对。没有它，调召回率只能靠端到端分数反推，
+     * 「某一类问题扩写没生效」这类缺陷会被整体分数掩盖。
+     * <p>
+     * 为 {@code null} 表示本轮没有扩写——降级路径（模型超时、开关关闭、查询已足够清晰）
+     * 与「扩写跑了但产出为空」在界面上都不显示，但两者的处置完全不同，
+     * 所以由 {@link ExpansionView#textOnly()} 显式区分，而不是靠 null 猜。
+     */
+    private ExpansionView expansion;
+
+    /**
      * 本轮的请求标识 —— 与后台日志里的 {@code [requestId]} 是同一个值。
      * <p>
      * 下发给界面是为了让「用户报障」这件事可操作：他说得出「刚才那次回答不对」，
@@ -72,6 +90,26 @@ public class ChatResponse {
      * 由后端算好下发，前端不重复实现。
      */
     private EvidenceGate.Level evidenceLevel;
+    /**
+     * 本轮任务阶段，见 agent-core 的 {@code TaskStage}。
+     * <p>
+     * 以<b>字符串</b>下发而不是枚举：这是跨服务与跨端的契约，枚举名一旦重命名，
+     * 编译期检查不到前端与外部调用方。字符串至少能让「不认识的取值」被显式识别，
+     * 而不是静默反序列化失败。
+     */
+    private String stage;
+
+    /**
+     * 本轮任务状态 —— 意图、当前子任务、待执行调用、已完成步骤、阶段、轮次。
+     * <p>
+     * <b>为什么在 stage 之外还要下发它。</b>stage 只回答「在哪个阶段」；
+     * 「这一轮到底在做什么、做到哪了、还在等哪几个调用」是刷新页面与跨轮续接同一任务
+     * 要读的账。前端若各自用 stage 去猜这些，猜错了没有任何地方会报错。
+     * <p>
+     * 字段名沿 agent-core {@code TaskState} 的对外契约（下划线风格），
+     * 不随 Java 侧驼峰偏好改。非任务路径（确定性流程、直接对话）为 null。
+     */
+    private java.util.Map<String, Object> taskState;
 
     /**
      * 讲了一条事实却没交代出处、已从 {@link #reply} 中剔除的句子。
@@ -133,7 +171,34 @@ public class ChatResponse {
      * @param refs   涉及的证据编号（1 基），可能为空——认不出编号时不猜，只展示文字
      * @param detail 冲突原文
      */
-    public record Conflict(List<Integer> refs, String detail) {
+/**
+     * @param refs     涉及的证据编号（1 基），可能为空——认不出编号时不猜，只展示文字
+     * @param detail   冲突原文
+     * @param resolved 能否依据版本信息定夺：{@code true} 表示已按较新版本给出结论，
+     *                 {@code false} 表示无法判定先后、必须人工确认。
+     *                 前端据此分两种形态渲染——「已定夺」是一条普通提示，
+     *                 「待人工确认」才需要用户点开原文自己拿主意
+     */
+    public record Conflict(List<Integer> refs, String detail, boolean resolved) {
+    }
+
+    /**
+     * 本轮检索扩写的观测视图。
+     * <p>
+     * {@code applied} 表示「扩写这一步确实运行过并且产出了内容」，与「产出为空」是两件事：
+     * 关闭功能、模型超时降级、查询已足够清晰被判定无需扩写——三者都得到空产出，
+     * 但只有第一种是用户的选择，后两种是系统的降级或判断，排查时不能混为一谈。
+     *
+     * @param hypothetical 假想答案（HyDE）原文；无则为 null
+     * @param angles       角度改写变体；无则为空列表
+     * @param applied      是否真的产出了扩写（{@code hypothetical} 或 {@code angles} 至少一项非空）
+     */
+    public record ExpansionView(String hypothetical, List<String> angles, boolean applied) {
+
+        /** 无扩写。降级路径与「判定无需扩写」共用这一个落点 */
+        public static ExpansionView textOnly() {
+            return new ExpansionView(null, List.of(), false);
+        }
     }
 
     /**

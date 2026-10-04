@@ -1,12 +1,12 @@
 package yumefusaka.envoymart.orderservice.mq;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.connection.CorrelationData;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * 订单事件发布器：发送事件到 RabbitMQ。
+ * 订单事件发布器：<b>把事件登记进发件箱</b>（不再直接发 MQ）。
+ * <p>
+ * 发送动作交给 {@link OutboxRelay}，理由见 {@link #publishOrderPaid}。
  * <p>
  * 只保留真正在发的事件。原先这里还有 {@code publishStockUpdated} 与
  * {@code publishPaymentCompleted}，两者都没有调用方——前者让整条 stock.updated
@@ -18,44 +18,35 @@ import org.springframework.stereotype.Component;
 @Component
 public class OrderEventPublisher {
 
-    private final RabbitTemplate rabbitTemplate;
+    private final OutboxWriter outboxWriter;
 
-    public OrderEventPublisher(RabbitTemplate rabbitTemplate) {
-        this.rabbitTemplate = rabbitTemplate;
+    public OrderEventPublisher(OutboxWriter outboxWriter) {
+        this.outboxWriter = outboxWriter;
     }
 
     public void publishOrderCreated(OrderCreatedEvent event) {
-        // 带上 CorrelationData：确认回调靠它的 id 才能指出"是哪一条消息没到 broker"，
-        // 否则只留下一句"有消息丢了"，排查时无从对上号
-        rabbitTemplate.convertAndSend(
-                OrderEventConfig.ORDER_EXCHANGE,
-                OrderEventConfig.ORDER_CREATED_KEY,
-                event,
-                new CorrelationData(event.getOrderNo()));
-        log.info("[MQ] 订单创建事件已发布: orderNo={}, amount={}", event.getOrderNo(), event.getTotalAmount());
+        outboxWriter.append(OrderEventConfig.ORDER_CREATED_KEY, event.getOrderNo(),
+                OrderEventConfig.ORDER_EXCHANGE, OrderEventConfig.ORDER_CREATED_KEY, event);
+        log.info("[MQ] 订单创建事件已登记待发布: orderNo={}, amount={}",
+                event.getOrderNo(), event.getTotalAmount());
     }
 
     /**
      * 订单已支付 —— 由 {@code markPaid} 在状态真正推进之后调用，商品服务据此累加销量。
      * <p>
-     * <b>失败要抛出去，不在这里吞掉。</b>调用方是「支付完成」的 MQ 消费者：抛出去会 nack
-     * 重试，重试时订单还是待支付（事务一起回滚了），于是走的是同一条正常路径、
-     * 重新发一次事件。吞掉的话就是一条已支付的订单永远不计销量，而且没有任何信号——
-     * 这与 {@code refundPaidButClosedOrder} 的取舍是同一条理由。
+     * <b>改成写发件箱了（U60）。</b>原先它直接在业务事务里 {@code convertAndSend}，
+     * 那段注释把取舍写成了「发送失败能让整条链路重试」——但那个重试依赖调用方抛异常、
+     * MQ nack，而真正要防的不是「发送返回错误」，是<b>提交之前的那个崩溃窗口</b>：
+     * 消息已经离开进程、事务还没落地，进程一挂，状态没了、下游却已经按新状态动作了。
      * <p>
-     * <b>发布点因此放在事务提交之前，这是想清楚后选的。</b>提交后再发的话，消息不会早到，
-     * 但发送失败时事务已经落地、没有任何东西能重放它；而"消息早于提交到达"在这里无害：
-     * 消费方（商品服务）只读 {@code product_spu}、写自己的台账，从不回读订单表。
-     * 至于「消息发出去了、事务却回滚了」——重试会把这一单重新走一遍，而台账的
-     * {@code (order_id, spu_id)} 唯一约束让第二次发布是幂等的，销量不会数两遍。
+     * 现在它只往 {@code event_outbox} 写一行（与业务行同一个事务），发送由
+     * {@link OutboxRelay} 在提交后扫描并投递。于是两种分叉同时消失：
+     * 提交前崩溃 → 行和状态一起回滚；提交后崩溃 → 行还在库里，下一轮扫描补发。
      */
     public void publishOrderPaid(OrderPaidEvent event) {
-        rabbitTemplate.convertAndSend(
-                OrderEventConfig.ORDER_EXCHANGE,
-                OrderEventConfig.ORDER_PAID_KEY,
-                event,
-                new CorrelationData("order-paid-" + event.orderNo()));
-        log.info("[MQ] 订单支付完成事件已发布: orderNo={}, 订单行={}",
+        outboxWriter.append(OrderEventConfig.ORDER_PAID_KEY, event.orderNo(),
+                OrderEventConfig.ORDER_EXCHANGE, OrderEventConfig.ORDER_PAID_KEY, event);
+        log.info("[MQ] 订单支付完成事件已登记待发布: orderNo={}, 订单行={}",
                 event.orderNo(), event.items() == null ? 0 : event.items().size());
     }
 }

@@ -16,7 +16,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { changeUserRole, changeUserStatus, getUserDetail, listUsers } from '@/api/admin/user'
-import { useAdminList } from '@/composables/useAdminList'
+import { useAdminList, useResponsiveColumns } from '@/composables/useAdminList'
 import { formatDateTime } from '@/utils/format'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import type { AdminUserDetail, AdminUserQuery, AdminUserSummary } from '@/types/admin'
@@ -43,6 +43,21 @@ const {
     size: 20,
   },
   { immediate: false },
+)
+
+
+/** 表格容器：列宽按它实测的宽度算，窄屏时等比例收缩 */
+const tableRef = ref<HTMLElement | null>(null)
+const { widths: colW } = useResponsiveColumns(
+  [
+    { width: 220, min: 200 },
+    { width: 170, min: 150 },
+    { width: 110, min: 100 },
+    { width: 160, min: 140 },
+    { width: 150, min: 130 },
+    { width: 90, min: 80 },
+  ],
+  tableRef,
 )
 
 onMounted(() => load(0))
@@ -232,9 +247,9 @@ const isDisabled = computed(() => active.value?.status === 0)
     <ErrorState v-if="error" :message="error" :on-retry="() => load()" />
 
     <template v-else>
-      <div class="admin-table">
+      <div ref="tableRef" class="admin-table">
         <el-table v-loading="loading" :data="records" style="width: 100%">
-          <el-table-column label="用户" min-width="220">
+          <el-table-column label="用户" :width="colW[0]">
             <template #default="{ row }">
               <div class="user-cell">
                 <el-avatar class="user-cell__avatar" :src="row.avatar ?? undefined" :size="40">
@@ -248,7 +263,7 @@ const isDisabled = computed(() => active.value?.status === 0)
             </template>
           </el-table-column>
 
-          <el-table-column label="联系方式" min-width="170">
+          <el-table-column label="联系方式" :width="colW[1]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <span class="admin-cell--tiny">{{ row.phone ?? '—' }}</span>
@@ -257,7 +272,7 @@ const isDisabled = computed(() => active.value?.status === 0)
             </template>
           </el-table-column>
 
-          <el-table-column label="角色" width="110">
+          <el-table-column label="角色" :width="colW[2]">
             <template #default="{ row }">
               <el-tag
                 :type="row.roleName === 'ADMIN' ? 'warning' : 'info'"
@@ -269,7 +284,7 @@ const isDisabled = computed(() => active.value?.status === 0)
             </template>
           </el-table-column>
 
-          <el-table-column label="状态" min-width="160">
+          <el-table-column label="状态" :width="colW[3]">
             <template #default="{ row }">
               <div class="admin-stack">
                 <el-tag :type="row.status === 1 ? 'success' : 'danger'" effect="plain" size="small">
@@ -285,13 +300,13 @@ const isDisabled = computed(() => active.value?.status === 0)
             </template>
           </el-table-column>
 
-          <el-table-column label="注册时间" width="150">
+          <el-table-column label="注册时间" :width="colW[4]">
             <template #default="{ row }">
               <span class="admin-cell--tiny">{{ formatDateTime(row.createdAt) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="90" fixed="right">
+          <el-table-column   fixed="right" label="操作" :width="colW[5]">
             <template #default="{ row }">
               <el-button link type="primary" @click="openDetail(row)">管理</el-button>
             </template>

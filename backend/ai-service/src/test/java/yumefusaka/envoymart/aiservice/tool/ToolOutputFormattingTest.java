@@ -9,7 +9,9 @@ import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.contract.OrderItemResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
+import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.contract.ProductSummary;
+import yumefusaka.envoymart.contract.SkuView;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -90,7 +92,10 @@ class ToolOutputFormattingTest {
     void 商品工具认得出图谱用的编号写法() {
         ProductClient client = mock(ProductClient.class);
         when(client.getProduct(7L)).thenReturn(Result.success(
-                ProductSummary.builder().id(7L).name("鱼油软胶囊").minPrice(9900L).maxPrice(9900L).build()));
+                ProductDetail.builder().id(7L).name("鱼油软胶囊")
+                        .skus(List.of(SkuView.builder().id(71L).specText("容量:90粒;包装:瓶装")
+                                .price(9900L).stock(12).build()))
+                        .build()));
 
         for (String written : List.of("SPU7", "spu7", "SPU 7", "spu007")) {
             ToolResult result = new ProductTool(client).execute(call("product_search", Map.of("query", written)));

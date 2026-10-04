@@ -132,6 +132,16 @@
   gap: 2px;
 }
 
+/* 同一行里并排的「次要文字 + 标签」。
+   admin-stack 解决不了它：flex 列容器的子项默认 align-items: stretch，
+   标签会被拉成整列宽，看起来像一个可编辑输入框 */
+.admin-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ys-space-2);
+}
+
 /* ==================== 分页 ==================== */
 
 .admin-pager {

@@ -115,12 +115,30 @@ public class ApprovalTokens {
         return body + "." + sign(body);
     }
 
+/**
+     * 签发一枚**不绑定平台会话**的确认令牌，用于 MCP 这类没有会话概念的入口。
+     * <p>
+     * <b>为什么要单独一个方法，而不是让调用方自己传 null</b>：这是「放宽一个安全维度」的动作，
+     * 必须显眼、必须能一眼看出有几处在用它，而不是淹没在普通 {@link #issue} 调用里。
+     * 载荷的 {@code s} 为空串，校验方在 sessionId 传 null 时不比较会话，其余维度
+     * （用户、动作、入参、有效期、签名）一律照旧强制——放松的只是「同一批次确认只能在同一会话里执行」。
+     * <p>
+     * 适用场景是「用户在对话里确认了取消 5 号单，外部 Agent 拿着这枚令牌经 MCP 执行同一动作」：
+     * 令牌里已经签着确切的用户与动作，绑定到具体会话既没有信息增益、又会让跨入口执行必然失败。
+     */
+    public String issueForExternalEntry(String userId, List<PendingAction> actions) {
+        return issue(userId, null, actions);
+    }
+
     /**
      * 校验并取回载荷。<b>任何一项不成立都返回空</b>，调用方据此拒绝执行——
      * 失败原因只进日志，不进给用户的文案（对用户而言「无效」与「过期」要做的事是同一件：
      * 重新发起一次）。
      *
      * @return 签名里的操作列表；签名不符、已过期、用户或会话对不上、载荷损坏时为空
+     * @param sessionId 调用场景的会话标识。**传 null 表示「不按会话设限」**——
+     *                  MCP 那条路径没有平台会话概念，签发的令牌要能在那里用，
+     *                  校验就必须容许「不比较会话」这一档；其余场景仍传真实会话，照旧收紧
      */
     public Optional<List<PendingAction>> verify(String token, String userId, String sessionId) {
         if (token == null || token.isBlank()) {
@@ -164,9 +182,16 @@ public class ApprovalTokens {
             log.info("[Approval] 确认令牌已过期 {} 秒，拒绝", now - expiresAt);
             return Optional.empty();
         }
-        if (!equalsNullSafe(userId, payload.get("u")) || !equalsNullSafe(sessionId, payload.get("s"))) {
-            // 令牌是发给某个用户、某个会话的。允许跨用户使用，等于拿到令牌的人就能替别人取消订单
-            log.warn("[Approval] 确认令牌不属于当前用户或会话，拒绝");
+        // 用户绑定永远强制：允许跨用户使用，等于拿到令牌的人就能替别人取消订单
+        if (!equalsNullSafe(userId, payload.get("u"))) {
+            log.warn("[Approval] 确认令牌不属于当前用户，拒绝");
+            return Optional.empty();
+        }
+        // 会话绑定按需收紧：sessionId 传 null 即「不比较会话」，用于 MCP 这类没有平台会话的入口。
+        // 令牌若能签发出「会话为空的载荷」（签发时 sessionId 传 null），也应容许在任何会话下执行——
+        // 否则「对话链路签发、MCP 链路执行」这条跨入口路径会永远被会话比较挡死。
+        if (sessionId != null && !equalsNullSafe(sessionId, payload.get("s"))) {
+            log.warn("[Approval] 确认令牌不属于当前会话，拒绝");
             return Optional.empty();
         }
 

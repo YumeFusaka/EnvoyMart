@@ -131,4 +131,105 @@ class EvidenceGateTest {
         assertThat(EvidenceGate.evaluate(List.of(chunk(0.13, true)), T).level())
                 .isEqualTo(EvidenceGate.Level.WEAK);
     }
+
+    /**
+     * 图谱依据只是「在场」还不够 —— 它必须是被重排器认可的那一条。
+     * <p>
+     * 实测到的反例（2026-10-03）：用户问「K2 和鱼油能一起吃吗」，图上没有 K2，
+     * 实体链接只命中了鱼油，于是召回的全是鱼油的边。这些边因为带
+     * {@code graphBacked} 标记，把整轮判定从 WEAK 抬成了 SUFFICIENT ——
+     * <b>把「K2 未收录」说成了「有图谱依据」</b>。它们的重排分（0.13）明明低于阈值，
+     * 说明重排器并不认为它们回答了用户的问题。
+     * <p>
+     * 判据因此收窄为：图谱豁免只在<b>图谱切片本身就是本轮最强的那条</b>时生效。
+     * 图谱路的正文是「图谱推导：…」的转述，字面与问题不像，分数天然偏低 ——
+     * 但只要它是被重排器挑出来的最强依据，就说明它确实对上了问题；
+     * 反之，一条连自己都不是最强的图谱切片，没有资格替文本路背书。
+     */
+    @Test
+    void 图谱切片不是最高分时不豁免() {
+        var graph = graphChunk(0.13).toBuilder().graphBacked(true).build();
+        var chunks = List.of(chunk(0.14, true), graph);
+
+        var decision = EvidenceGate.evaluate(chunks, T);
+
+        assertThat(decision.level())
+                .as("图谱切片 0.13 低于文本切片 0.14 —— 它没有回答问题，不能替整轮背书")
+                .isEqualTo(EvidenceGate.Level.WEAK);
+    }
+
+    /** 反过来：图谱切片确实是最强的那条时，豁免照常生效 */
+    @Test
+    void 图谱切片为最高分时仍豁免() {
+        var graph = graphChunk(0.17).toBuilder().graphBacked(true).build();
+        var chunks = List.of(chunk(0.13, true), graph);
+
+        var decision = EvidenceGate.evaluate(chunks, T);
+
+        assertThat(decision.level()).isEqualTo(EvidenceGate.Level.SUFFICIENT);
+        assertThat(decision.reason()).contains("图谱依据在场");
+    }
+
+    /**
+     * 真实链路里的形态：融合后留下的是<b>文本版</b>正文（source=manual），
+     * 图谱身份只体现在 graphBacked 标记上 —— 这条路先前从未被测到过。
+     */
+    @Test
+    void 文本版正文带图谱标记时也能触发豁免() {
+        var textButGraphBacked = chunk(null, null).toBuilder()
+                .source("manual").graphBacked(true)
+                .score(0.17).reranked(true)
+                .build();
+        var chunks = List.of(chunk(0.13, true), textButGraphBacked);
+
+        var decision = EvidenceGate.evaluate(chunks, T);
+
+        assertThat(decision.reason())
+                .as("source 是 manual，但图谱路确实召回并命中了这一片")
+                .contains("图谱依据在场");
+    }
+
+    /**
+     * U76 第三层：图谱切片被重排截断后，豁免必须靠<b>请求级事实</b>触发。
+     * <p>
+     * 实测形态（2026-10-03）：融合池 {@code candidates=9 kept=3}，图谱切片字面分低、
+     * 排在 topK 之外被整条丢掉。此时 {@code chunks} 里根本没有图谱切片，
+     * {@code topGraph} 必为 null —— 只看结果列表的话，豁免分支永远进不来，
+     * <b>它不是没触发，是输入没送到。</b>
+     */
+    @Test
+    void 图谱切片被重排截断时靠请求级事实豁免() {
+        var chunks = List.of(chunk(0.13, true));
+
+        var withoutFact = EvidenceGate.evaluate(chunks, T);
+        var withFact = EvidenceGate.evaluate(chunks, T, java.util.Set.of("KB-0006_4"));
+
+        assertThat(withoutFact.level())
+                .as("没有请求级事实时，这就是一次普通的低分 —— 不能放行")
+                .isEqualTo(EvidenceGate.Level.WEAK);
+        assertThat(withFact.level())
+                .as("图谱路本轮确实触达过依据，只是被 topK 截掉了")
+                .isEqualTo(EvidenceGate.Level.SUFFICIENT);
+        assertThat(withFact.reason()).contains("图谱依据在场");
+    }
+
+    /**
+     * 请求级事实不能变成无条件放行 —— <b>K2 反例必须仍然判 WEAK。</b>
+     * <p>
+     * 用户问「K2 和鱼油能一起吃吗」，图上没有 K2，实体链接只命中鱼油，
+     * 于是图谱路召回的全是鱼油的边。这些边<b>确实进了结果列表</b>
+     * （不是被截掉的），{@code topGraph} 非 null 且分数低于文本路 ——
+     * 它没有回答问题，不能替整轮背书。请求级事实在场也不该改变这个结论。
+     */
+    @Test
+    void 图谱召回了但没回答问题时不因请求级事实而放行() {
+        var graph = graphChunk(0.13).toBuilder().graphBacked(true).build();
+        var chunks = List.of(chunk(0.14, true), graph);
+
+        var decision = EvidenceGate.evaluate(chunks, T, java.util.Set.of("KB-0006_2"));
+
+        assertThat(decision.level())
+                .as("图谱切片就在结果里、且不是最强的那条 —— 它没回答问题")
+                .isEqualTo(EvidenceGate.Level.WEAK);
+    }
 }

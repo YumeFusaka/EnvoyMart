@@ -15,6 +15,7 @@ import yumefusaka.envoymart.orderservice.model.admin.AdminTicketQuery;
 import yumefusaka.envoymart.orderservice.model.admin.AdminTicketSummary;
 import yumefusaka.envoymart.orderservice.service.TicketAdminService;
 import yumefusaka.envoymart.orderservice.service.TicketDomainService;
+import yumefusaka.envoymart.orderservice.service.TicketNotifier;
 
 import java.util.List;
 
@@ -23,10 +24,13 @@ public class TicketAdminServiceImpl implements TicketAdminService {
 
     private final SupportTicketMapper ticketMapper;
     private final TicketDomainService domain;
+    private final TicketNotifier notifier;
 
-    public TicketAdminServiceImpl(SupportTicketMapper ticketMapper, TicketDomainService domain) {
+    public TicketAdminServiceImpl(SupportTicketMapper ticketMapper, TicketDomainService domain,
+                                  TicketNotifier notifier) {
         this.ticketMapper = ticketMapper;
         this.domain = domain;
+        this.notifier = notifier;
     }
 
     @Override
@@ -78,6 +82,10 @@ public class TicketAdminServiceImpl implements TicketAdminService {
             domain.transit(ticket, TicketStatus.PROCESSING, null);
         }
         domain.appendMessage(ticket, TicketSenderType.ADMIN, operatorId, content.trim());
+        // 回复是这个系统里**最需要被推送**的写动作：用户等客服回话，而不是等一个数字。
+        // 推送走与 /tickets/summary 完全相同的判据（未关闭 && 客服已回过话），
+        // 所以这里不需要判断"该不该推"—— 重新算一遍就是答案
+        notifier.notifyAwaiting(ticket.getUserId());
         return detail(ticketId);
     }
 

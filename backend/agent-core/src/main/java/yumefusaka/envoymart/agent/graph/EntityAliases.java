@@ -95,7 +95,10 @@ public final class EntityAliases {
 
         // 铁盐的具体形式不改变相互作用结论，并入通用的「铁剂」。
         // 这一条同时修好了那条断掉的多跳：孕期复合营养包 → 铁剂 → 左旋多巴
-        alias("铁剂", EntityKind.INGREDIENT, "富马酸亚铁", "硫酸亚铁", "琥珀酸亚铁", "铁补充剂");
+        // 补铁剂的全部盐形式都并到这一条上：**同一条别名只能出现在这一个列表里**，
+        // 在别处再 alias("铁剂", ...) 一次会让 variantsOf 回重复项（alias 对 VARIANTS 是追加写）
+        alias("铁剂", EntityKind.INGREDIENT, "富马酸亚铁", "硫酸亚铁", "琥珀酸亚铁",
+                "乳酸亚铁", "葡萄糖酸亚铁", "铁补充剂", "口服铁剂");
 
         // 句子片段，不是实体。它重复了「深海鱼油」已有的两条边
         alias("深海鱼油", EntityKind.INGREDIENT, "鱼油中的 EPA 与 DHA", "鱼油");
@@ -103,6 +106,162 @@ public final class EntityAliases {
         // 类型纠正：抗生素是药物类别不是具体药物。规范名不变，只把它拉回 DRUG_CLASS，
         // 与同样是类别的「喹诺酮类抗生素」「噻嗪类利尿剂」保持一致
         alias("抗生素", EntityKind.DRUG_CLASS);
+
+        // ── 营养素与成分：用户嘴里的写法 vs 说明书里的写法 ──
+        //
+        // 下面这一批覆盖的是「同一种东西在语料里叫学名、在用户嘴里叫俗名」。
+        // 不合并的症状与「富马酸亚铁 / 铁剂」那次完全一样：用户问「维 C 和这个能一起吃吗」，
+        // 而图上只有「抗坏血酸」，「维c」这个词在词典匹配时一个实体都链接不到——
+        // 图不报错，只是让这次多跳直接返回空。
+        //
+        // 判据仍然是「这个区分会不会改变图要得出的结论」：维 C 的三种叫法不改变它与
+        // 铁剂、抗凝药的相互作用结论，所以归一；而「维生素 D3 与维生素 D 不合并」
+        // 的理由见文末。
+
+        // 维生素 C：抗坏血酸是学名，「维C」「维生素C」「VC」都是常见写法
+        // 大小写变体不必逐个列出：注册时统一 normalize（去空白 + 转小写），
+        // 「维C」与「维c」归一到同一个键，重复写只会让 variantsOf 里出现两个一样的项
+        alias("维生素C", EntityKind.NUTRIENT, "维C", "VC", "抗坏血酸");
+
+        // 维生素 B12：钴胺素是学名
+        alias("维生素B12", EntityKind.NUTRIENT, "钴胺素", "氰钴胺", "VB12");
+
+        // 叶酸：维生素 B9 是同一个东西的另一个编号
+        alias("叶酸", EntityKind.NUTRIENT, "维生素B9", "蝶酰谷氨酸");
+
+        // 维生素 A：视黄醇是学名
+        alias("维生素A", EntityKind.NUTRIENT, "视黄醇", "维A");
+
+        // 维生素 E：生育酚是学名
+        alias("维生素E", EntityKind.NUTRIENT, "生育酚", "维E");
+
+        // 维生素 B6：吡哆醇是学名
+        alias("维生素B6", EntityKind.NUTRIENT, "吡哆醇", "吡哆辛");
+
+        // 维生素 B1 / B2：硫胺素、核黄素是学名
+        alias("维生素B1", EntityKind.NUTRIENT, "硫胺素");
+        alias("维生素B2", EntityKind.NUTRIENT, "核黄素");
+
+        // 钙：钙是元素，碳酸钙 / 柠檬酸钙是它最常见的两种化合物形式。
+        // 两者在吸收是否依赖胃酸上有区别（见 KB-0028），但**与药物的相互作用结论相同**
+        // （都影响四环素、喹诺酮、左甲状腺素的吸收，都增加噻嗪类的高钙风险），
+        // 而这张图要回答的正是后者，所以并入「钙」
+        alias("钙", EntityKind.NUTRIENT, "钙剂", "钙元素", "碳酸钙", "柠檬酸钙");
+
+        // DHA：藻油 DHA、二十二碳六烯酸是同一种东西
+        alias("DHA", EntityKind.NUTRIENT, "藻油DHA", "二十二碳六烯酸");
+
+        // EPA：与 DHA 同属深海鱼油提供的 omega-3，但相互作用结论不同（EPA 与出血风险的
+        // 关联证据更直接），因此**不并入 DHA**，只把拼写变体归一
+        alias("EPA", EntityKind.NUTRIENT, "二十碳五烯酸");
+
+        // 锌与硒：复合配方里常一起出现，但相互作用（锌拮抗铜吸收）只对锌成立，不合并
+        alias("锌", EntityKind.NUTRIENT, "锌剂", "锌元素");
+        alias("硒", EntityKind.NUTRIENT, "硒元素", "硒剂");
+        alias("铁", EntityKind.NUTRIENT, "铁元素");
+
+        // 「铁剂」这一组在文首已经注册。**不能在这里再注册一次**：alias() 对 VARIANTS 是
+        // 追加写而不是覆盖，第二次注册会让同一个写法在 variantsOf 里出现两遍。
+        // 要补别名就补到文首那一条上，别新开一条 —— 这是表自身唯一的坑
+
+        // 铜：长期大剂量补锌影响铜的吸收，这条边挂在铜上
+        alias("铜", EntityKind.NUTRIENT, "铜元素");
+
+        // 镁：与钙、铁同样存在吸收竞争
+        alias("镁", EntityKind.NUTRIENT, "镁元素");
+
+        // 辅酶 Q10：泛醌是学名，CoQ10 是常见英文写法
+        alias("辅酶Q10", EntityKind.INGREDIENT, "泛醌", "CoQ10", "泛癸利酮");
+
+        // 维生素 K2：甲萘醌-7 是学名。**不并入「维生素 K」**——K2 与 K1 的生理作用
+        // 与抗凝拮抗强度不同，而语料里只有 K2
+        alias("维生素K2", EntityKind.NUTRIENT, "甲萘醌", "MK-7");
+
+        // 「深海鱼油」这一组在文首已经注册（含「鱼油」与那个句子片段），这里不再重复登记，
+        // 只补它的营养素类别写法：欧米伽 3 / omega-3 说的是它提供的脂肪酸，不是鱼油本身，
+        // 因此单独作为一个规范名，靠 PROVIDES 这条关系与鱼油相连
+        alias("欧米伽3", EntityKind.NUTRIENT, "欧米伽-3", "Omega-3", "omega3", "ω-3", "n-3脂肪酸");
+
+        // 叶黄素与叶黄素酯：叶黄素酯在体内水解为叶黄素，二者在语料里是同一条链路
+        alias("叶黄素", EntityKind.INGREDIENT, "叶黄素酯");
+        alias("玉米黄质", EntityKind.INGREDIENT, "玉米黄素");
+
+        // 氨基葡萄糖：氨糖是口语写法
+        alias("氨基葡萄糖", EntityKind.INGREDIENT, "氨糖", "葡萄糖胺");
+        alias("硫酸软骨素", EntityKind.INGREDIENT, "软骨素");
+
+        // 胶原蛋白肽：小分子肽、水解胶原蛋白是同一种东西
+        alias("胶原蛋白肽", EntityKind.INGREDIENT, "胶原蛋白", "水解胶原蛋白", "小分子胶原蛋白肽");
+
+        // 膳食纤维：菊粉、抗性糊精都是水溶性膳食纤维的具体形式，
+        // 「与铁剂/左甲状腺素间隔 2 小时」这条结论对三者一致，故归一
+        alias("膳食纤维", EntityKind.INGREDIENT, "水溶性膳食纤维", "菊粉", "抗性糊精", "纤维素");
+
+        // 共轭亚油酸：CLA 是常见英文缩写
+        alias("共轭亚油酸", EntityKind.INGREDIENT, "CLA");
+
+        // 白芸豆提取物：语料与商品名两处写法
+        alias("白芸豆提取物", EntityKind.INGREDIENT, "白芸豆");
+
+        // 二十二碳六烯酸已在 DHA 那条登记；这里补「藻油」单独成词的写法
+        alias("藻油", EntityKind.INGREDIENT, "藻油DHA软胶囊");
+
+        // 乳清蛋白 / 豌豆蛋白 / 糙米蛋白：蛋白来源，各自是成分
+        alias("乳清蛋白", EntityKind.INGREDIENT, "乳清蛋白粉");
+        alias("豌豆蛋白", EntityKind.INGREDIENT, "豌豆蛋白粉");
+        alias("糙米蛋白", EntityKind.INGREDIENT, "糙米蛋白粉");
+
+        // ── 药物与药物类别 ──
+
+        // 华法林：香豆素类抗凝药的代表，语料里偶尔写成「华法林钠」
+        alias("华法林", EntityKind.DRUG, "华法林钠");
+        // 阿司匹林：抗血小板药的常见写法
+        alias("阿司匹林", EntityKind.DRUG, "乙酰水杨酸", "拜阿司匹灵");
+        // 左甲状腺素：甲状腺功能减退的替代治疗药，语料里带钠盐后缀
+        alias("左甲状腺素", EntityKind.DRUG, "左甲状腺素钠", "优甲乐", "L-T4");
+        // 左旋多巴：帕金森病治疗药
+        alias("左旋多巴", EntityKind.DRUG, "L-DOPA", "levodopa");
+        // 奥利司他：脂肪酶抑制剂，影响脂溶性营养素吸收
+        alias("奥利司他", EntityKind.DRUG, "赛尼可");
+        // 考来烯胺：胆汁酸螯合剂，影响脂溶性维生素与叶黄素吸收
+        alias("考来烯胺", EntityKind.DRUG, "消胆胺");
+        // 氟伏沙明：影响褪黑素代谢的 SSRI
+        alias("氟伏沙明", EntityKind.DRUG, "兰释");
+        // 地高辛：强心苷类代表药物
+        alias("地高辛", EntityKind.DRUG);
+
+        // 四环素类抗生素 / 喹诺酮类抗生素：两端的类型都统一到 DRUG_CLASS——
+        // 与钙、铁、锌的相互作用本来就以整类为单位成立，写成具体药名反而漏
+        alias("四环素类抗生素", EntityKind.DRUG_CLASS, "四环素类", "四环素");
+        alias("喹诺酮类抗生素", EntityKind.DRUG_CLASS, "喹诺酮类", "喹诺酮");
+        alias("噻嗪类利尿剂", EntityKind.DRUG_CLASS, "噻嗪类", "噻嗪类利尿药");
+        alias("苯二氮䓬类", EntityKind.DRUG_CLASS, "苯二氮卓类", "苯二氮䓬类药物");
+        alias("镇静催眠药", EntityKind.DRUG_CLASS, "镇静催眠类药物", "安眠药");
+        alias("抗凝药物", EntityKind.DRUG_CLASS, "抗凝药", "口服抗凝药");
+        alias("抗血小板药物", EntityKind.DRUG_CLASS, "抗血小板药");
+        alias("降糖药物", EntityKind.DRUG_CLASS, "降糖药", "口服降糖药");
+        alias("降脂药物", EntityKind.DRUG_CLASS, "降脂药", "他汀类药物", "他汀类");
+
+        // ── 人群 ──
+        //
+        // 孕期相关的三个人群见文末「有意不合并：人群节点，它缺的是层次不是别名」，
+        // 这里只补同一人群内部的写法变体（空格、全半角、常见误写），不做跨人群合并。
+        alias("妊娠期与哺乳期女性", EntityKind.POPULATION,
+                "孕期与哺乳期女性", "孕妇及哺乳期女性", "妊娠期哺乳期女性", "哺乳期女性", "哺乳期妇女");
+        alias("备孕期与孕早期女性", EntityKind.POPULATION, "备孕期女性", "孕早期女性");
+        alias("孕期女性", EntityKind.POPULATION, "孕妇", "妊娠期女性", "孕期");
+        alias("儿童", EntityKind.POPULATION, "小儿", "未成年人");
+        alias("婴幼儿", EntityKind.POPULATION, "婴儿", "幼儿");
+        alias("中老年人群", EntityKind.POPULATION, "中老年人", "老年人群", "老年人");
+        alias("素食人群", EntityKind.POPULATION, "素食者");
+        alias("乳糖不耐受人群", EntityKind.POPULATION, "乳糖不耐受者");
+        alias("肾功能不全者", EntityKind.POPULATION, "肾功能不全患者");
+        alias("肝功能不全者", EntityKind.POPULATION, "肝功能不全患者");
+        alias("高钙血症患者", EntityKind.POPULATION, "高钙血症");
+        alias("肾结石患者", EntityKind.POPULATION, "肾结石");
+        alias("出血性疾病患者", EntityKind.POPULATION, "出血性疾病");
+        alias("地中海贫血患者", EntityKind.POPULATION, "地中海贫血");
+
     }
 
     /**

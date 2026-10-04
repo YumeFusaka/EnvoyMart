@@ -86,6 +86,25 @@ public interface LLMProvider {
         return List.of();
     }
 
+    /**
+     * 对一份失败/空结果的执行轨迹做一次「自我诊断」，判断接下来该换什么策略。
+     * <p>
+     * <b>为什么要在重规划之外单独加一层</b>：重规划问的是「下一步做什么」，模型的默认反应
+     * 是把上一步原样再试一遍（提示词里那句「不要用同样的参数重发」就是在补这个洞）。
+     * 但真正有效的修法取决于<b>失败的性质</b>：参数写错要改参数，工具选错要换工具，
+     * 而「数据里根本没有」则应当停止重试、如实作答。这三者从一句「无结果」里分不出来，
+     * 所以要先让模型把「为什么失败」说出来，再据此给重规划一个明确方向。
+     * <p>
+     * 默认不提供该能力（返回 {@code null}）时，重规划退回原先那段通用上下文——
+     * 行为与没有这一层时逐位一致。
+     *
+     * @return 一句诊断；无法诊断时返回 null，调用方退回通用重规划
+     */
+    default String critique(String userMessage, String executionTrace,
+                            java.util.List<yumefusaka.envoymart.agent.tool.ToolDefinition> availableTools) {
+        return null;
+    }
+
     /** 流式变体，逐块推送。默认回退到非流式。 */
     default void chatStream(List<ChatMessage> messages, LLMConfig config, java.util.function.Consumer<String> onChunk) {
         LLMResponse resp = chat(messages, config);
