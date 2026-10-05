@@ -255,7 +255,7 @@ onUnmounted(() => {
 }
 
 .goods__sum {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
   text-align: right;
 }
@@ -318,13 +318,13 @@ onUnmounted(() => {
 }
 
 .summary__total dd {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xl);
   font-weight: 700;
 }
 
 .is-expired {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
 }
 
 @media (max-width: 720px) {

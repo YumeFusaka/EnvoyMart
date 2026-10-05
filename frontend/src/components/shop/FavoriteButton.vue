@@ -120,7 +120,7 @@ async function onClick() {
 
 .fav:hover {
   border-color: var(--color-primary-border);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .fav:focus-visible {
@@ -131,7 +131,7 @@ async function onClick() {
 .fav.is-on {
   border-color: var(--color-primary-border);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .fav.is-busy {

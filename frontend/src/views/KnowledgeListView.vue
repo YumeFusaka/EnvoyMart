@@ -84,11 +84,13 @@ onMounted(load)
     </header>
 
     <section class="kb-filters" aria-label="筛选">
+      <!-- 占位符不能当可访问名（输入后即消失），补一个显式标签 -->
       <el-input
         v-model="keyword"
         placeholder="按标题或标签搜索"
         clearable
         class="kb-filters__search"
+        aria-label="搜索知识文档"
         @keyup.enter="load"
         @clear="load"
       />
@@ -204,13 +206,13 @@ onMounted(load)
   grid-row: 1 / span 2;
   grid-column: 2;
   align-self: center;
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-lg);
   transition: transform var(--ys-duration-fast) var(--ys-ease-out);
 }
 
 .kb-entry--accent .kb-entry__arrow {
-  color: var(--color-accent);
+  color: var(--color-accent-strong);
 }
 
 .kb-entry:hover .kb-entry__arrow {
@@ -224,7 +226,7 @@ onMounted(load)
 
 .eyebrow {
   margin: 0;
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -299,7 +301,7 @@ onMounted(load)
   padding: 1px 8px;
   border: 1px solid var(--color-accent);
   border-radius: var(--ys-radius-sm);
-  color: var(--color-accent);
+  color: var(--color-accent-strong);
   font-size: var(--ys-font-xs);
 }
 

@@ -472,7 +472,7 @@ onMounted(() => {
 
 .admin-header__action:hover:not(:disabled) {
   border-color: var(--color-primary-border);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .admin-header__action:disabled {
@@ -529,7 +529,7 @@ onMounted(() => {
 
 .admin-nav--drawer .admin-nav__link:hover {
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .admin-nav--drawer .admin-nav__link.is-active {

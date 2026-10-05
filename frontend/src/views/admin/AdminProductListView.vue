@@ -313,7 +313,7 @@ const statusOptions = [
 }
 
 .stock--out {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-weight: 600;
 }
 </style>

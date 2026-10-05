@@ -465,7 +465,7 @@ defineExpose({ focus: () => inputRef.value?.focus() })
 }
 
 .search-box__text .is-hit {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
@@ -485,7 +485,7 @@ defineExpose({ focus: () => inputRef.value?.focus() })
 }
 
 .search-box__clear:hover {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 @media (prefers-reduced-motion: reduce) {

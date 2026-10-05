@@ -353,7 +353,7 @@ onMounted(() => {
 .app-nav__link:hover,
 .app-nav__link.is-active {
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .app-nav__link.is-active {
@@ -397,7 +397,7 @@ onMounted(() => {
 
 .app-cart:hover {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .app-user {
@@ -425,7 +425,7 @@ onMounted(() => {
   padding: 6px 16px;
   border: 1px solid var(--color-primary);
   border-radius: var(--ys-radius-full);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-sm);
   transition:
     background-color var(--ys-duration-fast) var(--ys-ease-out),

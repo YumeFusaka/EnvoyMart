@@ -303,7 +303,7 @@ onMounted(reload)
 }
 
 .cart__name:hover {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .cart__spec {
@@ -312,12 +312,12 @@ onMounted(reload)
 }
 
 .cart__invalid {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-size: var(--ys-font-xs);
 }
 
 .cart__warn {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
   font-size: var(--ys-font-xs);
 }
 
@@ -329,7 +329,7 @@ onMounted(reload)
 }
 
 .cart__sum {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
@@ -350,7 +350,7 @@ onMounted(reload)
 }
 
 .cart__bar-total strong {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xl);
 }
 

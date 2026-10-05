@@ -263,7 +263,7 @@ onMounted(async () => {
 
 .pending-card__action {
   margin-top: var(--ys-space-2);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-sm);
   font-weight: 600;
 }
@@ -396,6 +396,6 @@ onMounted(async () => {
 
 .link-grid__item:hover {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 </style>

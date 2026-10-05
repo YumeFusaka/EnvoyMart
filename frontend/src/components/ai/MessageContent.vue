@@ -144,13 +144,13 @@ async function copyCode(button: HTMLElement) {
 }
 
 .message-content :deep(a) {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 .message-content :deep(a:hover) {
-  color: var(--color-primary-hover);
+  color: var(--color-primary-strong);
 }
 
 .message-content :deep(a:focus-visible) {
@@ -272,7 +272,15 @@ async function copyCode(button: HTMLElement) {
  * 角标上标化用 `vertical-align: super` 而不是 `position: relative; top: -0.4em`：
  * 后者不影响行高，在行首会顶破容器的上边距。
  */
+/*
+ * 引用角标 [1]。它内联在正文流里，**视觉尺寸必须小于行高** ——
+ * 直接撑到 24px 会把每行间距顶开，一段话被拉得稀稀拉拉。
+ *
+ * 所以视觉保持 18px，靠 ::before 把命中区外扩到 24x24（项目基线要求的最小
+ * 可点击区域）。点击目标只有 19x18 时，触控板上要瞄准着点，很容易点空。
+ */
 .message-content :deep(.message-content__cite) {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -283,7 +291,7 @@ async function copyCode(button: HTMLElement) {
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-sm);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -292,6 +300,13 @@ async function copyCode(button: HTMLElement) {
   transition:
     background-color var(--ys-duration-fast) var(--ys-ease-out),
     color var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+/* 命中区外扩：18x18 的视觉 + 3px 外扩 = 24x24 的可点击面 */
+.message-content :deep(.message-content__cite)::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
 }
 
 .message-content :deep(.message-content__cite:hover) {

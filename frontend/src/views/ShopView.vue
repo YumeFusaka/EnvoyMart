@@ -226,17 +226,19 @@ const chips = computed(() => {
       clear: () => pushQuery({ keyword: undefined }),
     })
   }
+  // 兜底文案不要再带「已选」：模板那侧已经统一加了这个前缀，
+  // 两边都写会拼出「已选已选类目」（类目被删或 URL 手改后就会看到）
   if (current.categoryId) {
     list.push({
       key: 'categoryId',
-      label: findCategoryName(current.categoryId) ?? '已选类目',
+      label: findCategoryName(current.categoryId) ?? '未知类目',
       clear: () => pushQuery({ categoryId: undefined }),
     })
   }
   if (current.brandId) {
     list.push({
       key: 'brandId',
-      label: brands.value.find((brand) => brand.id === current.brandId)?.name ?? '已选品牌',
+      label: brands.value.find((brand) => brand.id === current.brandId)?.name ?? '未知品牌',
       clear: () => pushQuery({ brandId: undefined }),
     })
   }
@@ -331,11 +333,13 @@ watch(() => route.fullPath, load)
       <div class="surface shop__toolbar">
         <div class="shop__price">
           <span class="shop__price-label">价格</span>
+          <!-- 占位符不能当可访问名：触发输入后它就消失，读屏器此时念不出这个框是什么 -->
           <el-input
             v-model="priceDraft.min"
             class="shop__price-input"
             placeholder="最低"
             inputmode="decimal"
+            aria-label="价格下限"
             @keyup.enter="applyPrice"
           >
             <template #prefix>¥</template>
@@ -346,6 +350,7 @@ watch(() => route.fullPath, load)
             class="shop__price-input"
             placeholder="最高"
             inputmode="decimal"
+            aria-label="价格上限"
             @keyup.enter="applyPrice"
           >
             <template #prefix>¥</template>
@@ -477,13 +482,13 @@ watch(() => route.fullPath, load)
 .cat-list__item:hover,
 .brand-list__item:hover {
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .cat-list__item.is-active,
 .brand-list__item.is-active {
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
@@ -556,7 +561,7 @@ watch(() => route.fullPath, load)
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-full);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-sm);
   cursor: pointer;
   transition: background-color var(--ys-duration-fast) var(--ys-ease-out);
@@ -576,7 +581,7 @@ watch(() => route.fullPath, load)
 }
 
 .shop__chip-clear:hover {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .shop__grid {

@@ -752,7 +752,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
 
 .eyebrow {
   margin: 0;
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -924,7 +924,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
 }
 
 .chat-jump:hover {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .chat-jump:focus-visible {

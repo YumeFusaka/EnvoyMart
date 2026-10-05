@@ -242,12 +242,19 @@ cd backend
 
 ### 2. 启动
 
-**演示环境一键启动**（中间件 + 九个服务 + 前端，起完打印演示入口，可重复执行）：
+**一键启动**（中间件 + 九个服务 + 前端，起完打印入口，可重复执行）。两个模式共用同一套
+启动流程，只有前端那一段不同：
 
 ```bash
 cd backend
-./run-local.sh demo
+./run-local.sh dev      # 开发环境：前端起 dev server（5173，支持热更新）
+./run-local.sh master   # 演示环境：前端起生产产物（5173，无热更新，首屏快、画面干净）
 ```
+
+- `dev` 改前端源码即时生效；改后端仍需 `./run-local.sh stop <服务>` 后重启该服务。
+- `master` 走 `vite build + preview`，适合演示 / 投屏 / 验收。
+- 两者都占 5173，不能同时起；前端已在跑时脚本会跳过这一步。
+- `demo` 是 `master` 的旧名，保留为别名。
 
 它会先真连一次中间件确认就绪（不是只看端口在不在听——Docker Desktop 卡死时端口照样
 LISTENING），再拉起服务与前端。中间件跑在 Docker 里，起之前先确认 Docker Desktop 在运行。
@@ -405,7 +412,7 @@ EnvoyMart/
 ├── backend/
 │   ├── pom.xml                 # 聚合 POM（Boot 4.1.1 + LangChain4j 1.20.0）
 │   ├── Dockerfile              # 一份构建所有服务（--build-arg SERVICE=xxx）
-│   ├── run-local.sh            # 本地一键启动（demo / stop / 单服务）
+│   ├── run-local.sh            # 本地一键启动（dev / master / stop / 单服务）
 │   ├── common/                 # Result / JWT / 异常处理 / 身份透传
 │   ├── contract/               # 跨服务 DTO 与共享判据（SkuSnapshot / OrderResponse…）
 │   ├── gateway-service/

@@ -562,7 +562,7 @@ function operatorText(log: StatusLogView): string {
 }
 
 .amount {
-  color: var(--color-accent);
+  color: var(--color-accent-strong);
   font-weight: 600;
 }
 

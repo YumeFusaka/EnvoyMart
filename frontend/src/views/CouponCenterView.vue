@@ -148,7 +148,7 @@ onMounted(load)
 }
 
 .coupon__value {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-2xl);
   font-weight: 700;
   line-height: 1.1;

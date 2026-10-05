@@ -79,7 +79,7 @@ const rows = computed(() =>
   align-items: center;
   gap: var(--ys-space-2);
   margin: 0 0 var(--ys-space-2);
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-size: var(--ys-font-sm);
   font-weight: 600;
 }
@@ -139,7 +139,7 @@ const rows = computed(() =>
 }
 
 .conflict__ref {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-size: var(--ys-font-xs);
   font-weight: 600;
 }

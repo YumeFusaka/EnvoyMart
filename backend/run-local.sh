@@ -12,10 +12,17 @@
 #
 # 用法:
 #   ./run-local.sh                   启动全部
-#   ./run-local.sh demo              演示环境一键启动：中间件 + 全部服务 + 前端 + 演示入口
+#   ./run-local.sh dev               开发环境一键启动：中间件 + 全部服务 + 前端 dev server（支持热更新）
+#   ./run-local.sh master            演示环境一键启动：中间件 + 全部服务 + 前端生产产物（无热更新，首屏快、画面干净）
+#   ./run-local.sh demo              master 的旧名，保留为别名（脚本与文档里仍有引用）
 #   ./run-local.sh stop              停止全部（含前端；中间件容器保持运行）
 #   ./run-local.sh stop ai-service   只停止指定的一个或多个
 #   ./run-local.sh auth-service      只启动指定的一个或多个
+#
+# dev 与 master 共用同一套启动流程，只有前端那一段不同：
+#   dev    → pnpm dev（5173，HMR，改前端源码即时生效；改后端仍需重启对应服务）
+#   master → pnpm build + pnpm preview（5173，生产产物，无 HMR，适合演示/投屏/验收）
+# 两者都占用 5173，不能同时起；已在跑时脚本会跳过前端那一步。
 #
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -523,8 +530,10 @@ frontend_build_bg() {
   FE_BUILD_PID=$!
 }
 
+# mode: dev | master（master = 生产产物；旧名 prod 一并对齐，避免两处叫法分叉）
 frontend_up() {
   local mode="${1:-dev}"
+  [ "$mode" = "prod" ] && mode=master
   if port_listening 5173; then
     echo "跳过前端（5173 已在监听）"
     return 0
@@ -534,7 +543,7 @@ frontend_up() {
     return 1
   fi
   mkdir -p "$LOG_DIR"
-  if [ "$mode" = "prod" ]; then
+  if [ "$mode" = "master" ]; then
     # 演示走生产产物而不是 dev server：首屏不用现编译，比 dev 快，也不带 HMR 的抖动。
     # （Vue DevTools 的悬浮面板已被 vite.config.ts 的 appendTo 关掉，不再是理由，
     #  生产产物本来就干净——这条注释按事实更正，避免下一个人以为它还飘着。）
@@ -570,10 +579,19 @@ frontend_up() {
   return 1
 }
 
-print_entries() {
-  cat <<'EOF'
+print_entries() { # mode
+  local mode="$1"
+  local title hint
+  if [ "$mode" = "dev" ]; then
+    title="开发环境就绪（前端 dev server，支持热更新）"
+    hint="改前端源码即时生效；改后端仍需 ./run-local.sh stop <服务> 后重启"
+  else
+    title="演示环境就绪（前端生产产物，无热更新）"
+    hint="画面干净、首屏快，适合演示/投屏/验收"
+  fi
+  cat <<EOF
 
-==================== 演示环境就绪 ====================
+==================== $title ====================
 前端首页            http://localhost:5173/#/shop
 AI 助手（Agent）    http://localhost:5173/#/assistant
 知识库              http://localhost:5173/#/knowledge
@@ -584,6 +602,8 @@ AI 助手（Agent）    http://localhost:5173/#/assistant
 API 网关            http://localhost:8080
 链路追踪（可选）    http://localhost:8088
 账号                admin / 123456（管理员）· alice / 123456（普通用户）
+----------------------------------------------------
+$hint
 =====================================================
 EOF
 }
@@ -658,17 +678,43 @@ start_all_services() {
   return 0
 }
 
-demo_up() {
-  preflight || { echo "预检未过，演示环境没启动" >&2; exit 1; }
-  # 前端构建最早开跑：与中间件/服务无依赖，构建时间被后面的启动流程盖住（见 frontend_build_bg）
-  frontend_build_bg
+# 一键启动的公共主体。前端那一段按 mode 分叉，其余（预检 / 中间件 / 九服务 / 派生数据）完全相同：
+# 两个模式共用一套启动流程，是为了让「dev 能跑起来的东西 master 也一定能跑起来」——
+# 两套流程各写一份的话，迟早出现「演示能过、开发跑不起来」这类只在一边复现的问题。
+#   mode=dev    前端走 pnpm dev（HMR）
+#   mode=master 前端走生产产物（vite build + preview）
+run_all() { # mode
+  local mode="$1"
+
+  preflight || { echo "预检未过，环境没启动" >&2; exit 1; }
+
+  # 只有生产产物才需要提前构建；dev 模式现编译，无需这一步。
+  # 构建与中间件/服务零依赖，放进后台与启动并行（见 frontend_build_bg）。
+  [ "$mode" = "master" ] && frontend_build_bg
+
   middleware_up || exit 1
 
   start_all_services || exit 1
   resync_derived
 
-  frontend_up prod || exit 1
-  print_entries
+  frontend_up "$mode" || exit 1
+  print_entries "$mode"
+}
+
+# 一键启动两个模式走同一段收尾：全程输出各落一份日志（双击场景窗口会关，事后靠它复盘）。
+one_shot() { # 子命令名 前端模式 中文名
+  local cmd="$1" mode="$2" label="$3"
+  mkdir -p "$LOG_DIR"
+  rotate_log "$cmd"
+  if run_all "$mode" 2>&1 | tee "$LOG_DIR/$cmd.log"; then
+    echo "✓ $label 全部就绪（完整输出已存 $LOG_DIR/$cmd.log）"
+    rc=0
+  else
+    echo "✗ $label 没起来——往上翻找报错，完整输出已存 $LOG_DIR/$cmd.log" >&2
+    rc=1
+  fi
+  hold_window
+  exit "$rc"
 }
 
 case "${1:-all}" in
@@ -679,20 +725,11 @@ case "${1:-all}" in
     stop_services "$@"
     echo "（中间件容器保持运行；要一并停用 docker compose -f docker-compose.yml stop）"
     ;;
-  demo)
-    mkdir -p "$LOG_DIR"
-    rotate_log demo
-    # 全程输出同时落一份到 demo.log（双击场景窗口会关，事后靠它复盘）
-    if demo_up 2>&1 | tee "$LOG_DIR/demo.log"; then
-      echo "✓ 演示环境全部就绪（完整输出已存 $LOG_DIR/demo.log）"
-      rc=0
-    else
-      echo "✗ 演示环境没起来——往上翻找报错，完整输出已存 $LOG_DIR/demo.log" >&2
-      rc=1
-    fi
-    hold_window
-    exit "$rc"
-    ;;
+  dev)     one_shot dev    dev    开发环境 ;;
+  master)  one_shot master master 演示环境 ;;
+  # demo 是 master 的旧名。保留别名是因为 README / 规划文档 / 验收脚本注释里都还写着它，
+  # 改名会让那些地方的说明一夜失效——下次同步文档时再逐步替换，行为完全一致。
+  demo)    one_shot master master 演示环境 ;;
   all)  start_all_services || exit 1 ;;
   *)    for svc in "$@"; do start_one "$svc"; done ;;
 esac

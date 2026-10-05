@@ -435,7 +435,7 @@ const deltaClass = (delta: number) =>
 
 .eyebrow {
   margin: 0;
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -533,7 +533,7 @@ const deltaClass = (delta: number) =>
 }
 
 .metric-card__hint b {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 /* 分层面板 */
@@ -670,7 +670,7 @@ const deltaClass = (delta: number) =>
 }
 
 .expansion-hero__value--after {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-3xl);
 }
 
@@ -754,12 +754,12 @@ const deltaClass = (delta: number) =>
 }
 
 .expansion-delta.is-up {
-  color: var(--color-success);
+  color: var(--color-success-strong);
   background: var(--color-success-subtle);
 }
 
 .expansion-delta.is-down {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   background: var(--color-danger-subtle);
 }
 
@@ -880,7 +880,7 @@ const deltaClass = (delta: number) =>
 .case-row__docs-label--expect {
   margin-left: var(--ys-space-2);
   background: var(--color-warning-subtle);
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
 }
 
 .case-row__stratum {

@@ -298,7 +298,7 @@ onUnmounted(() => {
 .tabs__item.is-active {
   border-color: var(--color-primary);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
@@ -354,13 +354,13 @@ onUnmounted(() => {
 }
 
 .order__countdown {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
   font-size: var(--ys-font-xs);
   font-variant-numeric: tabular-nums;
 }
 
 .order__countdown.is-urgent {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-weight: 600;
 }
 
@@ -409,7 +409,7 @@ onUnmounted(() => {
 }
 
 .order__amount strong {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-md);
 }
 

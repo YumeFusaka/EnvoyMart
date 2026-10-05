@@ -355,7 +355,7 @@ onMounted(load)
 }
 
 .record__amount {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 

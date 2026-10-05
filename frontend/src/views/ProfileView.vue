@@ -58,9 +58,22 @@ const rules: FormRules = {
     { required: true, message: '请输入手机号', trigger: 'blur' },
     { pattern: /^1[3-9]\d{9}$/, message: '手机号格式不正确', trigger: 'blur' },
   ],
-  province: [{ required: true, message: '请输入省份', trigger: 'blur' }],
-  city: [{ required: true, message: '请输入城市', trigger: 'blur' }],
-  district: [{ required: true, message: '请输入区县', trigger: 'blur' }],
+  // 省市县没有地区字典接口，只能手填 —— 而手填最容易出的错是「顺手写英文」
+  // （实测库里的种子数据就有一条 'Shanghai Shanghai Minhang'）。这里只用一条
+  // 中文校验挡住明显的脏数据，不假装能做行政区划校验：真实校验要求一份随年份
+  // 变更的区划表，那是另一个模块的事，前端随手编一份反而会挡住合法地址
+  province: [
+    { required: true, message: '请输入省份', trigger: 'blur' },
+    { pattern: /^[\u4e00-\u9fa5·\-]{2,20}$/, message: '请用中文填写省份，如「上海市」', trigger: 'blur' },
+  ],
+  city: [
+    { required: true, message: '请输入城市', trigger: 'blur' },
+    { pattern: /^[\u4e00-\u9fa5·\-]{2,20}$/, message: '请用中文填写城市，如「上海市」', trigger: 'blur' },
+  ],
+  district: [
+    { required: true, message: '请输入区县', trigger: 'blur' },
+    { pattern: /^[\u4e00-\u9fa5·\-]{2,20}$/, message: '请用中文填写区县，如「浦东新区」', trigger: 'blur' },
+  ],
   detail: [{ required: true, message: '请输入详细地址', trigger: 'blur' }],
 }
 

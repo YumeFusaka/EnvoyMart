@@ -171,7 +171,7 @@ withDefaults(
 }
 
 .product-card__brand {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
   font-weight: 600;
 }
@@ -235,7 +235,7 @@ withDefaults(
 }
 
 .product-card__rating-star {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
 }
 
 .product-card__rating-value {
@@ -253,7 +253,7 @@ withDefaults(
   padding: 1px 6px;
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-sm);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
 }
 
@@ -270,7 +270,7 @@ withDefaults(
 }
 
 .product-card__price {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-md);
   font-weight: 700;
   white-space: nowrap;

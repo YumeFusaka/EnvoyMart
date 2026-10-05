@@ -56,11 +56,11 @@ defineProps<{
 }
 
 .auth-shell__link {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
 .auth-shell__link:hover {
-  color: var(--color-primary-hover);
+  color: var(--color-primary-strong);
 }
 </style>

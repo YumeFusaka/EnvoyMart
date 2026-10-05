@@ -364,7 +364,7 @@ onMounted(async () => {
 }
 
 .goods__sum {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
   text-align: right;
 }
@@ -384,7 +384,7 @@ onMounted(async () => {
 }
 
 .bar__warn {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-size: var(--ys-font-xs);
 }
 
@@ -407,13 +407,13 @@ onMounted(async () => {
 }
 
 .summary__total dd {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xl);
   font-weight: 700;
 }
 
 .summary__discount {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
 }
 
 .coupons {
@@ -439,7 +439,7 @@ onMounted(async () => {
 .coupon-pick.is-active {
   border-color: var(--color-primary);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 

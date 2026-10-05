@@ -76,7 +76,9 @@ const buckets = computed<Bucket[]>(() => {
               :aria-current="session.sessionId === activeId ? 'true' : undefined"
               @click="emit('select', session.sessionId)"
             >
-              <span class="session-list__title">{{ session.title }}</span>
+              <!-- 标题会被省略号截断（侧栏只有 207px 宽），补一个原生 tooltip
+                   让用户悬停能看到全文：截断本身是对的，但截断后无处可看就不对了 -->
+              <span class="session-list__title" :title="session.title">{{ session.title }}</span>
               <span class="session-list__meta">
                 {{ formatChatStamp(session.updatedAt) }} · {{ session.messageCount }} 条
               </span>
@@ -212,7 +214,7 @@ const buckets = computed<Bucket[]>(() => {
 
 .session-list__remove:hover {
   background: var(--color-danger-subtle);
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
 }
 
 .session-list__remove:focus-visible {

@@ -613,7 +613,7 @@ const liveProgress = computed(() => {
 
 .eyebrow {
   margin: 0;
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -693,7 +693,7 @@ const liveProgress = computed(() => {
 .badge--tone-danger {
   border-color: var(--color-danger);
   background: var(--color-danger-subtle);
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
 }
 
 .badge--tone-warn {
@@ -736,7 +736,7 @@ const liveProgress = computed(() => {
 
 .meta-strip__item.is-danger b,
 .meta-strip__item b.is-danger {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
 }
 
 .meta-strip__note {
@@ -935,7 +935,7 @@ const liveProgress = computed(() => {
 
 .live-case__error {
   margin: 0;
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-size: var(--ys-font-xs);
 }
 
@@ -1017,7 +1017,7 @@ const liveProgress = computed(() => {
 }
 
 .case-row__summary.is-issue {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-weight: 600;
 }
 

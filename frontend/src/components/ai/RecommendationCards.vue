@@ -157,7 +157,7 @@ const emit = defineEmits<{
 }
 
 .recommendation-card__price {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 700;
 }
 

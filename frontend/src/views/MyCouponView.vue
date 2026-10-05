@@ -149,7 +149,7 @@ onMounted(load)
 .tabs__item.is-active {
   border-color: var(--color-primary);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
@@ -194,7 +194,7 @@ onMounted(load)
 }
 
 .coupon__value {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-2xl);
   font-weight: 700;
   line-height: 1.1;

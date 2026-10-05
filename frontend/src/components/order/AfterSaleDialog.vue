@@ -217,7 +217,7 @@ watch(type, runPreview)
 }
 
 .goods__amount {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 

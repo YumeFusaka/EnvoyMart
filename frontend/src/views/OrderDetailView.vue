@@ -552,7 +552,7 @@ onMounted(load)
 }
 
 .goods__name:hover {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .goods__spec,
@@ -562,7 +562,7 @@ onMounted(load)
 }
 
 .goods__sum {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
   text-align: right;
 }
@@ -589,7 +589,7 @@ onMounted(load)
 }
 
 .summary__total dd {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-md);
   font-weight: 700;
 }

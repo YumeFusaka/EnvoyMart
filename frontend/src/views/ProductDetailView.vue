@@ -63,6 +63,19 @@ const currentSku = computed<SkuView | null>(() => {
   return product.skus.find((sku) => chosen.every((id) => sku.specValueIds.includes(id))) ?? null
 })
 
+/**
+ * 还没选的规格名。按钮置灰时要把「差什么」说出来。
+ *
+ * <p>此前只有 {@code :disabled}，用户看到的是一个灰按钮和一句解释都没有的页面 ——
+ * 只能靠把每个规格挨个点一遍去猜。置灰本身是对的（规格没选全时价格是区间，
+ * 加购也不知道加哪个 SKU），但「不能点」必须配上「为什么不能点」。
+ */
+const missingSpecs = computed(() => {
+  const product = detail.value
+  if (!product) return []
+  return product.specs.filter((spec) => selected.value[spec.specId] === undefined).map((spec) => spec.name)
+})
+
 const gallery = computed(() => {
   const product = detail.value
   if (!product) {
@@ -281,6 +294,14 @@ onMounted(load)
             <FavoriteButton :spu-id="detail.id" :label="detail.name" show-text />
           </div>
 
+          <!--
+            置灰必须配一句为什么。只给灰按钮，用户唯一能做的就是挨个规格点一遍试，
+            而这里差哪几项是完全已知的 —— 说出来就省掉那轮试错
+          -->
+          <p v-if="missingSpecs.length" class="buy__hint" role="status">
+            请先选择{{ missingSpecs.join('、') }}
+          </p>
+
           <p class="detail__meta">
             已售 {{ detail.sales }}
             <template v-if="detail.reviewCount">
@@ -345,6 +366,13 @@ onMounted(load)
   gap: var(--ys-space-3);
 }
 
+/* 「← 返回」是 link 型按钮，Element 给的默认高度只有 20px —— 低于 24×24 的下限。
+   撑到 24 并补一点左右内边距，让它在轨迹板上也好点 */
+.crumb .el-button {
+  min-height: 24px;
+  padding: 0 var(--ys-space-1);
+}
+
 .crumb__path {
   color: var(--color-text-secondary);
   font-size: var(--ys-font-sm);
@@ -375,7 +403,7 @@ onMounted(load)
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-full);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-sm);
   font-weight: 500;
   transition: border-color var(--ys-duration-fast) var(--ys-ease-out);
@@ -462,7 +490,7 @@ onMounted(load)
   padding: 2px 8px;
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-sm);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
 }
 
@@ -476,7 +504,7 @@ onMounted(load)
 }
 
 .price-box__value {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-2xl);
   font-weight: 700;
 }
@@ -513,13 +541,13 @@ onMounted(load)
 
 .spec__value:hover:not(.is-disabled) {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .spec__value.is-active {
   border-color: var(--color-primary);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
@@ -538,6 +566,14 @@ onMounted(load)
 
 .buy .el-button {
   flex: 1;
+}
+
+/* 提示贴着按钮下方，用提示色而不是错误色：这不是出错，是还差一步 */
+.buy__hint {
+  margin-top: var(--ys-space-2);
+  /* 用 strong 档而不是基础档：琥珀在浅底上做正文需要更深的一级才够对比度 */
+  color: var(--color-warning-strong);
+  font-size: var(--ys-font-sm);
 }
 
 .detail__meta {

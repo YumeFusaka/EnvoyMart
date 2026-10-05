@@ -282,7 +282,7 @@ onMounted(reload)
 }
 
 .summary__average {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-3xl);
   font-weight: 700;
   line-height: 1;
@@ -352,7 +352,7 @@ onMounted(reload)
 
 .filters__item:hover {
   border-color: var(--color-primary-border);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .filters__item:focus-visible {
@@ -363,7 +363,7 @@ onMounted(reload)
 .filters__item.is-active {
   border-color: var(--color-primary);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
@@ -400,7 +400,7 @@ onMounted(reload)
 
 .review__avatar {
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-sm);
 }
 
@@ -453,6 +453,10 @@ onMounted(reload)
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* 点击区下限 24×24（WCAG 2.2 AA）。原先 2px 上下内边距只有 22px 高，
+     在触屏与轨迹板上都偏难点中；这里用 min-height 撑到 24 而不是加内边距，
+     免得把这一排药丸撑得比旁边的标签高出一截 */
+  min-height: 24px;
   padding: 2px 10px;
   border: 1px solid var(--color-border);
   border-radius: var(--ys-radius-full);
@@ -464,7 +468,7 @@ onMounted(reload)
 
 .review__useful:hover:not(:disabled) {
   border-color: var(--color-primary-border);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .review__useful:focus-visible {
@@ -475,7 +479,7 @@ onMounted(reload)
 .review__useful.is-done {
   border-color: var(--color-primary-border);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   cursor: default;
 }
 

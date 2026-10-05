@@ -193,7 +193,7 @@ watch(activeChunkId, async () => {
 }
 
 .doc-breadcrumb a {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .doc-meta,
@@ -215,7 +215,7 @@ watch(activeChunkId, async () => {
 }
 
 .doc-meta__off {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   font-weight: 600;
 }
 
@@ -290,7 +290,7 @@ watch(activeChunkId, async () => {
 
 .doc-toc__item.is-active {
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 

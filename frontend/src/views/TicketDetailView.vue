@@ -297,7 +297,7 @@ watch(
 }
 
 .crumbs__link {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   text-decoration: none;
 }
 
@@ -338,7 +338,7 @@ watch(
 
 .head__order {
   font-size: var(--ys-font-xs);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   text-decoration: none;
 }
 

@@ -418,7 +418,8 @@ const isDisabled = computed(() => active.value?.status === 0)
 .user-cell__avatar {
   flex: none;
   background: var(--color-bg-sunken);
-  color: var(--color-text-muted);
+  /* muted 档叠在 sunken 底上只有 4.06:1，头像缩写也是要读的文字，升到 secondary */
+  color: var(--color-text-secondary);
 }
 
 .user-actions {

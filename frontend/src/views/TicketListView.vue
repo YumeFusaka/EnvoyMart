@@ -228,7 +228,7 @@ watch(
 .tickets__tab.is-active {
   border-color: var(--color-primary);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
@@ -325,12 +325,20 @@ watch(
 
 /* 球权在自己这边时才着色：一屏全是彩色标签等于没有重点 */
 .item__turn.is-mine {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-weight: 600;
 }
 
+/*
+ * 「查看会话」是整行里唯一的入口，但纯文字只有 48x19 —— 低于基线要求的 24px 高。
+ * 用垂直内边距把命中区撑到 24px，同时用负外边距抵消它对行高的影响：
+ * 观感完全不变，可点面变大（触控板上不再需要瞄着点）。
+ */
 .item__link {
-  color: var(--color-primary);
+  display: inline-block;
+  padding: var(--ys-space-1) 0;
+  margin: calc(var(--ys-space-1) * -1) 0;
+  color: var(--color-primary-strong);
   text-decoration: none;
 }
 

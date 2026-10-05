@@ -149,7 +149,7 @@ function toChunk(item: KnowledgeSnippet) {
 
 /* 相关度不足时整块降一档：不再是「已核对过的依据」，只是一些可能相关的材料 */
 .citations--weak .citations__title {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
 }
 
 .citations__note {
@@ -160,7 +160,7 @@ function toChunk(item: KnowledgeSnippet) {
 }
 
 .citations__note strong {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
   font-weight: 600;
 }
 
@@ -246,7 +246,7 @@ function toChunk(item: KnowledgeSnippet) {
 }
 
 .citation__head:hover .citation__where strong {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .citation__head:focus-visible {
@@ -326,10 +326,14 @@ function toChunk(item: KnowledgeSnippet) {
 }
 
 .citation__link {
-  padding: 0;
+  /* 纯文字链接只有 63x19，低于 24px 的点击目标基线。用垂直内边距撑高命中区，
+     负外边距抵消行高变化 —— 视觉零改动，可点面变大 */
+  display: inline-block;
+  padding: var(--ys-space-1) 0;
+  margin: calc(var(--ys-space-1) * -1) 0;
   border: 0;
   background: none;
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
   cursor: pointer;
 }

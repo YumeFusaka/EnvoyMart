@@ -768,7 +768,7 @@ async function copy(value: string) {
 }
 
 .order-total__pay {
-  color: var(--color-accent);
+  color: var(--color-accent-strong);
   font-weight: 700;
 }
 

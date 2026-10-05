@@ -486,7 +486,7 @@ async function handleCopy(message: ChatMessage) {
   display: inline-flex;
   align-items: center;
   gap: var(--ys-space-1);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
 }
 
@@ -558,7 +558,7 @@ async function handleCopy(message: ChatMessage) {
 .live-tool.is-running {
   border-color: var(--color-primary-border);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .live-tool.is-running .live-tool__dot {
@@ -580,7 +580,7 @@ async function handleCopy(message: ChatMessage) {
 .live-tool.is-fail {
   border-color: var(--color-danger-subtle);
   background: var(--color-danger-subtle);
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
 }
 
 .live-tool__ms {
@@ -631,7 +631,7 @@ async function handleCopy(message: ChatMessage) {
 
 .message-action:hover {
   border-color: var(--color-border);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .message-action:focus-visible {
@@ -661,7 +661,7 @@ async function handleCopy(message: ChatMessage) {
 
 .message-notice.is-error {
   background: var(--color-danger-subtle);
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
 }
 
 /*
@@ -672,7 +672,7 @@ async function handleCopy(message: ChatMessage) {
 */
 .message-notice.is-stage {
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .message-notice.is-stage.is-waiting {
@@ -805,7 +805,7 @@ async function handleCopy(message: ChatMessage) {
 }
 
 .trace__badge.is-fail {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
   background: var(--color-danger-subtle);
 }
 

@@ -206,7 +206,7 @@ onMounted(load)
 }
 
 a.item__product:hover .item__name {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .item__thumb {
@@ -323,7 +323,7 @@ a.item__product:hover .item__name {
 }
 
 .item__link {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   text-decoration: none;
 }
 
