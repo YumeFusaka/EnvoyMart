@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbf8f3"/><stop offset="1" stop-color="#f1eadc"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.8" cy="0.12" r="0.85">
+      <stop offset="0" stop-color="#b65b2e" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#b65b2e" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#8c3c18" opacity="0.10"/>
+    </pattern>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f3ecdf"/>
+    </linearGradient>
+    <linearGradient id="brandfill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b65b2e"/><stop offset="1" stop-color="#8c3c18"/>
+    </linearGradient>
+    <linearGradient id="cg" x1="0" y1="0" x2="0.6" y2="1">
+         <stop offset="0" stop-color="#f0d9a8"/><stop offset="1" stop-color="#cfa855"/>
+       </linearGradient>
+  </defs>
+  <rect width="600" height="600" fill="url(#bg)"/>
+  <rect width="600" height="600" fill="url(#dots)"/>
+  <rect width="600" height="600" fill="url(#glow)"/>
+  <circle cx="86" cy="512" r="150" fill="none" stroke="#b65b2e" stroke-opacity="0.12" stroke-width="26"/>
+  <ellipse cx="300" cy="470" rx="212" ry="32" fill="#4a3a29" opacity="0.07"/>
+  <g transform="translate(188 236) rotate(-24) scale(1.3)"><rect x="-19" y="-27" width="38" height="54" rx="19" fill="url(#cg)"/>
+        <ellipse cx="-6" cy="-13" rx="6" ry="9" fill="#ffffff" opacity="0.55"/></g><g transform="translate(300 216) rotate(10) scale(1.42)"><rect x="-19" y="-27" width="38" height="54" rx="19" fill="url(#cg)"/>
+        <ellipse cx="-6" cy="-13" rx="6" ry="9" fill="#ffffff" opacity="0.55"/></g><g transform="translate(412 240) rotate(22) scale(1.3)"><rect x="-19" y="-27" width="38" height="54" rx="19" fill="url(#cg)"/>
+        <ellipse cx="-6" cy="-13" rx="6" ry="9" fill="#ffffff" opacity="0.55"/></g><g transform="translate(238 352) rotate(6) scale(1.42)"><rect x="-19" y="-27" width="38" height="54" rx="19" fill="url(#cg)"/>
+        <ellipse cx="-6" cy="-13" rx="6" ry="9" fill="#ffffff" opacity="0.55"/></g><g transform="translate(362 356) rotate(-8) scale(1.3)"><rect x="-19" y="-27" width="38" height="54" rx="19" fill="url(#cg)"/>
+        <ellipse cx="-6" cy="-13" rx="6" ry="9" fill="#ffffff" opacity="0.55"/></g><g transform="translate(300 452) rotate(-14) scale(1.42)"><rect x="-19" y="-27" width="38" height="54" rx="19" fill="url(#cg)"/>
+        <ellipse cx="-6" cy="-13" rx="6" ry="9" fill="#ffffff" opacity="0.55"/></g>
+  <text x="300" y="556" text-anchor="middle" font-family="'Noto Sans SC','Microsoft YaHei','PingFang SC',sans-serif" font-size="20" fill="#7d6b52" letter-spacing="4">元气元素</text>
+</svg>

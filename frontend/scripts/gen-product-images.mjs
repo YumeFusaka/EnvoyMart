@@ -81,6 +81,21 @@ const PRODUCTS = [
   { id: 25, brand: 4, kind: 'bottle', contents: 'tablet-white',   label: ['孕妇钙片'] },
   { id: 26, brand: 2, kind: 'jar',    contents: 'gummy-multi',    label: ['儿童钙软糖'] },
   { id: 27, brand: 4, kind: 'bottle', contents: 'softgel-amber',  label: ['孕期 DHA', '藻油软胶囊'] },
+  // 28–39 是后加的品类补深（B 族、铁叶酸、锌硒、镁、鱼油高纯、纳豆、AD 滴剂、
+  // 儿童口服液、褪黑素片、氨糖维 D）。剂型与品牌都跟着 data.sql 里的那一行走：
+  // 滴剂/口服液用 bottle 配液体观感，片剂用 tablet-white，软胶囊用 softgel
+  { id: 28, brand: 2, kind: 'bottle', contents: 'tablet-white',   label: ['维生素 B 族', '复合片'] },
+  { id: 29, brand: 2, kind: 'bottle', contents: 'tablet-white',   label: ['维生素 C', '咀嚼片'] },
+  { id: 30, brand: 2, kind: 'bottle', contents: 'tablet-white',   label: ['铁叶酸片'] },
+  { id: 31, brand: 2, kind: 'bottle', contents: 'tablet-white',   label: ['锌硒宝片'] },
+  { id: 32, brand: 2, kind: 'bottle', contents: 'tablet-white',   label: ['镁维 B6', '缓释片'] },
+  { id: 33, brand: 6, kind: 'bottle', contents: 'softgel-golden', label: ['深海鱼油', '胶丸'] },
+  { id: 34, brand: 6, kind: 'bottle', contents: 'capsule-white',  label: ['纳豆激酶', '胶囊'] },
+  { id: 35, brand: 2, kind: 'bottle', contents: 'softgel-clear', label: ['维生素 AD', '滴剂'] },
+  { id: 36, brand: 2, kind: 'bottle', contents: 'softgel-clear', label: ['儿童铁锌', '口服液'] },
+  { id: 37, brand: 2, kind: 'bottle', contents: 'softgel-clear', label: ['葡萄糖酸锌', '口服液'] },
+  { id: 38, brand: 6, kind: 'bottle', contents: 'tablet-white',   label: ['褪黑素片'] },
+  { id: 39, brand: 4, kind: 'bottle', contents: 'tablet-white',   label: ['氨糖维 D 钙片'] },
 ]
 
 const product = (id) => PRODUCTS.find((p) => p.id === id)
@@ -454,7 +469,6 @@ function expectedRefs() {
 // 评价图清单：seed → 商品。前 8 条是 review-service/data.sql 的负数种子评价；
 // rev1 不在种子之列——它是早期通过接口创建的真实评价（验收残留），一并本地化
 const REVIEWS = [
-  { seed: 'rev1', spu: 1 },
   { seed: 'rev1a', spu: 1 }, { seed: 'rev1b', spu: 1 }, { seed: 'rev4a', spu: 1 },
   { seed: 'rev13a', spu: 3 }, { seed: 'rev13b', spu: 3 },
   { seed: 'rev18a', spu: 5 },
@@ -499,6 +513,10 @@ function main() {
   for (const r of REVIEWS) write(`${r.seed}-600.svg`, reviewPhoto(r.spu, r.seed.endsWith('b') ? 'b' : 'a'))
 
   console.log(`已生成 ${n} 张 → ${OUT}\\photos`)
+  // dev server 在启动时把 public/ 的目录清单读进内存，之后新增的文件要重启才可见，
+  // 而且请求会回落成 index.html（Content-Type: text/html），浏览器把 HTML 当 SVG 解析
+  // —— 网络面板看不到任何 4xx，只看到破图。演示链路走 vite build + preview 不受影响。
+  console.log('提示：若正在跑 pnpm dev，新生成的图要重启 dev server 才可见。')
 }
 
 main()
