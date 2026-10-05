@@ -559,57 +559,57 @@ const alertVisible = await poll(
 )
 ck('悬空锚点显式报警（不能静默）', alertVisible > 0)
 
-// ---- 四、相互作用检查：名单要可见、三种结论要分得开 ----
+// ---- 四、右栏的两段结构：中心实体自己的关系在前，其余实体在后 ----
 //
-// 这一段是补的：这个功能原先按钮上不写名单、结果也不写，用户既不知道查了哪几样，
-// 也没法复核，而它是页面上唯一一个下「能不能一起吃」结论的入口 —— 却一直没有断言护着。
-// 判据按用户能看到的结果写：点的前后都要能看到「查的是哪几样」。
-await page.goto(`${BASE}/#/knowledge/graph?root=${encodeURIComponent('华法林')}&depth=2`, {
-  waitUntil: 'networkidle',
-})
-await page.reload({ waitUntil: 'networkidle' })
-await page.locator('svg.canvas').waitFor({ state: 'visible', timeout: 20000 })
-await page.locator('.co-use__btn').waitFor({ state: 'visible', timeout: 20000 })
-
-const targets = (await page.locator('.co-use__chip').allTextContents()).map((t) =>
-  t.replace(/×/g, ' ').trim(),
-)
-ck(
-  `检查前就列出要查的名单（${targets.length} 项：${targets.join('、')}）`,
-  targets.length >= 2,
-  `只有 ${targets.length} 项，用户看不到「这几样」是哪几样`,
-)
-
-await page.locator('.co-use__btn').click()
-await poll(
-  () => page.locator('.co-use__result').count(),
-  (n) => n > 0,
-  12000,
-)
-const results = await page.evaluate(() =>
-  [...document.querySelectorAll('.co-use__result')].map((el) => ({
-    text: (el.textContent || '').replace(/\s+/g, ' ').trim(),
-    unknown: el.classList.contains('interaction__result--unknown'),
-    clean: el.classList.contains('interaction__result--clean'),
+// 这一段是回归：右栏原先是一张无差别的边清单，中心实体的关系和背景节点的关系混在一起平铺，
+// 用户读不出「哪些是主角」。判据按用户能看到的结构写。
+await page.goto(`${BASE}/#/knowledge/graph`, { waitUntil: 'networkidle' })
+await page.locator('.evidence__section').first().waitFor({ state: 'visible', timeout: 25000 })
+const sections = await page.evaluate(() =>
+  [...document.querySelectorAll('.evidence__section')].map((el) => ({
+    title: el.querySelector('.evidence__section-title')?.textContent.replace(/\s+/g, ' ').trim() ?? '',
+    groups: [...el.querySelectorAll('.evidence__group')].map((g) =>
+      g.textContent.replace(/\s+/g, ' ').trim(),
+    ),
+    rows: el.querySelectorAll('.evidence__row').length,
   })),
 )
 ck(
-  `结果按项列出（${results.length} 项）`,
-  results.length === targets.length,
-  `结果 ${results.length} 项 vs 名单 ${targets.length} 项，两边对不上`,
+  `右栏分两段（${sections.map((s) => s.title).join(' | ')}）`,
+  sections.length >= 2,
+  `只有 ${sections.length} 段，中心实体的关系没有单独成段`,
 )
-// 每项都必须给出「有风险 / 未发现风险 / 未收录」三选一的明确说法，
-// 不允许出现空白（空白会被用户读成「安全」）
 ck(
-  '每一项都给出了明确结论，没有留白',
-  results.every((r) => /条冲突|未发现已知冲突|图谱未收录/.test(r.text)),
-  results.map((r) => r.text).join(' | '),
+  '第一段是中心实体自己的关系，且按关系种类分组',
+  sections[0].title.includes('自己的关系') && sections[0].groups.length > 0,
+  `第一段标题=${sections[0].title}，分组=${sections[0].groups.length}`,
 )
-// 阴性结果与「没查成」必须在视觉上分得开：类名不同才算分开
 ck(
-  '「未发现已知冲突」与「图谱未收录」在样式上是两回事',
-  results.every((r) => !(r.unknown && r.clean)),
-  '同一行同时挂了 unknown 与 clean 两个类',
+  '第二段按实体分组，且组内再按关系种类排',
+  sections[1].title.includes('其他实体') && sections[1].groups.length > 0,
+  `第二段标题=${sections[1].title}，分组=${sections[1].groups.length}`,
+)
+// 风险类排前面：每一段里「相互作用 / 禁忌人群」要出现在「含有 / 提供」之前
+const flat = sections.flatMap((s) => s.groups)
+const riskIdx = flat.findIndex((g) => g.startsWith('相互作用') || g.startsWith('禁忌人群'))
+const infoIdx = flat.findIndex((g) => g.startsWith('含有') || g.startsWith('提供'))
+ck(
+  '风险类关系排在描述性关系之前',
+  riskIdx < 0 || infoIdx < 0 || riskIdx < infoIdx,
+  `风险类位置=${riskIdx}，描述类位置=${infoIdx}`,
+)
+
+// 图谱是助手的检索底座，不是让用户在图上自己查的工具：
+// 页头必须把「要结论去问助手」这个出口给出来，并且不再有任何“备查名单”类的查询入口
+ck(
+  '页头提供去助手的入口',
+  (await page.locator('.graph-head__ask').count()) > 0,
+  '用户想要结论时无处可去',
+)
+ck(
+  '不再保留「能不能一起吃」区块',
+  (await page.locator('.co-use').count()) === 0,
+  '区块仍在，用户会把逐项清单误读成组合判断',
 )
 
 ck('全程无控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
