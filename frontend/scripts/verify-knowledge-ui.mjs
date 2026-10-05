@@ -522,6 +522,57 @@ const alertVisible = await poll(
 )
 ck('悬空锚点显式报警（不能静默）', alertVisible > 0)
 
+// ---- 四、相互作用检查：名单要可见、三种结论要分得开 ----
+//
+// 这一段是补的：这个功能原先按钮上不写名单、结果也不写，用户既不知道查了哪几样，
+// 也没法复核，而它是页面上唯一一个下「能不能一起吃」结论的入口 —— 却一直没有断言护着。
+// 判据按用户能看到的结果写：点的前后都要能看到「查的是哪几样」。
+await page.goto(`${BASE}/#/knowledge/graph?root=${encodeURIComponent('华法林')}&depth=2`, {
+  waitUntil: 'networkidle',
+})
+await page.reload({ waitUntil: 'networkidle' })
+await page.locator('svg.canvas').waitFor({ state: 'visible', timeout: 20000 })
+await page.locator('.interaction__btn').waitFor({ state: 'visible', timeout: 20000 })
+
+const targets = await page.locator('.interaction__targets li').allTextContents()
+ck(
+  `检查前就列出要查的名单（${targets.length} 项：${targets.join('、')}）`,
+  targets.length >= 2,
+  `只有 ${targets.length} 项，用户看不到「这几样」是哪几样`,
+)
+
+await page.locator('.interaction__btn').click()
+await poll(
+  () => page.locator('.interaction__result').count(),
+  (n) => n > 0,
+  12000,
+)
+const results = await page.evaluate(() =>
+  [...document.querySelectorAll('.interaction__result')].map((el) => ({
+    text: (el.textContent || '').replace(/\s+/g, ' ').trim(),
+    unknown: el.classList.contains('interaction__result--unknown'),
+    clean: el.classList.contains('interaction__result--clean'),
+  })),
+)
+ck(
+  `结果按项列出（${results.length} 项）`,
+  results.length === targets.length,
+  `结果 ${results.length} 项 vs 名单 ${targets.length} 项，两边对不上`,
+)
+// 每项都必须给出「有风险 / 未发现风险 / 未收录」三选一的明确说法，
+// 不允许出现空白（空白会被用户读成「安全」）
+ck(
+  '每一项都给出了明确结论，没有留白',
+  results.every((r) => /条风险|未发现风险|图谱未收录/.test(r.text)),
+  results.map((r) => r.text).join(' | '),
+)
+// 阴性结果与「没查成」必须在视觉上分得开：类名不同才算分开
+ck(
+  '「未发现风险」与「图谱未收录」在样式上是两回事',
+  results.every((r) => !(r.unknown && r.clean)),
+  '同一行同时挂了 unknown 与 clean 两个类',
+)
+
 ck('全程无控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 
 await browser.close()

@@ -149,6 +149,7 @@ const letterboxScale = computed(() => {
   return { x: box.width / viewBoxSide.value, y: box.height / viewBoxSide.value }
 })
 
+
 /**
  * 自动缩放倍数（相对 baseScale）。
  *
@@ -186,6 +187,25 @@ const canZoomOutInternal = computed(() => zoom.value > minZoom.value + 1e-6)
 
 /** 缩放后的绝对值（像素/布局单位），以及内容在屏幕上的实际尺寸 */
 const autoScale = computed(() => baseScale.value * zoom.value)
+/**
+ * 裁剪矩形在**镜头层用户坐标**里的半宽/半高。
+ *
+ * <p>裁剪路径挂在带镜头 transform 的 <g> 上，所以矩形要按「镜头放大前」的坐标写：
+ * 屏幕像素 → 除以 viewBox→px 系数（letterboxScale 的短边值）→ 再除以 autoScale。
+ *
+ * <p>早期只除了 autoScale，漏掉了 viewBox→px 那一层。viewBox 是正方形而容器通常不是，
+ * 短边方向被 preserveAspectRatio 压过一次，于是裁剪矩形在屏幕上的覆盖范围比容器小一圈：
+ * 实测 622x720 的容器上裁剪落在 x=42..580（容器是 0..622），两侧各被白白切掉 42px ——
+ * 症状是「放大后节点被切断，但明显还没到画布边界」。
+ *
+ * <p>短边系数取 min 而不是分轴：viewBox 正方形、meet 语义下两轴用同一个缩放比。
+ */
+const clipHalf = computed(() => {
+  const box = boxSize.value
+  const pxPerUnit = Math.min(letterboxScale.value.x, letterboxScale.value.y) || 1
+  const unitPerCam = pxPerUnit * autoScale.value || 1
+  return { x: (box.width || 1) / 2 / unitPerCam, y: (box.height || 1) / 2 / unitPerCam }
+})
 
 /** 裁剪路径 id。同页可能挂多张画布，加随机后缀避免 id 撞车 */
 const clipId = 'graph-clip-' + Math.random().toString(36).slice(2, 9)
@@ -583,10 +603,10 @@ watch(
       -->
         <clipPath :id="clipId">
           <rect
-            :x="-(boxSize.width || 1) / 2 / autoScale"
-            :y="-(boxSize.height || 1) / 2 / autoScale"
-            :width="(boxSize.width || 1) / autoScale"
-            :height="(boxSize.height || 1) / autoScale"
+            :x="-clipHalf.x"
+            :y="-clipHalf.y"
+            :width="clipHalf.x * 2"
+            :height="clipHalf.y * 2"
           />
         </clipPath>
       </defs>

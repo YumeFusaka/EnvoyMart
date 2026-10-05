@@ -200,14 +200,24 @@ async function resolveDefaultRoot(): Promise<string> {
   return ''
 }
 
+/**
+ * 会被拿去检查的那几样 —— 商品 / 成分 / 药物，取当前视图里前 5 个。
+ *
+ * <p>抽成 computed 是为了**在按钮上就把名单显示出来**：原先后端查什么、前端不吭声，
+ * 用户只看到一个「检查这几样」的按钮，既不知道「这几样」是哪几样，点完的结论也没法复核
+ * ——而这是一份要拿去做用药判断的报告，名单必须摆出来。
+ */
+const CHECKABLE_KINDS = new Set(['PRODUCT', 'INGREDIENT', 'DRUG'])
+const checkTargets = computed(() =>
+  layout.value.nodes
+    .filter((n) => CHECKABLE_KINDS.has(n.node.kind))
+    .slice(0, 5)
+    .map((n) => ({ name: n.node.name, label: n.node.label })),
+)
+
 /** 「这几样能不能一起吃」。只在用户主动点的时候发请求 —— 它要带商品与药物，不是每次都要看 */
 async function runInteractionCheck() {
-  const items = layout.value.nodes
-    .filter(
-      (n) => n.node.kind === 'PRODUCT' || n.node.kind === 'INGREDIENT' || n.node.kind === 'DRUG',
-    )
-    .map((n) => n.node.name)
-    .slice(0, 5)
+  const items = checkTargets.value.map((n) => n.name)
   if (items.length < 2) return
   try {
     report.value = await checkInteractions(items)
@@ -528,8 +538,25 @@ watch([root, depth], load, { immediate: true })
         </ul>
 
         <div v-if="visibleEdges.length" class="interaction">
-          <button type="button" class="interaction__btn" @click="runInteractionCheck">
-            检查这几样能不能一起用
+          <!--
+            「检查这几样」的「这几样」必须当场写出来。原先按钮不写名单、结论也不写，
+            用户既不知道查了谁，也没法复核——而这是要拿来判「能不能一起吃」的报告，
+            名单本身就是结论的一部分
+          -->
+          <p class="interaction__lead">
+            会把当前图里的这 {{ checkTargets.length }} 样拿去查相互作用与禁忌：
+          </p>
+          <ul class="interaction__targets">
+            <li v-for="t in checkTargets" :key="t.name">{{ t.label }}</li>
+          </ul>
+
+          <button
+            type="button"
+            class="interaction__btn"
+            :disabled="checkTargets.length < 2"
+            @click="runInteractionCheck"
+          >
+            {{ checkTargets.length < 2 ? '至少要有两样才能查' : '检查这几样能不能一起用' }}
           </button>
 
           <!--
@@ -539,9 +566,37 @@ watch([root, depth], load, { immediate: true })
           <p v-if="report && !report.available" class="interaction__note interaction__note--warn">
             未检查：{{ report.note || '图谱暂时不可用' }}
           </p>
-          <p v-else-if="report" class="interaction__note">
-            已检查 {{ report.items.length }} 项。冲突与禁忌见上方清单，每条都带原文。
-          </p>
+          <template v-else-if="report">
+            <p class="interaction__note">
+              已检查上面 {{ report.items.length }} 项，结果如下（每条都带原文）：
+            </p>
+            <ul class="interaction__results">
+              <li
+                v-for="item in report.items"
+                :key="item.input"
+                class="interaction__result"
+                :class="{
+                  'interaction__result--clean': item.found && item.risks.length === 0,
+                  'interaction__result--unknown': !item.found,
+                }"
+              >
+                <span class="interaction__result-name">{{ item.label }}</span>
+                <!--
+                  「没收录」「没查到风险」「查到风险」是三种结论，必须说成三句不同的话：
+                  把没收录渲染成「未发现风险」在用药场景下是相反的结论
+                -->
+                <span v-if="!item.found" class="interaction__result-count interaction__result-count--unknown">
+                  图谱未收录，无法判断
+                </span>
+                <span v-else-if="item.risks.length" class="interaction__result-count">
+                  {{ item.risks.length }} 条风险
+                </span>
+                <span v-else class="interaction__result-count interaction__result-count--clean">
+                  未发现风险
+                </span>
+              </li>
+            </ul>
+          </template>
         </div>
       </aside>
     </div>
@@ -724,6 +779,10 @@ watch([root, depth], load, { immediate: true })
   bottom: var(--ys-space-3);
   z-index: var(--ys-z-raised);
   display: flex;
+  /* 居中而不是默认的 baseline：这一排里 +/- 是 16px、档位与读数是 12px，
+     baseline 对齐会把小字整体抬高一段，肉眼就是「几个字不在一条水平线上」。
+     所有子项高度都已经拉成 30px，居中对齐即可让字面都落在同一条中线 */
+  align-items: center;
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--color-border);
@@ -787,6 +846,10 @@ watch([root, depth], load, { immediate: true })
 
 /* 读数。等宽数字：缩放时它会一位一位跳，比例字宽会让整排按钮跟着抖 */
 .graph-zoom__percent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
   min-width: 4.5ch;
   padding-inline: var(--ys-space-1);
   color: var(--color-text-secondary);
@@ -796,6 +859,9 @@ watch([root, depth], load, { immediate: true })
 }
 
 .graph-zoom__scale {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
   padding-inline: var(--ys-space-1) var(--ys-space-2);
   color: var(--color-text-muted);
   font-size: var(--ys-font-xs);
@@ -1077,6 +1143,83 @@ watch([root, depth], load, { immediate: true })
 
 .interaction__note--warn {
   color: var(--color-warning-strong);
+}
+
+/* 「这几样」的名单。它必须比按钮更早被看到 —— 用户要能先确认查的是谁，再决定点不点 */
+.interaction__lead {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+}
+
+.interaction__targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-1) var(--ys-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.interaction__targets li {
+  padding: 2px var(--ys-space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-full);
+  background: var(--color-bg-sunken);
+  color: var(--color-text-primary);
+  font-size: var(--ys-font-xs);
+}
+
+.interaction__results {
+  display: grid;
+  gap: var(--ys-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.interaction__result {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ys-space-2);
+  padding: var(--ys-space-1) var(--ys-space-2);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-sunken);
+  font-size: var(--ys-font-xs);
+}
+
+.interaction__result-name {
+  color: var(--color-text-primary);
+}
+
+.interaction__result-count {
+  flex: none;
+  color: var(--color-warning-strong);
+}
+
+/* 「未发现风险」用静默色：它是阴性结果，不该和风险条目抢注意力 */
+.interaction__result-count--clean {
+  color: var(--color-text-muted);
+}
+
+/* 「图谱未收录」不是阴性结果，必须与「未发现风险」在视觉上分开 */
+.interaction__result-count--unknown {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.interaction__result--unknown {
+  background: transparent;
+  border: 1px dashed var(--color-border);
+}
+
+.interaction__btn:disabled {
+  border-color: var(--color-border);
+  background: var(--color-bg-sunken);
+  color: var(--color-text-secondary);
+  cursor: not-allowed;
 }
 
 /* ==================== 窄容器 ==================== */
