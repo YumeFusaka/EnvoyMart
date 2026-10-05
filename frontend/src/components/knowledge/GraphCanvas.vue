@@ -111,19 +111,27 @@ const MIN_READABLE_NODE_PX = 10
  */
 
 /**
- * viewBox 的正方形边长。取较长边，短边方向的留白交给 preserveAspectRatio 均分。
- * 正方形是刻意的：用户单位与屏幕像素的换算比例只由容器长短边之比决定一次，
- * 镜头换算、裁剪路径与「拖多少像素走多少像素」这句承诺都因此自洽。
+ * viewBox 的宽高。取容器本身的尺寸，**不再强制正方形**。
+ *
+ * <p>曾经用正方形 viewBox（边长取长边）再过 preserveAspectRatio 的 meet 居中，
+ * 代价是短边方向两侧各留一条 letterbox 空带：802x720 的容器上有 41px 宽的空白，
+ * 内容是画不进去的（SVG 不绘制 viewBox 以外），看着就像「画布没铺满」。
+ * 为了让布局、镜头、裁剪三处的换算不被这条空带污染，代码里得处处带着
+ * letterboxScale / letterboxX / letterboxY 三个补偿量 —— 补偿量本身没错，
+ * 但它们让「一个用户单位到底是多少像素」不再是个常量，是这类 bug 的温床。
+ *
+ * <p>改成与容器同比之后，viewBox→屏幕就是恒等映射（1 单位 = 1px），
+ * 三个补偿量一起消失，裁剪矩形就是 0,0,宽,高，等于容器本身。
  */
-const viewBoxSide = computed(() => Math.max(boxSize.value.width, boxSize.value.height) || 1)
+const viewBoxW = computed(() => boxSize.value.width || 1)
+const viewBoxH = computed(() => boxSize.value.height || 1)
 
 /**
  * 1 个布局单位在 100% 时占几个屏幕像素（对标基准，不是最终比例）。
  *
- * <p>取两个容器方向里**更宽松**的那一个，且直接按整条边长算、不再做短边换算。
- * 这两种写法的差别在默认取景上很明显：按短边收紧后，一个 802x720 的容器会让
- * 可读倍率比可拖范围算出来的更小一圈，结果是「内容看着铺满了，却怎么都拖不动」
- * —— 而底下的 panLimit 用的正是同一套尺寸，两处必须共用同一个基准。
+ * <p>取两个容器方向里**更宽松**的那一个，且直接按整条边长算。
+ * 按短边收紧会让可读倍率比可拖范围算出来的更小一圈，结果是「内容看着铺满了，
+ * 却怎么都拖不动」—— 而底下的 maxPan 用的正是同一套尺寸，两处必须共用同一基准。
  *
  * <p>留白靠 FIT_PADDING 给，不需要再用短边把比例压下来。
  */
@@ -132,21 +140,6 @@ const baseScale = computed(() => {
   if (!box.width || !box.height) return 1
   const side = Math.max(box.width, box.height) - FIT_PADDING * 2
   return Math.max(1, side) / Math.max(worldW.value, worldH.value)
-})
-
-/**
- * viewBox 用户单位到屏幕像素的系数。
- *
- * <p>viewBox 是正方形、容器通常不是，短边方向被 preserveAspectRatio 压缩，
- * 于是「1 个用户单位」在屏幕上并不恒等于 1px：短边方向要再乘
- * `boxSide / viewBoxSide`。把屏幕上「要多大」换算回用户单位时**必须带上它** ——
- * 漏掉这一步的后果很具体：802x720 的容器上可读倍率算出来偏大 10%，药丸只剩
- * 9px，恰好卡在「看不清」的门槛下，而代码看上去完全正确。
- */
-const letterboxScale = computed(() => {
-  const box = boxSize.value
-  if (!box.width || !box.height) return { x: 1, y: 1 }
-  return { x: box.width / viewBoxSide.value, y: box.height / viewBoxSide.value }
 })
 
 
@@ -169,10 +162,9 @@ const minZoom = computed(() => 1)
 const defaultZoom = computed(() => {
   // 药丸高度取自布局本身，不写死 30：写死后一旦排版改了高度，可读倍率会静默失准，
   // 表现就是「打开页面节点又小到看不清」，而阈值那边还显示正常。
-  // 换算里带上 letterboxScale：节点高是用户单位，屏幕上还要被正方形 viewBox 压一次
+  // viewBox 与容器同比后一个用户单位就是 1px，可读倍率只由节点高度与 baseScale 决定
   const nodeUnits = props.layout.nodes[0]?.height ?? 30
-  const offset = Math.min(letterboxScale.value.x, letterboxScale.value.y)
-  const readable = MIN_READABLE_NODE_PX / (nodeUnits * baseScale.value * offset)
+  const readable = MIN_READABLE_NODE_PX / (nodeUnits * baseScale.value)
   return clampZoom(Math.max(minZoom.value, readable))
 })
 /** 倍率统一夹在 [100%, 放大上限] 之间。上限随 baseScale 变，所以只能在这里算 */
@@ -187,25 +179,6 @@ const canZoomOutInternal = computed(() => zoom.value > minZoom.value + 1e-6)
 
 /** 缩放后的绝对值（像素/布局单位），以及内容在屏幕上的实际尺寸 */
 const autoScale = computed(() => baseScale.value * zoom.value)
-/**
- * 裁剪矩形在**镜头层用户坐标**里的半宽/半高。
- *
- * <p>裁剪路径挂在带镜头 transform 的 <g> 上，所以矩形要按「镜头放大前」的坐标写：
- * 屏幕像素 → 除以 viewBox→px 系数（letterboxScale 的短边值）→ 再除以 autoScale。
- *
- * <p>早期只除了 autoScale，漏掉了 viewBox→px 那一层。viewBox 是正方形而容器通常不是，
- * 短边方向被 preserveAspectRatio 压过一次，于是裁剪矩形在屏幕上的覆盖范围比容器小一圈：
- * 实测 622x720 的容器上裁剪落在 x=42..580（容器是 0..622），两侧各被白白切掉 42px ——
- * 症状是「放大后节点被切断，但明显还没到画布边界」。
- *
- * <p>短边系数取 min 而不是分轴：viewBox 正方形、meet 语义下两轴用同一个缩放比。
- */
-const clipHalf = computed(() => {
-  const box = boxSize.value
-  const pxPerUnit = Math.min(letterboxScale.value.x, letterboxScale.value.y) || 1
-  const unitPerCam = pxPerUnit * autoScale.value || 1
-  return { x: (box.width || 1) / 2 / unitPerCam, y: (box.height || 1) / 2 / unitPerCam }
-})
 
 /** 裁剪路径 id。同页可能挂多张画布，加随机后缀避免 id 撞车 */
 const clipId = 'graph-clip-' + Math.random().toString(36).slice(2, 9)
@@ -230,9 +203,10 @@ const worldH = computed(() => Math.max(1, props.layout.height || 1))
  * 最多把镜头推到最外圈的节点上，再往里就只剩另一侧的节点，洞永远进不来。
  * 它比节点包围盒大一圈是刻意的 —— 宽出来的正是那个洞。
  */
-const contentDiameter = computed(() => props.layout.contentRadius * 2 * autoScale.value)
-const contentW = computed(() => contentDiameter.value)
-const contentH = computed(() => contentDiameter.value)
+
+
+/** 内容外接圆在屏幕上的半径。平移边界（视口中心不许跑出这个圆）按它算 */
+const contentRadiusScreen = computed(() => props.layout.contentRadius * autoScale.value)
 
 /**
  * 镜头平移量，单位是**屏幕像素**，以「内容居中」为原点。
@@ -247,39 +221,20 @@ const contentH = computed(() => contentDiameter.value)
 const pan = ref({ x: 0, y: 0 })
 
 /**
- * 镜头位置与「视野是否还有内容」的距离判据。
+ * 镜头最多能推多远：**视口中心不得离开内容外接圆**。
  *
- * <p>这张图的内容分布是**环带**而不是实心圆：实测三跳图（中心 + 10 + 47 + 19 个
- * 节点）的环半径是 184 / 1121 / 1226，第一圈与第二圈之间隔着 937 单位的空心带。
- * 于是「内容包围盒贴住视口边」与「外接圆贴住视口边」两种划界方式都会把镜头
- * 放进那条带里 —— 屏幕上几乎一个节点都看不到（实测边缘处空白占比 100%）。
- * 用户报的「拖完白屏」就是这条带。
+ * <p>为什么是「内容圆半径」而不是一个固定的屏占比。这张图的内容是同心环带，
+ * 外接圆是内容真实占据的范围；视口中心一旦跑到圆外，屏幕上就只剩圆外的空白。
+ * 所以「中心留在圆内」这条约束恰好等价于「视野里始终有内容」，而且它天然随
+ * 缩放与内容尺寸变化 —— 放大后能推得更远，正好够把最外圈的节点拖到屏幕边缘。
  *
- * <p>所以边界不写成矩形，而写成**「视口中心离最近的节点不能超过一个屏幕半径」**：
- * 拖到哪儿，视野中心附近总还压着东西。它比矩形约束更贴合这张图的形状 ——
- * 密度大的方向可以多拖一点，稀疏的方向少拖一点，而不是被一个对称数字绑死。
+ * <p>曾经写的是「位移不超过视口短边的一半」（实测 720 高的容器上只有 360px）。
+ * 那个数字是为了压掉「拖进环内空洞看到白屏」的问题而拍的，代价是把一个正常手势
+ * 也一并禁掉了：3 倍放大时最右侧节点的中心离画布中心 420px，360px 的上限让它
+ * 永远进不到容器右边缘 —— 用户报的「放大后往边缘拖，拖不动、最外圈的节点看不到」
+ * 就是这里。
  */
-/**
- * 镜头最多能推多远，单位是屏幕像素。
- *
- * <p>这张图的内容分布是**环带**而不是实心圆：实测三跳图（中心 + 10 + 47 + 19 个
- * 节点）的环半径是 184 / 1121 / 1226，第一圈与第二圈之间隔着 937 单位的空心带。
- * 镜头一旦被推进那条带（或推过最外圈），屏幕上就几乎什么都不剩 —— 实测
- * 空白网格占比 100%，用户报的「拖完白屏」就是这里。
- *
- * <p>约束因此写成**位移模长不超过视口短边的一半**，而不是矩形边界。
- * 矩形在四个方向上给出同样的距离，而这张图的节点密度天生不均匀，
- * 密的方向用不满、疏的方向一推到底就是白屏。
- *
- * <p>取「半个短边」是量出来的，不是拍的：实测把上限放到 0.85 倍最外圈半径
- * （965px）时，视口里虽然还有 9 个节点，但全挤在一个角上，其余全是空 ——
- * 截图看就是白屏。收到半屏（360px）后，八个方向上都有 6~8 个节点落在视口内、
- * 且分布均匀，与「居中 300%」的观感一致。语义也好讲：**最多把图推离中心半个屏幕**。
- */
-const MAX_PAN_RATIO = 0.5
-const maxPan = computed(
-  () => Math.min(boxSize.value.width, boxSize.value.height) * MAX_PAN_RATIO,
-)
+const maxPan = computed(() => contentRadiusScreen.value)
 
 /**
  * 把待落盘的位移夹进边界。
@@ -304,13 +259,6 @@ function clampPan(next: { x: number; y: number }) {
 const pannable = computed(() => maxPan.value > 1)
 
 /**
- * viewBox 正方形比容器**多出来的那部分**，短边方向由 preserveAspectRatio 均分到两边。
- * 它是内容在短边方向上的额外留白，镜头锚点必须把它的一半让出来。
- */
-const letterboxX = computed(() => (viewBoxSide.value - boxSize.value.width) / 2)
-const letterboxY = computed(() => (viewBoxSide.value - boxSize.value.height) / 2)
-
-/**
  * 镜头锚点：**布局原点（0,0，就是中心实体）映到屏幕上的位置**。
  *
  * <p>以布局原点而不是内容包围盒中心做锚点：同心环图的圆心就是当前中心实体，
@@ -320,14 +268,12 @@ const letterboxY = computed(() => (viewBoxSide.value - boxSize.value.height) / 2
  * 锚点落在**可视区中心**时 pan 为 0 就是「内容居中」；平移量直接加在锚点上，
  * 屏幕位移与手势位移因此是 1:1。
  *
- * <p>难点在「可视区中心」不等于「viewBox 中心」：viewBox 是正方形，容器通常
- * 不是，短边方向多出来的那截会被 preserveAspectRatio 均分到两侧留白。
- * 不减掉这半个 letterbox 的话布局原点会整块偏出去 —— 实测 802x720 的容器上
- * 中心实体偏低 37px，而「往正中拖」的手势也会被这 37px 吃掉一半行程。
+ * <p>viewBox 与容器同比之后，「可视区中心」就是「viewBox 中心」，锚点直接取容器中心，
+ * 不需要再减 letterbox 那半个偏移 —— 那一项是在正方形 viewBox 下才存在的补偿。
  */
 const originOnScreen = computed(() => ({
-  x: boxSize.value.width / 2 + letterboxX.value + pan.value.x,
-  y: boxSize.value.height / 2 + letterboxY.value + pan.value.y,
+  x: boxSize.value.width / 2 + pan.value.x,
+  y: boxSize.value.height / 2 + pan.value.y,
 }))
 
 /**
@@ -570,7 +516,7 @@ watch(
       ref="canvasEl"
       class="canvas"
       :class="{ 'is-dragging': dragging }"
-      :viewBox="`0 0 ${viewBoxSide} ${viewBoxSide}`"
+      :viewBox="`0 0 ${viewBoxW} ${viewBoxH}`"
       preserveAspectRatio="xMidYMid meet"
       role="img"
       :aria-label="`知识图谱：${layout.nodes.length} 个实体、${layout.edges.length} 条关系，共 ${Math.max(layout.ringRadii.length - 1, 0)} 跳。可用滚轮缩放、拖拽平移`"
@@ -593,31 +539,33 @@ watch(
     -->
       <defs>
         <!-- 白底。透明时节点会与页头的深色预览条目叠在一起，读不清 -->
-        <rect :width="viewBoxSide" :height="viewBoxSide" fill="var(--color-bg-surface)" />
+        <rect :width="viewBoxW" :height="viewBoxH" fill="var(--color-bg-surface)" />
         <!--
-        裁剪矩形要覆盖**整个可视画布**，而 clipPath 默认按被裁剪元素自己的用户空间
-        解释 —— 这里被裁的是带镜头 transform 的 <g>，所以 0..802 会先被镜头缩放平移，
-        再去裁画面，结果是画面有一大半被当作「越界」裁掉（实测只剩右下角一块）。
-        正确做法是把它写成镜头逆变换后的范围：可视区在镜头层用户坐标里就是
-        「画布中心的反方向 ± 半个可视世界」。
-      -->
+        裁剪矩形就是 viewBox 本身（0,0 到 容器宽,容器高），且**挂在没有 transform 的
+        那一层**。两点都是踩出来的：
+
+        1. clipPath 未声明 clipPathUnits 时默认 userSpaceOnUse，矩形坐标系取的是
+           「引用它的元素自己的用户空间」。挂在带 transform 的 <g> 上时矩形会跟着镜头
+           一起平移缩放 —— 0..720 在屏幕上变成 (360,731)-(1762,2133)，内容只剩右下角、
+           左上被切掉一大片，而明显还没到组件边界。所以这一层不能有 transform。
+        2. 矩形是 0..尺寸 这一整段，不是以 0 为中心的 ±半宽。中心式写法会让裁剪整体
+           平移半个画布，症状是「一侧被切、另一侧大片空白」。
+
+        另一条路是在镜头层里写逆变换把矩形挪回去，但那个式子要同时跟住 originOnScreen
+        与 autoScale，漏乘哪一项都让裁剪落到别处，而症状长得一模一样 —— 不值得再赌。
+        -->
         <clipPath :id="clipId">
-          <rect
-            :x="-clipHalf.x"
-            :y="-clipHalf.y"
-            :width="clipHalf.x * 2"
-            :height="clipHalf.y * 2"
-          />
+          <rect x="0" y="0" :width="viewBoxW" :height="viewBoxH" />
         </clipPath>
       </defs>
-
       <g
-        class="viewport"
+        class="viewport-clip"
         :clip-path="`url(#${clipId})`"
         :class="{ 'is-dragging': dragging, 'is-pannable': pannable }"
-        :transform="`translate(${originOnScreen.x}, ${originOnScreen.y}) scale(${autoScale})`"
       >
-        <g>
+        <g
+          class="viewport"
+          :transform="`translate(${originOnScreen.x}, ${originOnScreen.y}) scale(${autoScale})`">
           <!--
         同心参考圈。它的作用是把「半径 = 跳数」这条隐含约定画出来 ——
         没有它，用户只会看到一堆点散布在圆里，不知道远近是什么意思。
@@ -744,17 +692,17 @@ watch(
   user-select: none;
 }
 
-.viewport.is-pannable {
+.viewport-clip.is-pannable {
   cursor: grab;
 }
 
-.viewport.is-dragging {
+.viewport-clip.is-dragging {
   cursor: grabbing;
 }
 
 /* 拖动时子元素的 hover 高亮会闪，压掉它 */
-.viewport.is-dragging .node:hover .node__box,
-.viewport.is-dragging .edge__hit:hover + .edge__line {
+.viewport-clip.is-dragging .node:hover .node__box,
+.viewport-clip.is-dragging .edge__hit:hover + .edge__line {
   stroke-width: initial;
 }
 

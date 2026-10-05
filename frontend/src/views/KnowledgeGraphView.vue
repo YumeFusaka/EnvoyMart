@@ -113,6 +113,12 @@ const visibleEdges = computed(() => edges.value.filter((e) => !hidden.value.incl
 
 const layout = computed(() => ringLayout(visibleEdges.value, root.value || null))
 
+/** 中心实体的展示名。清单标题要说清「这些关系是围绕谁列的」，「依据清单」四个字没说对象 */
+const rootLabel = computed(() => {
+  const node = layout.value.nodes.find((n) => n.depth === 0)
+  return node?.node.label ?? root.value
+})
+
 /** 出现过的类型，按词表的固定顺序排 —— 顺序随数据变的话，图例每次刷新都在跳 */
 const kindsInGraph = computed(() => {
   const seen = new Set<string>()
@@ -201,24 +207,66 @@ async function resolveDefaultRoot(): Promise<string> {
 }
 
 /**
- * 会被拿去检查的那几样 —— 商品 / 成分 / 药物，取当前视图里前 5 个。
+ * 用户选出来要一起查的几样东西。
  *
- * <p>抽成 computed 是为了**在按钮上就把名单显示出来**：原先后端查什么、前端不吭声，
- * 用户只看到一个「检查这几样」的按钮，既不知道「这几样」是哪几样，点完的结论也没法复核
- * ——而这是一份要拿去做用药判断的报告，名单必须摆出来。
+ * <p>**名单由用户自己攒，不是从当前视图里自动截前 5 个。**自动截取的版本有个致命问题：
+ * 用户看不懂为什么是这几样，换个跳数名单还会悄悄变 —— 而这是一份要拿去判断能不能同服的
+ * 报告，「查了谁」必须是用户亲口说的。所以名单落在 URL 上（换个中心实体也不丢），
+ * 图上点节点、清单里点「加进名单」都能往里加，每一项也可以单独移除。
  */
 const CHECKABLE_KINDS = new Set(['PRODUCT', 'INGREDIENT', 'DRUG'])
-const checkTargets = computed(() =>
-  layout.value.nodes
-    .filter((n) => CHECKABLE_KINDS.has(n.node.kind))
-    .slice(0, 5)
-    .map((n) => ({ name: n.node.name, label: n.node.label })),
-)
 
-/** 「这几样能不能一起吃」。只在用户主动点的时候发请求 —— 它要带商品与药物，不是每次都要看 */
+/** 名单从 URL 读出来。放 URL 上是为了刷新不丢、链接还能直接发给别人 */
+function parseTargets(raw: unknown): { name: string; label: string }[] {
+  const text = typeof raw === 'string' ? raw : ''
+  return text
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => ({ name: s, label: s }))
+}
+
+const checkTargets = ref<{ name: string; label: string }[]>(parseTargets(route.query.items))
+
+/** 是否已经预填过一次。用户清空名单后要尊重这个动作，不能下次加载又填回来 */
+let seeded = false
+
+/** 哪些项的风险明细被收起了。默认全展开：这条信息本来就是要给人看的 */
+const collapsed = ref<Set<string>>(new Set())
+
+/** 名单里有没有这一项。清单行上的按钮据此在「加进名单 / 移出名单」之间切换 */
+const inTargets = (name: string) => checkTargets.value.some((t) => t.name === name)
+
+function toggleTarget(node: { name: string; label: string; kind?: string }) {
+  if (!CHECKABLE_KINDS.has(node.kind ?? '')) return
+  const at = checkTargets.value.findIndex((t) => t.name === node.name)
+  if (at >= 0) checkTargets.value.splice(at, 1)
+  else if (checkTargets.value.length < 8) {
+    checkTargets.value.push({ name: node.name, label: node.label })
+  }
+}
+
+function removeTarget(name: string) {
+  const at = checkTargets.value.findIndex((t) => t.name === name)
+  if (at >= 0) checkTargets.value.splice(at, 1)
+}
+
+function toggleRisk(input: string) {
+  const next = new Set(collapsed.value)
+  if (next.has(input)) next.delete(input)
+  else next.add(input)
+  collapsed.value = next
+}
+
+/** 同一条边可能从多项里被查出来，键里带上端点才唯一 */
+const riskKey = (r: GraphEdge) =>
+  `${r.docId}#${r.chunkId}#${r.head.name}#${r.relation}#${r.tail.name}`
+
+/** 查这几样各自已知的相互作用与禁忌。只在用户主动点的时候发请求 —— 它要带商品与药物，不是每次都要看 */
 async function runInteractionCheck() {
   const items = checkTargets.value.map((n) => n.name)
   if (items.length < 2) return
+  collapsed.value = new Set()
   try {
     report.value = await checkInteractions(items)
   } catch (e) {
@@ -228,8 +276,64 @@ async function runInteractionCheck() {
   }
 }
 
+/**
+ * 名单一变就清掉上一次的报告：留着旧结论会让人以为它对应的是新名单。
+ * 同时把名单回写 URL，刷新与分享都不丢。
+ */
+watch(
+  checkTargets,
+  (list) => {
+    report.value = null
+    collapsed.value = new Set()
+    const items = list.map((t) => t.name).join(',')
+    if ((route.query.items ?? '') !== items) {
+      router.replace({ query: { ...route.query, items: items || undefined } })
+    }
+  },
+  { deep: true },
+)
+
+/**
+ * 图谱加载完把名单对齐到真实数据上。两件事：
+ * ① URL 里存的是键（SPU7），chips 上要显示展示名，否则用户认不出自己选了什么；
+ * ② 名单为空时**用当前视图里的可查项预填一次**（最多 4 个），让这块一进来就能用。
+ * 预填只在名单为空时发生，用户清空过一次之后不会再被填回来 —— 否则「移除」这个动作
+ * 会被下一次加载撤销，等于没做。
+ */
+watch(
+  () => layout.value.nodes,
+  (nodes) => {
+    const byName = new Map(nodes.map((n) => [n.node.name, n.node.label]))
+    for (const t of checkTargets.value) {
+      const label = byName.get(t.name)
+      if (label && label !== t.label) t.label = label
+    }
+    if (!checkTargets.value.length && !seeded && nodes.length) {
+      seeded = true
+      checkTargets.value = nodes
+        .filter((n) => CHECKABLE_KINDS.has(n.node.kind))
+        .slice(0, 4)
+        .map((n) => ({ name: n.node.name, label: n.node.label }))
+    }
+  },
+  { immediate: true },
+)
+
 function focusOn(name: string) {
   router.push({ query: { ...route.query, root: name } })
+}
+
+/**
+ * 画布上点一个节点。**主行为是「以它为中心」**，这是这张图最主要的用法。
+ * 顺带把它加进「一起吃安全吗」的名单 —— 用户刚点过它，多半正在关心它。
+ * 加名单只是副作用，所以只在它属于可查品类时才做，也不改变跳转结果。
+ */
+function onCanvasNode(name: string) {
+  focusOn(name)
+  const node = layout.value.nodes.find((n) => n.node.name === name)?.node
+  if (node && CHECKABLE_KINDS.has(node.kind) && !inTargets(name) && checkTargets.value.length < 8) {
+    checkTargets.value.push({ name: node.name, label: node.label })
+  }
 }
 
 /**
@@ -471,13 +575,15 @@ watch([root, depth], load, { immediate: true })
         </div>
       </section>
 
-      <aside class="graph-rail surface" aria-label="依据清单">
+      <aside class="graph-rail surface" aria-label="关系与出处">
         <div class="graph-rail__head">
-          <h2>依据清单</h2>
+          <h2>关系与出处</h2>
           <p>
-            {{ visibleEdges.length }} 条
-            <template v-if="hidden.length">（已隐藏 {{ hidden.length }} 类）</template>
+            <template v-if="rootLabel">以「{{ rootLabel }}」为中心，</template>
+            {{ visibleEdges.length }} 条关系
+            <template v-if="hidden.length">（另有 {{ hidden.length }} 类被筛掉）</template>
           </p>
+          <p class="graph-rail__hint">点开任意一条，能读到它的原文依据。</p>
         </div>
 
         <!-- 「筛选把关系都关了」与「压根没有这个实体」要分开说：
@@ -508,7 +614,12 @@ watch([root, depth], load, { immediate: true })
                 {{ relationLabel(edge.relation) }}
               </span>
               <span class="evidence__pair">
-                {{ edge.head.label }} <span aria-hidden="true">→</span> {{ edge.tail.label }}
+                <span class="evidence__subject">{{ edge.head.label }}</span>
+                <span class="evidence__verb" aria-hidden="true">→</span>
+                <span class="evidence__object">{{ edge.tail.label }}</span>
+              </span>
+              <span class="evidence__chevron" aria-hidden="true">
+                {{ edgeKey(edge) === selectedKey ? '收起' : '看依据' }}
               </span>
             </button>
 
@@ -530,74 +641,137 @@ watch([root, depth], load, { immediate: true })
                 关联路径：{{ edge.chain.join(' → ') }}
               </p>
 
-              <button type="button" class="evidence__focus" @click="focusOn(edge.tail.name)">
-                以「{{ edge.tail.label }}」为中心
-              </button>
+              <div class="evidence__actions">
+                <button type="button" class="evidence__focus" @click="focusOn(edge.tail.name)">
+                  以「{{ edge.tail.label }}」为中心
+                </button>
+                <button
+                  v-if="CHECKABLE_KINDS.has(edge.tail.kind)"
+                  type="button"
+                  class="evidence__focus"
+                  :class="{ 'is-on': inTargets(edge.tail.name) }"
+                  @click="toggleTarget(edge.tail)"
+                >
+                  {{ inTargets(edge.tail.name) ? '移出名单' : '加进名单' }}
+                </button>
+              </div>
             </div>
           </li>
         </ul>
 
-        <div v-if="visibleEdges.length" class="interaction">
-          <!--
-            「检查这几样」的「这几样」必须当场写出来。原先按钮不写名单、结论也不写，
-            用户既不知道查了谁，也没法复核——而这是要拿来判「能不能一起吃」的报告，
-            名单本身就是结论的一部分
-          -->
-          <p class="interaction__lead">
-            会把当前图里的这 {{ checkTargets.length }} 样拿去查相互作用与禁忌：
+        <section class="co-use">
+          <h3 class="co-use__title">能不能一起吃</h3>
+          <p class="co-use__lead">
+            下面这几样是你选出来的。点按钮，会逐样告诉你它和什么相冲、禁用于谁，
+            依据是哪篇文档的哪句话。查的是每样各自的已知冲突，不是两两组合。
           </p>
-          <ul class="interaction__targets">
-            <li v-for="t in checkTargets" :key="t.name">{{ t.label }}</li>
-          </ul>
+
+          <!--
+            名单必须可增可删。原先它是「当前视图里的前 5 个节点」，用户既看不懂
+            为什么是这几样，换个跳数名单还会悄悄变 —— 而这是要拿去判断能不能同服的
+            报告，查了谁必须由用户自己说了算
+          -->
+          <div v-if="checkTargets.length" class="co-use__picked">
+            <span class="co-use__picked-label">已选 {{ checkTargets.length }} 样</span>
+            <ul class="co-use__chips">
+              <li v-for="t in checkTargets" :key="t.name" class="co-use__chip">
+                <span>{{ t.label }}</span>
+                <button
+                  type="button"
+                  class="co-use__chip-x"
+                  :aria-label="`从名单里移除 ${t.label}`"
+                  @click="removeTarget(t.name)"
+                >
+                  ×
+                </button>
+              </li>
+            </ul>
+          </div>
+          <p v-else class="co-use__lead">
+            名单是空的。展开上面任意一条关系，点「加进名单」把它加进来。
+          </p>
 
           <button
             type="button"
-            class="interaction__btn"
+            class="co-use__btn"
             :disabled="checkTargets.length < 2"
             @click="runInteractionCheck"
           >
-            {{ checkTargets.length < 2 ? '至少要有两样才能查' : '检查这几样能不能一起用' }}
+            {{
+              checkTargets.length < 2
+                ? '至少选两样才能查'
+                : `查这 ${checkTargets.length} 样的已知冲突`
+            }}
           </button>
 
           <!--
             available=false 必须说成「没查成」。空列表与「无冲突」在界面上长得一模一样，
             而在这个场景里它们是相反的两句话
           -->
-          <p v-if="report && !report.available" class="interaction__note interaction__note--warn">
-            未检查：{{ report.note || '图谱暂时不可用' }}
+          <p v-if="report && !report.available" class="co-use__alert">
+            这次没查成：{{ report.note || '图谱暂时不可用' }}。请稍后重试，不要当作「没有冲突」。
           </p>
           <template v-else-if="report">
-            <p class="interaction__note">
-              已检查上面 {{ report.items.length }} 项，结果如下（每条都带原文）：
-            </p>
-            <ul class="interaction__results">
+            <p class="co-use__summary">每一样都单独查过，结果如下。</p>
+            <ul class="co-use__results">
               <li
                 v-for="item in report.items"
                 :key="item.input"
-                class="interaction__result"
+                class="co-use__result"
                 :class="{
-                  'interaction__result--clean': item.found && item.risks.length === 0,
-                  'interaction__result--unknown': !item.found,
+                  'co-use__result--clean': item.found && item.risks.length === 0,
+                  'co-use__result--unknown': !item.found,
                 }"
               >
-                <span class="interaction__result-name">{{ item.label }}</span>
-                <!--
-                  「没收录」「没查到风险」「查到风险」是三种结论，必须说成三句不同的话：
-                  把没收录渲染成「未发现风险」在用药场景下是相反的结论
-                -->
-                <span v-if="!item.found" class="interaction__result-count interaction__result-count--unknown">
-                  图谱未收录，无法判断
-                </span>
-                <span v-else-if="item.risks.length" class="interaction__result-count">
-                  {{ item.risks.length }} 条风险
-                </span>
-                <span v-else class="interaction__result-count interaction__result-count--clean">
-                  未发现风险
-                </span>
+                <div class="co-use__result-head">
+                  <span class="co-use__result-name">{{ item.label }}</span>
+                  <!--
+                    「没收录」「没查到风险」「查到风险」是三种结论，必须说成三句不同的话：
+                    把没收录渲染成「未发现风险」在用药场景下是相反的结论
+                  -->
+                  <span v-if="!item.found" class="co-use__verdict co-use__verdict--unknown">
+                    图谱未收录，无法判断
+                  </span>
+                  <button
+                    v-else-if="item.risks.length"
+                    type="button"
+                    class="co-use__verdict co-use__verdict--risk"
+                    :aria-expanded="!collapsed.has(item.input)"
+                    @click="toggleRisk(item.input)"
+                  >
+                    {{ item.risks.length }} 条冲突 ·
+                    {{ collapsed.has(item.input) ? '展开' : '收起' }}
+                  </button>
+                  <span v-else class="co-use__verdict co-use__verdict--clean">
+                    未发现已知冲突
+                  </span>
+                </div>
+
+                <!-- 只报数量等于没报：用户要看到「和谁、什么后果、哪句话说的」 -->
+                <ul
+                  v-if="item.found && item.risks.length && !collapsed.has(item.input)"
+                  class="co-use__risks"
+                >
+                  <li v-for="r in item.risks" :key="riskKey(r)" class="co-use__risk">
+                    <span class="co-use__risk-rel" :class="`co-use__risk-rel--${r.relation}`">
+                      {{ relationLabel(r.relation) }}
+                    </span>
+                    <span class="co-use__risk-pair">
+                      {{ r.counterpart ? r.counterpart.label : r.tail.label }}
+                    </span>
+                    <span v-if="r.effect" class="co-use__risk-effect">{{ r.effect }}</span>
+                    <RouterLink
+                      class="co-use__risk-src"
+                      :to="{ path: `/knowledge/${r.docId}`, query: { chunk: r.chunkId } }"
+                    >
+                      看依据
+                    </RouterLink>
+                  </li>
+                </ul>
               </li>
             </ul>
           </template>
-        </div>
+        </section>
       </aside>
     </div>
   </div>
@@ -995,6 +1169,13 @@ watch([root, depth], load, { immediate: true })
 }
 
 .graph-rail__head p,
+/* 「点开能看原文」是用法说明，要弱于副标题 */
+.graph-rail__hint {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+}
+
 .graph-rail__empty {
   margin-top: var(--ys-space-1);
   color: var(--color-text-secondary);
@@ -1009,9 +1190,12 @@ watch([root, depth], load, { immediate: true })
   list-style: none;
 }
 
+/* 三栏：关系名 / 一句话 / 展开指示。第三栏让「可以点开」写在脸上 */
 .evidence__head {
   display: grid;
-  gap: 4px;
+  grid-template-columns: 4.6em minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--ys-space-2);
   width: 100%;
   padding: var(--ys-space-2) var(--ys-space-3);
   border: 1px solid var(--color-border);
@@ -1057,9 +1241,40 @@ watch([root, depth], load, { immediate: true })
   color: var(--color-warning-strong);
 }
 
+/* 一句话要有主宾之分：两端同色时读不出「谁对谁」 */
 .evidence__pair {
-  color: var(--color-text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
   font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+}
+
+.evidence__subject {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.evidence__verb {
+  color: var(--color-text-muted);
+}
+
+.evidence__object {
+  color: var(--color-text-secondary);
+}
+
+.evidence__chevron {
+  color: var(--color-primary-strong);
+  font-size: var(--ys-font-xs);
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.evidence__head.is-active .evidence__chevron {
+  color: var(--color-text-secondary);
 }
 
 .evidence__detail {
@@ -1098,8 +1313,13 @@ watch([root, depth], load, { immediate: true })
   color: var(--color-primary-strong);
 }
 
+.evidence__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-2);
+}
+
 .evidence__focus {
-  justify-self: start;
   padding: 4px var(--ys-space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--ys-radius-full);
@@ -1114,14 +1334,95 @@ watch([root, depth], load, { immediate: true })
   color: var(--color-primary-strong);
 }
 
-.interaction {
-  display: grid;
-  gap: var(--ys-space-2);
-  padding-top: var(--ys-space-3);
-  border-top: 1px dashed var(--color-border);
+.evidence__focus.is-on {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary-strong);
 }
 
-.interaction__btn {
+/* ==================== 一起吃安全吗 ==================== */
+
+/* 与上面的关系清单分开：它们是两件事（看依据 / 查同服）。原先只隔一条虚线又没有标题，
+   读起来像清单的第九行，而用户对这两件事的心智完全不同 */
+.co-use {
+  display: grid;
+  gap: var(--ys-space-2);
+  margin-top: var(--ys-space-3);
+  padding: var(--ys-space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-sunken);
+}
+
+.co-use__title {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--ys-font-sm);
+  font-weight: 600;
+}
+
+.co-use__lead {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+}
+
+.co-use__picked {
+  display: grid;
+  gap: var(--ys-space-2);
+}
+
+/* 「已选 N 样」把名单的性质写出来：它是用户选的，不是系统算的 */
+.co-use__picked-label {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  font-weight: 600;
+}
+
+.co-use__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-1) var(--ys-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.co-use__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px var(--ys-space-1) 2px var(--ys-space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-full);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: var(--ys-font-xs);
+}
+
+/* 可移除是这一块的关键：名单由用户说了算，才谈得上「查了谁」 */
+.co-use__chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--ys-radius-full);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-sm);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.co-use__chip-x:hover {
+  background: var(--color-bg-sunken);
+  color: var(--color-danger-strong);
+}
+
+.co-use__btn {
   padding: var(--ys-space-2) var(--ys-space-3);
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-sm);
@@ -1131,95 +1432,146 @@ watch([root, depth], load, { immediate: true })
   cursor: pointer;
 }
 
-.interaction__btn:hover {
+.co-use__btn:hover:not(:disabled) {
   border-color: var(--color-primary);
 }
 
-.interaction__note {
-  color: var(--color-text-secondary);
-  font-size: var(--ys-font-xs);
-  line-height: var(--ys-leading-base);
-}
-
-.interaction__note--warn {
-  color: var(--color-warning-strong);
-}
-
-/* 「这几样」的名单。它必须比按钮更早被看到 —— 用户要能先确认查的是谁，再决定点不点 */
-.interaction__lead {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--ys-font-xs);
-  line-height: var(--ys-leading-base);
-}
-
-.interaction__targets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--ys-space-1) var(--ys-space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.interaction__targets li {
-  padding: 2px var(--ys-space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--ys-radius-full);
-  background: var(--color-bg-sunken);
-  color: var(--color-text-primary);
-  font-size: var(--ys-font-xs);
-}
-
-.interaction__results {
-  display: grid;
-  gap: var(--ys-space-1);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.interaction__result {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--ys-space-2);
-  padding: var(--ys-space-1) var(--ys-space-2);
-  border-radius: var(--ys-radius-sm);
-  background: var(--color-bg-sunken);
-  font-size: var(--ys-font-xs);
-}
-
-.interaction__result-name {
-  color: var(--color-text-primary);
-}
-
-.interaction__result-count {
-  flex: none;
-  color: var(--color-warning-strong);
-}
-
-/* 「未发现风险」用静默色：它是阴性结果，不该和风险条目抢注意力 */
-.interaction__result-count--clean {
-  color: var(--color-text-muted);
-}
-
-/* 「图谱未收录」不是阴性结果，必须与「未发现风险」在视觉上分开 */
-.interaction__result-count--unknown {
-  color: var(--color-text-secondary);
-  font-style: italic;
-}
-
-.interaction__result--unknown {
-  background: transparent;
-  border: 1px dashed var(--color-border);
-}
-
-.interaction__btn:disabled {
+.co-use__btn:disabled {
   border-color: var(--color-border);
   background: var(--color-bg-sunken);
   color: var(--color-text-secondary);
   cursor: not-allowed;
+}
+
+.co-use__alert {
+  margin: 0;
+  padding: var(--ys-space-2);
+  border: 1px solid var(--color-warning-strong);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-warning-strong);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+}
+
+.co-use__summary {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+}
+
+.co-use__results {
+  display: grid;
+  gap: var(--ys-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.co-use__result {
+  display: grid;
+  gap: var(--ys-space-1);
+  padding: var(--ys-space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-surface);
+}
+
+.co-use__result--unknown {
+  background: transparent;
+  border-style: dashed;
+}
+
+.co-use__result-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ys-space-2);
+}
+
+.co-use__result-name {
+  color: var(--color-text-primary);
+  font-size: var(--ys-font-sm);
+  font-weight: 600;
+}
+
+.co-use__verdict {
+  flex: none;
+  font-size: var(--ys-font-xs);
+}
+
+/* 有冲突：可点开看明细，所以做成按钮，并给出比纯文字更强的对比 */
+.co-use__verdict--risk {
+  padding: 2px var(--ys-space-2);
+  border: 1px solid var(--color-danger-strong);
+  border-radius: var(--ys-radius-full);
+  background: transparent;
+  color: var(--color-danger-strong);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* 阴性结果用静默色：它不该和风险条目抢注意力 */
+.co-use__verdict--clean {
+  color: var(--color-text-muted);
+}
+
+/* 「图谱未收录」不是阴性结果，必须与「未发现风险」在视觉上分开 */
+.co-use__verdict--unknown {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.co-use__risks {
+  display: grid;
+  gap: var(--ys-space-1);
+  margin: 0;
+  padding: var(--ys-space-2) 0 0;
+  border-top: 1px solid var(--color-border);
+  list-style: none;
+}
+
+.co-use__risk {
+  display: grid;
+  grid-template-columns: 4.6em minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px var(--ys-space-2);
+  font-size: var(--ys-font-xs);
+}
+
+.co-use__risk-rel {
+  font-weight: 600;
+}
+
+.co-use__risk-rel--INTERACTS_WITH {
+  color: var(--color-danger-strong);
+}
+
+.co-use__risk-rel--CAUTION_FOR {
+  color: var(--color-warning-strong);
+}
+
+.co-use__risk-rel--CONTAINS {
+  color: var(--ys-warm-600);
+}
+
+.co-use__risk-rel--PROVIDES {
+  color: var(--color-success-strong);
+}
+
+.co-use__risk-pair {
+  min-width: 0;
+  color: var(--color-text-primary);
+}
+
+.co-use__risk-effect {
+  grid-column: 1 / -1;
+  color: var(--color-text-secondary);
+  line-height: var(--ys-leading-base);
+}
+
+.co-use__risk-src {
+  color: var(--color-primary-strong);
 }
 
 /* ==================== 窄容器 ==================== */

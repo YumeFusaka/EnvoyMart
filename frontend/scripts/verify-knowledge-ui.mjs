@@ -228,6 +228,18 @@ const geometry = () =>
         )
         return { tx: +m[1], ty: +m[2], scale: +m[3] }
       })(),
+      clip: (() => {
+        const rect = document.querySelector('svg.canvas clipPath rect')
+        const m = rect.getScreenCTM()
+        const r = rect.getBBox()
+        const pt = (x, y) => ({
+          x: m.a * x + m.c * y + m.e,
+          y: m.b * x + m.d * y + m.f,
+        })
+        const a = pt(r.x, r.y)
+        const b2 = pt(r.x + r.width, r.y + r.height)
+        return { l: a.x, t: a.y, r: b2.x, b: b2.y }
+      })(),
     }
   })
 
@@ -253,6 +265,24 @@ ck(
   `只有 ${base.visible} 个节点落在画布里，裁剪范围可能又算错了`,
 )
 
+// 裁剪区必须严丝合缝地覆盖整块画布。
+// 只数「有多少节点落在画布里」是漏的：裁剪矩形整块平移之后，落在框内的节点
+// 仍有 60% 以上，画面却明显缺了一块 —— 这条直接量裁剪框本身。
+const clipOk = (g) => {
+  const pad = 2
+  return (
+    g.clip.l <= g.box.l + pad &&
+    g.clip.r >= g.box.r - pad &&
+    g.clip.t >= g.box.t - pad &&
+    g.clip.b <= g.box.b + pad
+  )
+}
+ck(
+  `裁剪区覆盖画布可见区（clip ${Math.round(base.clip.l)},${Math.round(base.clip.t)}-${Math.round(base.clip.r)},${Math.round(base.clip.b)} / 容器 ${Math.round(base.box.l)},${Math.round(base.box.t)}-${Math.round(base.box.r)},${Math.round(base.box.b)}）`,
+  clipOk(base),
+  '裁剪矩形没有盖住整块画布——放大后会出现「还没到边界就被切」',
+)
+
 const viewportTf = () => page.locator('g.viewport').getAttribute('transform')
 const tfBase = await viewportTf()
 await page.locator('button[aria-label="放大"]').click()
@@ -264,6 +294,13 @@ ck(
   '放大后节点在屏幕上变大',
   zoomed.minH > base.minH,
   `${base.minH.toFixed(1)} → ${zoomed.minH.toFixed(1)}`,
+)
+// 放大才是这个 bug 的触发条件，所以这里必须再量一遍 —— 默认视角下裁剪矩形
+// 和画布几乎重合，坏的实现也照样是绿的
+ck(
+  `放大后裁剪区仍覆盖画布（clip ${Math.round(zoomed.clip.l)},${Math.round(zoomed.clip.t)}-${Math.round(zoomed.clip.r)},${Math.round(zoomed.clip.b)}）`,
+  clipOk(zoomed),
+  '放大后裁剪矩形没跟着画布走——又会出现「还没到边界就被切」',
 )
 
 await page.mouse.move(600, 700)
@@ -532,23 +569,25 @@ await page.goto(`${BASE}/#/knowledge/graph?root=${encodeURIComponent('华法林'
 })
 await page.reload({ waitUntil: 'networkidle' })
 await page.locator('svg.canvas').waitFor({ state: 'visible', timeout: 20000 })
-await page.locator('.interaction__btn').waitFor({ state: 'visible', timeout: 20000 })
+await page.locator('.co-use__btn').waitFor({ state: 'visible', timeout: 20000 })
 
-const targets = await page.locator('.interaction__targets li').allTextContents()
+const targets = (await page.locator('.co-use__chip').allTextContents()).map((t) =>
+  t.replace(/×/g, ' ').trim(),
+)
 ck(
   `检查前就列出要查的名单（${targets.length} 项：${targets.join('、')}）`,
   targets.length >= 2,
   `只有 ${targets.length} 项，用户看不到「这几样」是哪几样`,
 )
 
-await page.locator('.interaction__btn').click()
+await page.locator('.co-use__btn').click()
 await poll(
-  () => page.locator('.interaction__result').count(),
+  () => page.locator('.co-use__result').count(),
   (n) => n > 0,
   12000,
 )
 const results = await page.evaluate(() =>
-  [...document.querySelectorAll('.interaction__result')].map((el) => ({
+  [...document.querySelectorAll('.co-use__result')].map((el) => ({
     text: (el.textContent || '').replace(/\s+/g, ' ').trim(),
     unknown: el.classList.contains('interaction__result--unknown'),
     clean: el.classList.contains('interaction__result--clean'),
@@ -563,12 +602,12 @@ ck(
 // 不允许出现空白（空白会被用户读成「安全」）
 ck(
   '每一项都给出了明确结论，没有留白',
-  results.every((r) => /条风险|未发现风险|图谱未收录/.test(r.text)),
+  results.every((r) => /条冲突|未发现已知冲突|图谱未收录/.test(r.text)),
   results.map((r) => r.text).join(' | '),
 )
 // 阴性结果与「没查成」必须在视觉上分得开：类名不同才算分开
 ck(
-  '「未发现风险」与「图谱未收录」在样式上是两回事',
+  '「未发现已知冲突」与「图谱未收录」在样式上是两回事',
   results.every((r) => !(r.unknown && r.clean)),
   '同一行同时挂了 unknown 与 clean 两个类',
 )
