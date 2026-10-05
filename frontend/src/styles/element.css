@@ -65,6 +65,142 @@
   box-shadow: var(--focus-ring);
 }
 
+/*
+ * 输入类的焦点态。
+ *
+ * EP 自己只给 `.el-input__wrapper.is-focus` 一条 1px 的内阴影，而全局那条
+ * `:focus-visible { outline }` 落在**真实的 <input>** 上 —— 它被 wrapper 包着、
+ * 边框由 wrapper 画，于是 outline 被裁掉、1px 内阴影又看不出来。
+ * 结果就是键盘用户按 Tab 进到输入框时界面上没有任何变化（实测
+ * `.el-input__wrapper` 聚焦前后 box-shadow 都是 none）。
+ *
+ * 这里统一给包装层画一圈与按钮同源的焦点环，选择器同时覆盖 input / textarea /
+ * select 三种形态。用 :focus-within 而不是 :focus-visible 是因为焦点事件发生在
+ * 内层原生元素上，包装层只能靠「里面有没有焦点」来判断。
+ */
+.el-input__wrapper:focus-within,
+.el-textarea__inner:focus-visible,
+.el-select__wrapper:focus-within {
+  box-shadow: var(--focus-ring);
+  /*
+   * 内阴影由 EP 的 is-focus 规则给出，优先级与这里相同但更靠后（它带 .is-focus
+   * 类，特异性更高）。显式声明 inset 版本让 1px 的那条也能同时存在，
+   * 边框不塌陷。
+   */
+  outline: none;
+}
+
+/*
+ * 标签（el-tag）的文字色。
+ *
+ * EP 的默认档 `.el-tag--info` 用 --el-color-info (#909399) 叠在自己的浅灰底
+ * (#f4f4f5) 上，实测只有 **2.8:1** —— 订单状态、售后状态这一整排在弱视用户
+ * 眼里几乎是一片灰。而项目这一侧其实已经有能力过线：warm-500 叠该底是 4.66:1、
+ * warm-600 是 5.28:1，状态色 600 档也都 ≥5:1。
+ *
+ * 所以把 tag 的文字色统一指到项目的语义色上，背景/边框仍由 EP 变量给。
+ * 与 --color-primary-strong 是同一个模式：**浅底上的小字要比纯色块里的字深一档**。
+ */
+/*
+ * 文字型按钮（link / text）的主色也要用 strong 档。
+ *
+ * `el-button link type="primary"` 的文字色走 --el-color-primary，也就是 500 档，
+ * 它落在页面暖灰底上只有 4.15:1 —— 领券中心顶部的「我的优惠券」就是这一处。
+ * 实心按钮不受影响：那里对比度由底上的白字决定，仍用 --color-primary。
+ */
+.el-button.is-link.el-button--primary,
+.el-button.is-text.el-button--primary {
+  --el-button-text-color: var(--color-primary-strong);
+  --el-button-hover-text-color: var(--color-primary-strong);
+}
+.el-button.is-link.el-button--success,
+.el-button.is-text.el-button--success {
+  --el-button-text-color: var(--color-success-strong);
+  --el-button-hover-text-color: var(--color-success-strong);
+}
+.el-button.is-link.el-button--warning,
+.el-button.is-text.el-button--warning {
+  --el-button-text-color: var(--color-warning-strong);
+  --el-button-hover-text-color: var(--color-warning-strong);
+}
+.el-button.is-link.el-button--danger,
+.el-button.is-text.el-button--danger,
+.el-button.is-link.el-button--error,
+.el-button.is-text.el-button--error {
+  --el-button-text-color: var(--color-danger-strong);
+  --el-button-hover-text-color: var(--color-danger-strong);
+}
+
+/*
+ * 朴素按钮（plain）同样是「浅底 + 主色文字」，文字色要走 strong 档。
+ * 知识库的「搜索」就是这一处：500 档叠在 -subtle 浅底上只有 4.15:1。
+ * 实心按钮不受影响 —— 那里对比度由底上的白字决定，仍用 --color-primary。
+ */
+.el-button--primary.is-plain {
+  --el-button-text-color: var(--color-primary-strong);
+  --el-button-hover-text-color: var(--color-text-inverse);
+  --el-button-hover-bg-color: var(--color-primary);
+  --el-button-hover-border-color: var(--color-primary);
+}
+.el-button--success.is-plain {
+  --el-button-text-color: var(--color-success-strong);
+}
+.el-button--warning.is-plain {
+  --el-button-text-color: var(--color-warning-strong);
+}
+.el-button--danger.is-plain,
+.el-button--error.is-plain {
+  --el-button-text-color: var(--color-danger-strong);
+}
+
+/*
+ * 禁用态按钮。EP 默认的禁用态是「主色混白到 50% + 白字」，
+ * 实测这个底上的白字只有 **2.01:1** —— 不仅不达标，更要命的是它看起来
+ * 和可点击状态几乎一样：用户在商品详情页会反复点一个点了没反应的按钮。
+ *
+ * 这里把它改成「中性底 + 中性字」，与可点击态形成明确的视觉区分。
+ * 文字走 secondary 而不是 muted：muted（#7d6b52）压在 sunken 底上只有 4.06:1，
+ * 差一点点不达标；secondary（#76624b）是 4.60:1，刚好过线且观感仍是「弱」。
+ * 全站共用，避免每个页面各补一次。
+ */
+.el-button.is-disabled,
+.el-button.is-disabled:hover,
+.el-button.is-disabled:focus {
+  --el-button-disabled-bg-color: var(--color-bg-sunken);
+  --el-button-disabled-text-color: var(--color-text-secondary);
+  --el-button-disabled-border-color: var(--color-border);
+  opacity: 1;
+}
+
+/*
+ * 头像占位缩写（没有头像图时 EP 渲染的那个字）。
+ *
+ * EP 默认是「`#c0c4cc` 灰底 + 白字」，实测 **1.75:1** —— 顶栏那个「管」字
+ * 几乎只剩一块灰圆。这里改成与页面同色的 sunken 底 + secondary 字（4.60:1），
+ * 视觉上也从「一块突兀的灰」变成与暖色系一致的小色块。
+ */
+.el-avatar {
+  background: var(--color-bg-sunken);
+  color: var(--color-text-secondary);
+}
+
+.el-tag.el-tag--info {
+  --el-tag-text-color: var(--color-text-muted);
+}
+.el-tag.el-tag--primary {
+  --el-tag-text-color: var(--color-primary-strong);
+}
+.el-tag.el-tag--success {
+  --el-tag-text-color: var(--color-success-strong);
+}
+.el-tag.el-tag--warning {
+  --el-tag-text-color: var(--color-warning-strong);
+}
+.el-tag.el-tag--danger,
+.el-tag.el-tag--error {
+  --el-tag-text-color: var(--color-danger-strong);
+}
+
 .el-card,
 .el-dialog,
 .el-drawer {

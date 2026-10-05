@@ -53,6 +53,7 @@
      600 档给「浅色底上的小字」——如 success-subtle / warning-subtle 底上的徽标 */
   --ys-red-50: #fdf0ee;
   --ys-red-500: #c0392b;
+  --ys-red-600: #a83224;
   --ys-amber-50: #fdf7ec;
   --ys-amber-500: #b7791f;
   --ys-amber-600: #92610e;
@@ -140,11 +141,26 @@
   --color-primary-active: var(--ys-terracotta-700);
   --color-primary-subtle: var(--ys-terracotta-50);
   --color-primary-border: var(--ys-terracotta-200);
+  /*
+   * 主色**用作文字**时的档位，比 --color-primary 深一档。
+   *
+   * 500 档(#b65b2e) 只在纯白上勉强够 4.57:1，一旦落在本项目的暖灰底
+   * (--color-bg-surface-muted / --color-bg-page) 上就跌到 4.13～4.34:1，
+   * 低于 WCAG 2.2 AA 的 4.5:1 —— 而登录页的「立即注册」、导航的当前项
+   * 恰好就是这种「主色小字 + 暖灰底」的组合，实测 4.15 / 4.34。
+   *
+   * 600 档(#a04d24) 在所有页面底色上都有 ≥5.2:1，所以文字一律走它；
+   * 背景、边框、图标仍用 --color-primary，那里对比度由前景（白字）决定。
+   * 与 --color-success-strong / --color-warning-strong 是同一个模式。
+   */
+  --color-primary-strong: var(--ys-terracotta-600);
 
   /* 强调色 */
   --color-accent: var(--ys-teal-500);
   --color-accent-hover: var(--ys-teal-700);
   --color-accent-subtle: var(--ys-teal-50);
+  /* 与 primary/success/warning/danger 同因：500 档叠浅底不达 4.5:1 */
+  --color-accent-strong: var(--ys-teal-700);
 
   /* 状态 */
   --color-success: var(--ys-green-500);
@@ -157,6 +173,8 @@
   --color-warning-strong: var(--ys-amber-600);
   --color-danger: var(--ys-red-500);
   --color-danger-subtle: var(--ys-red-50);
+  /* red-500 叠自身 -subtle 浅底只有 4.89:1，与 success/warning 同因 */
+  --color-danger-strong: var(--ys-red-600);
 
   /* 页面底纹。用 token 而不是写死在全局样式里，切主题时才会跟着变 */
   --color-page-gradient:

@@ -274,7 +274,7 @@ const router = createRouter({
         },
         {
           // 知识库：上传文档 → 自动切分 → 重建索引进向量库与图谱。
-          // 放在 admin 段下是因为「谁都能看依据」（/knowledge/documents 公开只读）
+          // 放在 admin 段下是因为「谁都能看依据」（/knowledge 公开只读）
           // 与「谁来写依据」是两件事 —— 读的门开着，写必须换一扇门
           path: 'knowledge',
           name: 'admin-knowledge',
