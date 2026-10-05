@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import yumefusaka.envoymart.common.util.Amounts;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.contract.CouponPreview;
 import yumefusaka.envoymart.contract.RedeemItem;
@@ -237,7 +238,11 @@ public class CouponServiceImpl implements CouponService {
         if (scopeAmount < threshold) {
             long all = items.stream().mapToLong(this::subtotalOf).sum();
             String what = all > scopeAmount ? "优惠券适用范围内的商品金额" : "订单金额";
-            throw new IllegalStateException(what + "未达到使用门槛，还差 " + (threshold - scopeAmount) + " 分");
+            // 金额在库里是「分」，但这句话是给用户看的 —— 直接拼分值会得到
+            // 「还差 23200 分」这种没人读得懂的单位。展示层一律按元，且只在
+            // 非整数时才带两位小数（「还差 23 元」比「还差 23.00 元」更像人话）
+            throw new IllegalStateException(
+                    what + "未达到使用门槛，还差 " + Amounts.yuan(threshold - scopeAmount) + " 元");
         }
 
         return computeDeduction(coupon, scopeAmount);

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import yumefusaka.envoymart.common.util.Amounts;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.paymentservice.entity.PaymentEntity;
 import yumefusaka.envoymart.paymentservice.entity.RefundEntity;
@@ -116,7 +117,8 @@ public class RefundServiceImpl implements RefundService {
             throw new IllegalArgumentException("退款金额必须大于 0");
         }
         if (requestAmount > refundable) {
-            throw new IllegalStateException("退款金额超出可退额度，最多可退 " + refundable + " 分");
+            // 金额在库里是「分」，但这句直接给用户看，要按元展示（见 Amounts）
+            throw new IllegalStateException("退款金额超出可退额度，最多可退 " + Amounts.yuan(refundable) + " 元");
         }
 
         RefundEntity entity = new RefundEntity();

@@ -106,8 +106,30 @@ class CouponServiceImplTest {
         // 总额 20700 > 门槛，但范围内的只有 6900 < 10000
         assertThatThrownBy(() -> service.redeem("u1001", request(item(10, 13800, 14, 13), item(6, 6900, 4, 1))))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessage("优惠券适用范围内的商品金额未达到使用门槛，还差 3100 分");
+                .hasMessage("优惠券适用范围内的商品金额未达到使用门槛，还差 31 元");
         verify(userCouponMapper, never()).redeem(anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void 门槛差额按元展示而不是分() {
+        // 差 2350 分 = 23.50 元。库里的金额单位是「分」，但这句话直接给用户看，
+        // 拼分值会得到「还差 2350 分」—— 一条把钱说少 100 倍、还换了个单位的提示。
+        // 这里只传类目内商品，所以总额与范围金额相同，走「订单金额」措辞分支
+        givenCoupon(coupon("FIXED", 2000L, null, 10000, "CATEGORY", "1"));
+
+        assertThatThrownBy(() -> service.redeem("u1001", request(item(6, 7650, 4, 1))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("订单金额未达到使用门槛，还差 23.50 元");
+    }
+
+    @Test
+    void 门槛差额是整元时不带小数位() {
+        // 整数分值要输出「还差 31 元」而不是「还差 31.00 元」—— 少两个没信息的字符
+        givenCoupon(coupon("FIXED", 2000L, null, 10000, "CATEGORY", "1"));
+
+        assertThatThrownBy(() -> service.redeem("u1001", request(item(6, 6900, 4, 1))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("订单金额未达到使用门槛，还差 31 元");
     }
 
     @Test
