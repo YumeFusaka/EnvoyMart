@@ -55,6 +55,58 @@ export function relationLabel(relation: string | null | undefined): string {
 }
 
 /**
+ * 一个「关系」的标识：只看三元组，不看它由哪篇文档支撑。
+ *
+ * 图谱里同一件事常被多篇文档各说一遍（DHA 与阿司匹林相冲，三篇说明书都写了），
+ * 那是三条独立的边、各有各的出处。但用户眼里那是**一件事**，列表里列三遍就是重复。
+ * 所以界面按「关系」聚合、把出处收在下面 —— 这与图谱的语义模型一致：
+ * 一条关系、多个证据。
+ */
+export function relationKey(edge: GraphEdge): string {
+  return [edge.head.name, edge.relation, edge.tail.name].join('|')
+}
+
+/** 一条关系，加上支撑它的全部出处（边）。同一件事的不同文档证据收在这里 */
+export interface EvidenceGroup {
+  /** 关系标识，选中态用它 */
+  key: string
+  head: GraphNode
+  tail: GraphNode
+  relation: string
+  /** 支撑这条关系的边。至少一条；多条时按文档号排序，保证每次渲染顺序一致 */
+  sources: GraphEdge[]
+}
+
+/**
+ * 把边按「关系」聚合。
+ * <p>
+ * 保留首次出现的顺序（也就是画布上的绘制顺序），同一关系内按 docId 排 ——
+ * 顺序不稳的话，同一份数据每次刷新列表都在跳。
+ */
+export function groupByRelation(edges: GraphEdge[]): EvidenceGroup[] {
+  const groups = new Map<string, EvidenceGroup>()
+  for (const edge of edges) {
+    const key = relationKey(edge)
+    const existing = groups.get(key)
+    if (existing) {
+      existing.sources.push(edge)
+    } else {
+      groups.set(key, {
+        key,
+        head: edge.head,
+        tail: edge.tail,
+        relation: edge.relation,
+        sources: [edge],
+      })
+    }
+  }
+  for (const g of groups.values()) {
+    g.sources.sort((a, b) => a.docId.localeCompare(b.docId))
+  }
+  return [...groups.values()]
+}
+
+/**
  * 一条边的稳定标识。
  *
  * 同一个切片上可能有好几条边（同一句话支撑的不同三元组），所以键里必须带上

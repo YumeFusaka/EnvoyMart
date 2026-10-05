@@ -13,10 +13,12 @@ import { entityNeighborhood, graphStats, searchEntities } from '@/api/graph'
 import GraphCanvas from '@/components/knowledge/GraphCanvas.vue'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import type { GraphEdge, GraphNode } from '@/types/models'
+import type { EvidenceGroup } from '@/utils/graph'
 import {
   KIND_ORDER,
   RELATION_ORDER,
   edgeKey,
+  groupByRelation,
   kindLabel,
   relationLabel,
   ringLayout,
@@ -118,6 +120,23 @@ const rootLabel = computed(() => {
   return node?.node.label ?? root.value
 })
 
+/**
+ * 当前中心并进候选项，且永远用展示名覆盖：`el-select` 只认选项列表里的 label，
+ * 找不到就退回去显示原始值 —— 于是键 `spu7` 露在标题栏上，和图上的「鱼油软胶囊」对不上。
+ */
+watch([root, rootLabel], () => {
+  if (!root.value) return
+  const rest = entityOptions.value.filter((o) => o.value !== root.value)
+  entityOptions.value = [{ value: root.value, label: rootLabel.value }, ...rest]
+}, { immediate: true })
+
+/**
+ * 下拉展示文本的 key。**只靠改选项 label 不够**：`el-select` 把已选项的显示文本
+ * 缓存住了，选项列表变化不会让它重算，首屏那几百毫秒的 `spu7` 就一直在标题栏上。
+ * 让它在展示名变化时重建一次，代价只落在这一个控件上。
+ */
+const selectKey = computed(() => `${root.value}::${rootLabel.value}`)
+
 /** 出现过的类型，按词表的固定顺序排 —— 顺序随数据变的话，图例每次刷新都在跳 */
 const kindsInGraph = computed(() => {
   const seen = new Set<string>()
@@ -155,18 +174,33 @@ const evidenceSections = computed(() => {
   const core = edges.filter(isRoot)
   const rest = edges.filter((e) => !isRoot(e))
 
-  /** 风险类排前面：用户先要知道的是「有没有冲突」，不是「含什么成分」 */
+  /**
+   * 组内按关系聚合后再按种类分组。
+   * <p>
+   * 聚合放在这里而不是更早：画布仍然画每一条边（它们确实存在），
+   * 只有**给人读的列表**按关系合并 —— 同一件事被三篇文档说过，用户要看的是一件事 +
+   * 三处出处，不是同一行重复三遍。风险类排前面：用户先要知道的是「有没有冲突」。
+   */
   const byRelation = (list: GraphEdge[]) => {
-    const groups = new Map<string, GraphEdge[]>()
-    for (const e of list) {
-      const g = groups.get(e.relation) ?? []
-      g.push(e)
-      groups.set(e.relation, g)
+    const byKind = new Map<string, EvidenceGroup[]>()
+    for (const g of groupByRelation(list)) {
+      const arr = byKind.get(g.relation) ?? []
+      arr.push(g)
+      byKind.set(g.relation, arr)
     }
-    return RELATION_ORDER.filter((r) => groups.has(r))
-      .concat([...groups.keys()].filter((r) => !RELATION_ORDER.includes(r)))
-      .map((relation) => ({ relation, edges: groups.get(relation)! }))
+    return RELATION_ORDER.filter((r) => byKind.has(r))
+      .concat([...byKind.keys()].filter((r) => !RELATION_ORDER.includes(r)))
+      .map((relation) => ({ relation, relations: byKind.get(relation)! }))
   }
+
+  /** 一组里有多少条关系、一共多少处依据。两个数字都要给，否则计数和展开后的条数对不上 */
+  const tally = (groups: { relations: EvidenceGroup[] }[]) => ({
+    relations: groups.reduce((n, g) => n + g.relations.length, 0),
+    sources: groups.reduce(
+      (n, g) => n + g.relations.reduce((m, r) => m + r.sources.length, 0),
+      0,
+    ),
+  })
 
   // 归组：取离中心更近的那一端；两端跳数相同（都是外圈互连）时取 head
   const anchored = new Map<string, { label: string; kind: string; edges: GraphEdge[] }>()
@@ -182,13 +216,24 @@ const evidenceSections = computed(() => {
   }
   const outer = [...anchored.entries()]
     .sort((a, b) => (depthOf.get(a[0]) ?? 99) - (depthOf.get(b[0]) ?? 99))
-    .map(([name, g]) => ({ name, label: g.label, kind: g.kind, groups: byRelation(g.edges) }))
+    .map(([name, g]) => {
+      const groups = byRelation(g.edges)
+      return { name, label: g.label, kind: g.kind, groups, ...tally(groups) }
+    })
 
+  const coreGroups = byRelation(core)
+  const outerRelations = outer.reduce((n, e2) => n + e2.relations, 0)
+  const outerSources = outer.reduce((n, e2) => n + e2.sources, 0)
+  const all = groupByRelation(edges)
   return {
-    core: byRelation(core),
-    coreCount: core.length,
+    core: coreGroups,
+    ...tally(coreGroups),
     outer,
-    outerCount: rest.length,
+    outerRelations,
+    outerSources,
+    /** 全文（两段合计）的关系数与依据处数，给顶部那句读 */
+    totalRelations: all.length,
+    totalSources: edges.length,
   }
 })
 
@@ -213,6 +258,7 @@ async function load() {
   loading.value = true
   error.value = ''
   selectedKey.value = ''
+
 
   try {
     edges.value = await entityNeighborhood(root.value, depth.value)
@@ -348,6 +394,7 @@ watch([root, depth], load, { immediate: true })
         <label class="graph-tools__field">
           <span>中心实体</span>
           <el-select
+            :key="selectKey"
             :model-value="root"
             filterable
             remote
@@ -524,7 +571,7 @@ watch([root, depth], load, { immediate: true })
           <h2>关系与出处</h2>
           <p>
             <template v-if="rootLabel">以「{{ rootLabel }}」为中心，</template>
-            {{ visibleEdges.length }} 条关系
+            {{ evidenceSections.totalRelations }} 条关系
             <template v-if="hidden.length">（另有 {{ hidden.length }} 类被筛掉）</template>
           </p>
           <p class="graph-rail__hint">点开任意一条，能读到它的原文依据。</p>
@@ -552,56 +599,74 @@ watch([root, depth], load, { immediate: true })
           <section v-if="evidenceSections.core.length" class="evidence__section">
             <h3 class="evidence__section-title">
               「{{ rootLabel }}」自己的关系
-              <span class="evidence__section-count">{{ evidenceSections.coreCount }} 条</span>
+              <span class="evidence__section-count">
+                {{ evidenceSections.relations }} 条
+                <template v-if="evidenceSections.sources > evidenceSections.relations">
+                  · {{ evidenceSections.sources }} 处依据
+                </template>
+              </span>
             </h3>
             <template v-for="group in evidenceSections.core" :key="group.relation">
               <p class="evidence__group">
                 {{ relationLabel(group.relation) }}
-                <span class="evidence__group-count">{{ group.edges.length }}</span>
+                <span class="evidence__group-count">{{ group.relations.length }}</span>
               </p>
               <ul class="evidence__list">
-                <template v-for="edge in group.edges" :key="edgeKey(edge)">
-                                  <li class="evidence__row">
-                                    <button
-                                      type="button"
-                                      class="evidence__head"
-                                      :class="{ 'is-active': edgeKey(edge) === selectedKey }"
-                                      :aria-expanded="edgeKey(edge) === selectedKey"
-                                      @click="selectedKey = edgeKey(edge) === selectedKey ? '' : edgeKey(edge)"
-                                    >
-                                      <span class="evidence__rel" :class="`evidence__rel--${edge.relation}`">
-                                        {{ relationLabel(edge.relation) }}
-                                      </span>
-                                      <span class="evidence__pair">
-                                        <span class="evidence__subject">{{ edge.head.label }}</span>
-                                        <span class="evidence__verb" aria-hidden="true">→</span>
-                                        <span class="evidence__object">{{ edge.tail.label }}</span>
-                                      </span>
-                                      <span class="evidence__chevron" aria-hidden="true">
-                                        {{ edgeKey(edge) === selectedKey ? '收起' : '看依据' }}
-                                      </span>
-                                    </button>
+                <template v-for="rel in group.relations" :key="rel.key">
+                  <li class="evidence__row">
+                    <button
+                      type="button"
+                      class="evidence__head"
+                      :class="{ 'is-active': rel.key === selectedKey }"
+                      :aria-expanded="rel.key === selectedKey"
+                      @click="selectedKey = rel.key === selectedKey ? '' : rel.key"
+                    >
+                      <span class="evidence__rel" :class="`evidence__rel--${rel.relation}`">
+                        {{ relationLabel(rel.relation) }}
+                      </span>
+                      <span class="evidence__pair">
+                        <span class="evidence__subject">{{ rel.head.label }}</span>
+                        <span class="evidence__verb" aria-hidden="true">→</span>
+                        <span class="evidence__object">{{ rel.tail.label }}</span>
+                        <!--
+                          出处数量写在行上：同一件事被几篇文档说过，用户在这里一眼看到「3 处」，
+                          而不是把同一行读三遍才反应过来那是重复
+                        -->
+                        <span v-if="rel.sources.length > 1" class="evidence__kinds">
+                          {{ rel.sources.length }} 处依据
+                        </span>
+                      </span>
+                      <span class="evidence__chevron" aria-hidden="true">
+                        {{ rel.key === selectedKey ? '收起' : '看依据' }}
+                      </span>
+                    </button>
 
-                                    <div v-if="edgeKey(edge) === selectedKey" class="evidence__detail">
-                                      <p v-if="edge.effect" class="evidence__effect">{{ edge.effect }}</p>
-                                      <blockquote class="evidence__quote">{{ edge.quote }}</blockquote>
-                                      <p class="evidence__source">
-                                        <RouterLink
-                                          :to="{ path: `/knowledge/${edge.docId}`, query: { chunk: edge.chunkId } }"
-                                        >
-                                          《{{ edge.docTitle || edge.docId }}》· 查看原文
-                                        </RouterLink>
-                                      </p>
-                                      <p v-if="edge.chain.length" class="evidence__chain">
-                                        关联路径：{{ edge.chain.join(' → ') }}
-                                      </p>
-                                      <div class="evidence__actions">
-                                        <button type="button" class="evidence__focus" @click="focusOn(edge.tail.name)">
-                                          以「{{ edge.tail.label }}」为中心
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </li>
+                    <div v-if="rel.key === selectedKey" class="evidence__detail">
+                                        <!--
+                        每条出处单独一块：效果 / 逐字引文 / 文档链接。多篇文档对同一件事的表述会有差异，
+                        合成一段会丢掉差异，而差异恰恰是「信哪一篇」的依据
+                      -->
+                      <ul class="evidence__sources">
+                        <li v-for="src in rel.sources" :key="edgeKey(src)" class="evidence__source-item">
+                          <p v-if="src.effect" class="evidence__effect">{{ src.effect }}</p>
+                          <blockquote class="evidence__quote">{{ src.quote }}</blockquote>
+                          <p class="evidence__source">
+                            <RouterLink :to="{ path: `/knowledge/${src.docId}`, query: { chunk: src.chunkId } }">
+                              《{{ src.docTitle || src.docId }}》· 查看原文
+                            </RouterLink>
+                          </p>
+                          <p v-if="src.chain.length" class="evidence__chain">
+                            关联路径：{{ src.chain.join(' → ') }}
+                          </p>
+                        </li>
+                      </ul>
+                      <div class="evidence__actions">
+                        <button type="button" class="evidence__focus" @click="focusOn(rel.tail.name)">
+                          以「{{ rel.tail.label }}」为中心
+                        </button>
+                      </div>
+                    </div>
+                  </li>
                 </template>
               </ul>
             </template>
@@ -610,7 +675,10 @@ watch([root, depth], load, { immediate: true })
           <section v-if="evidenceSections.outer.length" class="evidence__section">
             <h3 class="evidence__section-title">
               与「{{ rootLabel }}」相关的其他实体
-              <span class="evidence__section-count">{{ evidenceSections.outerCount }} 条</span>
+              <span class="evidence__section-count">
+                {{ evidenceSections.outerRelations }} 条关系
+                · {{ evidenceSections.outerSources }} 处依据
+              </span>
             </h3>
             <p class="evidence__section-note">
               这些是中心实体之外的连线，用来说明上下文。
@@ -618,55 +686,66 @@ watch([root, depth], load, { immediate: true })
             <template v-for="entity in evidenceSections.outer" :key="entity.name">
               <p class="evidence__group">
                 {{ entity.label }}
-                <span class="evidence__group-count">
-                  {{ entity.groups.reduce((n, g) => n + g.edges.length, 0) }}
-                </span>
+                <span class="evidence__group-count">{{ entity.relations }}</span>
               </p>
               <template v-for="group in entity.groups" :key="group.relation">
                 <p class="evidence__subgroup">{{ relationLabel(group.relation) }}</p>
                 <ul class="evidence__list">
-                  <template v-for="edge in group.edges" :key="edgeKey(edge)">
-                                    <li class="evidence__row">
-                                      <button
-                                        type="button"
-                                        class="evidence__head"
-                                        :class="{ 'is-active': edgeKey(edge) === selectedKey }"
-                                        :aria-expanded="edgeKey(edge) === selectedKey"
-                                        @click="selectedKey = edgeKey(edge) === selectedKey ? '' : edgeKey(edge)"
-                                      >
-                                        <span class="evidence__rel" :class="`evidence__rel--${edge.relation}`">
-                                          {{ relationLabel(edge.relation) }}
-                                        </span>
-                                        <span class="evidence__pair">
-                                          <span class="evidence__subject">{{ edge.head.label }}</span>
-                                          <span class="evidence__verb" aria-hidden="true">→</span>
-                                          <span class="evidence__object">{{ edge.tail.label }}</span>
-                                        </span>
-                                        <span class="evidence__chevron" aria-hidden="true">
-                                          {{ edgeKey(edge) === selectedKey ? '收起' : '看依据' }}
-                                        </span>
-                                      </button>
+                  <template v-for="rel in group.relations" :key="rel.key">
+                    <li class="evidence__row">
+                      <button
+                        type="button"
+                        class="evidence__head"
+                        :class="{ 'is-active': rel.key === selectedKey }"
+                        :aria-expanded="rel.key === selectedKey"
+                        @click="selectedKey = rel.key === selectedKey ? '' : rel.key"
+                      >
+                        <span class="evidence__rel" :class="`evidence__rel--${rel.relation}`">
+                          {{ relationLabel(rel.relation) }}
+                        </span>
+                        <span class="evidence__pair">
+                          <span class="evidence__subject">{{ rel.head.label }}</span>
+                          <span class="evidence__verb" aria-hidden="true">→</span>
+                          <span class="evidence__object">{{ rel.tail.label }}</span>
+                          <!--
+                            出处数量写在行上：同一件事被几篇文档说过，用户在这里一眼看到「3 处」，
+                            而不是把同一行读三遍才反应过来那是重复
+                          -->
+                          <span v-if="rel.sources.length > 1" class="evidence__kinds">
+                            {{ rel.sources.length }} 处依据
+                          </span>
+                        </span>
+                        <span class="evidence__chevron" aria-hidden="true">
+                          {{ rel.key === selectedKey ? '收起' : '看依据' }}
+                        </span>
+                      </button>
 
-                                      <div v-if="edgeKey(edge) === selectedKey" class="evidence__detail">
-                                        <p v-if="edge.effect" class="evidence__effect">{{ edge.effect }}</p>
-                                        <blockquote class="evidence__quote">{{ edge.quote }}</blockquote>
-                                        <p class="evidence__source">
-                                          <RouterLink
-                                            :to="{ path: `/knowledge/${edge.docId}`, query: { chunk: edge.chunkId } }"
-                                          >
-                                            《{{ edge.docTitle || edge.docId }}》· 查看原文
-                                          </RouterLink>
-                                        </p>
-                                        <p v-if="edge.chain.length" class="evidence__chain">
-                                          关联路径：{{ edge.chain.join(' → ') }}
-                                        </p>
-                                        <div class="evidence__actions">
-                                          <button type="button" class="evidence__focus" @click="focusOn(edge.tail.name)">
-                                            以「{{ edge.tail.label }}」为中心
-                                          </button>
-                                        </div>
-                                      </div>
-                                    </li>
+                      <div v-if="rel.key === selectedKey" class="evidence__detail">
+                        <!--
+                          每条出处单独一块：效果 / 逐字引文 / 文档链接。多篇文档对同一件事的表述会有差异，
+                          合成一段会丢掉差异，而差异恰恰是「信哪一篇」的依据
+                        -->
+                        <ul class="evidence__sources">
+                          <li v-for="src in rel.sources" :key="edgeKey(src)" class="evidence__source-item">
+                            <p v-if="src.effect" class="evidence__effect">{{ src.effect }}</p>
+                            <blockquote class="evidence__quote">{{ src.quote }}</blockquote>
+                            <p class="evidence__source">
+                              <RouterLink :to="{ path: `/knowledge/${src.docId}`, query: { chunk: src.chunkId } }">
+                                《{{ src.docTitle || src.docId }}》· 查看原文
+                              </RouterLink>
+                            </p>
+                            <p v-if="src.chain.length" class="evidence__chain">
+                              关联路径：{{ src.chain.join(' → ') }}
+                            </p>
+                          </li>
+                        </ul>
+                        <div class="evidence__actions">
+                          <button type="button" class="evidence__focus" @click="focusOn(rel.tail.name)">
+                            以「{{ rel.tail.label }}」为中心
+                          </button>
+                        </div>
+                      </div>
+                    </li>
                   </template>
                 </ul>
               </template>
@@ -1252,6 +1331,30 @@ watch([root, depth], load, { immediate: true })
 
 .evidence__head.is-active .evidence__chevron {
   color: var(--color-text-secondary);
+}
+
+/* 出处数量徽标：同一件事有几篇文档支撑，写在主语那一行 */
+.evidence__kinds {
+  margin-inline-start: var(--ys-space-1);
+  padding: 0 var(--ys-space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-full);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+}
+
+/* 每条出处独立一块：文档之间可能有表述差异，合起来会丢掉差异 */
+.evidence__sources {
+  display: grid;
+  gap: var(--ys-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidence__source-item + .evidence__source-item {
+  padding-top: var(--ys-space-3);
+  border-top: 1px dashed var(--color-border);
 }
 
 .evidence__detail {

@@ -612,6 +612,62 @@ ck(
   '区块仍在，用户会把逐项清单误读成组合判断',
 )
 
+
+// ---- 五、同一关系的多篇出处要合并，不能列成重复行 ----
+//
+// 回归：图谱里同一件事常被多篇文档各说一遍（DHA 与阿司匹林相冲，三篇说明书都写了），
+// 它们是三条独立的边，但用户眼里是**一件事**。按边逐条列会让用户看到三行一模一样的东西。
+await page.goto(`${BASE}/#/knowledge/graph?root=${encodeURIComponent('阿司匹林')}&depth=1`, {
+  waitUntil: 'networkidle',
+})
+// 等到带「3 处依据」徽标的行出现 —— 它只在阿司匹林这个视图里有，
+// 等它就等于等到新视图渲染完毕（等旧视图的行数是没用的，两边都有行）
+await page.locator('.evidence__kinds').first().waitFor({ state: 'visible', timeout: 25000 })
+await page.locator('.evidence__row').first().waitFor({ state: 'visible', timeout: 25000 })
+const pairs = await page.evaluate(() =>
+  [...document.querySelectorAll('.evidence__pair')].map((el) =>
+    el.textContent.replace(/\s+/g, ' ').trim(),
+  ),
+)
+const bare = pairs.map((p2) => p2.replace(/\d+\s*处依据$/, '').trim())
+ck(
+  `同一关系只列一次（${pairs.length} 行）`,
+  new Set(bare).size === bare.length,
+  `出现重复行：${bare.join(' | ')}`,
+)
+// 阿司匹林这个视图里有多篇文档支撑的关系（DHA / EPA），徽标应该出现
+const withSources = pairs.find((p2) => /\d+\s*处依据$/.test(p2))
+ck(
+  `多篇文档支撑的关系标出出处数量（${withSources ?? '（无）'}）`,
+  Boolean(withSources),
+  '没有任何行标出出处数量，用户看不出哪些事有多篇支持',
+)
+// 展开后必须看得到每一处的引文与文档链接（否则「合并」就是丢证据）
+await page.locator('.evidence__row', { hasText: '处依据' }).first().locator('.evidence__head').click()
+await page.locator('.evidence__source-item').first().waitFor({ state: 'visible', timeout: 10000 })
+const srcCount = await page.locator('.evidence__source-item').count()
+const linkCount = await page.locator('.evidence__source-item a').count()
+ck(
+  `展开后逐条列出每一处出处（${srcCount} 处，${linkCount} 个文档链接）`,
+  srcCount >= 2 && linkCount === srcCount,
+  `出处 ${srcCount} 处但文档链接 ${linkCount} 个，合并时丢了证据`,
+)
+// ---- 六、中心实体下拉必须显示展示名，不能露键 ----
+//
+// 回归：`?root=spu7` 时下拉只显示「spu7」，而画布与右栏都写「鱼油软胶囊」，同一个实体两个名字。
+// 根因是 `el-select` 只认选项列表里的 label，找不到就把原始值当展示文本。
+await page.goto(`${BASE}/#/knowledge/graph?root=spu7&depth=1`, { waitUntil: 'networkidle' })
+// 必须硬刷新：SPA 里 goto 到同路由只是改 query，不会重挂载，上一屏的中心会留着
+await page.reload({ waitUntil: 'networkidle' })
+// 等图表画出来（这个视图没有 `.evidence__kinds`，等它的行数即可）
+await page.locator('.evidence__row').first().waitFor({ state: 'visible', timeout: 25000 })
+await page.waitForTimeout(1500)
+const selectText = await page.locator('.graph-tools .el-select__wrapper').innerText()
+ck(
+  `中心实体下拉显示展示名而非键（${selectText.trim()}）`,
+  selectText.includes('鱼油软胶囊') && !selectText.includes('spu7'),
+  '下拉露出的仍是键，与画布/右栏的展示名对不上',
+)
 ck('全程无控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 
 await browser.close()
