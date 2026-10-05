@@ -13,12 +13,55 @@ import { checkInteractions, entityNeighborhood, graphStats, searchEntities } fro
 import GraphCanvas from '@/components/knowledge/GraphCanvas.vue'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import type { GraphEdge, GraphNode, InteractionReport } from '@/types/models'
-import { KIND_ORDER, RELATION_ORDER, edgeKey, kindLabel, relationLabel, ringLayout } from '@/utils/graph'
+import {
+  KIND_ORDER,
+  RELATION_ORDER,
+  edgeKey,
+  kindLabel,
+  relationLabel,
+  ringLayout,
+} from '@/utils/graph'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
 const router = useRouter()
+
+/** 画布组件实例。缩放工具栏通过它驱动画布自己的视图状态（见 GraphCanvas 的 defineExpose） */
+const canvasRef = ref<InstanceType<typeof GraphCanvas> | null>(null)
+
+/** 画布上报的缩放读数，直接显示在工具栏上。100% = 整图铺满 */
+const zoomPercent = ref('100%')
+/**
+ * 缩放到顶/到底时按钮置灰。
+ * <p>
+ * 不置灰的话按钮点了没反应，用户会以为页面卡住 —— 反馈缺失比功能缺失更让人怀疑系统。
+ */
+const canZoomIn = ref(true)
+const canZoomOut = ref(true)
+
+/**
+ * 缩放档位。与页头的「跳数」同形，都是「先给一个总览，再决定要不要钻进去」。
+ * 100% 是铺满全图、200% 是看清一圈、300% 是逐条边核对依据 —— 三档对应三种读法。
+ */
+const ZOOM_PRESETS = [
+  { value: 100, label: '全图' },
+  { value: 200, label: '细看' },
+  { value: 300, label: '逐条' },
+]
+/** 档位命中用整数百分比比较，浮点误差不该让按钮看起来没选中 */
+const zoomLevel = computed(() => Math.round(Number.parseFloat(zoomPercent.value)))
+
+/**
+ * 当前在哪个量级的提示。「离原图多远」这件事百分比已经说了，
+ * 这里补一句视角说法，方便用户在缩放时知道自己走到哪一步了
+ */
+const scaleHint = computed(() => {
+  const level = zoomLevel.value
+  if (level <= 100) return '整图'
+  if (level <= 200) return '局部'
+  return '细节'
+})
 
 /**
  * 演示用入口。图谱里收录了这些，点一下就有东西可看，不必先猜名字。
@@ -49,6 +92,19 @@ const depth = computed(() => {
 })
 const selectedKey = ref('')
 
+/**
+ * 中心实体下拉的候选。**由远程搜索写入，不是写死的常量列表**。
+ *
+ * 原先是 `v-for="s in SAMPLES"`，于是无论用户搜什么，下拉里永远只有那 4 个演示名——
+ * 远程调用的结果根本没被渲染。而 `remote-method` 在 Element Plus 里是
+ * **单参数**（`props.remoteMethod(val)`，返回值靠数据源回填），
+ * 这里却按 Element UI 2.x 的 callback 风格写成 `(keyword, cb)`，
+ * 第二个参数恒为 undefined，一调 `cb(...)` 就抛 `t is not a function`。
+ *
+ * 正确写法：远程结果写进这个 ref，模板按它渲染 `el-option`。
+ */
+const entityOptions = ref<{ value: string; label: string }[]>([])
+
 /** 关系类型筛选。默认为空表示「全都要」—— 默认全关的话第一眼是一张空图 */
 const hidden = ref<string[]>([])
 
@@ -61,7 +117,9 @@ const layout = computed(() => ringLayout(visibleEdges.value, root.value || null)
 const kindsInGraph = computed(() => {
   const seen = new Set<string>()
   for (const item of layout.value.nodes) seen.add(item.node.kind)
-  return KIND_ORDER.filter((k) => seen.has(k)).concat([...seen].filter((k) => !KIND_ORDER.includes(k)))
+  return KIND_ORDER.filter((k) => seen.has(k)).concat(
+    [...seen].filter((k) => !KIND_ORDER.includes(k)),
+  )
 })
 
 const relationsInGraph = computed(() => {
@@ -145,7 +203,9 @@ async function resolveDefaultRoot(): Promise<string> {
 /** 「这几样能不能一起吃」。只在用户主动点的时候发请求 —— 它要带商品与药物，不是每次都要看 */
 async function runInteractionCheck() {
   const items = layout.value.nodes
-    .filter((n) => n.node.kind === 'PRODUCT' || n.node.kind === 'INGREDIENT' || n.node.kind === 'DRUG')
+    .filter(
+      (n) => n.node.kind === 'PRODUCT' || n.node.kind === 'INGREDIENT' || n.node.kind === 'DRUG',
+    )
     .map((n) => n.node.name)
     .slice(0, 5)
   if (items.length < 2) return
@@ -169,13 +229,20 @@ function focusOn(name: string) {
  * 拿它当搜索范围的话，用户搜一个图上恰好没有的词会得到「没有这个实体」——
  * 而它可能好端端地在图里，只是不在这两跳之内。
  */
-async function queryEntities(keyword: string, cb: (results: { value: string; label: string }[]) => void) {
-  if (!keyword) return cb([])
+async function queryEntities(keyword: string) {
+  if (!keyword) {
+    entityOptions.value = []
+    return
+  }
   try {
     const found: GraphNode[] = await searchEntities(keyword, 12)
-    cb(found.map((n) => ({ value: n.name, label: `${n.label}（${kindLabel(n.kind)}）` })))
+    entityOptions.value = found.map((n) => ({
+      value: n.name,
+      label: `${n.label}（${kindLabel(n.kind)}）`,
+    }))
   } catch {
-    cb([])
+    // 搜索失败回空表：下拉显示「无匹配」，比留着一批过期候选误导用户要好
+    entityOptions.value = []
   }
 }
 
@@ -232,7 +299,12 @@ watch([root, depth], load, { immediate: true })
             style="width: 220px"
             @update:model-value="focusOn"
           >
-            <el-option v-for="s in SAMPLES" :key="s" :value="s" :label="s" />
+            <el-option
+              v-for="s in entityOptions"
+              :key="s.value"
+              :value="s.value"
+              :label="s.label"
+            />
           </el-select>
         </label>
 
@@ -294,14 +366,78 @@ watch([root, depth], load, { immediate: true })
           </div>
         </div>
 
-        <GraphCanvas
-          v-else
-          :layout="layout"
-          :selected-key="selectedKey"
-          :selected-node="root"
-          @select-edge="(e) => (selectedKey = edgeKey(e))"
-          @select-node="focusOn"
-        />
+        <div v-else class="graph-viewport">
+          <GraphCanvas
+            ref="canvasRef"
+            v-model:zoom-percent="zoomPercent"
+            v-model:can-zoom-in="canZoomIn"
+            v-model:can-zoom-out="canZoomOut"
+            :layout="layout"
+            :selected-key="selectedKey"
+            :selected-node="root"
+            @select-edge="(e) => (selectedKey = edgeKey(e))"
+            @select-node="focusOn"
+          />
+
+          <!--
+            缩放控件固定在画布右下角。放这里而不是顶部工具栏：它作用于**画布**，
+            和「换中心实体/换跳数」不是一类操作；贴在画布上，鼠标不用离开图再回来。
+            按钮是给「没有滚轮 / 只用键盘」的场景兜底，滚轮与拖拽同样可用
+          -->
+          <div class="graph-zoom" role="group" aria-label="图谱缩放">
+            <button
+              type="button"
+              class="graph-zoom__btn"
+              aria-label="放大"
+              title="放大"
+              :disabled="!canZoomIn"
+              @click="canvasRef?.zoomIn()"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              class="graph-zoom__btn"
+              aria-label="缩小"
+              title="缩小"
+              :disabled="!canZoomOut"
+              @click="canvasRef?.zoomOut()"
+            >
+              −
+            </button>
+
+            <!--
+              百分比与档位必须一起给。百分比是「我现在离原图多远」的读数，
+              档位是「直接到某个距离」的入口 —— 只有加减按钮时，用户想知道
+              自己是不是已经放到最大，只能一直点下去试
+            -->
+            <span class="graph-zoom__percent" aria-live="polite">{{ zoomPercent }}</span>
+            <button
+              v-for="preset in ZOOM_PRESETS"
+              :key="preset.value"
+              type="button"
+              class="graph-zoom__btn graph-zoom__btn--preset"
+              :class="{ 'is-current': zoomLevel === preset.value }"
+              :aria-label="`缩放到 ${preset.value}%`"
+              :aria-pressed="zoomLevel === preset.value"
+              :title="`缩放到 ${preset.value}%`"
+              @click="canvasRef?.zoomTo(preset.value)"
+            >
+              {{ preset.label }}
+            </button>
+
+            <button
+              type="button"
+              class="graph-zoom__btn graph-zoom__btn--reset"
+              aria-label="复位视图"
+              title="复位视图"
+              @click="canvasRef?.reset()"
+            >
+              复位
+            </button>
+            <span class="graph-zoom__scale" aria-hidden="true">{{ scaleHint }}</span>
+          </div>
+        </div>
 
         <!--
           半径的含义必须写出来。同心环这个形状本身不会说话 —— 不解释的话，
@@ -373,7 +509,9 @@ watch([root, depth], load, { immediate: true })
               <blockquote class="evidence__quote">{{ edge.quote }}</blockquote>
 
               <p class="evidence__source">
-                <RouterLink :to="{ path: `/knowledge/${edge.docId}`, query: { chunk: edge.chunkId } }">
+                <RouterLink
+                  :to="{ path: `/knowledge/${edge.docId}`, query: { chunk: edge.chunkId } }"
+                >
                   《{{ edge.docTitle || edge.docId }}》· 查看原文
                 </RouterLink>
               </p>
@@ -429,7 +567,7 @@ watch([root, depth], load, { immediate: true })
 }
 
 .graph-crumb a {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .graph-head__row {
@@ -552,19 +690,11 @@ watch([root, depth], load, { immediate: true })
 }
 
 .legend__item--INTERACTS_WITH .legend__swatch {
-  background: repeating-linear-gradient(
-    90deg,
-    var(--color-danger) 0 5px,
-    transparent 5px 8px
-  );
+  background: repeating-linear-gradient(90deg, var(--color-danger) 0 5px, transparent 5px 8px);
 }
 
 .legend__item--CAUTION_FOR .legend__swatch {
-  background: repeating-linear-gradient(
-    90deg,
-    var(--color-warning) 0 3px,
-    transparent 3px 6px
-  );
+  background: repeating-linear-gradient(90deg, var(--color-warning) 0 3px, transparent 3px 6px);
 }
 
 /* ==================== 主体 ==================== */
@@ -583,6 +713,94 @@ watch([root, depth], load, { immediate: true })
   container-type: inline-size;
 }
 
+/* 缩放控件的定位基准：贴画布右下角，不随画布内部平移走动 */
+.graph-viewport {
+  position: relative;
+}
+
+.graph-zoom {
+  position: absolute;
+  right: var(--ys-space-3);
+  bottom: var(--ys-space-3);
+  z-index: var(--ys-z-raised);
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-full);
+  background: var(--color-bg-surface);
+  box-shadow: var(--ys-shadow-raised);
+}
+
+/* 可点击区下限 24×24（WCAG 2.2 AA）。密集工具条取到 30px */
+.graph-zoom__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 var(--ys-space-1);
+  border: none;
+  border-radius: var(--ys-radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-md);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.graph-zoom__btn:hover:not(:disabled) {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary-strong);
+}
+
+/* 到顶/到底：按钮留着占位，但明确地不可点，而不是点了没反应 */
+.graph-zoom__btn:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.graph-zoom__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.graph-zoom__btn--reset {
+  width: auto;
+  padding: 0 var(--ys-space-3);
+  font-size: var(--ys-font-xs);
+}
+
+/* 缩放到某个档位。与 +/- 同一排、同一形状，但用主色底强调「可以直接跳过去」 */
+.graph-zoom__btn--preset {
+  width: auto;
+  padding: 0 var(--ys-space-2);
+  font-size: var(--ys-font-xs);
+}
+
+.graph-zoom__btn--preset.is-current {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary-strong);
+  font-weight: 600;
+}
+
+/* 读数。等宽数字：缩放时它会一位一位跳，比例字宽会让整排按钮跟着抖 */
+.graph-zoom__percent {
+  min-width: 4.5ch;
+  padding-inline: var(--ys-space-1);
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.graph-zoom__scale {
+  padding-inline: var(--ys-space-1) var(--ys-space-2);
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+}
+
 .graph-stage__loading,
 .graph-stage__empty {
   padding: var(--ys-space-16) var(--ys-space-4);
@@ -599,7 +817,7 @@ watch([root, depth], load, { immediate: true })
 }
 
 .graph-stage__empty a {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .graph-samples {
@@ -615,7 +833,7 @@ watch([root, depth], load, { immediate: true })
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-full);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-xs);
   cursor: pointer;
 }
@@ -762,15 +980,15 @@ watch([root, depth], load, { immediate: true })
 }
 
 .evidence__rel--PROVIDES {
-  color: var(--color-success);
+  color: var(--color-success-strong);
 }
 
 .evidence__rel--INTERACTS_WITH {
-  color: var(--color-danger);
+  color: var(--color-danger-strong);
 }
 
 .evidence__rel--CAUTION_FOR {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
 }
 
 .evidence__pair {
@@ -811,7 +1029,7 @@ watch([root, depth], load, { immediate: true })
 }
 
 .evidence__source a {
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .evidence__focus {
@@ -827,7 +1045,7 @@ watch([root, depth], load, { immediate: true })
 
 .evidence__focus:hover {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
 }
 
 .interaction {
@@ -842,7 +1060,7 @@ watch([root, depth], load, { immediate: true })
   border: 1px solid var(--color-primary-border);
   border-radius: var(--ys-radius-sm);
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  color: var(--color-primary-strong);
   font-size: var(--ys-font-sm);
   cursor: pointer;
 }
@@ -858,7 +1076,7 @@ watch([root, depth], load, { immediate: true })
 }
 
 .interaction__note--warn {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
 }
 
 /* ==================== 窄容器 ==================== */

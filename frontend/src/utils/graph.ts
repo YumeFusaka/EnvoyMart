@@ -116,6 +116,19 @@ export interface GraphLayout {
    */
   width: number
   height: number
+  /**
+   * 最外一圈节点的外接圆半径（布局单位，含节点自身半宽）。
+   *
+   * <p>它存在的唯一理由是**给镜头划边界**。同心环图的节点铺在一条条圆环上，
+   * 环与环之间是空的：三跳图实测外圈半径 1273，而节点包围盒只覆盖 2606 单位直径 ——
+   * 按包围盒允许平移，镜头正好能停进「圆环内部那片空心区」，拖一下就是整屏空白
+   * （图还在，只是视野落进了洞里，实测 150 条边的三跳图能拖出九成白屏）。
+   *
+   * <p>改用外接圆直径当内容尺寸后，边界退化成一条圆切线：镜头最多推到最外圈，
+   * 再往里就只能停在另一侧，洞里那片空白永远进不了视口。它比节点包围盒大一圈
+   * 是**刻意的** —— 宽出来的正是圆环内部的空洞，按包围盒算就会把它算成可看内容。
+   */
+  contentRadius: number
 }
 
 const NODE_HEIGHT = 30
@@ -187,7 +200,7 @@ export function ringLayout(edges: GraphEdge[], root: string | null): GraphLayout
     }
   }
   if (nodes.size === 0) {
-    return { nodes: [], edges: [], ringRadii: [], width: 0, height: 0 }
+    return { nodes: [], edges: [], ringRadii: [], width: 0, height: 0, contentRadius: 0 }
   }
 
   const adjacency = new Map<string, Set<string>>()
@@ -317,6 +330,13 @@ export function ringLayout(edges: GraphEdge[], root: string | null): GraphLayout
   const extentX = placedNodes.reduce((max, n) => Math.max(max, Math.abs(n.x) + n.width / 2), 0)
   const extentY = placedNodes.reduce((max, n) => Math.max(max, Math.abs(n.y) + n.height / 2), 0)
 
+  // 外接圆半径：取每个节点「圆心到它中心 + 自身半宽」的最大值。
+  // 节点挂在环上，半径才是它到中心的真实距离；包围盒的 x/y 分量在斜向上会低估
+  const contentRadius = placedNodes.reduce(
+    (max, n) => Math.max(max, Math.hypot(n.x, n.y) + n.width / 2),
+    0,
+  )
+
   const width = Math.round((extentX + CANVAS_PADDING) * 2)
   // 两个轴分开算，**不再强制正方形**。画布宽 100% 高 auto，正方形时
   // 内容的上下留白会白白占掉一屏的一半 —— 实测 802×802 的画布里内容只有
@@ -325,7 +345,7 @@ export function ringLayout(edges: GraphEdge[], root: string | null): GraphLayout
   const height = Math.round(Math.max((extentY + CANVAS_PADDING) * 2, width * MIN_ASPECT))
 
   // 节点画在边之后，靠自身填充挡住线头，省掉一套「求线段与药丸交点」的几何
-  return { nodes: placedNodes, edges: placedEdges, ringRadii, width, height }
+  return { nodes: placedNodes, edges: placedEdges, ringRadii, width, height, contentRadius }
 }
 
 /**
