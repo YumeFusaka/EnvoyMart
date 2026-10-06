@@ -118,8 +118,91 @@ class MilvusVectorStoreTest {
                 .isEqualTo(writtenAt);
     }
 
+
+    /**
+     * 带 docId 过滤的检索必须把过滤条件下推给底层，而不是取回来自己筛。
+     * <p>
+     * 这是情节记忆按 userId 隔离的关键一跳。桩在这里扮演「支持过滤」的 Milvus：
+     * 它检查收到的请求里真的带了 filter，并且 filter 真的按 docId 生效——
+     * 若实现只把参数吞掉、照旧全量返回，这条会红。
+     */
+    @Test
+    void 带docId的检索把过滤下推到底层() {
+        FilterRecordingStore delegate = new FilterRecordingStore();
+        MilvusVectorStore store = new MilvusVectorStore(delegate, FIXED_VECTOR);
+
+        store.indexBatch(List.of(
+                DocumentChunk.builder().chunkId("a").docId("u1001").content("我的地址").build(),
+                DocumentChunk.builder().chunkId("b").docId("u1002").content("别人的地址").build()));
+
+        List<DocumentChunk> mine = store.search("地址", 5, "u1001");
+
+        assertThat(delegate.lastRequestFiltered)
+                .as("过滤没有下推——请求里不带 filter，等于取回来再筛，过取窗口一满就漏召回")
+                .isTrue();
+        assertThat(mine)
+                .isNotEmpty()
+                .allSatisfy(c -> assertThat(c.getDocId()).isEqualTo("u1001"));
+        assertThat(mine).noneSatisfy(c -> assertThat(c.getDocId()).isEqualTo("u1002"));
+    }
+
+    /** 支持查询过滤的最小向量库：只有请求带 filter 时才按 docId 收窄 */
+    private static final class FilterRecordingStore implements EmbeddingStore<TextSegment> {
+        private final List<TextSegment> segments = new ArrayList<>();
+        boolean lastRequestFiltered = false;
+
+        @Override
+        public String add(Embedding embedding) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void add(String id, Embedding embedding) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public String add(Embedding embedding, TextSegment embedded) {
+            segments.add(embedded);
+            return UUID.randomUUID().toString();
+        }
+
+        @Override
+        public List<String> addAll(List<Embedding> embeddings) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<String> addAll(List<Embedding> embeddings, List<TextSegment> embedded) {
+            List<String> ids = new ArrayList<>(embedded.size());
+            for (TextSegment segment : embedded) {
+                segments.add(segment);
+                ids.add(UUID.randomUUID().toString());
+            }
+            return ids;
+        }
+
+        @Override
+        public EmbeddingSearchResult<TextSegment> search(EmbeddingSearchRequest request) {
+            lastRequestFiltered = request.filter() != null;
+            List<TextSegment> pool = segments;
+            if (request.filter() != null) {
+                // 按 docId 等值过滤模拟 Milvus 行为，证明「传入的过滤器真的能生效」
+                pool = segments.stream()
+                        .filter(seg -> request.filter().test(seg.metadata()))
+                        .toList();
+            }
+            List<EmbeddingMatch<TextSegment>> matches = pool.stream()
+                    .limit(request.maxResults())
+                    .map(seg -> new EmbeddingMatch<>(1.0, UUID.randomUUID().toString(),
+                            new Embedding(new float[]{1f, 0f, 0f}), seg))
+                    .toList();
+            return new EmbeddingSearchResult<>(matches);
+        }
+    }
     /**
      * 历史数据里没有这两个键。
+
      * <p>
      * 升级时向量库里已经躺着几万条没有 type/timestamp 的切片，读它们不能报错——
      * 一次检索里只要有一条抛异常，整轮对话就退化成兜底话术。缺键按「不知道」处理，

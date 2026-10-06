@@ -1,0 +1,100 @@
+{
+  "cases": [
+    {
+      "query": "帮我找 200 元以内孕妇能吃的钙片，看看我有没有可用的优惠券，算上运费一共多少钱",
+      "expectTools": ["product_search"],
+      "mustPrecede": [],
+      "expectMinSteps": 1,
+      "expectMaxSteps": 3,
+      "note": "单域带条件过滤：约束应落到 product_search 的参数里，而不是拆成多步"
+    },
+    {
+      "query": "帮我找一款乳清蛋白粉，找到后直接加两件到购物车",
+      "expectTools": ["product_search", "cart_add"],
+      "mustPrecede": [["product_search", "cart_add"]],
+      "expectMinSteps": 2,
+      "expectMaxSteps": 3,
+      "note": "两步有依赖：必须先查商品拿到 skuId，再加购；加购应 dependsOn 查询步"
+    },
+    {
+      "query": "看看我的购物车里有什么，然后帮我结算下单",
+      "expectTools": ["cart_checkout"],
+      "mustPrecede": [],
+      "expectMinSteps": 1,
+      "expectMaxSteps": 2,
+      "note": "结算单步；不应无端先查一遍订单"
+    },
+    {
+      "query": "查一下我订单 20240001 现在到哪了",
+      "expectTools": ["order_query", "logistics_query"],
+      "mustPrecede": [],
+      "expectMinSteps": 1,
+      "expectMaxSteps": 2,
+      "note": "物流单步或订单+物流两步，两者都不算错"
+    },
+    {
+      "query": "我不想要订单 20240002 了，帮我取消掉",
+      "expectTools": ["order_cancel"],
+      "mustPrecede": [],
+      "expectMinSteps": 1,
+      "expectMaxSteps": 2,
+      "note": "取消订单；高危工具，规划阶段不应擅自补别的动作"
+    },
+    {
+      "query": "我买的那瓶鱼油说明书上写着什么，一天吃几粒",
+      "expectTools": ["knowledge_search"],
+      "mustPrecede": [],
+      "expectMinSteps": 1,
+      "expectMaxSteps": 2,
+      "note": "知识型问句走知识检索，不该去搜商品"
+    },
+    {
+      "query": "我在吃华法林，可以再吃深海鱼油吗",
+      "expectTools": ["knowledge_search", "interaction_check"],
+      "mustPrecede": [],
+      "expectMinSteps": 1,
+      "expectMaxSteps": 3,
+      "note": "药物相互作用：知识检索与相互作用检查都在合理范围内"
+    },
+    {
+      "query": "帮我找一下有没有益生菌，另外我之前在你们这买过吗",
+      "expectTools": ["product_search", "order_query"],
+      "mustPrecede": [],
+      "expectMinSteps": 2,
+      "expectMaxSteps": 3,
+      "note": "跨域多步：商品检索 + 订单查询，两者互不依赖，理想上应并发"
+    },
+    {
+      "query": "我要退货，订单 20240003 里的蛋白粉有质量问题",
+      "expectTools": ["after_sale_apply"],
+      "mustPrecede": [],
+      "expectMinSteps": 1,
+      "expectMaxSteps": 3,
+      "note": "售后申请；可能需要先查订单确认，但核心动作是售后"
+    },
+    {
+      "query": "今天天气怎么样，适合出门吗",
+      "expectTools": [],
+      "mustPrecede": [],
+      "expectMinSteps": 0,
+      "expectMaxSteps": 1,
+      "note": "该拒答/无关：平台没有天气能力，不该硬调工具"
+    },
+    {
+      "query": "帮我推荐一款适合送长辈的保健品",
+      "expectTools": ["product_search"],
+      "mustPrecede": [],
+      "expectMinSteps": 1,
+      "expectMaxSteps": 2,
+      "note": "模糊推荐：可以先搜商品；若先反问澄清也合理，故只要求不硬调无关工具"
+    },
+    {
+      "query": "我想买点东西，但还没想好买什么",
+      "expectTools": [],
+      "mustPrecede": [],
+      "expectMinSteps": 0,
+      "expectMaxSteps": 1,
+      "note": "应先澄清：信息不足时先反问，不该拿着空需求硬搜"
+    }
+  ]
+}
