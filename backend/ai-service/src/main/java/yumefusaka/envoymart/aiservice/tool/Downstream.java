@@ -155,11 +155,53 @@ public final class Downstream {
             // 「商品服务连不上（DecodeException）」，排查的第一步（区分连不上与答非所问）
             // 就无从下手。实测踩到过：接口 200、应答是合法 JSON，工具却报「连不上」。
             log.warn("[下游失败] {} 调用异常（{}）", service, e.getClass().getSimpleName(), e);
-            // 走到这里的是连接没建立、超时这类**传输层**失败——Feign 那边已经按安全判据重试过，
-            // 到这里说明它也没辙了。包装成同一种异常，工具层不必认识两种失败
-            throw new DownstreamException(-1, service + "连不上（" + e.getClass().getSimpleName()
-                    + "）。请告知用户稍后再试，不要据此说「没有」或「查不到」。", true);
+            throw transportFailure(service, e);
         }
+    }
+
+    /**
+     * 传输层失败 → 给模型看的那句话。
+     * <p>
+     * <b>为什么必须把「超时」与「连不上」分开说</b>：这两句在用户那里是完全不同的处境。
+     * 「连不上」是请求没到达，写操作**一定没生效**；「读超时」是请求到达了、下游也在处理，
+     * 只是应答没按时回来，写操作**可能已经生效了**。
+     * 实测踩到过：下单返回「订单服务连不上（RetryableException）」，把它当失败告诉用户，
+     * 而订单其实已经创建成功（服务端日志里那笔订单号明明白白）。用户按「稍后再试」再点一次，
+     * 就是两笔订单、两份库存。
+     * <p>
+     * 文案里那句「先查询当前状态，不要直接重复操作」是写给模型的：写操作的结果未知时，
+     * 正确动作不是重来一次，而是先去查「刚才那一下到底成没成」。
+     */
+    static DownstreamException transportFailure(String service, RuntimeException e) {
+        if (isTimeout(e)) {
+            return new DownstreamException(-1, service + "在超时前没有返回结果，这次操作是否生效**无法确认**。"
+                    + "请先查询当前状态再决定下一步，不要直接重复操作。"
+                    + "不要据此说「没有」或「查不到」。", true);
+        }
+        return new DownstreamException(-1, service + "连不上（" + e.getClass().getSimpleName()
+                + "）。请告知用户稍后再试，不要据此说「没有」或「查不到」。", true);
+    }
+
+    /**
+     * 这次传输层失败是不是「超时」。
+     * <p>
+     * 靠 <b>cause 链</b>判定，而不是靠最外层异常类名：Feign 会把超时包一层
+     * {@code RetryableException}，连接被拒也包成同一层——两者类名一模一样，只有 cause 链不同。
+     * 按类名判会把它们混成一种，而这两种对写操作的含义正好相反。
+     */
+    private static boolean isTimeout(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof java.net.SocketTimeoutException) {
+                return true;
+            }
+            // 不同 HTTP 客户端（HttpClient / OkHttp / JDK）超时抛的类型不一样，
+            // 但名字里都带 timeout。按类名兜一层：漏判会把「可能已生效」说成
+            // 「一定没生效」，而那正是这次要修的那个 bug
+            if (t.getClass().getSimpleName().toLowerCase().contains("timeout")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 下游业务码 ≥500 = 它明确说「这次没做成」，与「查无此物」不是一回事 */

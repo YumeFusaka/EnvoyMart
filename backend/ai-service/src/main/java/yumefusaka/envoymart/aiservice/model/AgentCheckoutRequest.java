@@ -20,4 +20,14 @@ public class AgentCheckoutRequest {
     private String receiverDistrict;
     private String receiverDetail;
     private String remark;
+
+    /**
+     * 幂等键：同一次「用户确认下单」的重试必须带同一个值。
+     * <p>
+     * <b>它不由模型生成，也不由本服务生成，而是从审批令牌的签名载荷里取。</b>
+     * 见 {@code ApprovalTokens.issue}——令牌代表「用户点了这一次确认」，
+     * 同一个令牌重放就是同一个意图，那正是幂等键该认的粒度。
+     */
+    private String requestId;
+
 }

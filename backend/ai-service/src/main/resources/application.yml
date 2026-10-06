@@ -34,6 +34,15 @@ spring:
           knowledge-service:
             connect-timeout: 2000
             read-timeout: 30000
+          # order-service 单独放宽：结算链路里有 Seata 全局事务 + 库存分支 + MQ 登记，
+          # 耗时不受调用方控制。实测首次下单 5.3 秒（Seata 类加载冷启动占 2.6 秒），
+          # 而 5 秒那档是按「用户等一个页面」定的——写操作用这个标准去卡，结果就是
+          # 「订单已经创建成功、客户端却读超时」：服务端照写不误，调用方却记成失败。
+          # 放宽到 30 秒只是**减少**超时概率，真正的兜底在 Downstream.transportFailure——
+          # 超时被翻译成「结果未知，先核实」，而不是「失败」。
+          order-service:
+            connect-timeout: 2000
+            read-timeout: 30000
     nacos:
       discovery:
         enabled: ${NACOS_ENABLED:false}

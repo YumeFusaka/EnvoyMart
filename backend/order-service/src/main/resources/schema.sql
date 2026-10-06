@@ -76,6 +76,16 @@ create table if not exists shop_order (
     --   alter table shop_order add column user_coupon_id bigint null;
     user_coupon_id bigint,
 
+    -- 幂等键：同一次「确认下单」意图的多次投递带同一个值，靠这条唯一约束去重。
+    -- **为什么用数据库唯一约束而不是「先查再插」**：并发重试下「先查再插」两次都能查到
+    -- 「还没有」，于是两笔都插进去 —— 判这件事的只能是数据库自己。
+    -- 允许 NULL 是刻意的：没带幂等键的调用方（旧前端、外部 MCP）不做去重，
+    -- 而 MySQL 的唯一约束允许多个 NULL，正好表达「这些行不参与去重」。
+    -- 老库需要手工执行一次（新库自动带上）
+    --   alter table shop_order add column request_id varchar(64) null, add unique key uk_order_request (request_id);
+    request_id varchar(64),
+    constraint uk_order_request unique (request_id),
+
     index idx_order_user_status (user_id, status),
     -- 超时关单的扫描任务走这个索引：where status = 'CREATED' and expire_at < now()
     index idx_order_status_expire (status, expire_at)

@@ -15,6 +15,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * 高危操作的确认令牌 —— <b>把「用户批准了什么」变成一份服务端签过名的载荷。</b>
@@ -101,9 +102,16 @@ public class ApprovalTokens {
         if (actions == null || actions.isEmpty()) {
             throw new IllegalArgumentException("没有待确认的操作，不该签发确认令牌");
         }
+        // **一次性给出幂等键，签进载荷里。**
+        // 令牌是「用户点了这一次确认」的凭据，所以「同一个令牌执行两次」就是同一笔业务意图——
+        // 正是幂等键该认的那个粒度。键写进签名载荷有两个好处：
+        // ① 客户端改不了（改了签名就不对）；② 重入时服务端从载荷里读回来即可，
+        // 不需要在服务端保存任何状态，也不需要模型重新生成。
+        // 作用域是整个令牌（一班次一个键），而不是每个动作一个：一次确认批次本就是一次用户意图。
+        String requestId = UUID.randomUUID().toString();
         List<Map<String, Object>> encoded = new ArrayList<>(actions.size());
         for (PendingAction action : actions) {
-            encoded.add(Map.of("t", action.tool(), "p", action.arguments()));
+            encoded.add(Map.of("t", action.tool(), "p", withRequestId(action, requestId)));
         }
         Map<String, Object> payload = Map.of(
                 "u", userId == null ? "" : userId,
@@ -114,6 +122,33 @@ public class ApprovalTokens {
                 .encodeToString(MAPPER.writeValueAsBytes(payload));
         return body + "." + sign(body);
     }
+
+    /**
+     * 把幂等键并入这次调用的参数。只对**声明了幂等键**的工具生效。
+     * <p>
+     * <b>为什么不无脑塞进所有工具</b>：幂等键只对写操作有意义，读工具带上它是噪音；
+     * 而且工具的参数会进 {@link ToolCallDescription} 被渲染成确认卡片上的描述，
+     * 塞进去会让用户看到一串没有意义的 UUID。
+     */
+    private static Map<String, Object> withRequestId(PendingAction action, String requestId) {
+        if (!IDEMPOTENT_TOOLS.contains(action.tool())) {
+            return action.arguments();
+        }
+        Map<String, Object> merged = new java.util.LinkedHashMap<>(action.arguments());
+        merged.putIfAbsent(REQUEST_ID_ARG, requestId);
+        return merged;
+    }
+
+    /**
+     * 需要幂等键的写工具。<b>列在白名单里而不是靠「有没有这个参数」推断</b>：
+     * 幂等键是给跨服务写操作用的，而工具有没有接收它的字段是实现细节——
+     * 靠字段推断会让「新增一个写工具时忘了登记」表现为「它没有幂等保护」，且不报错。
+     */
+    private static final java.util.Set<String> IDEMPOTENT_TOOLS = java.util.Set.of(
+            "cart_checkout");
+
+    /** 幂等键在工具参数里的字段名 */
+    public static final String REQUEST_ID_ARG = "requestId";
 
 /**
      * 签发一枚**不绑定平台会话**的确认令牌，用于 MCP 这类没有会话概念的入口。

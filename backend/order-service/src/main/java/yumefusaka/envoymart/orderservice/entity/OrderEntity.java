@@ -68,4 +68,10 @@ public class OrderEntity {
      * 那只是一个金额，退给哪张券、谁的券，都无从得知。
      */
     private Long userCouponId;
+    /**
+     * 幂等键。同一次「确认下单」意图的重复投递带同一个值，靠唯一约束
+     * （{@code uk_order_request}）去重。为 null 表示这次调用不参与去重。
+     */
+    private String requestId;
+
 }

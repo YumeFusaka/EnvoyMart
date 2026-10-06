@@ -191,4 +191,59 @@ class DownstreamTest {
                 .as("失败最容易被读成否定，而它听着像个结论")
                 .contains("不要据此说「知识库没有相关内容」");
     }
+
+    @Test
+    void 写操作读超时说结果未知而不是连不上() {
+        Script script = new Script(code(200, "永远不会走到"));
+        // Feign 的真实形状：RetryableException 包着 SocketTimeoutException
+        script.boom = new RuntimeException("Read timed out executing POST /orders/checkout",
+                new java.net.SocketTimeoutException("Read timed out"));
+
+        assertThatThrownBy(() -> Downstream.mutate("订单服务", script))
+                .isInstanceOf(Downstream.DownstreamException.class)
+                .as("超时意味着「请求到了、下游也许已经做了」，与「连不上（一定没做）」是两回事")
+                .hasMessageContaining("无法确认")
+                .hasMessageContaining("先查询当前状态")
+                .hasMessageContaining("不要直接重复操作")
+                .as("绝不能出现「连不上」——实测就是这句把一笔已成功的订单说成了失败")
+                .hasMessageNotContaining("连不上");
+    }
+
+    @Test
+    void 连不上与超时按cause链区分而不是按最外层类名() {
+        // 两种失败的**最外层类名相同**（都是 RetryableException），只有 cause 链不同。
+        // 按类名判会把它们混成一种，而这两种对写操作的含义正好相反
+        Script refused = new Script(code(200, "x"));
+        refused.boom = new RuntimeException("ConnectException", new java.net.ConnectException("Connection refused"));
+        Script timeout = new Script(code(200, "x"));
+        timeout.boom = new RuntimeException("SocketTimeoutException", new java.net.SocketTimeoutException("Read timed out"));
+
+        assertThatThrownBy(() -> Downstream.mutate("订单服务", refused))
+                .hasMessageContaining("连不上");
+        assertThatThrownBy(() -> Downstream.mutate("订单服务", timeout))
+                .hasMessageContaining("无法确认");
+    }
+
+    @Test
+    void 读超时也走未知语义() {
+        Script script = new Script(code(200, "x"));
+        script.boom = new RuntimeException("Read timed out", new java.net.SocketTimeoutException("Read timed out"));
+
+        // 读操作超时同样「不知道成没成」——但读是幂等的，重发安全，
+        // 所以文案里保留「不要据此说「没有」」这一句，另一句「不要重复操作」只对写有意义
+        assertThatThrownBy(() -> Downstream.read("订单服务", script))
+                .hasMessageContaining("无法确认")
+                .hasMessageContaining("不要据此说「没有」");
+    }
+
+    @Test
+    void 超时异常标为瞬时() {
+        ToolResult result = Downstream.failure("下单",
+                Downstream.transportFailure("订单服务",
+                        new RuntimeException("Read timed out", new java.net.SocketTimeoutException("Read timed out"))));
+
+        assertThat(result.isTransientFailure())
+                .as("结果未知属于「过一会儿再试有意义」，与「参数错」不同")
+                .isTrue();
+    }
 }

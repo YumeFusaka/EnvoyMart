@@ -41,7 +41,7 @@
         <jjwt.version>0.13.0</jjwt.version>
         <langgraph4j.version>1.8.27</langgraph4j.version>
         <springdoc.version>3.1.1</springdoc.version>
-        <lombok.version>1.18.42</lombok.version>
+        <lombok.version>1.18.46</lombok.version>
         <!-- 知识图谱驱动。5.26 与服务端镜像 neo4j:5.26-community 同一条线 -->
         <neo4j.driver.version>5.26.0</neo4j.driver.version>
         <!-- HTML 白名单净化（商品详情正文）。见 product-service 的 HtmlSanitizer -->

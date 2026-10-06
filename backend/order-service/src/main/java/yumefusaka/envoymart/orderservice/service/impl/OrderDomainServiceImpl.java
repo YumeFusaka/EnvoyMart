@@ -132,6 +132,17 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     @GlobalTransactional(name = "envoymart-checkout", rollbackFor = Exception.class)
     @Transactional
     public OrderResponse checkout(String userId, CheckoutRequest request) {
+        // **幂等第一关：先认这次意图是不是已经成过单**。
+        // 放在最前面是因为它必须挡在「扣库存、清购物车」之前——用户读超时后重试的那一次，
+        // 若走到下面就会再建一单、再清一次车、再扣一次库存。
+        // 这里只挡「前一次已经提交完成」这一种；并发同时到达的那一次由唯一约束兜（见下）
+        OrderResponse replayed = findByRequestId(userId, request.getRequestId());
+        if (replayed != null) {
+            log.info("[Order] 幂等命中：requestId={} 已经成过单 {}，直接返回原单",
+                    request.getRequestId(), replayed.getOrderNo());
+            return replayed;
+        }
+
         // 只结算**勾选**的条目：购物车里可以有暂不买的商品
         List<CartItemEntity> cartItems = selectSelected(userId);
         if (cartItems.isEmpty()) {
@@ -196,13 +207,32 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             // 记下用的哪张券：取消/关单/退款时要靠它把券退回去。
             // 光有 discountAmount 退不了券 —— 它只是一笔钱，对不回具体是哪张券
             order.setUserCouponId(request.getUserCouponId());
+            // 幂等键落库：它是唯一约束的输入。null 表示这次调用不参与去重
+            order.setRequestId(blankToNull(request.getRequestId()));
             order.setFreightAmount(FREIGHT_FREE);
             order.setTotalAmount(0L);
             order.setPayAmount(0L);
             LocalDateTime now = Times.now();
             order.setCreatedAt(now);
             order.setExpireAt(now.plusMinutes(PAYMENT_WINDOW_MINUTES));
-            orderMapper.insert(order);
+            try {
+                orderMapper.insert(order);
+            } catch (org.springframework.dao.DuplicateKeyException e) {
+                // **幂等第二关：并发重试撞唯一约束。**
+                // 第一关是「先查再返回」，但两次请求可能同时查到「还没有」——那一步挡不住并发。
+                // 唯一约束才是真正判这件事的地方：这里撞上了，就说明另一次同意图的下单已经赢了，
+                // 把它的单查出来返回即可，不再走扣库存/清购物车。
+                // 整个过程在 @Transactional 内，回滚会连带撤销本次已做的状态流水
+                OrderResponse replay = findByRequestId(userId, request.getRequestId());
+                if (replay == null) {
+                    // 撞了约束却查不到，说明撞的是别的唯一键（order_no 撞了是生成器出问题），
+                    // 不能吞掉：吞掉会把一个真实故障变成一次「静默无单」
+                    throw e;
+                }
+                log.info("[Order] 幂等命中（并发撞约束）：requestId={} 返回已存在的单 {}",
+                        request.getRequestId(), replay.getOrderNo());
+                return replay;
+            }
             writeStatusLog(order.getId(), null, OrderStatus.CREATED, "USER", userId, "用户提交订单");
 
             try {
@@ -342,6 +372,29 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     private String resolveName(Long skuId) {
         SkuSnapshot sku = fetchSkus(List.of(skuId)).get(skuId);
         return sku == null ? String.valueOf(skuId) : sku.getSpuName();
+    }
+
+    /**
+     * 按幂等键找回这一单。找不到返回 null。
+     * <p>
+     * <b>为什么连 userId 一起查</b>：幂等键来自调用方，理论上不同用户可能撞同一个值。
+     * 只按 requestId 查的话，A 用户的重试会拿到 B 用户的订单——那不只是错误，是越权。
+     */
+    private OrderResponse findByRequestId(String userId, String requestId) {
+        String key = blankToNull(requestId);
+        if (key == null) {
+            return null;
+        }
+        OrderEntity existing = orderMapper.selectOne(new LambdaQueryWrapper<OrderEntity>()
+                .eq(OrderEntity::getRequestId, key)
+                .eq(OrderEntity::getUserId, userId)
+                .last("limit 1"));
+        return existing == null ? null : getOrder(userId, existing.getId());
+    }
+
+    /** 空白串一律当「没给」：前端把没填的输入框序列化成空串是常态 */
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.strip();
     }
 
     private String generateOrderNo() {

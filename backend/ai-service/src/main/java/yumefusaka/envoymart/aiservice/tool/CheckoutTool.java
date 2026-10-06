@@ -77,6 +77,11 @@ public class CheckoutTool implements Tool {
             request.setReceiverDistrict(required(call, "receiverDistrict"));
             request.setReceiverDetail(required(call, "receiverDetail"));
             request.setRemark(optional(call, "remark"));
+            // 幂等键来自审批令牌的签名载荷（见 ApprovalTokens.issue），本工具只负责原样透传。
+            // 没有这一行，用户读超时后重试就会变成第二笔订单——
+            // 而这一次「模型重新生成了一个 id」也救不了，因为幂等键的定义就是
+            // 「同一次确认在重试时必须是同一个值」
+            request.setRequestId(optional(call, "requestId"));
 
             // 写操作：下单绝不重发。重发就是两笔订单、两份库存占用，
             // 而其中一笔用户根本不知道它存在
