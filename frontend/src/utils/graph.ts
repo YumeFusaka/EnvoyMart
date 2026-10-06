@@ -23,6 +23,9 @@ const KIND_LABELS: Record<string, string> = {
   DRUG: '药物',
   DRUG_CLASS: '药物类别',
   POPULATION: '人群',
+  // 组合节点没有对应的现实实体，只是「这几样一起」这个结构。图例里单列一项，
+  // 用户看到的是「铁剂 + 钙剂」这样一个圆，标成「组合」才明白它代表什么
+  COMBINATION: '组合',
 }
 
 /** 关系类型 → 中文。与后端 GraphRelation.label() 是同一份词表的两侧 */
@@ -31,6 +34,7 @@ const RELATION_LABELS: Record<string, string> = {
   PROVIDES: '提供',
   INTERACTS_WITH: '相互作用',
   CAUTION_FOR: '禁忌人群',
+  COMBINED_WITH: '组合禁忌',
 }
 
 /**
@@ -39,10 +43,10 @@ const RELATION_LABELS: Record<string, string> = {
  * 刻意不是字典的键顺序：**风险优先级的顺序**。用户先要看见的是
  * 「有几种药、和什么冲突」，而不是「这个商品含什么成分」。
  */
-export const KIND_ORDER = ['PRODUCT', 'INGREDIENT', 'NUTRIENT', 'DRUG', 'DRUG_CLASS', 'POPULATION']
+export const KIND_ORDER = ['PRODUCT', 'INGREDIENT', 'NUTRIENT', 'DRUG', 'DRUG_CLASS', 'POPULATION', 'COMBINATION']
 
 /** 图例里的关系顺序，同样是风险优先 */
-export const RELATION_ORDER = ['INTERACTS_WITH', 'CAUTION_FOR', 'CONTAINS', 'PROVIDES']
+export const RELATION_ORDER = ['COMBINED_WITH', 'INTERACTS_WITH', 'CAUTION_FOR', 'CONTAINS', 'PROVIDES']
 
 export function kindLabel(kind: string | null | undefined): string {
   if (!kind) return ''

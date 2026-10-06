@@ -95,6 +95,93 @@ class GraphServiceRecallTest {
         assertThat(result.get(0).head().name()).isEqualTo("深海鱼油");
     }
 
+    // ==================== 组合禁忌（「两两没事、三样一起有事」） ====================
+
+    private static GraphEdge combo(String members, String tail) {
+        return new GraphEdge(new GraphNode("combo:" + members, members.replace("|", " + "), "COMBINATION"),
+                "COMBINED_WITH", "三者同服可能增加结石风险", node(tail),
+                "KB-0031", null, "KB-0031_2", 30, 60, "铁剂、钙剂与维生素D 三者同服可能增加结石风险",
+                null, List.of());
+    }
+
+    private static Substance substance(String root, String name) {
+        return new Substance(root, root, name, name, "INGREDIENT", List.of(root, name));
+    }
+
+    /**
+     * 三样都问到 —— 组合必须出现在结果里。
+     * <p>
+     * 这条是本次改造的核心：{@code A}、{@code B}、{@code C} 之间一条
+     * {@code INTERACTS_WITH} 都没有（两两拆开看谁都没问题），
+     * 单跳路一个字都答不出来，只有这张「组合」边能把它说出来。
+     */
+    @Test
+    void 三样都问到时组合禁忌出现在结果里() {
+        KnowledgeGraphStore store = mock(KnowledgeGraphStore.class);
+        when(store.isAvailable()).thenReturn(true);
+        when(store.resolveKeys(anyList())).thenReturn(java.util.Map.of("铁剂", "铁剂", "钙", "钙", "维生素d", "维生素d"));
+        when(store.expandSubstances(anyList())).thenReturn(List.of(
+                substance("铁剂", "铁剂"), substance("钙", "钙"), substance("维生素d", "维生素d")));
+        when(store.risksOf(anyList())).thenReturn(List.of());
+        when(store.combinationsOf(anyList())).thenReturn(List.of(combo("维生素d|钙|铁剂", "肾结石患者")));
+        KnowledgeDocumentMapper docMapper = mock(KnowledgeDocumentMapper.class);
+        when(docMapper.selectList(any())).thenReturn(List.of());
+        GraphService service = new GraphService(docMapper, mock(KnowledgeChunkMapper.class), store);
+
+        var report = service.interactions(List.of("铁剂", "钙", "维生素D"));
+
+        assertThat(report.available()).isTrue();
+        assertThat(report.items())
+                .as("三样都问到、组合的全部成员都在场，这条边必须出现")
+                .flatExtracting(item -> item.risks())
+                .anyMatch(e -> "COMBINED_WITH".equals(e.relation()));
+    }
+
+    /**
+     * 只问到两样 —— 组合<b>不能</b>出现。
+     * <p>
+     * 这一条比上一条更要紧。组合节点 {@code combo:维生素d|钙|铁剂} 的语义是
+     * 「三样都要在场才算数」；用户只带了其中两样时，把这条风险扣在他手上，
+     * 他会得到一个与现实不符的结论（他分开吃、以为规避了，其实风险与第三样有关）。
+     * <b>按「相交」匹配就是把一条条件边当成无条件边</b> —— 这正是只加
+     * {@code COMBINATION_RELATION} 到无向匹配里会犯的错。
+     */
+    @Test
+    void 只问到组合的一部分时不报组合禁忌() {
+        KnowledgeGraphStore store = mock(KnowledgeGraphStore.class);
+        when(store.isAvailable()).thenReturn(true);
+        when(store.resolveKeys(anyList())).thenReturn(java.util.Map.of("铁剂", "铁剂", "钙", "钙"));
+        when(store.expandSubstances(anyList())).thenReturn(List.of(
+                substance("铁剂", "铁剂"), substance("钙", "钙")));
+        when(store.risksOf(anyList())).thenReturn(List.of());
+        // 图谱里确实有这条组合，但用户只问了其中两样
+        when(store.combinationsOf(anyList())).thenReturn(List.of());
+        KnowledgeDocumentMapper docMapper = mock(KnowledgeDocumentMapper.class);
+        when(docMapper.selectList(any())).thenReturn(List.of());
+        GraphService service = new GraphService(docMapper, mock(KnowledgeChunkMapper.class), store);
+
+        var report = service.interactions(List.of("铁剂", "钙"));
+
+        assertThat(report.items())
+                .as("缺一个成员就不成立：把条件边当无条件边会多报一条风险")
+                .flatExtracting(item -> item.risks())
+                .noneMatch(e -> "COMBINED_WITH".equals(e.relation()));
+    }
+
+    /**
+     * 组合节点的键形状与「成员被全覆盖」这一层的判据。
+     * <p>
+     * {@code covers} 是私有方法，但它守的规则是公开约定：键以 {@code combo:} 开头、
+     * 成员按 {@code |} 分。这里用一个形状不对的键当反例——
+     * 图上真出现这种边时，放它过去等于报一条来历不明的风险。
+     */
+    @Test
+    void 形状不对的组合键不算命中() {
+        assertThat(KnowledgeGraphStore.combinationLabel("combo:维生素d|钙|铁剂"))
+                .isEqualTo("维生素d + 钙 + 铁剂");
+        assertThat(KnowledgeGraphStore.combinationLabel("维生素d")).isNull();
+        assertThat(KnowledgeGraphStore.combinationLabel("combo:")).isNull();
+    }
     /**
      * 商品文档覆盖：同一篇文档的多条边只算一处，且按文档号升序。
      * <p>

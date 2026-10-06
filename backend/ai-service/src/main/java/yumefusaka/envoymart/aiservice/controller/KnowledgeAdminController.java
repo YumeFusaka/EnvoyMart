@@ -7,8 +7,10 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.aiservice.knowledge.KnowledgeIndexer;
+import yumefusaka.envoymart.aiservice.knowledge.ProductCoverageService;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.RequireAdmin;
+import yumefusaka.envoymart.contract.ProductGraphCoverage;
 
 /**
  * 检索索引的管理接口 —— 知识库管理台调的就是它。
@@ -34,9 +36,11 @@ import yumefusaka.envoymart.common.web.RequireAdmin;
 public class KnowledgeAdminController {
 
     private final KnowledgeIndexer indexer;
+    private final ProductCoverageService coverageService;
 
-    public KnowledgeAdminController(KnowledgeIndexer indexer) {
+    public KnowledgeAdminController(KnowledgeIndexer indexer, ProductCoverageService coverageService) {
         this.indexer = indexer;
+        this.coverageService = coverageService;
     }
 
     /**
@@ -76,6 +80,23 @@ public class KnowledgeAdminController {
         return Result.success(indexer.rebuildOne(docNo));
     }
 
+    /**
+     * 商品资料覆盖率 —— 「在售商品里有多少是有说明书支撑的」。
+     * <p>
+     * 这个数字回答的是存储质量的欠账：{@code coveredSpu} 之外的商品，
+     * 用户问到时系统只能答「知识库里没有」。{@code reason} 把两种缺失分开——
+     * 图上没节点（要重建图谱）与有节点无文档边（要传说明书），处置完全不同。
+     * <p>
+     * 一次请求要拉商品目录再查一次图谱，是**只读的管理视图**，不做缓存：
+     * 它本身就是用来发现「刚上架的商品有没有接上资料」的，缓存会让这个发现延迟。
+     * <p>
+     * <b>读 {@code available} 之前不要读那三个计数</b>：图谱或商品目录不可用时
+     * 三个计数都是 0，与「全都覆盖了」在界面上长得一样。
+     */
+    @GetMapping("/coverage")
+    public Result<ProductGraphCoverage> coverage() {
+        return Result.success(coverageService.coverage());
+    }
     /**
      * 重建进度与上次结果。
      * <p>

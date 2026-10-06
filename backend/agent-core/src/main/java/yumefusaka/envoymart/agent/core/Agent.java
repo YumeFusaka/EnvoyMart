@@ -25,6 +25,7 @@ import yumefusaka.envoymart.agent.memory.UserProfile;
 import yumefusaka.envoymart.agent.memory.UserProfileStore;
 import yumefusaka.envoymart.agent.rag.CitationVerifier;
 import yumefusaka.envoymart.agent.rag.ConflictReporter;
+import yumefusaka.envoymart.agent.rag.ConflictVerdictService;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.KnowledgePrompt;
@@ -33,8 +34,13 @@ import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
 import yumefusaka.envoymart.agent.rag.RetrievalOutcome;
 import yumefusaka.envoymart.agent.rag.ToolFactVerifier;
+import yumefusaka.envoymart.agent.core.task.ClarificationTracker;
 import yumefusaka.envoymart.agent.core.task.HealthQueryCoverage;
 import yumefusaka.envoymart.agent.core.task.IntentDriftDetector;
+import yumefusaka.envoymart.agent.core.task.IntentSwitchDetector;
+import yumefusaka.envoymart.agent.core.task.ReferenceResolver;
+import yumefusaka.envoymart.agent.core.task.SessionContext;
+import yumefusaka.envoymart.agent.core.task.SessionContextStore;
 import yumefusaka.envoymart.agent.core.task.TaskCheckpoint;
 import yumefusaka.envoymart.agent.core.task.TaskState;
 import yumefusaka.envoymart.agent.core.task.TaskStateStore;
@@ -121,6 +127,32 @@ public class Agent {
      */
     private final LLMProvider conflictChecker;
 
+    /**
+     * 冲突裁定的留存与复用。可为 null —— 与 {@link #conflictChecker} 同样的理由：
+     * 单测与不需要跨轮复用的部署可以不给它位置。为 null 时冲突照常抽取与展示，
+     * 只是每轮重新判一次（即改造前的行为）。
+     */
+    private final ConflictVerdictService conflictVerdictService;
+
+    /**
+     * 会话现场存储 —— 「这个会话正在办的是哪件事」。
+     * <p>
+     * 默认 {@link SessionContextStore#NOOP}：不配就是「每轮都按新事项处理」，
+     * 与改造前的行为一致（每次意图判断只看当前这一句话）。
+     */
+    private final SessionContextStore sessionContextStore;
+
+    /** 澄清进度在 context_snapshot 里的键。取值是稳定契约，前端与日志按它读 */
+    private static final String SNAPSHOT_CLARIFICATION = "clarification";
+
+    /**
+     * 上一轮给出的候选商品在 context_snapshot 里的键。
+     * <p>
+     * 存它只为一件事：让「把第二个加进购物车」这类**跨轮序号指代**有确定答案。
+     * 不存的话，模型只能靠历史里那段文字去数，而它数的是自己的措辞，不是卡片顺序。
+     */
+    private static final String SNAPSHOT_CANDIDATES = "lastCandidates";
+
     /** 各会话的对话轮次计数，用于按间隔触发记忆抽取 */
     private final Map<String, Integer> turnCounters = new ConcurrentHashMap<>();
 
@@ -179,6 +211,53 @@ public class Agent {
                  QueryRewriter queryRewriter,
                  TaskStateStore taskStateStore,
                  LLMProvider conflictChecker) {
+        this(config, toolRegistry, intentRouter, agentGraph, shortTermMemory, episodicMemory,
+                profileStore, ragEngine, consolidator, queryRewriter, taskStateStore, conflictChecker,
+                null, SessionContextStore.NOOP);
+    }
+
+    /**
+     * 完整构造器 —— 追加冲突裁定留存。
+     * <p>
+     * 与断点、冲突核对通道同样的取舍：留存是<b>可选的部署能力</b>，
+     * 不该让所有既有调用点（含大量单测）跟着改一遍。所以留一个不带它的重载，
+     * 新能力通过这个完整构造器注入。
+     */
+    public Agent(Config config,
+                 ToolRegistry toolRegistry,
+                 IntentRouter intentRouter,
+                 AgentGraph agentGraph,
+                 Memory shortTermMemory,
+                 Memory episodicMemory,
+                 UserProfileStore profileStore,
+                 RAGEngine ragEngine,
+                 MemoryConsolidator consolidator,
+                 QueryRewriter queryRewriter,
+                 TaskStateStore taskStateStore,
+                 LLMProvider conflictChecker,
+                 ConflictVerdictService conflictVerdictService) {
+        this(config, toolRegistry, intentRouter, agentGraph, shortTermMemory, episodicMemory,
+                profileStore, ragEngine, consolidator, queryRewriter, taskStateStore, conflictChecker,
+                conflictVerdictService, SessionContextStore.NOOP);
+    }
+
+    /**
+     * 完整构造器 —— 追加会话现场存储（跨轮上下文隔离）。
+     */
+    public Agent(Config config,
+                 ToolRegistry toolRegistry,
+                 IntentRouter intentRouter,
+                 AgentGraph agentGraph,
+                 Memory shortTermMemory,
+                 Memory episodicMemory,
+                 UserProfileStore profileStore,
+                 RAGEngine ragEngine,
+                 MemoryConsolidator consolidator,
+                 QueryRewriter queryRewriter,
+                 TaskStateStore taskStateStore,
+                 LLMProvider conflictChecker,
+                 ConflictVerdictService conflictVerdictService,
+                 SessionContextStore sessionContextStore) {
         this.config = config;
         this.toolRegistry = toolRegistry;
         this.approvals = new ApprovalTokens(config.getApprovalSecret());
@@ -192,6 +271,8 @@ public class Agent {
         this.queryRewriter = queryRewriter;
         this.taskStateStore = taskStateStore == null ? TaskStateStore.NOOP : taskStateStore;
         this.conflictChecker = conflictChecker;
+        this.conflictVerdictService = conflictVerdictService;
+        this.sessionContextStore = sessionContextStore == null ? SessionContextStore.NOOP : sessionContextStore;
     }
 
     public AgentResponse chat(String userId, String sessionId, String message, String approvalToken) {
@@ -240,9 +321,21 @@ public class Agent {
             return confirmed;
         }
 
-        // 0. 指代消解：改写必须先于记录本轮消息——喂给它的历史里不能含本轮，
-        //    否则「那它呢」的「它」在历史里已经指到了本轮自己
-        String retrievalQuery = queryRewriter.rewrite(message, recentConversation(scopedSession));
+        // 0. 指代消解分两层。
+        //    **先做序号指代**（「第二个」）：它是确定的事实，由代码解析，
+        //    不交给模型猜——猜错的下一步是不可逆的加购/下单。
+        //    再把结果交给模型做代词消解（「那它呢」）：那类指向靠字面判不出来，
+        //    模型比正则合适。顺序不能反：模型改写会把「第二个」的所指判断成它自己的猜测，
+        //    而不是我们从候选列表里查出来的那一条。
+        SessionContext sessionContext = loadSessionContext(userId, sessionId);
+        List<String> candidates = candidatesOf(sessionContext);
+        String withReference = ReferenceResolver.resolve(message, candidates);
+        if (!withReference.equals(message)) {
+            log.info("[Agent][Reference] 序号指代已消解：「{}」→「{}」", message, withReference);
+        }
+        // 改写必须先于记录本轮消息——喂给它的历史里不能含本轮，
+        // 否则「那它呢」的「它」在历史里已经指到了本轮自己
+        String retrievalQuery = queryRewriter.rewrite(withReference, recentConversation(scopedSession));
 
         // 1. 记录用户消息
         rememberMessage(userId, scopedSession, "user: " + message);
@@ -270,7 +363,21 @@ public class Agent {
         // 读而非写 —— 写入由入口层完成，因为它才知道用户此刻在看什么；
         // Agent 只负责把它注入这一轮的 prompt
         List<PerceptualMemory.Observation> observations = perceptualMemory.current(scopedSession);
-        String systemPrompt = buildSystemPrompt(profile, episodes, knowledge, evidence, observations);
+        // 会话现场：这个会话此刻在办的是哪件事。它决定「这一轮的意图是接续还是另起」，
+        // 进而决定上文的意图与已完成步骤要不要注入 prompt。
+        //
+        // 放在检索之后、组装 prompt 之前：判定要用改写句（「那第二个呢」只有改写完
+        // 才知道它问的是什么），而注入发生在 prompt 拼装的那一刻。
+        IntentSwitchDetector.Verdict switchVerdict =
+                IntentSwitchDetector.check(sessionContext.coreIntent(), retrievalQuery);
+        // 澄清进度：这个会话已经问过几轮、拿到了什么条件。
+        // **切换话题时从零开始**——上一件事澄清到一半的条件，不该限制新话题的检索范围
+        // （用户问完益生菌改问订单，把「腹泻」带过去会让订单查询也带着一个症状条件）
+        ClarificationTracker.Progress clarification = ClarificationTracker.advance(
+                switchVerdict.switched() ? null : progressOf(sessionContext), retrievalQuery);
+        String systemPrompt = buildSystemPrompt(profile, episodes, knowledge, evidence, observations,
+                switchVerdict.switched() ? null : sessionContext,
+                switchVerdict.switched() ? null : clarification);
         // 上一轮中断的现场以提示的形式进 prompt：让模型知道「有个操作在等你点头」，
         // 于是用户说「那就确认吧」时它能把话接上，而不是从头再规划一遍、
         // 把用户已经审过的那次调用重新推导成另一个样子
@@ -323,6 +430,11 @@ public class Agent {
         // 而下一轮用户可能已经换了页面——留着它，模型会拿着过期上下文作答，
         // 而那段内容读起来和新鲜的一样可信。失效条件是「本轮结束」，不是「池子满了」
         perceptualMemory.clear(scopedSession);
+
+        // 6. 更新会话现场：这一轮之后，这个会话正在办的是哪件事。
+        //    新事项用**改写句**冻结核心意图（它才带着被补回来的主语），
+        //    接续则保留原来的意图、只推进子任务与已完成步骤
+        updateSessionContext(userId, sessionId, retrievalQuery, switchVerdict, sessionContext, response, clarification);
 
         return response;
     }
@@ -698,11 +810,25 @@ public class Agent {
             // 用它替换 reply 会把回答正文换成核对说明——所以只取冲突条目，
             // 正文仍然用主回答那一版（{@code report.reply()}）
             log.info("[Agent] 独立冲突核对命中：{} 条（主回答未报出）", isolated.conflicts().size());
-            return new ConflictReporter.Report(fallback.reply(), isolated.conflicts());
+            // 隔离路径的冲突同样要接留存：它与主线报出的是同一批证据上的同一件事，
+            // 若只在主线接，则「主答漏报、靠隔离兜出」的冲突永远命不中历史裁定
+            return reuseVerdicts(new ConflictReporter.Report(fallback.reply(), isolated.conflicts()),
+                    evidence);
         } catch (Exception e) {
             log.warn("[Agent] 独立冲突核对失败，沿用主回答判定：{}", e.toString());
             return fallback;
         }
+    }
+
+    /**
+     * 把这一轮的冲突接上裁定留存。未配置留存时原样返回 —— 保持改造前行为。
+     */
+    private ConflictReporter.Report reuseVerdicts(ConflictReporter.Report report,
+                                                  List<DocumentChunk> evidence) {
+        if (conflictVerdictService == null) {
+            return report;
+        }
+        return conflictVerdictService.apply(report, evidence);
     }
 
     /**
@@ -804,6 +930,148 @@ public class Agent {
     }
 
     /**
+     * 读会话现场。存储失败时退回空现场（= 按新事项处理）而不是抛 ——
+     * 现场是增强项，一次 Redis 抖动不该让用户等不到回答。
+     */
+    private SessionContext loadSessionContext(String userId, String sessionId) {
+        try {
+            return sessionContextStore.load(userId, sessionId)
+                    .orElseGet(() -> SessionContext.empty(userId, sessionId, System.currentTimeMillis()));
+        } catch (RuntimeException e) {
+            log.warn("[Agent][Session] 会话现场读取失败，本轮按新事项处理：{}", e.getMessage());
+            return SessionContext.empty(userId, sessionId, System.currentTimeMillis());
+        }
+    }
+
+    /**
+     * 更新会话现场并落库。
+     * <p>
+     * <b>核心意图只在「新事项」时冻结，接续时原样保留。</b>这是这个字段全部意义所在：
+     * 它必须整个会话里指的是同一件事，否则「上文在办什么」就没有稳定答案，
+     * 而注入 prompt 的那段说明会随着每一轮改写句漂移。
+     * <p>
+     * <b>已完成步骤接续时累加、切换时保留。</b>切换不重置它，因为它记的是
+     * 「这个会话真做过什么」，是「不要再重复查一遍」的依据——上一件事查过的订单，
+     * 这一件事里同样不该再查一次。
+     */
+    private void updateSessionContext(String userId, String sessionId, String retrievalQuery,
+                                      IntentSwitchDetector.Verdict switchVerdict,
+                                      SessionContext previous, AgentResponse response,
+                                      ClarificationTracker.Progress progress) {
+        long now = System.currentTimeMillis();
+        try {
+            SessionContext next = switchVerdict.switched()
+                    ? previous.switchTo(retrievalQuery, now)
+                    : (previous.idle()
+                            // 会话里还没有事项：建立它。这不是「切换」而是「开工」，
+                            // 两者的区别见 IntentSwitchDetector.check 对空意图的处理
+                            ? previous.switchTo(retrievalQuery, now)
+                            : previous);
+            for (String tool : executedTools(response)) {
+                next = next.complete(tool, now);
+            }
+            next = next.withPending(pendingTools(response), now);
+            // 澄清进度落在 context_snapshot 里：它是「这个会话已经知道什么」的一部分，
+            // 与意图、已完成步骤同层。存进快照而不是新加字段，是因为它天然是
+            // 「随会话走的可变上下文」，而 TaskState 的字段清单是稳定契约、不该为它扩容
+            Map<String, Object> snapshot = new java.util.LinkedHashMap<>(next.contextSnapshot());
+            if (progress != null) {
+                snapshot.put(SNAPSHOT_CLARIFICATION, snapshotOf(progress));
+            }
+            // 记下这一轮端给用户的候选，供下一轮解析「第二个」。
+            // **只在真有候选时覆盖**：这一轮没给候选（问订单、问政策）不该把上一轮
+            // 的候选抹掉——用户完全可能先看一眼推荐、问个别的事、再回头说「第二个」
+            List<String> candidates = ReferenceResolver.candidatesOf(response == null ? null : response.getReply());
+            if (!candidates.isEmpty()) {
+                snapshot.put(SNAPSHOT_CANDIDATES, candidates);
+            }
+            next = next.advance(next.currentSubtask(), snapshot, now);
+            sessionContextStore.save(next);
+            if (switchVerdict.switched()) {
+                log.info("[Agent][Session] 意图切换 userId={} 新事项={} 依据：{}",
+                        userId, retrievalQuery, switchVerdict.detail());
+            }
+        } catch (RuntimeException e) {
+            log.warn("[Agent][Session] 会话现场保存失败，本轮回答不受影响：{}", e.getMessage());
+        }
+    }
+
+    /**
+     * 从上下文快照里读回澄清进度。
+     * <p>
+     * 快照是 {@code Map<String, Object>}（要能被序列化进 Redis），而进度是一个 record ——
+     * 这里逐个字段还原。字段缺失时返回 {@code null} 表示「这个会话没有在澄清」，
+     * 而不是返回一个空进度：空的 Progress 会让下一轮看起来像「已经澄清过 0 轮」，
+     * 于是第一次澄清就被当成第二次，改口判断拿到一份不存在的历史。
+     */
+    @SuppressWarnings("unchecked")
+    private static ClarificationTracker.Progress progressOf(SessionContext context) {
+        if (context == null || context.contextSnapshot() == null) {
+            return null;
+        }
+        Object raw = context.contextSnapshot().get(SNAPSHOT_CLARIFICATION);
+        if (!(raw instanceof Map<?, ?> map) || map.isEmpty()) {
+            return null;
+        }
+        Map<String, String> collected = new java.util.LinkedHashMap<>();
+        Object values = map.get("collected");
+        if (values instanceof Map<?, ?> valueMap) {
+            valueMap.forEach((k, v) -> collected.put(String.valueOf(k), String.valueOf(v)));
+        }
+        return new ClarificationTracker.Progress(
+                collected,
+                map.get("round") instanceof Number n ? n.intValue() : 0,
+                Boolean.TRUE.equals(map.get("converged")),
+                (List<String>) asStringList(map.get("missing")),
+                (List<String>) asStringList(map.get("corrections")));
+    }
+
+    private static List<String> asStringList(Object raw) {
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream().map(String::valueOf).toList();
+    }
+
+    /** 上一轮给出过的候选商品名，按正文里的出现顺序 —— 「第二个」数的就是它们 */
+    @SuppressWarnings("unchecked")
+    private static List<String> candidatesOf(SessionContext context) {
+        if (context == null || context.contextSnapshot() == null) {
+            return List.of();
+        }
+        return asStringList(context.contextSnapshot().get(SNAPSHOT_CANDIDATES));
+    }
+
+    /** 把澄清进度写进快照（可序列化形态）。快照里只留标量，见 taskStateOf 的同类说明 */
+    private static Map<String, Object> snapshotOf(ClarificationTracker.Progress progress) {
+        Map<String, Object> snapshot = new java.util.LinkedHashMap<>();
+        snapshot.put("collected", new java.util.LinkedHashMap<>(progress.collected()));
+        snapshot.put("round", progress.round());
+        snapshot.put("converged", progress.converged());
+        snapshot.put("missing", List.copyOf(progress.missing()));
+        snapshot.put("corrections", List.copyOf(progress.corrections()));
+        return snapshot;
+    }
+
+    private static List<String> executedTools(AgentResponse response) {
+        if (response == null || response.getToolExecutions() == null) {
+            return List.of();
+        }
+        return response.getToolExecutions().stream()
+                .map(ToolExecution::getTool)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+    }
+
+    private static List<String> pendingTools(AgentResponse response) {
+        if (response == null || response.getPendingActions() == null) {
+            return List.of();
+        }
+        return List.copyOf(response.getPendingActions());
+    }
+
+    /**
      * 任务标识。
      * <p>
      * 由「用户 + 会话」派生而不是随机生成：断点的读取方是<b>下一次请求</b>，
@@ -895,6 +1163,9 @@ public class Agent {
         if (report.conflicts().isEmpty() && conflictChecker != null && conflictChecker.supportsReasoning()) {
             report = checkConflictIsolated(userMessage, evidence, report);
         }
+        // 冲突裁定的留存与复用：同一条矛盾第二次出现时沿用「已于 X 时裁定」，
+        // 资料改一个字即指纹变化、旧裁定自动失效重新判定。见 {@link ConflictVerdictService}
+        report = reuseVerdicts(report, evidence);
         // 工具依据决定「没有引用」该怎么解读：有依据时无引用是正常的，没有依据时
         // 整篇就是模型自己写的、无出处的句子必须报出来。
         //
@@ -1036,6 +1307,17 @@ public class Agent {
      */
     private String buildSystemPrompt(UserProfile profile, List<MemoryItem> episodes, List<DocumentChunk> knowledge,
                                      EvidenceGate.Decision evidence, List<PerceptualMemory.Observation> observations) {
+        return buildSystemPrompt(profile, episodes, knowledge, evidence, observations, null, null);
+    }
+
+    /**
+     * @param continuing 接续的会话现场；{@code null} 表示这是新事项（或本就无现场），
+     *                   此时不注入任何上文说明。传 null 而不是传一个空现场，
+     *                   是为了让「没有上文」这件事只有一个表示
+     */
+    private String buildSystemPrompt(UserProfile profile, List<MemoryItem> episodes, List<DocumentChunk> knowledge,
+                                     EvidenceGate.Decision evidence, List<PerceptualMemory.Observation> observations,
+                                     SessionContext continuing, ClarificationTracker.Progress progress) {
         StringBuilder sb = new StringBuilder(config.getDefaultSystemPrompt());
 
         // 语言约束放在最前面，且不带条件 —— 它是一条**输出契约**，不是业务规则。
@@ -1072,10 +1354,33 @@ public class Agent {
                 不得因为用户问的是「药」而知识库里只有保健食品，就跳过商品检索直接回答
                 「没有用药依据」——那是把一次没做的检索说成了结论。
 
-                查到相关商品时，要给出：推荐的是什么、为什么适合他这种情况、有什么作用，
-                并提醒保健食品不能替代药物治疗。信息不足以判断时，先问清楚
-                （比如「肠道不好」是便秘、腹泻还是腹胀——三者适用的商品完全不同），
-                问清之后再做评估，不要拿模糊输入硬查、也不要就此拒答。
+                查到相关商品时，回答必须包含这四样，缺一不可：
+                ① 推荐哪一个商品（写清商品名，价格与规格逐字照工具返回的写）；
+                ② 为什么适合他这种情况（对应到他的症状）；
+                ③ 有什么作用（是补什么、起什么效，以说明书为准）；
+                ④ 一句提醒：保健食品不能替代药物治疗，症状持续或加重请就医。
+
+                ### 什么时候先问、怎么问
+                症状词指向多种可能、而且**不同的可能对应不同商品**时（「肠道不好」可能是
+                便秘、腹泻或腹胀，三者适用的商品完全不同），先问清楚再给结论。
+                但问题必须**能缩小结果集**：
+                - 要问「是便秘、腹泻，还是腹胀？」这种**给出候选**的问题，
+                  让用户点一个词就能定方向；
+                - **不要问**「您能说得详细一点吗」「具体是什么感觉」——
+                  这种问题把归纳的活推回给用户，而用户来问就是因为他不知道该怎么描述；
+                  它也不会让下一轮的检索范围变小，问十轮还是同一批结果；
+                - 一轮问不清就再问一轮，**不设轮数上限**，但每一轮都要拿到新信息
+                  （用户答了「腹泻」，下一轮就不许再问是不是便秘）；
+                - 用户回答后**用新条件重新检索一次**，不要拿原话再查一遍。
+
+                ### 「没有」的正确说法
+                查不到时说的是**平台资料的覆盖情况**，不是对用户身体的判断。两者差一个字都算错：
+                - 可以说：「平台知识库里暂时没有收录针对这个情况的商品/依据。」
+                - **不可以**说：「你这种情况不能吃」「你不适合吃这个」「这个对你的病没用」——
+                  这是医学结论，平台没有资格下，我们也没做过任何诊断。
+                - 资料里确实写了禁忌或就医提示的（比如某商品说明书写着「肠梗阻、肠道狭窄者禁用」），
+                  **照着资料说**并建议就医：这是「复述资料」，不是「下结论」。
+                  判据是资料里有没有写，不是这个话题敏不敏感。
                 """);
 
         List<ProfileEntry> profileEntries = profile == null ? List.of() : profile.injectionEntries();
@@ -1108,6 +1413,65 @@ public class Agent {
                 sb.append("- ").append(observation.source()).append("：")
                         .append(observation.content()).append("\n");
             }
+        }
+
+        // 会话现场：这个会话正在办哪件事、已经走到哪。
+        //
+        // **只在接续时注入**（continuing 非 null）。换了话题就必须一个字都不提——
+        // 把「上一个事项」写进新话题的 prompt，模型会把两件事缝在一起，
+        // 生成一段看起来连贯、实则回答了没人问的问题的正文。这正是上下文隔离要防的东西。
+        //
+        // 注入的是**结构化事实**（意图原文 + 已完成的工具 + 当前子任务），不是对话摘要：
+        // 摘要是模型生成的、会漂移，而这些字段是代码写的、可核对。
+        // 「已完成步骤」这一项尤其关键——它让模型知道哪几步别再做一遍，
+        // 这是多轮里重复调用同一个工具的主要来源。
+        if (continuing != null && !continuing.idle()) {
+            sb.append("\n\n## 当前会话正在办的事\n");
+            sb.append("意图：").append(continuing.coreIntent()).append("\n");
+            if (continuing.currentSubtask() != null && !continuing.currentSubtask().isBlank()) {
+                sb.append("当前子任务：").append(continuing.currentSubtask()).append("\n");
+            }
+            if (!continuing.completedSteps().isEmpty()) {
+                sb.append("已经查过的步骤：").append(String.join("、", continuing.completedSteps()))
+                        .append("\n")
+                        .append("用户这一轮若在接着问同一件事，**不要重复上面已经查过的步骤**，")
+                        .append("直接使用已有结论往下走。\n");
+            }
+            if (!continuing.pendingTools().isEmpty()) {
+                sb.append("还有待确认的操作：").append(String.join("、", continuing.pendingTools())).append("\n");
+            }
+            sb.append("以上是本会话的进行状态，不是用户说的话。\n");
+        }
+
+        // 澄清进度：这个会话已经问过几轮、拿到了什么条件。
+        //
+        // **为什么要显式写进 prompt，而不是让模型自己从历史里总结。**
+        // 实测失效：用户答了「腹泻」，下一轮又被问「是便秘还是腹泻」——模型看的是整段历史，
+        // 分不清哪句是用户已经答过的（历史里既有它的提问，也有用户的回答）。
+        // 把它写成一份「已知 / 还缺」的清单，判断就变成读表而不是理解。
+        //
+        // 改口单独标出来（「已纠正」）：不标的话，模型会把新旧两个取值都当成限制条件，
+        // 检索出空集，然后告诉用户「没有相关商品」——而其实是它自己把条件叠加了。
+        if (progress != null && !progress.collected().isEmpty()) {
+            sb.append("\n\n## 这一轮的澄清进度\n");
+            sb.append("已经问过 ").append(progress.round()).append(" 轮。已知条件：\n");
+            for (Map.Entry<String, String> entry : progress.collected().entrySet()) {
+                sb.append("- ").append(entry.getKey()).append("：").append(entry.getValue()).append("\n");
+            }
+            if (!progress.corrections().isEmpty()) {
+                sb.append("**用户已经改口**：").append(String.join("、", progress.corrections()))
+                        .append("。以改口后的新说法为准，**不要**把旧说法也当成限制条件"
+                                + "（两个条件一起用会搜出空集）。\n");
+            }
+            if (progress.converged()) {
+                sb.append("条件已经足够，**这一轮直接给出结论与商品推荐**，不要再问。\n");
+            } else if (!progress.missing().isEmpty()) {
+                sb.append("还缺：").append(String.join("、", progress.missing()))
+                        .append("。若确实需要再问，只问缺的这几项，"
+                                + "且必须给出候选让用户选（不要问「能说得详细点吗」）；"
+                                + "**已经答过的不要再问**。\n");
+            }
+            sb.append("以上是本会话的澄清状态。\n");
         }
 
         // 知识段永远渲染 —— 哪怕是空的。空空如也的 prompt 会让模型默认「没有限制、随便答」，

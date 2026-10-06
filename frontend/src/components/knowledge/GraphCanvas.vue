@@ -777,6 +777,14 @@ watch(
   stroke-dasharray: 2 4;
 }
 
+/* 组合禁忌：最重的一条，点划线 + 更粗。它是这几条里唯一「条件成立才发生」的结论，
+   线型上要和其它几条明确分开 —— 用户扫一眼就该看出这不是单看某一样东西的风险 */
+.edge--COMBINED_WITH .edge__line {
+  stroke: var(--color-danger);
+  stroke-dasharray: 12 4 2 4;
+  stroke-width: 2.5;
+}
+
 .edge__hit:hover + .edge__line,
 .edge.is-active .edge__line {
   stroke-width: 3.5;
@@ -832,6 +840,13 @@ watch(
 
 .node--POPULATION .node__dot {
   fill: var(--ys-warm-600);
+}
+
+/* 组合节点：实心深色。
+   它不是一种实体而是一个结构（「这几样一起」），用比所有实体都重的实心点，
+   让它在一圈药丸里一眼可辨 —— 用户看到它就知道「这几条线是因为这几样凑在一起才有的」 */
+.node--COMBINATION .node__dot {
+  fill: var(--color-text-primary);
 }
 
 /* 只有这两个类型给整个药丸上边色：商品是主角，药物是安全关键 */

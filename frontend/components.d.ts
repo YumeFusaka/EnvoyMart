@@ -17,6 +17,7 @@ declare module 'vue' {
     AiConflictList: typeof import('./src/components/ai/ConflictList.vue')['default']
     AiMessageContent: typeof import('./src/components/ai/MessageContent.vue')['default']
     AiPendingApprovalCard: typeof import('./src/components/ai/PendingApprovalCard.vue')['default']
+    AiPendingPaymentCard: typeof import('./src/components/ai/PendingPaymentCard.vue')['default']
     AiQuickPromptBar: typeof import('./src/components/ai/QuickPromptBar.vue')['default']
     AiRecommendationCards: typeof import('./src/components/ai/RecommendationCards.vue')['default']
     AuthAuthShell: typeof import('./src/components/auth/AuthShell.vue')['default']

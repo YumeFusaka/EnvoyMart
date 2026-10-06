@@ -264,4 +264,81 @@ class TripleValidatorTest {
 
         assertThat(result.accepted().get(0).chunkId()).isEqualTo("KB-0006-002");
     }
+
+    // ==================== 组合禁忌 ====================
+
+    /** 一句话里明确列出三样，且给出共同后果 —— 这是唯一能支撑组合关系的句式 */
+    private static final String COMBO_BODY = """
+            复合矿物质补充剂说明书
+            本品含铁剂、钙剂与维生素D，三者同服可能增加结石风险，肾结石患者禁用。
+            铁剂与钙剂同服会影响铁的吸收。
+            维生素D 与噻嗪类利尿剂合用可能引起高钙血症。
+            """;
+
+    private static Triple combo(String members, String tailKind, String tailName, String quote) {
+        return new Triple("COMBINATION", members, null, "COMBINED_WITH", tailKind, tailName,
+                null, "三者同服可能增加结石风险", quote);
+    }
+
+    @Test
+    void 组合成员被引文全覆盖时入库_键按成员排序且可复现() {
+        // 「钙剂＋铁剂＋维生素D」与「铁剂＋钙剂＋维生素D」是同一个组合。
+        // 不排序的话同一件事会在图上分成两个节点，条数与来源各算一半 —— 而这是静默的
+        TripleValidator.Result a = TripleValidator.validate(List.of(
+                combo("铁剂+钙剂+维生素D", "POPULATION", "肾结石患者",
+                        "本品含铁剂、钙剂与维生素D，三者同服可能增加结石风险")),
+                "KB-0031", COMBO_BODY, List.of());
+        TripleValidator.Result b = TripleValidator.validate(List.of(
+                combo("钙剂＋维生素D＋铁剂", "POPULATION", "肾结石患者",
+                        "本品含铁剂、钙剂与维生素D，三者同服可能增加结石风险")),
+                "KB-0031", COMBO_BODY, List.of());
+
+        assertThat(a.accepted()).hasSize(1);
+        assertThat(b.accepted()).hasSize(1);
+        assertThat(a.accepted().get(0).headName())
+                .isEqualTo(b.accepted().get(0).headName())
+                .startsWith("combo:")
+                // 成员已被别名归一（钙剂 → 钙），且按字典序拼接
+                .isEqualTo("combo:维生素d|钙|铁剂");
+    }
+
+    @Test
+    void 引文只提到部分成员_必须丢弃() {
+        // 这条是本批最要紧的判据。文档里有「铁剂与钙剂同服影响铁的吸收」这句话，
+        // 它确实是逐字存在的、也确实提到了两样东西；但模型把「维生素D」也塞进了组合，
+        // 而那句话里没有维生素D。放它入库，用户就会看到「铁剂+钙剂+维生素D 有结石风险」
+        // 这样一条**带着完整伪溯源**的结论 —— 少报一条组合远好过多报一条
+        TripleValidator.Result result = TripleValidator.validate(List.of(
+                combo("铁剂+钙剂+维生素D", "POPULATION", "肾结石患者",
+                        "铁剂与钙剂同服会影响铁的吸收")),
+                "KB-0031", COMBO_BODY, List.of());
+
+        assertThat(result.accepted()).isEmpty();
+        assertThat(result.count(TripleValidator.RejectReason.UNANCHORED)).isEqualTo(1);
+    }
+
+    @Test
+    void 只有一个成员的组合是畸形_必须丢弃() {
+        // 一个成员的「组合」与单跳是一回事，走 INTERACTS_WITH 表达即可。
+        // 放它进来等于给同一件事多加一条形状不同的边，查询时会报两遍
+        TripleValidator.Result result = TripleValidator.validate(List.of(
+                combo("铁剂", "DRUG", "左旋多巴", "铁剂与钙剂同服会影响铁的吸收")),
+                "KB-0031", COMBO_BODY, List.of());
+
+        assertThat(result.accepted()).isEmpty();
+        assertThat(result.count(TripleValidator.RejectReason.MALFORMED)).isEqualTo(1);
+    }
+
+    @Test
+    void 组合的尾端必须出现在原文里() {
+        // 尾端是编的（正文里没有「高钾血症患者」），整条丢弃 —— 与单跳那条判据一致。
+        // 组合的头不是实体，所以「端点有无出处」这条只剩尾端可查
+        TripleValidator.Result result = TripleValidator.validate(List.of(
+                combo("铁剂+钙剂", "POPULATION", "高钾血症患者",
+                        "本品含铁剂、钙剂与维生素D，三者同服可能增加结石风险")),
+                "KB-0031", COMBO_BODY, List.of());
+
+        assertThat(result.accepted()).isEmpty();
+        assertThat(result.count(TripleValidator.RejectReason.UNANCHORED)).isEqualTo(1);
+    }
 }

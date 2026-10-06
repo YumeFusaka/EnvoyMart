@@ -22,6 +22,7 @@ import { ElMessage } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import {
   changeDocumentStatus,
+  fetchKnowledgeCoverage,
   fetchReindexStatus,
   getDocumentAdmin,
   listDocumentsAdmin,
@@ -45,7 +46,10 @@ const { query, records, loading, error, search, resetFilters, load } = useAdminL
   { immediate: false },
 )
 
-onMounted(() => load(0))
+onMounted(() => {
+  void load(0)
+  void loadCoverage()
+})
 
 /** 表格容器。列宽由它实测的宽度反推，所以宽度变化源是它而不是 window */
 const tableRef = ref<HTMLElement | null>(null)
@@ -311,6 +315,47 @@ async function reindex() {
 async function onReset() {
   await resetFilters()
 }
+// ==================== 商品资料覆盖率 ====================
+
+/**
+ * 覆盖率读数：在售商品里有多少是有说明书支撑的。
+ *
+ * 它回答的是「存储质量的欠账」——未覆盖的商品，用户问到时系统只能答
+ * 「知识库里没有」。所以这一块的落点是**可行动**：每个未覆盖的商品点一下就进它的编辑页。
+ *
+ * `available` 与计数分开：图谱或商品目录不可用时三个计数都是 0，
+ * 与「全部覆盖」在界面上长得一模一样。不加这个标志，一次故障会显示成「一切正常」。
+ */
+const coverage = ref<Awaited<ReturnType<typeof fetchKnowledgeCoverage>> | null>(null)
+const coverageLoading = ref(false)
+
+async function loadCoverage() {
+  coverageLoading.value = true
+  try {
+    coverage.value = await fetchKnowledgeCoverage()
+  } catch {
+    // 拦截器已提示；把读数置空，让区块显示成「没查成」而不是「全绿」
+    coverage.value = null
+  } finally {
+    coverageLoading.value = false
+  }
+}
+
+/** 未覆盖原因的文案。两种原因的修法不同，不能合起来说 */
+function uncoveredReason(reason: 'NO_NODE' | 'NO_DOCUMENT') {
+  return reason === 'NO_NODE'
+    ? '图谱里还没有这个商品节点'
+    : '图谱里有节点，但没有文档支持它'
+}
+
+/** 覆盖率的百分比读数。分母为 0 时给 null —— 那是「还没有商品」而不是「一个都没覆盖」 */
+const coveragePercent = computed(() => {
+  const data = coverage.value
+  if (!data || data.totalSpu === 0) {
+    return null
+  }
+  return Math.round((data.coveredSpu / data.totalSpu) * 100)
+})
 </script>
 
 <template>
@@ -354,6 +399,75 @@ async function onReset() {
       </span>
     </div>
 
+    <!-- 商品资料覆盖率：这是「多少商品答得上来」的读数，不是文档列表的附属统计。
+         它排在文档列表之前，因为缺资料的商品才是要去处理的那批。 -->
+    <section class="coverage" aria-label="商品资料覆盖率">
+      <div class="coverage__head">
+        <h2 class="coverage__title">商品资料覆盖率</h2>
+        <el-button
+          link
+          :icon="Refresh"
+          :loading="coverageLoading"
+          @click="loadCoverage"
+        >
+          刷新
+        </el-button>
+      </div>
+
+      <p v-if="coverageLoading && !coverage" class="coverage__hint">正在统计…</p>
+
+      <p v-else-if="!coverage" class="coverage__hint coverage__hint--bad">
+        覆盖率没查成（商品服务或图谱服务不可用）。这不代表商品都覆盖了，请稍后重试。
+      </p>
+
+      <p v-else-if="!coverage.available" class="coverage__hint coverage__hint--bad">
+        覆盖率没查成：{{ coverage.reason || '图谱或商品目录暂时不可用' }}。
+        <strong>这不代表商品都覆盖了</strong>，请稍后重试。
+      </p>
+
+      <template v-else>
+        <div class="coverage__stats">
+          <div class="coverage__stat">
+            <span class="coverage__value">{{ coverage.coveredSpu }} / {{ coverage.totalSpu }}</span>
+            <span class="coverage__label">在售商品有说明书支撑</span>
+          </div>
+          <div class="coverage__stat">
+            <span class="coverage__value" :class="{ 'coverage__value--warn': coverage.uncoveredSpu.length > 0 }">
+              {{ coverage.uncoveredSpu.length }}
+            </span>
+            <span class="coverage__label">未覆盖，需要补资料</span>
+          </div>
+          <div class="coverage__stat">
+            <span class="coverage__value">{{ coveragePercent === null ? '—' : coveragePercent + '%' }}</span>
+            <span class="coverage__label">覆盖率</span>
+          </div>
+        </div>
+
+        <p v-if="coverage.uncoveredSpu.length === 0" class="coverage__hint coverage__hint--good">
+          全部在售商品都有说明书支撑。新上架商品如果这里没出现，是因为图谱还没重建 ——
+          上传说明书后会自动同步。
+        </p>
+
+        <div v-else class="coverage__list">
+          <p class="coverage__list-hint">
+            这些商品在图谱里还没有说明书支撑，用户问到时会答「知识库里没有」。
+            点商品名进它的编辑页，「说明书与知识依据」一栏会告诉你接上了没有。
+          </p>
+          <ul class="coverage__items">
+            <li v-for="item in coverage.uncoveredSpu" :key="item.spuKey" class="coverage__item">
+              <RouterLink
+                class="coverage__item-name"
+                :to="`/admin/products/${item.spuKey.replace(/^SPU/i, '')}/edit`"
+              >
+                {{ item.name }}
+              </RouterLink>
+              <span class="coverage__item-key">{{ item.spuKey }}</span>
+              <el-tag size="small" effect="plain" type="warning">{{ uncoveredReason(item.reason) }}</el-tag>
+            </li>
+          </ul>
+        </div>
+      </template>
+    </section>
     <div class="admin-filters">
       <div class="admin-filters__item">
         <label class="admin-filters__label" for="kb-keyword">标题 / 标签</label>
@@ -561,5 +675,119 @@ async function onReset() {
   .kb-form__row {
     grid-template-columns: 1fr;
   }
+}
+/* ==================== 商品资料覆盖率 ==================== */
+.coverage {
+  padding: var(--ys-space-4) var(--ys-space-5);
+  margin-bottom: var(--ys-space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--card-radius);
+  background: var(--color-bg-surface);
+  box-shadow: var(--card-shadow);
+}
+
+.coverage__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ys-space-3);
+}
+
+.coverage__title {
+  margin: 0;
+  font-size: var(--ys-font-md);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.coverage__hint {
+  margin: var(--ys-space-3) 0 0;
+  font-size: var(--ys-font-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.coverage__hint--good {
+  color: var(--color-success-strong);
+}
+
+.coverage__hint--bad {
+  color: var(--color-warning-strong);
+}
+
+.coverage__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--ys-space-4);
+  margin-top: var(--ys-space-4);
+}
+
+.coverage__stat {
+  display: grid;
+  gap: var(--ys-space-1);
+}
+
+.coverage__value {
+  font-size: var(--ys-font-xl);
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 未覆盖数 > 0 时才上警示色：0 也标红会让人以为一直在出问题 */
+.coverage__value--warn {
+  color: var(--color-warning-strong);
+}
+
+.coverage__label {
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-secondary);
+}
+
+.coverage__list {
+  margin-top: var(--ys-space-4);
+}
+
+.coverage__list-hint {
+  margin: 0 0 var(--ys-space-3);
+  font-size: var(--ys-font-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.coverage__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--ys-space-2);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.coverage__item {
+  display: flex;
+  align-items: center;
+  gap: var(--ys-space-3);
+  flex-wrap: wrap;
+  padding: var(--ys-space-2) var(--ys-space-3);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-sunken);
+}
+
+.coverage__item-name {
+  font-weight: 600;
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.coverage__item-name:hover {
+  text-decoration: underline;
+}
+
+.coverage__item-key {
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 </style>

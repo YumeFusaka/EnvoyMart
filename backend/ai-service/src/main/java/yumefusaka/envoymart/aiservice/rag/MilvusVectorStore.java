@@ -70,6 +70,31 @@ public class MilvusVectorStore implements VectorStore {
                 .toList();
     }
 
+    /**
+     * 带 {@code docId} 过滤的检索 —— 过滤<b>下推到 Milvus</b>，不是取回来再筛。
+     * <p>
+     * 这是情节记忆按 userId 隔离的正确做法。原先「多取 20 倍再在应用层筛」的上限是
+     * 真实的：记忆库一大，某个用户的条目就被挤出过取窗口，他再也回忆不起自己说过的话，
+     * 而日志里只显示「召回 0 条」——与「他确实没提过」完全同形。
+     * <p>
+     * Milvus 的 {@code maxResults} 是在<b>过滤之后</b>计数的，所以这里给的就是
+     * 真正想要的条数，不需要再乘任何倍数。
+     */
+    @Override
+    public List<DocumentChunk> search(String query, int topK, String docId) {
+        if (docId == null || docId.isBlank()) {
+            return search(query, topK);
+        }
+        EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
+                .queryEmbedding(Embedding.from(embeddingService.embed(query)))
+                .maxResults(topK)
+                .filter(metadataKey(META_DOC_ID).isEqualTo(docId))
+                .build();
+        return delegate.search(request).matches().stream()
+                .map(this::toChunk)
+                .toList();
+    }
+
     @Override
     public void deleteByDocId(String docId) {
         delegate.removeAll(metadataKey(META_DOC_ID).isEqualTo(docId));

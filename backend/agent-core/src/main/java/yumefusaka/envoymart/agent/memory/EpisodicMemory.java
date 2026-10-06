@@ -40,15 +40,6 @@ public class EpisodicMemory implements Memory {
      */
     private static final int MAX_PREFERENCES_PER_USER = 50;
 
-    /**
-     * 召回时的过取倍数。
-     * <p>
-     * {@link VectorStore} 的契约里没有过滤参数，只能在应用层按 userId 过滤，
-     * 因此需要先多取一些再筛。<b>这是当前实现的已知上限</b>：当记忆库足够大、
-     * 某用户的相关条目全被挤出过取窗口时，召回会漏。真正的解法是给向量库加
-     * docId 过滤（Milvus 支持 filter expression），留给下一步。
-     */
-    private static final int OVER_FETCH_FACTOR = 20;
 
     private final Map<String, Deque<MemoryItem>> store = new ConcurrentHashMap<>();
 
@@ -188,21 +179,30 @@ public class EpisodicMemory implements Memory {
         return item.getType() == MemoryItem.Type.PREFERENCE;
     }
 
+    /**
+     * 按语义召回该用户的情节记忆。
+     * <p>
+     * <b>过滤下沉到向量库，不在应用层筛。</b>原先的做法是多取 {@code limit * 20} 条
+     * 再由这里筛掉别人的条目——那是一个静默漏召回：记忆库一大，某个用户的相关条目
+     * 就被挤出过取窗口，他再也回忆不起自己说过的话，而日志里只显示「召回 0 条」，
+     * 与「他确实没提过」完全同形。<b>过取倍数只是把漏召回的阈值推后，没有消除它。</b>
+     * <p>
+     * {@code mergeRecent} 兜底保留，但它现在管的是另一件事：库里<b>真的</b>没有
+     * 足够相关的条目（语义检索没命中，而不是被窗口挤掉）。那时退回近期条目，
+     * 宁可相关性弱也不给空。
+     */
     @Override
     public List<MemoryItem> recall(String userId, String query, int limit) {
         if (vectorStore == null || userId == null || userId.isBlank()) {
             return List.of();
         }
-        int overFetch = Math.max(limit * OVER_FETCH_FACTOR, 50);
-        List<MemoryItem> mine = vectorStore.search(query, overFetch).stream()
-                .filter(chunk -> userId.equals(chunk.getDocId()))
+        List<MemoryItem> mine = vectorStore.search(query, limit, userId).stream()
                 .map(this::toMemoryItem)
                 .collect(Collectors.toList());
 
         if (mine.size() < limit) {
-            log.debug("[EpisodicMemory] userId={} 过取窗口内仅命中 {} 条（需 {}），可能已触达过取上限",
+            log.debug("[EpisodicMemory] userId={} 语义命中 {} 条（需 {}），用近期条目补齐",
                     userId, mine.size(), limit);
-            // 兜底：过取窗口没捞到足够条目时，退回该用户的近期条目，宁可相关性弱也不给空
             mine = mergeRecent(userId, mine, limit);
         }
         return mine.stream().limit(limit).toList();

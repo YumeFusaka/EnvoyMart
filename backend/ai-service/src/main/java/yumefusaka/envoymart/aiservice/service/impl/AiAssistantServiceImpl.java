@@ -15,6 +15,9 @@ import yumefusaka.envoymart.aiservice.memory.ChatIdempotencyStore;
 import yumefusaka.envoymart.aiservice.model.ChatRequest;
 import yumefusaka.envoymart.aiservice.model.ChatResponse;
 import yumefusaka.envoymart.aiservice.model.KnowledgeSnippet;
+import yumefusaka.envoymart.aiservice.model.PendingPayment;
+import yumefusaka.envoymart.aiservice.tool.ProductSearchResult;
+import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.aiservice.model.ToolCallResponse;
 import yumefusaka.envoymart.aiservice.service.AiAssistantService;
@@ -190,6 +193,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
                 .recommendedProducts(extractProducts(executions))
+                .pendingPayments(extractPayments(executions))
                 .pendingActions(agentResp.getPendingActions())
                 .approvalToken(agentResp.getApprovalToken())
                 .evidenceLevel(agentResp.getEvidenceLevel())
@@ -323,7 +327,50 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .build();
     }
 
-    /** 从工具执行结果里抽取商品卡片数据（商品搜索工具的 rawData）。 */
+    /** 可支付的订单状态。取值来自 order-service 的订单状态机，不是在这里新定义的一套 */
+    private static final String PAYABLE_STATUS = "CREATED";
+
+    /**
+     * 从工具执行结果里抽取「待支付订单」。
+     * <p>
+     * 判据是<b>订单状态</b>而不是「这一轮调没调下单工具」：下单工具返回的订单
+     * 也可能已经是关闭或已支付状态（重放、并发）。按工具名判会把一个已经付过的订单
+     * 再渲染成支付卡，用户点进去看到一个不存在的待支付单——比不弹卡片坏得多。
+     * <p>
+     * 只有 {@code CREATED} 是可支付的。这个枚举值来自 order-service，
+     * 两边共用同一个 {@code OrderResponse} 契约，不是在前端各写一份字符串。
+     */
+    private List<PendingPayment> extractPayments(List<ToolExecution> executions) {
+        List<PendingPayment> payments = new java.util.ArrayList<>();
+        for (ToolExecution execution : executions) {
+            if (!execution.isSuccess() || !(execution.getRawData() instanceof OrderResponse order)) {
+                continue;
+            }
+            if (!PAYABLE_STATUS.equals(order.getStatus()) || order.getOrderNo() == null) {
+                continue;
+            }
+            // 同一单只出一张卡：重放或补查都可能让同一个订单出现两次
+            boolean duplicated = payments.stream()
+                    .anyMatch(p -> p.orderNo().equals(order.getOrderNo()));
+            if (!duplicated) {
+                payments.add(new PendingPayment(order.getId(), order.getOrderNo(), order.getPayAmount(),
+                        order.getExpireAt() == null ? null : order.getExpireAt().toString()));
+            }
+        }
+        return List.copyOf(payments);
+    }
+
+    /**
+     * 从工具执行结果里抽取商品卡片数据。
+     * <p>
+     * <b>两种形状都认</b>：检索工具现在交付 {@code ProductSearchResult}（SPU 摘要 + 默认规格），
+     * 而详情类工具直接挂 {@code ProductSummary}。只认一种的后果实测过 ——
+     * 检索工具换成结构化载体、这里没跟上，卡片区就空了，而正文里的商品名一个不少，
+     * 排查时看到的是「模型答得挺好，就是没卡片」。
+     * <p>
+     * 按商品编号去重而不是按对象相等：同一件商品可能同时出现在「关键词搜到」与
+     * 「按编号查详情」两次调用里，两张一模一样的卡片并排渲染是纯粹的视觉噪音。
+     */
     private List<ProductSummary> extractProducts(List<ToolExecution> executions) {
         return executions.stream()
                 .filter(ToolExecution::isSuccess)
@@ -331,10 +378,26 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .filter(Objects::nonNull)
                 .filter(List.class::isInstance)
                 .flatMap(data -> ((List<?>) data).stream())
-                .filter(ProductSummary.class::isInstance)
-                .map(ProductSummary.class::cast)
-                .distinct()
-                .toList();
+                .map(this::toProductSummary)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.collectingAndThen(
+                        java.util.stream.Collectors.toMap(
+                                p -> p.getId() == null ? String.valueOf(System.identityHashCode(p)) : p.getId(),
+                                p -> p,
+                                (first, ignored) -> first,
+                                java.util.LinkedHashMap::new),
+                        map -> List.copyOf(map.values())));
+    }
+
+    /** 一条工具结果的原始数据 → SPU 摘要。认不出形状时返回 null（跳过，而不是崩） */
+    private ProductSummary toProductSummary(Object raw) {
+        if (raw instanceof ProductSummary summary) {
+            return summary;
+        }
+        if (raw instanceof ProductSearchResult result) {
+            return result.summary();
+        }
+        return null;
     }
 
     /**

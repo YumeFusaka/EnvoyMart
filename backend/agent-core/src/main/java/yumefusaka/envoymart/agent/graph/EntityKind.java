@@ -35,7 +35,43 @@ public enum EntityKind {
     /** 药物类别。噻嗪类利尿剂、四环素类抗生素 —— 相互作用常以类为单位成立 */
     DRUG_CLASS("药物类别"),
     /** 人群。妊娠期哺乳期、肝肾功能不全者 */
-    POPULATION("人群");
+    POPULATION("人群"),
+
+    /**
+     * 组合节点 —— 「三样东西一起」这件事本身。
+     * <p>
+     * <b>它不是一种实体，是图上的一个结构。</b>键以 {@code combo:} 开头，由参与组合的
+     * 物质名按字典序拼接而成（如 {@code combo:铁剂|钙剂}），因此同一个组合无论从哪篇文档
+     * 抽出来都落到同一个节点，条数与来源可以正确累加。
+     * <p>
+     * <b>为什么不给它一个「看起来更像实体」的名字</b>：它不对应现实世界里任何一种东西，
+     * 用户不会想「我要查一下『组合』这个实体」。落在图上是为了让
+     * {@code 物质 -COMBINED_WITH-> 药物} 这条边有地方挂 —— 而风险的<b>成立条件</b>
+     * （「这几样一起」）写在头节点的键里，{@code effect} 里只写后果。
+     * <p>
+     * 抽取提示词与前端图例都不列它：前者的词表由 {@code GraphRelation#signature()} 生成，
+     * 已经说明了「组合」这一端的形状；后者按 kind 上色，多一类就会多一个用户无法理解的图例项。
+     * 前端遇到它会当作普通节点渲染，标签是参与成分的中文名拼接（见 {@code TripleValidator}）。
+     */
+    COMBINATION("组合");
+
+    /** 组合节点键的前缀。写入与读取两处共用，改动只改这一处 */
+    public static final String COMBINATION_PREFIX = "combo:";
+
+    /** 是不是组合节点的类型。校验器据此放行 {@code COMBINED_WITH} 的形状 */
+    public boolean isCombination() {
+        return this == COMBINATION;
+    }
+
+    /**
+     * 判定一个节点名是否为组合节点键。
+     * <p>
+     * 抽成方法而不是在各处写 {@code startsWith}：写入期形状校验、读取期展开、
+     * 前端展示三处都要问同一个问题，三处各写一遍就必然有一天只改了两处。
+     */
+    public static boolean isCombinationKey(String name) {
+        return name != null && name.startsWith(COMBINATION_PREFIX);
+    }
 
     private final String label;
 

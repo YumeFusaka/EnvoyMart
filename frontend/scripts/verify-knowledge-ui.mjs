@@ -22,6 +22,7 @@ import { chromium } from 'playwright-core'
 
 const BASE = process.env.VERIFY_BASE ?? 'http://localhost:5173'
 const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
+const NEO4J_HTTP = process.env.VERIFY_NEO4J ?? 'http://localhost:7474'
 const CHROMIUM =
   process.env.PLAYWRIGHT_CHROMIUM ??
   'C:/Users/j/AppData/Local/ms-playwright/chromium-1223/chrome-win64/chrome.exe'
@@ -668,6 +669,83 @@ ck(
   selectText.includes('鱼油软胶囊') && !selectText.includes('spu7'),
   '下拉露出的仍是键，与画布/右栏的展示名对不上',
 )
+// ---- 七、组合禁忌（方案 B）：图上有、清单里有、出处点得回原文 ----
+//
+// 背景：`COMBINED_WITH` 是「三样一起才有事」的结构，线上语料里没有这类原句，
+// 所以**这一段自己造一条边**，验完再删。测的是四件事：组合节点长什么样、
+// 关系名翻译对不对、右栏能不能读、点开能不能看到逐字引文。
+// 不这么做的话，这条链路直到有真实语料之前都没有任何一处会跑到。
+const COMBO_KEY = 'combo:verify|组合|样本'
+async function cypher(script) {
+  const res = await fetch(`${NEO4J_HTTP}/db/neo4j/tx/commit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Basic ' + Buffer.from('neo4j:envoymart123').toString('base64'),
+    },
+    body: JSON.stringify({ statements: [{ statement: script }] }),
+  })
+  return res.json()
+}
+
+let comboErr = null
+try {
+  await cypher(
+    `MERGE (h:Entity {name:'${COMBO_KEY}'}) ` +
+      `SET h.label='样本A + 样本B + 样本C', h.kind='COMBINATION' ` +
+      `MERGE (t:Entity {name:'验收样本人群'}) ` +
+      `SET t.label='验收样本人群', t.kind='POPULATION' ` +
+      `MERGE (h)-[r:REL {relation:'COMBINED_WITH', docId:'KB-0005', chunkId:'KB-0005_0', ` +
+      `quoteStart:0, quoteEnd:10, quote:'组合验收样本逐字引文', effect:'样本后果'}]->(t)`,
+  )
+  await page.goto(`${BASE}/#/knowledge/graph?root=${encodeURIComponent(COMBO_KEY)}&depth=1`, {
+    waitUntil: 'networkidle',
+  })
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.locator('.evidence__row').first().waitFor({ state: 'visible', timeout: 25000 })
+  await page.waitForTimeout(1200)
+
+  const comboLegend = await page.locator('.legend__item').allTextContents()
+  ck(
+    '组合禁忌在关系图例里（翻译过，不是 COMBINED_WITH）',
+    comboLegend.some((t) => t.includes('组合禁忌')),
+    `图例=${JSON.stringify(comboLegend)}`,
+  )
+  const kindLegend = await page.locator('.kind-legend__item').allTextContents()
+  ck(
+    '组合节点有单独的类型图例项',
+    kindLegend.some((t) => t.includes('组合')),
+    `类型图例=${JSON.stringify(kindLegend)}`,
+  )
+  const nodeLabels = await page.locator('.node__label').allTextContents()
+  ck(
+    '画布上组合节点显示成员名（不是 combo: 键）',
+    nodeLabels.some((t) => t.includes('样本A')) && !nodeLabels.some((t) => t.includes('combo:')),
+    `节点=${JSON.stringify(nodeLabels)}`,
+  )
+  const railText = await page.locator('.graph-rail').innerText()
+  ck('右栏把组合关系读成「组合禁忌」', railText.includes('组合禁忌'), railText.slice(0, 120))
+
+  await page.locator('.evidence__head').first().click()
+  await page.locator('.evidence__detail').first().waitFor({ state: 'visible', timeout: 8000 })
+  const detail = await page.locator('.evidence__detail').first().innerText()
+  ck(
+    '组合关系的出处是逐字引文（溯源链完整）',
+    detail.includes('组合验收样本逐字引文'),
+    detail.slice(0, 160),
+  )
+} catch (e) {
+  comboErr = e
+} finally {
+  // 造出来的边必须删掉：留在图上会让下一次「图谱规模」断言与演示都对不上
+  await cypher(
+    `MATCH (h:Entity {name:'${COMBO_KEY}'})-[r:REL]->() DELETE r ` +
+      `WITH h MATCH (h)-[r2:REL]-() DELETE r2 ` +
+      `WITH DISTINCT h DETACH DELETE h`,
+  )
+  await cypher(`MATCH (t:Entity {name:'验收样本人群'}) WHERE NOT (t)--() DELETE t`)
+}
+ck('组合禁忌验收未抛异常', comboErr === null, comboErr === null ? '' : String(comboErr))
 ck('全程无控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 
 await browser.close()

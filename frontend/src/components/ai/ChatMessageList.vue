@@ -4,6 +4,7 @@ import CitationList from '@/components/ai/CitationList.vue'
 import ConflictList from '@/components/ai/ConflictList.vue'
 import MessageContent from '@/components/ai/MessageContent.vue'
 import PendingApprovalCard from '@/components/ai/PendingApprovalCard.vue'
+import PendingPaymentCard from '@/components/ai/PendingPaymentCard.vue'
 import RecommendationCards from '@/components/ai/RecommendationCards.vue'
 import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
@@ -304,6 +305,16 @@ async function handleCopy(message: ChatMessage) {
           <li v-for="(mismatch, i) in message.factMismatches" :key="i">{{ mismatch }}</li>
         </ul>
       </details>
+
+      <!--
+        支付卡放在高危确认卡的**上面**：冲突时（先取消再下单这类操作），
+        用户更需要先看到「有一笔钱等着付」，而不是「有个操作等你点」。
+      -->
+      <PendingPaymentCard
+        v-if="message.pendingPayments?.length"
+        :payments="message.pendingPayments"
+        :active="position === messages.length - 1"
+      />
 
       <PendingApprovalCard
         v-if="message.pendingActions?.length"

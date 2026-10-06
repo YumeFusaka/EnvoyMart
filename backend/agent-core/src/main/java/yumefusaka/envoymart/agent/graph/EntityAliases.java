@@ -260,6 +260,28 @@ public final class EntityAliases {
         alias("高钙血症患者", EntityKind.POPULATION, "高钙血症");
         alias("肾结石患者", EntityKind.POPULATION, "肾结石");
         alias("出血性疾病患者", EntityKind.POPULATION, "出血性疾病");
+        // ── 用户口语缩写：从真实提问里捞出来的写法 ──
+        //
+        // 与上面几批的区别是**来源不同**：上面的是设计时按语料盘点出来的，
+        // 这一批来自真实会话。放进来不是因为它们「更常见」，而是因为漏掉它们的表现是静默的：
+        // 图不报错，只是这次多跳返回空，用户看到的是「图谱里没有收录」。
+        //
+        // **维生素 D3 / D2 不并入「维生素 D」**：D 是一个族，两者带各自的建议量与
+        // 相互作用结论，合并会抹掉真实区别（见文末「有意不合并」）。这里只统一写法变体。
+        alias("维生素D3", EntityKind.NUTRIENT, "VD3", "维D3", "胆钙化醇", "胆骨化醇");
+        alias("维生素D2", EntityKind.NUTRIENT, "VD2", "维D2", "麦角钙化醇");
+
+        // 蛋白与氨基酸类：口语里的「蛋白粉」在图上叫「乳清蛋白」，
+        // 「蛋白粉和肌酸能一起吃吗」这类提问在词典匹配阶段一个实体都链接不到
+        alias("肌酸", EntityKind.INGREDIENT, "一水肌酸", "肌酸粉");
+        alias("谷氨酰胺", EntityKind.INGREDIENT, "L-谷氨酰胺");
+        alias("支链氨基酸", EntityKind.INGREDIENT, "BCAA");
+
+        // 益生菌：用户说「益生菌」，图上按菌株分。**不做菌株级合并**——
+        // 不同菌株的适应症不同，压成一个节点会让「腹泻吃哪种」变成「随便哪种都行」。
+        // 这里只补「益生菌」这一层写法，菌株差异仍留在图上
+        alias("益生菌", EntityKind.INGREDIENT, "益生菌制剂", "活性益生菌", "复合益生菌");
+
         alias("地中海贫血患者", EntityKind.POPULATION, "地中海贫血");
 
     }

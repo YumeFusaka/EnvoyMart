@@ -118,3 +118,23 @@ export async function getDocumentAdmin(docNo: string) {
   const response = await request.get(`/knowledge/documents/${docNo}`)
   return response.data.data as DocumentDetail
 }
+
+/**
+ * 商品资料覆盖率 —— 「在售商品里多少是有说明书支撑的」。
+ *
+ * 这个数字是**存储质量的欠账表**：未覆盖的商品，用户问到时系统只能答
+ * 「知识库里没有」。所以它不是一个只读好看的指标，而是一份待办清单。
+ *
+ * `available=false` 必须先于三个计数被读取：图谱或商品目录不可用时三个计数都是 0，
+ * 与「全部覆盖」在界面上长得一模一样，而它们是相反的两句话。
+ */
+export async function fetchKnowledgeCoverage() {
+  const response = await request.get('/ai/admin/knowledge/coverage')
+  return response.data.data as {
+    totalSpu: number
+    coveredSpu: number
+    uncoveredSpu: { spuKey: string; name: string; reason: 'NO_NODE' | 'NO_DOCUMENT' }[]
+    available: boolean
+    reason?: string | null
+  }
+}

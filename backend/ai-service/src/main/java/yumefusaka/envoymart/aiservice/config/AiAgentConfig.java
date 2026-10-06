@@ -22,6 +22,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import yumefusaka.envoymart.agent.core.Agent;
 import yumefusaka.envoymart.agent.core.AgentGraph;
+import yumefusaka.envoymart.agent.core.task.SessionContextStore;
 import yumefusaka.envoymart.agent.core.task.TaskStateStore;
 import yumefusaka.envoymart.agent.flow.FlowRegistry;
 import yumefusaka.envoymart.agent.flow.IntentRouter;
@@ -596,6 +597,15 @@ public class AiAgentConfig {
         return new QueryRewriter(llmProvider, llmConfig);
     }
 
+    /**
+     * 冲突裁定的留存与复用。存储走 Redis（{@code RedisConflictVerdictStore}），
+     * 让「已经裁定过的结论」跨重启存活 —— 用户拍板的原话是「正确的决策需要持久化」。
+     */
+    @Bean
+    public ConflictVerdictService conflictVerdictService(ConflictVerdictStore conflictVerdictStore) {
+        return new ConflictVerdictService(conflictVerdictStore);
+    }
+
     @Bean
     public Agent agent(ToolRegistry toolRegistry,
                        IntentRouter intentRouter,
@@ -609,6 +619,8 @@ public class AiAgentConfig {
                        TaskStateStore taskStateStore,
                        LLMProvider llmProvider,
                        LLMConfig llmConfig,
+                       ConflictVerdictService conflictVerdictService,
+                       SessionContextStore sessionContextStore,
                        @Value("${envoymart.agent.approval-secret:}") String approvalSecret) {
         return new Agent(
                 Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3)
@@ -617,7 +629,8 @@ public class AiAgentConfig {
                         .llmModel(llmConfig.getModel()).build(),
                 toolRegistry, intentRouter, agentGraph,
                 shortTermMemory, episodicMemory, userProfileStore, ragEngine,
-                memoryConsolidator, queryRewriter, taskStateStore, llmProvider
+                memoryConsolidator, queryRewriter, taskStateStore, llmProvider, conflictVerdictService,
+                sessionContextStore
         );
     }
 }

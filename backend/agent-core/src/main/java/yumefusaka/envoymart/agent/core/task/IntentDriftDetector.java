@@ -95,6 +95,17 @@ public final class IntentDriftDetector {
      * 这里用工具名而不是工具描述——描述是给模型看的长文本，会随措辞调整而变，
      * 拿它做判据等于把观测信号绑在一份会被人随手改写的文案上。
      */
+    /**
+     * 工具领域关键词表 —— 供「跑偏检测」与「意图切换判断」共用。
+     * <p>
+     * 原本是 {@code ToolSemantics} 的内部常量。开出来是因为
+     * {@link IntentSwitchDetector} 要用同一份判据回答「这一轮落到哪个领域」，
+     * 而同一个语义写在两处迟早会分叉。
+     */
+    static java.util.Map<String, Set<String>> keywordTable() {
+        return ToolSemantics.KEYWORDS;
+    }
+
     private static final class ToolSemantics {
         private static final java.util.Map<String, Set<String>> KEYWORDS = java.util.Map.of(
                 "product_search", Set.of("商品", "推荐", "找", "搜", "买", "价格", "预算", "规格", "shopping"),

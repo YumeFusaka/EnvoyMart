@@ -250,6 +250,75 @@ class EpisodicMemoryTest {
                 .contains("用户是学生党，预算有限");
     }
 
+    /**
+     * 过取窗口之外的条目也必须召回 —— 这是「静默漏召回」的回归防线。
+     * <p>
+     * 原实现是「多取 {@code limit * 20} 条再按 userId 筛」。记忆库一大，
+     * 某个用户的相关条目就被挤出窗口，他再也回忆不起自己说过的话，
+     * 而日志里只显示「召回 0 条」—— <b>与「他确实没提过」完全同形</b>，
+     * 没有任何报错。修法是把过滤下沉到向量库（{@code search(query, topK, docId)}），
+     * 「取 topK」的含义因此从「所有切片里取前 topK 再筛」变成「属于我的切片里取前 topK」。
+     * <p>
+     * 桩向量库刻意不覆写带过滤的方法，走的就是 {@link VectorStore} 的默认实现——
+     * 它先按 docId 筛完再截断，所以窗口大小不再影响结果。
+     */
+    @Test
+    void 过取窗口之外的条目也能召回() {
+        RecordingVectorStore store = new RecordingVectorStore();
+        EpisodicMemory memory = new EpisodicMemory(store);
+
+        // 别人先塞满窗口：50 条起步的过取窗口会被这些条目占满
+        for (int i = 0; i < 120; i++) {
+            memory.add(item("u9999", "别人的第 " + i + " 条记忆"));
+        }
+        memory.add(item("u1001", "用户的收货地址是某大学 3 号楼"));
+
+        List<MemoryItem> mine = memory.recall("u1001", "地址", 5);
+
+        assertThat(mine)
+                .as("窗口被别人的条目占满时，该用户自己的记忆不该被挤掉")
+                .anySatisfy(m -> assertThat(m.getContent()).contains("某大学 3 号楼"));
+        assertThat(mine).allSatisfy(m -> assertThat(m.getUserId()).isEqualTo("u1001"));
+    }
+
+    /** 召回时带的过滤条件就是调用方的 userId，不是别的键 */
+    @Test
+    void 召回把过滤条件原样传给向量库() {
+        List<String> seenDocIds = new ArrayList<>();
+        VectorStore store = new VectorStore() {
+            @Override
+            public void indexBatch(List<DocumentChunk> batch) {
+            }
+
+            @Override
+            public List<DocumentChunk> search(String query, int topK) {
+                return List.of();
+            }
+
+            @Override
+            public List<DocumentChunk> search(String query, int topK, String docId) {
+                seenDocIds.add(docId);
+                return List.of();
+            }
+
+            @Override
+            public void deleteByDocId(String docId) {
+            }
+
+            @Override
+            public void deleteByIds(List<String> chunkIds) {
+            }
+
+            @Override
+            public void removeAll() {
+            }
+        };
+        new EpisodicMemory(store).recall("u1001", "预算", 5);
+
+        assertThat(seenDocIds)
+                .as("过滤下沉的关键就是这一跳：把 userId 交给向量库，而不是取回来自己筛")
+                .containsExactly("u1001");
+    }
     /** 打分是确定的：同样的内容必须得到同样的分，否则「为什么这条丢了」永远答不出来 */
     @Test
     void 重要性打分确定且显式标注优先() {

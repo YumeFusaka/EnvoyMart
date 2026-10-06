@@ -224,6 +224,17 @@ public class InteractionCheckTool implements Tool {
     }
 
     private String riskLine(GraphEdge edge) {
+        // 组合禁忌要先说清「哪几样一起」——这条边的主体不是一个实体而是几样东西的组合，
+        // 只写「与某药物有组合禁忌」的话，用户不知道该调整哪几样里的哪一样
+        if (isCombination(edge)) {
+            StringBuilder sb = new StringBuilder("  ⚠ 组合禁忌（").append(combinationMembers(edge)).append(" 同服）：");
+            if (notBlank(edge.effect())) {
+                sb.append(edge.effect().strip());
+            }
+            sb.append("\n");
+            appendEvidence(sb, edge);
+            return sb.toString();
+        }
         StringBuilder sb = new StringBuilder("  ⚠ ")
                 .append(relationLabel(edge.relation())).append("：与「")
                 .append(counterpartLabel(edge)).append("」");
@@ -232,14 +243,51 @@ public class InteractionCheckTool implements Tool {
             sb.append(" —— ").append(edge.effect().strip());
         }
         sb.append("\n");
+        appendEvidence(sb, edge);
+        return sb.toString();
+    }
 
+    /**
+     * 关联路径与出处。两条渲染分支（单跳风险 / 组合禁忌）共用。
+     * <p>
+     * 抽出来是因为它们的差别只在<b>前半句怎么说</b>：组合的主体是「哪几样一起」，
+     * 单跳的主体是「对方是谁」；而后半句「依据是哪句话、出自哪篇」完全一样。
+     * 各写一遍的话，出处格式改进一次只会改到其中一边。
+     */
+    private void appendEvidence(StringBuilder sb, GraphEdge edge) {
         if (edge.chain() != null && edge.chain().size() > 1) {
             sb.append("      关联路径：").append(String.join(" → ", edge.chain())).append("\n");
         }
         sb.append("      出处：").append(notBlank(edge.docTitle())
                         ? "《" + edge.docTitle() + "》" : nullSafe(edge.docId()))
                 .append("｜原文：「").append(truncate(edge.quote())).append("」\n");
-        return sb.toString();
+    }
+
+    /**
+     * 这条边是不是组合禁忌。
+     * <p>
+     * 判据是关系名，与后端 {@code GraphRelation.COMBINED_WITH} 同一份词表。
+     * <b>不看 head 的类型名</b>：那边把 {@code COMBINATION} 归一成一个结构标记，
+     * 而这条工具拿到的 {@code GraphEdge} 里 head.kind 就是它；两者都能判，
+     * 但关系名是唯一的稳定面——head 的 kind 在别的查询路径上可能是 null。
+     */
+    private boolean isCombination(GraphEdge edge) {
+        return GraphRelation.parse(edge.relation()) == GraphRelation.COMBINED_WITH;
+    }
+
+    /**
+     * 组合的成员，用于「哪几样一起」这句话。
+     * <p>
+     * 优先用 chain（后端在相互作用查询里把成员名填了进去）；没有就退回 head.label
+     * ——后端渲染组合节点时已经把 {@code combo:A|B} 翻成「A + B」了。
+     * 两者都没有时给一句「若干样」，绝不回一个 {@code combo:} 开头的键给用户看。
+     */
+    private String combinationMembers(GraphEdge edge) {
+        if (edge.chain() != null && !edge.chain().isEmpty()) {
+            return String.join(" + ", edge.chain());
+        }
+        String head = label(edge.head().label(), edge.head().name());
+        return head.startsWith("combo:") ? "若干样" : head;
     }
 
     /**

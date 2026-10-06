@@ -362,6 +362,18 @@ public class KnowledgeGraphBuilder {
         return out;
     }
 
+    /**
+     * 是不是组合三元组。
+     * <p>
+     * 判据是<b>关系名</b>而不是头类型：{@code COMBINATION} 这个类型名不该出现在
+     * 抽取提示词的类型清单里（词表由 {@code EntityKind.values()} 生成，
+     * 组合是结构不是知识，列进去会让模型到处去建组合节点）。所以这里靠关系名分流，
+     * 与 {@code GraphRelation.COMBINED_WITH} 是同一份判据。
+     */
+    private static boolean isCombination(GraphTriplePayload t) {
+        return GraphRelation.COMBINED_WITH == GraphRelation.parse(t.getRelation());
+    }
+
     /** 商品实体解析成 SPU 键；非商品类型原样返回；商品但解析不出来返回 {@code null} */
     private static String resolve(String kind, String name, Map<String, ProductSummary> byKey,
                                   Map<String, ProductSummary> byName) {
@@ -450,6 +462,16 @@ public class KnowledgeGraphBuilder {
                    但关系与引文仍必须来自文档。
                 5. **不要输出「风险」「不良反应」这类实体。** 后果写在关系的 effect 字段里，
                    不单独建节点——风险是组合导致的，单独一条「维生素D → 高钙血症」是错的。
+                5b. **只有当一句话把要一起服用的所有东西都点名了，才抽 COMBINED_WITH。**
+                   文档写「铁剂与钙剂同服影响吸收」时，那只涉及两样，用
+                   「铁剂 -INTERACTS_WITH-> 钙剂」而不是组合；文档写
+                   「本品含铁，与钙剂、维生素D 同服会增加结石风险」这种一句话里明确列出
+                   三样（及以上）并给出共同后果的，才抽成组合：
+                   headKind 填 COMBINATION，headName 用「+」连接全部成员
+                   （如 铁剂+钙剂+维生素D），relation 填 COMBINED_WITH，tailName 填被牵连的药物或人群。
+                   **成员必须全部出现在 quote 里**：只提到其中两样、第三样是你补上的，
+                   整条会被系统丢掉。宁可少抽一条组合，也不要把两样东西的风险说成三样的。
+                   如果文档只说了「与他药同服需注意」这种没有点名具体药物的，不要抽。
                 6. 文档里的「本品」「本产品」指的就是这篇文档所描述的那个商品。
                 7. 抽取不到任何关系时输出 {"triples":[]}。
 

@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.knowledgeservice.graph;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import yumefusaka.envoymart.agent.graph.EntityKind;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.contract.GraphEdge;
@@ -9,6 +10,7 @@ import yumefusaka.envoymart.contract.GraphIngestResult;
 import yumefusaka.envoymart.contract.GraphNode;
 import yumefusaka.envoymart.contract.GraphTriplePayload;
 import yumefusaka.envoymart.contract.InteractionReport;
+import yumefusaka.envoymart.contract.ProductGraphCoverage;
 import yumefusaka.envoymart.contract.Substance;
 import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeChunkEntity;
 import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeDocumentEntity;
@@ -182,6 +184,13 @@ public class GraphService {
         List<GraphEdge> risks = allNames.isEmpty() ? List.of()
                 : withTitles(graphStore.risksOf(List.copyOf(allNames)));
 
+        // 组合禁忌单独查一次，且**只挂在「这次把所有成员都问到了」的那一项上**。
+        // 它不能像单跳风险那样对每个 root 各分发一遍：组合的成立条件是「这几样同时在场」，
+        // 挂到其中某一样上会变成「单吃这个就有事」，而那样的结论在图上根本不存在。
+        // 分配规则见 combinationsFor
+        List<GraphEdge> combinations = allNames.isEmpty() ? List.of()
+                : withTitles(graphStore.combinationsOf(List.copyOf(allNames)));
+
         List<InteractionReport.Item> items = new ArrayList<>(inputs0.size());
         for (String input : inputs0) {
             String raw = rawByKey.get(input);
@@ -226,7 +235,18 @@ public class GraphService {
                         + withCounterpart.relation() + '\u0000' + withCounterpart.docId();
                 unique.putIfAbsent(dedupeKey, withCounterpart);
             }
-            List<GraphEdge> mineRisks = List.copyOf(unique.values());
+            List<GraphEdge> mineRisks = new ArrayList<>(unique.values());
+            // 组合禁忌：挂在这一项上，条件是「这一项参与了某个成立的组合」。
+            // <b>判据是该组合的成员里至少有一个属于这一项</b>，而不是「全部属于」——
+            // 组合天生跨项：{@code A+B+C} 的三条成员分属三次输入，任何单独一项都装不下它。
+            // 按「全部属于这一项」判会让所有跨项组合永远挂不上来（这正是第一版的表现：
+            // 三样都问了，报告里一条组合也没有，而日志一切正常）。
+            //
+            // 三项都挂同一个组合、chain 里都写着完整成员，读起来是「A+B+C 一起有问题」——
+            // 这不是重复渲染：用户逐项核对时会发现每一项都指向同一个组合结论，
+            // 而那正是他该得到的印象（不是 A 单独有事、也不是 B 单独有事）
+            // 并把组合成员写进 chain —— 用户要看的正是「哪几样凑在一起才出的这件事」
+            mineRisks.addAll(combinationsFor(mineNames, combinations));
 
             // 回答里的名字用**用户自己的写法**（raw），不用图谱里的键：他问的是
             // 「鱼油软胶囊」，回一句「spu5 没有风险」既对不上号也看不懂
@@ -283,6 +303,10 @@ public class GraphService {
         // 剩下的全是没有来路的警告——正是这段话开头说的那种答非所问
         List<GraphEdge> edges = new ArrayList<>(graphStore.compositionOf(linked));
         edges.addAll(graphStore.risksOf(List.copyOf(scope)));
+        // 组合禁忌也算风险依据：用户这一句话里同时提到了某组合的全部成员时，
+        // 那条「几样一起才有事」的边正是他该看到的。成员的判定用 scope（含展开出的物质），
+        // 与 interactions 同源 —— 两处判据各写一份的话，「问法不同结论不同」只是时间问题
+        edges.addAll(graphStore.combinationsOf(List.copyOf(scope)));
         if (edges.isEmpty()) {
             return List.of();
         }
@@ -312,6 +336,43 @@ public class GraphService {
                 .toList();
     }
 
+    /**
+     * 找出「成员全在本项展开集合里」的组合，并把成员名填进 chain。
+     * <p>
+     * {@code combinationsOf} 已经按「本次请求的全部实体」筛过一遍，这里再做一次
+     * 逐项过滤：一次问三样东西时，某个组合可能只用到其中两样的成分，
+     * 那它该挂在那两样上，而不是三样各挂一次（后者会让用户以为第三样也参与了）。
+     * <p>
+     * {@code chain} 填成组合成员的中文名 —— 前端画这条边时就能显示
+     * 「铁剂 + 钙剂 → 某药物」，而不是一个不知从哪冒出来的组合节点。
+     */
+    private static List<GraphEdge> combinationsFor(Set<String> mineNames, List<GraphEdge> combinations) {
+        if (combinations.isEmpty()) {
+            return List.of();
+        }
+        List<GraphEdge> out = new ArrayList<>();
+        for (GraphEdge e : combinations) {
+            List<String> members = combinationMembersOf(e.head().name());
+            // 成员与这一项有交集即挂上，理由见调用处 
+            if (members.isEmpty() || java.util.Collections.disjoint(members, mineNames)) {
+                continue;
+            }
+            out.add(e.withChain(members));
+        }
+        return out;
+    }
+
+    /** 组合节点键 → 成员键列表。键形状不对时返回空列表（调用方据此跳过该边） */
+    private static List<String> combinationMembersOf(String key) {
+        if (!EntityKind.isCombinationKey(key)) {
+            return List.of();
+        }
+        String members = key.substring(EntityKind.COMBINATION_PREFIX.length());
+        if (members.isBlank()) {
+            return List.of();
+        }
+        return List.of(members.split("\\|"));
+    }
     /**
      * 这条风险边是从哪条链上够到的 —— 取端点里第一个能被本 root 展开到的物质。
      * <p>
@@ -360,6 +421,65 @@ public class GraphService {
                 .toList();
     }
 
+    /**
+     * 全量在售商品的图谱覆盖读数 —— 「多少商品是有资料的、多少没有」。
+     * <p>
+     * <b>为什么口径落在这里而不是管理台。</b>「一个商品有没有被资料支持」这件事，
+     * 判据只有图上那几条 {@code CONTAINS} 边。管理台、ai-service 各写一遍这段判据，
+     * 就会像「价格筛选」那次一样，两条路在边界条件下给出相反的答案。
+     * <b>本方法必须与 {@link #documentsOfProduct} 用同一套判据</b>：
+     * 只认一跳、只认 {@code CONTAINS}、按 docId 去重。
+     * <p>
+     * <b>为什么商品清单由调用方给。</b>商品目录的事实源在 product-service，
+     * 那边才是「哪些商品在售」的唯一判据（下架商品不该出现在覆盖率里）。
+     * knowledge-service 不持有商品目录，也不该为了这一件事去反向依赖它。
+     *
+     * @param spus 在售商品清单，只用到「键」与「展示名」
+     * @return 覆盖率读数。图谱不可用时 {@code available=false}，
+     *         调用方必须把「没查成」与「全都覆盖了」分开
+     */
+    public ProductGraphCoverage coverage(List<SpuRef> spus) {
+        if (spus == null || spus.isEmpty()) {
+            return new ProductGraphCoverage(0, 0, List.of(), true, null);
+        }
+        // 查图的键与存储层的节点键必须是同一套规范化（图上存 spu7，调用方给 SPU7），
+        // 查回来也用同一套键取值。这两处少任何一处，覆盖率都会恒为 0
+        Map<String, KnowledgeGraphStore.ProductCoverageView> views = graphStore.productCoverage(
+                spus.stream().map(SpuRef::spuKey).toList());
+        if (!graphStore.isAvailable()) {
+            // 图谱不可用时**不能**把全部商品算成未覆盖：那会让人以为要重传几十份说明书，
+            // 而真实故障是图库连不上。这一条判据与其它图谱接口一致
+            return new ProductGraphCoverage(spus.size(), 0, List.of(), false, graphStore.unavailableReason());
+        }
+        List<ProductGraphCoverage.Uncovered> uncovered = new ArrayList<>();
+        int covered = 0;
+        for (SpuRef spu : spus) {
+            KnowledgeGraphStore.ProductCoverageView view =
+                    views.get(TripleValidator.normalizeName(spu.spuKey()));
+            if (view == null) {
+                // 查询里 UNWIND 过每一个键，理论上不会缺；真缺了说明图在两次查询之间变过，
+                // 保守地当「没节点」——它至少把商品列进了欠账清单，不会被静默算成已覆盖
+                uncovered.add(new ProductGraphCoverage.Uncovered(spu.spuKey(), spu.name(),
+                        ProductGraphCoverage.Reason.NO_NODE));
+            } else if (view.docCount() > 0) {
+                covered++;
+            } else {
+                uncovered.add(new ProductGraphCoverage.Uncovered(spu.spuKey(), spu.name(),
+                        view.nodeExists() ? ProductGraphCoverage.Reason.NO_DOCUMENT
+                                : ProductGraphCoverage.Reason.NO_NODE));
+            }
+        }
+        return new ProductGraphCoverage(spus.size(), covered, uncovered, true, null);
+    }
+
+    /**
+     * 覆盖率计算用的商品引用 —— 只带「键」与「给人看的名字」。
+     * <p>
+     * 不直接用 {@code ProductSummary}：knowledge-service 拿不到也不该拿商品契约，
+     * 它需要的只是「有哪些键要查、查完用哪个名字回显」。
+     */
+    public record SpuRef(String spuKey, String name) {
+    }
     /**
      * 一个商品当前的文档覆盖。
      *

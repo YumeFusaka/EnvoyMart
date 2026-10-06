@@ -11,6 +11,7 @@ import org.neo4j.driver.TransactionConfig;
 import org.neo4j.driver.Value;
 import org.springframework.beans.factory.DisposableBean;
 import yumefusaka.envoymart.agent.graph.EntityAliases;
+import yumefusaka.envoymart.agent.graph.EntityKind;
 import yumefusaka.envoymart.contract.GraphEdge;
 import yumefusaka.envoymart.contract.GraphNode;
 import yumefusaka.envoymart.contract.Substance;
@@ -49,6 +50,15 @@ public class KnowledgeGraphStore implements DisposableBean {
     private static final List<String> SUBSTANCE_RELATIONS = List.of("CONTAINS", "PROVIDES");
     /** 风险相关的关系。查询时按<b>无向</b>匹配，见 {@link #risksOf} */
     private static final List<String> RISK_RELATIONS = List.of("INTERACTS_WITH", "CAUTION_FOR");
+    /**
+     * 组合禁忌的关系名。
+     * <p>
+     * <b>单独一份、不进 {@link #RISK_RELATIONS}。</b>它两端的形状与其余几条不同：
+     * 头是「组合」节点而不是实体（见 {@code EntityKind#COMBINATION}），
+     * 混进无向匹配会捞出「组合节点与它某个成员之间」那种不存在的边，
+     * 也会让 {@code CAUTION_FOR} 那条「方向有语义」的判据被无意义地套用。
+     */
+    private static final String COMBINATION_RELATION = "COMBINED_WITH";
     /** 邻域查询最大跳数。再深下去图上什么都连着什么，返回的图没有可读性 */
     private static final int MAX_DEPTH = 3;
     /**
@@ -804,6 +814,165 @@ public class KnowledgeGraphStore implements DisposableBean {
         }
     }
 
+    /**
+     * 从一个物质集合里找出「全部成员都被这次问到」的组合禁忌边 —— 组合查询的核心。
+     * <p>
+     * <b>语义是「被集合包含」，不是「与集合相交」。</b>组合节点 {@code combo:A|B|C} 表达的
+     * 是「A、B、C 都要在场才算数」；用户只问了 A 和 B 时，那条边<b>不成立</b>——
+     * 他手上没有 C。按相交匹配会把一条要求三样的风险扣在两样东西上，
+     * 症状与 {@code riskOf} 那段注释里说的正好相反：这次是<b>多报</b>，
+     * 用户按提示把 A、B 分开吃，而真实风险与 C 有关。
+     * <p>
+     * <b>怎么判「集合包含」。</b>组合节点的键是成员名排序后拼接，而名字里可能含
+     * {@code |} 之外的分隔（成员本身不会含 {@code |}，见
+     * {@code TripleValidator.combinationMembers}），所以按 {@code |} 切开逐个比即可，
+     * 不需要在 Cypher 里做集合运算——后者要 {@code APOC} 或更复杂的列表推导，
+     * 而这条判据一行字符串比较就说得清。
+     *
+     * @param names 用户这一次问到的全部实体键（含商品展开出的成分与营养素）
+     * @return 成员被本次输入全覆盖的组合边。空表示「这几样的组合没有被收录的风险」——
+     *         与「没有组合这种表达」是两件事，调用方要分开说
+     */
+    public List<GraphEdge> combinationsOf(List<String> names) {
+        if (!isAvailable() || names == null || names.isEmpty()) {
+            return List.of();
+        }
+        var asked = new java.util.HashSet<>(names);
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                var result = tx.run("""
+                        MATCH (h:Entity)-[r:REL {relation: $rel}]->(t:Entity)
+                        RETURN %s
+                        ORDER BY r.docId
+                        """.formatted(EDGE_COLUMNS), Map.of("rel", COMBINATION_RELATION));
+                List<GraphEdge> out = new ArrayList<>();
+                while (result.hasNext()) {
+                    GraphEdge edge = toEdge(result.next());
+                    if (covers(edge.head().name(), asked)) {
+                        out.add(edge);
+                    }
+                }
+                return out;
+            }, txConfig());
+        } catch (RuntimeException e) {
+            markUnavailable("组合禁忌查询 names=" + names.size(), e);
+            return List.of();
+        }
+    }
+
+    /**
+     * 组合节点的成员是否被 {@code asked} 全部覆盖。
+     * <p>
+     * 键不是组合形式（不以 {@code combo:} 开头）时返回 {@code false}：那说明图上有一条
+     * 形状不对的组合边，放它进来等于把一条来历不明的风险报给用户。丢弃是保守的
+     * ——少报一条总比多报一条好，前者用户还能靠说明书补上，后者会让他按错误的建议行事。
+     */
+    private static boolean covers(String combinationKey, java.util.Set<String> asked) {
+        if (!EntityKind.isCombinationKey(combinationKey)) {
+            return false;
+        }
+        String members = combinationKey.substring(EntityKind.COMBINATION_PREFIX.length());
+        if (members.isBlank()) {
+            return false;
+        }
+        for (String member : members.split("\\|")) {
+            if (!asked.contains(member)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 组合节点出现在某个实体的邻域里时，把它<b>展开成参与成员</b>再返回。
+     * <p>
+     * 前端画图与「关系与出处」列表都要读得懂 {@code combo:铁剂|钙剂} 这种键。
+     * 直接把它当普通节点渲染的话，用户看到的是一个叫「铁剂|钙剂」的圆——
+     * 知道「有这么个东西」但不知道它为什么在那儿。展开成成员之后，点这一个节点
+     * 能看到它由哪几样组成，这才是组合节点存在的意义。
+     * <p>
+     * <b>不去改 {@link #neighborhood} 的返回结构</b>（那会动到前端已有的边表契约），
+     * 只把组合节点的 label 换成可读的「铁剂 + 钙剂」，并把它自己的 kind 标成
+     * {@code COMBINATION}。前端按 kind 上色时遇到未知类型会原样显示，
+     * 落在这里正好是一类可以单独配色、单独筛选的东西。
+     */
+    public static String combinationLabel(String key) {
+        if (!EntityKind.isCombinationKey(key)) {
+            return null;
+        }
+        String members = key.substring(EntityKind.COMBINATION_PREFIX.length());
+        // 空成员表不是组合节点（键只剩前缀），给 null 让调用方沿用原 label，
+        // 而不是回一个空字符串——后者在界面上是一个没有标签的圆
+        return members.isBlank() ? null : String.join(" + ", members.split("\\|"));
+    }
+
+    /**
+     * 一批商品在图上「有没有节点、有没有文档边」—— 覆盖率把关的底层读数。
+     * <p>
+     * <b>为什么一次问一批而不是逐个查</b>：管理台要的是「全部在售商品的覆盖情况」，
+     * 几十件商品逐个发查询就是几十次往返。这一条 Cypher 把整批一次问完。
+     * <p>
+     * <b>两种「没有」在这一层就分开</b>：节点不存在与节点存在但没有任何
+     * {@code CONTAINS} 边是两种不同的缺失，前者要重建图谱、后者要传说明书，
+     * 合并成一个布尔值就没法告诉运维该做哪件事。
+     * <p>
+     * <b>为什么用 OPTIONAL MATCH 而不是两条查询</b>：节点存在但无边的商品在
+     * 「节点查询」里查得到、在「边查询」里查不到，两次查询之间图可能变过——
+     * 一次查询拿到的一致快照才能保证两个数字对得上。
+     *
+     * @param keys 商品图谱节点键（{@code SPU7}）。方法内部按 {@link TripleValidator#normalizeName}
+     *             规范化到与节点键同一套写法（图上存的是 {@code spu7}），返回的 Map
+     *             也以规范化后的键为键
+     * @return 每个键对应的「节点是否存在 + 有几篇文档支持」；图谱不可用或 keys 为空时返回空 Map，
+     *         调用方必须据此把「没查成」与「确实没有」分开
+     */
+    public Map<String, ProductCoverageView> productCoverage(List<String> keys) {
+        if (!isAvailable() || keys == null || keys.isEmpty()) {
+            return Map.of();
+        }
+        // 键必须与节点键同一套规范化（去空白 + 转小写，见 TripleValidator#normalizeName）：
+        // 图上的商品节点存的是 spu7，而调用方（ai-service 的实体链接）按 SPU7 这个写法产出键。
+        // 少这一步的症状是「每个商品都报没有节点」——覆盖率永远 0%，而图明明建得好好的
+        List<String> distinct = keys.stream()
+                .map(TripleValidator::normalizeName)
+                .filter(k -> !k.isEmpty())
+                .distinct()
+                .toList();
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                var result = tx.run("""
+                        UNWIND $keys AS k
+                        OPTIONAL MATCH (n:Entity {name: k})
+                        OPTIONAL MATCH (n)-[r:REL {relation: 'CONTAINS'}]->(:Entity)
+                        WHERE r.docId IS NOT NULL
+                        RETURN k AS key, n IS NOT NULL AS nodeExists,
+                               count(DISTINCT r.docId) AS docCount
+                        """, Map.of("keys", distinct));
+                Map<String, ProductCoverageView> out = new LinkedHashMap<>();
+                while (result.hasNext()) {
+                    Record r = result.next();
+                    out.put(r.get("key").asString(),
+                            new ProductCoverageView(r.get("nodeExists").asBoolean(),
+                                    r.get("docCount").asInt(0)));
+                }
+                return out;
+            }, txConfig());
+        } catch (RuntimeException e) {
+            markUnavailable("覆盖率查询 keys=" + distinct.size(), e);
+            return Map.of();
+        }
+    }
+
+    /**
+     * 一件商品的图覆盖状态。
+     *
+     * @param nodeExists 图上有没有这个商品节点
+     * @param docCount   有多少篇文档通过 {@code CONTAINS} 边支持它。与
+     *                   {@code GraphService.documentsOfProduct} 同一判据（只认 CONTAINS、
+     *                   按 docId 去重），口径不能两处各写一份
+     */
+    public record ProductCoverageView(boolean nodeExists, int docCount) {
+    }
     public Map<String, Object> stats() {
         if (!isAvailable()) {
             Map<String, Object> out = new LinkedHashMap<>();
@@ -863,13 +1032,37 @@ public class KnowledgeGraphStore implements DisposableBean {
     }
 
     private GraphNode toNode(Record r, String prefix) {
-        return new GraphNode(r.get(prefix).asString(), r.get(prefix + "Label").asString(null),
+        return node(r.get(prefix).asString(), r.get(prefix + "Label").asString(null),
                 r.get(prefix + "Kind").asString(null));
+    }
+
+    /**
+     * 建图节点，顺带把<b>组合节点</b>翻译成人读得懂的标签。
+     * <p>
+     * 组合节点的键是 {@code combo:铁剂|钙剂}，直接渲染出来用户看到的是一个
+     * 叫「铁剂|钙剂」的圆——他知道有这么个东西，但不知道那是「这两样一起」的意思。
+     * 翻译放在这一层而不是前端，是因为读这两条路径（ai-service 的工具输出、
+     * 前端的图与列表）拿到的都是同一份 {@link GraphNode}，只翻一处就等于没翻。
+     * <p>
+     * 只改 {@code label}，{@code name} 保持原键：前端要拿 name 去查下一跳与去重，
+     * 键一旦被翻译过，「以它为中心」就会去查一个不存在的实体。
+     */
+    private static GraphNode node(String name, String label, String kind) {
+        if (EntityKind.isCombinationKey(name)) {
+            // 组合节点：kind 一律标成 COMBINATION（写入时存的也是它，这里显式归一
+            // 是为了让「图上早于这次改造写入的组合节点」也能被前端按新类型渲染）。
+            // **标签优先用节点上存的** —— 那是写入时按模型原写法拼的（「维生素D + 钙 + 铁剂」），
+            // 而 combinationLabel 是从键反推的，键已被规范化成小写（「维生素d」）。
+            // 只有存量节点没有 label 时才退回键反推，保证界面上一定有字
+            String display = label != null && !label.isBlank() ? label : combinationLabel(name);
+            return new GraphNode(name, display, EntityKind.COMBINATION.name());
+        }
+        return new GraphNode(name, label, kind);
     }
 
     /** 按行取节点，列名形如 {@code name/label/kind} */
     private GraphNode toNode(Record r) {
-        return new GraphNode(r.get("name").asString(), r.get("label").asString(null),
+        return node(r.get("name").asString(), r.get("label").asString(null),
                 r.get("kind").asString(null));
     }
 

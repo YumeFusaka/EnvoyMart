@@ -544,6 +544,24 @@ export interface ToolCall {
   facts?: Record<string, string> | null
 }
 
+/**
+ * 待支付订单 —— 支付卡片的数据面。
+ *
+ * 字段与后端 `PendingPayment` 一一对应，不做任何加工：这一层只负责搬运，
+ * 展示逻辑（金额除 100、倒计时）留在卡片组件里，两处各改一半的话，
+ * 金额会先在一处被除、再在另一处被除。
+ */
+export interface PendingPayment {
+  /** 订单主键 —— 跳转 `/payment?orderId=` 用的就是它，不是订单号 */
+  orderId: number
+  /** 订单编号，给人核对的凭据（用户在订单列表里看到的就是它） */
+  orderNo: string
+  /** 应付金额（分）。展示时除 100——中间每一步都别换成浮点，一分钱都不该在展示层丢 */
+  payAmount: number
+  /** 支付截止时间（ISO 字符串）。服务端没给时为 null，此时不显示倒计时，不编一个 */
+  expireAt: string | null
+}
+
 export interface ChatResponse {
   sessionId: string
   reply: string
@@ -551,6 +569,14 @@ export interface ChatResponse {
   toolCalls: ToolCall[]
   /** 与商品列表页同一个类型 —— 之前这里写的是另一套字段，卡片全是空的 */
   recommendedProducts: ProductSummary[]
+  /**
+   * 本轮产生的待支付订单，前端据此渲染支付卡片。
+   *
+   * **只有真的创建了待支付订单时才非空**：已支付的订单不该再弹一张支付卡。
+   * 订单号与金额都是服务端给的确定事实，不从正文里正则抽取——
+   * 支付是一次真实跳转，抽错会把用户带到别人的订单或一个不存在的页面。
+   */
+  pendingPayments?: PendingPayment[]
   /**
    * 等待用户确认的高危操作，形如 `order_cancel(orderId=12)`。
    * <p>
@@ -684,6 +710,8 @@ export interface ChatMessage {
   knowledge?: KnowledgeSnippet[]
   toolCalls?: ToolCall[]
   recommendedProducts?: ProductSummary[]
+  /** 待支付订单，见 `ChatResponse.pendingPayments`。付完或切走后清空，卡片随之消失 */
+  pendingPayments?: PendingPayment[]
   /** 待确认的高危操作。确认或取消后清空，卡片随之消失 */
   pendingActions?: string[]
   /** 确认这张卡片要带回服务端的令牌，与 `pendingActions` 同生共死 */

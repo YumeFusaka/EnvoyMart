@@ -227,18 +227,8 @@ public class ProductTool implements Tool {
      * 拿不到规格（下游抖动）时这个字段就是 null，引用解析会原样保留占位串，
      * 失败信息里看得见是哪一步没成——不假装「这个商品没有规格」。
      */
-    private List<Map<String, Object>> withDefaultSku(List<ProductSummary> products) {
-        List<Map<String, Object>> enriched = new java.util.ArrayList<>(products.size());
-        for (ProductSummary product : products) {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("id", product.getId());
-            item.put("name", product.getName());
-            item.put("minPrice", product.getMinPrice());
-            item.put("maxPrice", product.getMaxPrice());
-            item.put("skuId", defaultSkuId(product.getId()));
-            enriched.add(item);
-        }
-        return enriched;
+    private List<ProductSearchResult> withDefaultSku(List<ProductSummary> products) {
+        return ProductSearchResult.of(products, ProductSearchResult.skuIndex(products, this::defaultSkuId));
     }
 
     /**

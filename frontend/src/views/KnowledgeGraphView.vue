@@ -920,6 +920,10 @@ watch([root, depth], load, { immediate: true })
   background: repeating-linear-gradient(90deg, var(--color-warning) 0 3px, transparent 3px 6px);
 }
 
+.legend__item--COMBINED_WITH .legend__swatch {
+  background: repeating-linear-gradient(90deg, var(--color-danger) 0 6px, transparent 6px 9px);
+}
+
 /* ==================== 主体 ==================== */
 
 .graph-body {
@@ -1144,6 +1148,10 @@ watch([root, depth], load, { immediate: true })
   background: var(--ys-warm-600);
 }
 
+.kind-legend__item--COMBINATION .kind-legend__dot {
+  background: var(--color-text-primary);
+}
+
 /* ==================== 依据栏 ==================== */
 
 .graph-rail {
@@ -1295,6 +1303,10 @@ watch([root, depth], load, { immediate: true })
 
 .evidence__rel--CAUTION_FOR {
   color: var(--color-warning-strong);
+}
+
+.evidence__rel--COMBINED_WITH {
+  color: var(--color-danger-strong);
 }
 
 /* 一句话要有主宾之分：两端同色时读不出「谁对谁」 */

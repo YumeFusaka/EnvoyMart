@@ -10,6 +10,8 @@ import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.contract.GraphIngestPayload;
 import yumefusaka.envoymart.contract.GraphIngestResult;
 import yumefusaka.envoymart.contract.KnowledgeDocumentPayload;
+import yumefusaka.envoymart.contract.ProductCoverageRequest;
+import yumefusaka.envoymart.contract.ProductGraphCoverage;
 import yumefusaka.envoymart.knowledgeservice.graph.GraphService;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocumentService;
 
@@ -75,6 +77,25 @@ public class KnowledgeInternalController {
         return Result.success(graphService.ingest(payload));
     }
 
+    /**
+     * 一批商品的图谱覆盖读数 —— ai-service 的管理接口拿它算「多少商品有资料」。
+     * <p>
+     * <b>为什么由 ai-service 发起而不是管理台直接问这里</b>：算覆盖率要两份输入，
+     * 商品目录（product-service）与图谱（这里），只有 ai-service 同时够得着两者。
+     * 让管理台自己去拉商品目录再拼，等于把「哪些商品在售」与「图上有哪些节点」
+     * 两份口径搬到浏览器里对齐，两边各写一遍只是时间问题。
+     * <p>
+     * 走 {@code /internal} 前缀：网关对这一段一律 404，只有服务间直连够得着。
+     * 它返回的是运维视图，不该对匿名请求开放。
+     */
+    @PostMapping("/graph/product-coverage")
+    public Result<ProductGraphCoverage> productCoverage(@RequestBody ProductCoverageRequest request) {
+        List<GraphService.SpuRef> spus = request == null || request.spus() == null ? List.of()
+                : request.spus().stream()
+                        .map(s -> new GraphService.SpuRef(s.spuKey(), s.name()))
+                        .toList();
+        return Result.success(graphService.coverage(spus));
+    }
     /**
      * 清理已无任何文档支持的孤立实体。整批重建结束后调一次。
      * <p>

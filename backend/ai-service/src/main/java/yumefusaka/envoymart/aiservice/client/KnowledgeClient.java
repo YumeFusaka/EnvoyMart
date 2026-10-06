@@ -11,6 +11,8 @@ import yumefusaka.envoymart.contract.GraphIngestPayload;
 import yumefusaka.envoymart.contract.GraphIngestResult;
 import yumefusaka.envoymart.contract.InteractionReport;
 import yumefusaka.envoymart.contract.KnowledgeDocumentPayload;
+import yumefusaka.envoymart.contract.ProductCoverageRequest;
+import yumefusaka.envoymart.contract.ProductGraphCoverage;
 
 import java.util.List;
 
@@ -51,6 +53,17 @@ public interface KnowledgeClient {
     @GetMapping("/knowledge/graph/interactions")
     Result<InteractionReport> interactions(@RequestParam("items") String items);
 
+    /**
+     * 一批商品的图谱覆盖读数 —— 覆盖率把关用。
+     * <p>
+     * 走 {@code /internal} 前缀：网关对这一段一律 404。它不返回用户数据，
+     * 但它是「一次问几十个键」的内部批处理通道，不该对匿名请求开放。
+     * <p>
+     * 请求体里要带商品名：knowledge-service 不持有商品目录，
+     * 回显的名字由调用方（ai-service，它刚拉过目录）提供。
+     */
+    @PostMapping("/knowledge/internal/graph/product-coverage")
+    Result<ProductGraphCoverage> productCoverage(@RequestBody ProductCoverageRequest request);
     /**
      * 图谱召回 —— 混合检索的第三路。
      * <p>

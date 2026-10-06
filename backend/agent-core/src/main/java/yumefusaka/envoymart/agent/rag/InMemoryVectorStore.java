@@ -80,6 +80,34 @@ public class InMemoryVectorStore implements VectorStore {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * 带 {@code docId} 过滤的检索。
+     * <p>
+     * <b>这里必须真的先筛后取，不能沿用默认实现的多取再筛。</b>在线性扫描的内存实现里，
+     * 「先筛掉不属于这份文档的切片，再排序取 topK」与不过滤的代价完全一样
+     * （反正都要扫全量），却能彻底消灭「某用户的条目被挤出窗口」这类静默漏召回——
+     * 那是情节记忆按 userId 过滤时真实踩过的坑。走 IVF 的近似路径时同理：
+     * 候选集里先按 docId 过滤，再排序截断。
+     */
+    @Override
+    public List<DocumentChunk> search(String query, int topK, String docId) {
+        if (docId == null || docId.isBlank()) {
+            return search(query, topK);
+        }
+        if (store.isEmpty()) {
+            return List.of();
+        }
+        // 过滤版本直接走全量扫描：过滤是「少算」而不是「多算」，而 IVF 的近似取舍
+        // 只在候选集足够大时才划算。带条件时，宁可慢一点也不要漏召回
+        float[] queryVector = embeddingService.embed(query);
+        return store.values().stream()
+                .filter(c -> c.getEmbedding() != null && docId.equals(c.getDocId()))
+                .map(c -> withScore(new ScoredChunk(c, cosineSimilarity(queryVector, c.getEmbedding()))))
+                .sorted(Comparator.comparingDouble(c -> -c.getScore()))
+                .limit(topK)
+                .collect(Collectors.toList());
+    }
+
     /** 暴力全量搜索（降级） */
     private List<DocumentChunk> bruteForceSearch(float[] queryVector, int topK) {
         return store.values().stream()

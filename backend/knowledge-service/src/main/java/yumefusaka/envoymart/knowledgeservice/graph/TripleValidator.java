@@ -176,6 +176,12 @@ public final class TripleValidator {
         if (headKind == null || tailKind == null || relation == null) {
             return Verdict.reject(RejectReason.VOCABULARY);
         }
+        // 组合禁忌走另一条分支：头是「组合」节点（不是实体），形状与锚定规则都不一样。
+        // 分出去而不是在这里加一串 if，是因为两者的判据几乎不重叠——
+        // 混在一起写会让「单跳到组合」的每一处判断都要重新想一遍它适不适用
+        if (relation == GraphRelation.COMBINED_WITH) {
+            return validateCombination(t, docId, body, chunks, tailKind);
+        }
 
         // 模型写的名字，先留一份：下面锚定要拿它去正文里找
         String headWritten = normalizeName(t.headName());
@@ -227,6 +233,136 @@ public final class TripleValidator {
                 relation, tail.kind(), tail.name(),
                 displayLabel(tail, tailWritten, t.tailLabel(), t.tailName()),
                 truncate(t.effect()), docId, chunkIdAt(chunks, span[0]), span[0], span[1], quote));
+    }
+
+    /**
+     * 组合禁忌的校验路径 —— 「两两没事、三样一起有事」这一条。
+     * <p>
+     * <b>与单跳校验的三处不同，每一处都是必须的：</b>
+     * <ol>
+     *   <li><b>头是组合节点，不是实体。</b>模型给出的是参与组合的若干物质名
+     *       （{@code headName} 里用 {@code +} 连接，如 {@code 铁剂+钙剂}），
+     *       这里把每个成员归一到规范名、去重、按字典序排序，拼成
+     *       {@code combo:铁剂|钙剂}。排序是必须的：「钙+铁」与「铁+钙」是同一个组合，
+     *       不排序的话同一件事会在图上分成两个节点、条数各算一半。</li>
+     *   <li><b>成员必须都出现在正文里。</b>成员一个都不在原文中的组合是模型凭常识拼的，
+     *       整条丢弃——这条挡的是「把两条互不相干的边凑成一个组合」。</li>
+     *   <li><b>引文必须同时提到全部成员。</b>这是本类最要紧的一条判据：
+     *       文档里单独一句「铁剂与钙剂同服影响吸收」<b>不能</b>支撑
+     *       「铁剂+钙剂+维生素D 三样一起有事」——那句话里没有维生素 D。
+     *       少了这一条，模型只要找到任意一句提到两个成员的话，就能把一个更大的组合
+     *       挂上去，而图上看起来有完整出处。这是最容易静默出错的地方。</li>
+     * </ol>
+     * <b>至少两个成员</b>：一个成员的「组合」与单跳是一回事，走 {@code INTERACTS_WITH}
+     * 表达即可，不该多出一条形状不同的边把同一件事说两遍。
+     */
+    private static Verdict validateCombination(Triple t, String docId, Compact body,
+                                               List<KnowledgeChunkEntity> chunks,
+                                               EntityKind tailKind) {
+        List<String> members = combinationMembers(t.headName());
+        if (members.size() < 2) {
+            return Verdict.reject(RejectReason.MALFORMED);
+        }
+        String comboKey = combinationKey(members);
+        if (comboKey.length() > MAX_NAME_CHARS) {
+            return Verdict.reject(RejectReason.MALFORMED);
+        }
+
+        // 成员的展示名：优先用模型给的原写法（「维生素 D3」比「维生素d3」好读），
+        // 归一到规范名后再拼，保证同一个组合的标签每次一样
+        String display = combinationDisplay(t.headName(), members);
+
+        String tailWritten = normalizeName(t.tailName());
+        Canonical tail = canonical(tailWritten, tailKind);
+        if (tail.name().isEmpty()) {
+            return Verdict.reject(RejectReason.SELF_LOOP);
+        }
+        if (!GraphRelation.COMBINED_WITH.acceptsTail(tail.kind())) {
+            return Verdict.reject(RejectReason.VOCABULARY);
+        }
+        if (tail.name().length() > MAX_NAME_CHARS || !wellShaped(tail.kind(), tail.name())) {
+            return Verdict.reject(RejectReason.MALFORMED);
+        }
+
+        // 引文要同时提到全部成员 —— 见方法注释第三条
+        String quote = t.quote() == null ? "" : t.quote().strip();
+        int[] span = quote.isEmpty() ? null : body.locate(quote);
+        if (span == null) {
+            return Verdict.reject(RejectReason.UNGROUNDED);
+        }
+        String compactQuote = EntityNames.normalize(quote);
+        for (String member : members) {
+            if (!compactQuote.contains(member)) {
+                // 成员不在引文里 = 这句话支撑不了这个组合，报 UNANCHORED 而不是 UNGROUNDED：
+                // 引文本身是逐字命中的，缺的是「它说的不是这件事」
+                return Verdict.reject(RejectReason.UNANCHORED);
+            }
+        }
+        if (!body.anchors(tail.kind(), tailWritten, t.tailLabel())) {
+            return Verdict.reject(RejectReason.UNANCHORED);
+        }
+
+        return Verdict.accept(new GroundedTriple(EntityKind.COMBINATION, comboKey, display,
+                GraphRelation.COMBINED_WITH, tail.kind(), tail.name(),
+                displayLabel(tail, tailWritten, t.tailLabel(), t.tailName()),
+                truncate(t.effect()), docId, chunkIdAt(chunks, span[0]), span[0], span[1], quote));
+    }
+
+    /**
+     * 拆组合成员并归一化。
+     * <p>
+     * 分隔符多收几种是必要的：模型有时给 {@code 铁剂+钙剂}、有时给
+     * {@code 铁剂、钙剂}、有时给英文逗号。只认一种的话，「分隔符写法不同」
+     * 会表现为「这个组合没有收录」，而日志上看到的是一条正常抽出来的三元组被丢弃。
+     * <p>
+     * 归一是<b>先做</b>的：别名表会把「富马酸亚铁」并到「铁剂」，如果先拼键再归一，
+     * 「富马酸亚铁+钙剂」与「铁剂+钙剂」会变成两个组合节点。
+     */
+    static List<String> combinationMembers(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(raw.split("[+＋、,，;；|]"))
+                .map(TripleValidator::normalizeName)
+                .map(TripleValidator::canonicalName)
+                .filter(s -> !s.isEmpty())
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * 组合的展示标签：成员用<b>模型写的原写法</b>，顺序与键一致。
+     * <p>
+     * <b>为什么要单独算一次，而不直接用键。</b>键是规范化过的（去空白、转小写），
+     * 拿它当标签会让界面上出现「维生素d + 钙 + 铁剂」——<b>小写的 d</b> 是规范化
+     * 的副产物，对人来说是错的。这里保留原始写法（「维生素D」），
+     * 同时按成员键的排序顺序输出，使标签与键的成员顺序对得上。
+     * <p>
+     * 取不到原写法时（成员是别名归一来的、原文里没写）退回成员键本身：
+     * 宁可显示「铁剂」这种归一后的名字，也不要显示空白或漏掉一个成员。
+     */
+    private static String combinationDisplay(String raw, List<String> members) {
+        if (raw == null || raw.isBlank()) {
+            return String.join(" + ", members);
+        }
+        // 原始写法按「归一后 → 原名」建一次映射，再按 members（已排序）的顺序取，
+        // 这样顺序跟着键走，大小写跟着模型走
+        java.util.Map<String, String> written = new java.util.LinkedHashMap<>();
+        for (String part : raw.split("[+＋、,，;；|]")) {
+            String stripped = part.strip();
+            String normalized = canonicalName(normalizeName(stripped));
+            // 同一个成员出现两次时保留第一次的写法
+            written.putIfAbsent(normalized, stripped);
+        }
+        return members.stream()
+                .map(m -> written.getOrDefault(m, m))
+                .collect(Collectors.joining(" + "));
+    }
+
+    /** 组合节点的键。成员<b>必须已归一且排过序</b>，见 {@link #combinationMembers} */    /** 组合节点的键。成员<b>必须已归一且排过序</b>，见 {@link #combinationMembers} */
+    static String combinationKey(List<String> sortedMembers) {
+        return EntityKind.COMBINATION_PREFIX + String.join("|", sortedMembers);
     }
 
     /**

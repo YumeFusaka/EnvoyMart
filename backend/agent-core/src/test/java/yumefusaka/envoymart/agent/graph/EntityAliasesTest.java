@@ -58,7 +58,10 @@ class EntityAliasesTest {
         // 再拿它当反例会测到一个与预期相反的结果——反例必须选真正不在表里的写法
         assertThat(EntityAliases.resolve("维生素h")).isNull();
         assertThat(EntityAliases.resolve("硒代蛋氨酸")).isNull();
-        assertThat(EntityAliases.resolve("维生素d3")).isNull();
+        // 反例要选真正不在表里的写法。原先这里放的是「维生素d3」——那时它确实不在表里，
+        // 后来为了让用户嘴里的「VD3」能链接到节点，它成了规范名（**不等于并入「维生素 D」**，
+        // 见「维生素D3不并入维生素D」那条测试）。两件事很容易被混为一谈：
+        // 「表里有没有这个写法」与「它是不是被并进了另一个节点」，是两套判据
         assertThat(EntityAliases.resolve(null)).isNull();
         assertThat(EntityAliases.resolve("")).isNull();
     }
@@ -135,8 +138,18 @@ class EntityAliasesTest {
 
     @Test
     void 维生素D3不并入维生素D() {
-        // 这一条是「有意不合并」，见 EntityAliases 文末。写成测试是为了让
-        // 「有人顺手加一条别名」时先看到这里的理由，而不是先改表
-        assertThat(EntityAliases.resolve("维生素d3")).isNull();
+        // 这一条是「有意不合并」，见 EntityAliases 文末。
+        //
+        // **判据不是「表里没有维生素d3」**（那样写会把「有没有这个写法」与
+        // 「它属于哪个节点」混为一谈，而后者才是这条不变量的内容）：
+        // D3 必须是它自己的规范名，解析结果不能是「维生素d」。
+        assertThat(EntityAliases.resolve("维生素d3"))
+                .isNotNull()
+                .extracting(EntityAliases.Canonical::name)
+                .isNotEqualTo("维生素d");
+        // 反向也要成立：**表里没有为「维生素 D」登记任何别名，所以它解析为 null（沿用原名）**。
+        // 这正是「不合并」在表这一层的表现——若哪天有人给 D3 加一条 alias("维生素D", ...)
+        // 或反过来，这条断言会先红，而那时要问的是「为什么现在可以把两者说成一回事」
+        assertThat(EntityAliases.resolve("维生素d")).isNull();
     }
 }

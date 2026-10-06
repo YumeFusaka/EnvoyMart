@@ -42,7 +42,28 @@ public enum GraphRelation {
 
     /** 营养素/成分 → 人群。需要先咨询医师的人群 */
     CAUTION_FOR("人群禁忌", EnumSet.of(EntityKind.NUTRIENT, EntityKind.INGREDIENT),
-            EnumSet.of(EntityKind.POPULATION));
+            EnumSet.of(EntityKind.POPULATION)),
+
+    /**
+     * 组合禁忌：营养素/成分 → 组合。
+     * <p>
+     * <b>前面三条都是「单跳」关系，这一条不是。</b>它们的语义是「A 与 B 之间有事」，
+     * 而存在一类风险<b>只能由三样及以上的东西一起成立</b>：两两拆开看谁都没问题
+     * （所以图上没有一条 {@code INTERACTS_WITH}），三样同时服下才出问题。
+     * 单跳表达不了这种「组合才成立」的结论，这是图谱三个缺口里唯一必须动结构的一个。
+     * <p>
+     * <b>为什么要落到图上，而不是让 Agent 把各自的单跳风险拼起来。</b>后者只能回答
+     * 「这几样各自有什么风险」，面对「两两没事、三样有事」时给不出任何提示 ——
+     * 而这类结论恰恰是文本检索也答不了、图谱独有的价值。
+     * <p>
+     * <b>形状</b>：头是「组合」节点（键以 {@code combo:} 开头，由若干物质名排序拼接而成），
+     * 尾是被牵连的实体（药物 / 药物类别 / 人群）。{@link #acceptsHead} 与
+     * {@link #acceptsTail} 对它是特例，见 {@code TripleValidator} 与
+     * {@code EntityKind#isCombination} —— 组合节点的类型不写成 {@link EntityKind} 的新枚举值，
+     * 是因为它不该作为一个「实体类型」暴露给抽取提示词与前端图例：它是结构，不是知识。
+     */
+    COMBINED_WITH("组合禁忌", EnumSet.of(EntityKind.NUTRIENT, EntityKind.INGREDIENT),
+            EnumSet.of(EntityKind.DRUG, EntityKind.DRUG_CLASS, EntityKind.POPULATION));
 
     /** 中文说法。给模型看的工具输出与给用户看的界面都用它，不要漏出枚举名 */
     private final String label;

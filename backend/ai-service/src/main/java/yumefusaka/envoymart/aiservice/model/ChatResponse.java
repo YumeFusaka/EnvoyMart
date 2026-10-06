@@ -70,6 +70,19 @@ public class ChatResponse {
     private List<ProductSummary> recommendedProducts;
 
     /**
+     * 本轮产生的待支付订单，前端据此渲染支付卡片。
+     * <p>
+     * <b>为什么需要它，而不是让前端从正文里认。</b>下单成功时正文里确实写着
+     * 「单号 YS…，应付 268.00 元」，但那段话是模型写的，格式每轮都可能变；
+     * 前端要从里面可靠地抽出订单号，只能写正则在自由文本上碰运气。
+     * 而支付是一次真实跳转（{@code /payment?orderNo=…}），抽错了会把用户带到
+     * 别人的订单或一个不存在的页面。<b>订单号是确定的事实，该由服务端以结构化字段交付。</b>
+     * <p>
+     * 只在「这一轮真的创建了待支付订单」时非空——已支付的订单不该再弹一张支付卡。
+     */
+    private List<PendingPayment> pendingPayments;
+
+    /**
      * 等待用户确认的高危操作，前端据此渲染确认卡片。
      * <p>
      * 每项是可直接展示的中文描述，形如 {@code order_cancel(orderId=12)}——

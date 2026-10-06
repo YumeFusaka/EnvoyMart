@@ -126,6 +126,7 @@ function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[
     recommendedProducts: response?.recommendedProducts?.length
       ? response.recommendedProducts
       : undefined,
+    pendingPayments: response?.pendingPayments?.length ? response.pendingPayments : undefined,
     evidenceLevel: response?.evidenceLevel ?? undefined,
     retrievalQuery: response?.retrievalQuery ?? undefined,
     expansion: response?.expansion?.applied ? response.expansion : undefined,
@@ -445,6 +446,9 @@ async function runStream(
           assistantMessage.toolCalls = response.toolCalls
           assistantMessage.recommendedProducts = response.recommendedProducts
           // 非空即本轮被中断：回复是确认提示，没有任何工具真正执行过
+          assistantMessage.pendingPayments = response.pendingPayments?.length
+            ? response.pendingPayments
+            : undefined
           assistantMessage.pendingActions = response.pendingActions ?? undefined
           // 卡片与令牌同生共死：只留卡片不留令牌，用户点确认时无从证明自己批的是哪一次
           assistantMessage.approvalToken = response.approvalToken ?? undefined
