@@ -450,6 +450,7 @@ async function runStream(
             ? response.pendingPayments
             : undefined
           assistantMessage.pendingActions = response.pendingActions ?? undefined
+          assistantMessage.pendingActionDetails = response.pendingActionDetails ?? undefined
           // 卡片与令牌同生共死：只留卡片不留令牌，用户点确认时无从证明自己批的是哪一次
           assistantMessage.approvalToken = response.approvalToken ?? undefined
           // 任务阶段。它与 pendingActions 表达同一件事的两个层次：阶段说「停在哪里」，

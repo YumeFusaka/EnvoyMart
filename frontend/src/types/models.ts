@@ -562,6 +562,20 @@ export interface PendingPayment {
   expireAt: string | null
 }
 
+/**
+ * 待确认操作的结构化形式，与 `pendingActions` 的字符串版成对下发。
+ *
+ * 字符串版（`order_cancel(orderId=12)`）是用户核对授权对象的原始依据，**永远保留**；
+ * 这一份供卡片渲染可读文案（`订单取消 · 订单号 12`）。前端不认识某个工具或渲染失败时，
+ * 退回字符串版——两者互补，信息量只增不减。
+ */
+export interface PendingActionDetail {
+  /** 工具名，见 `@/utils/tools` 的 TOOL_LABELS */
+  tool: string
+  /** 工具入参，键为工具声明的参数名 */
+  arguments: Record<string, unknown>
+}
+
 export interface ChatResponse {
   sessionId: string
   reply: string
@@ -584,6 +598,8 @@ export interface ChatResponse {
    * 前端据此渲染确认卡片。
    */
   pendingActions: string[] | null
+  /** pendingActions 的结构化版本：每项 { tool, arguments }，供卡片渲染可读文案；前端不认识某工具时退回字符串版 */
+  pendingActionDetails?: PendingActionDetail[] | null
   /**
    * 确认令牌，与 `pendingActions` 同时非空、同时为空。
    *
@@ -714,6 +730,8 @@ export interface ChatMessage {
   pendingPayments?: PendingPayment[]
   /** 待确认的高危操作。确认或取消后清空，卡片随之消失 */
   pendingActions?: string[]
+  /** 同 ChatResponse.pendingActionDetails，渲染可读卡片用；缺失时退回 pendingActions 原文 */
+  pendingActionDetails?: PendingActionDetail[]
   /** 确认这张卡片要带回服务端的令牌，与 `pendingActions` 同生共死 */
   approvalToken?: string
   /** 本轮任务阶段，见 `ChatResponse.stage` 的说明。仅用于展示与状态判定 */

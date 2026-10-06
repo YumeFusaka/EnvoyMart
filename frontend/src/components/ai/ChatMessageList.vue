@@ -319,6 +319,7 @@ async function handleCopy(message: ChatMessage) {
       <PendingApprovalCard
         v-if="message.pendingActions?.length"
         :actions="message.pendingActions"
+        :details="message.pendingActionDetails"
         :active="position === messages.length - 1"
         @approve="emit('approve')"
         @dismiss="emit('dismiss')"

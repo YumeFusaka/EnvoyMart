@@ -665,6 +665,7 @@ public class Agent {
                     .knowledge(knowledgeOf(graphResult))
                     .retrieval(retrievalOf(graphResult))
                     .pendingActions(pending.stream().map(PendingAction::describe).toList())
+                    .pendingActionDetails(pending.stream().map(Agent::pendingDetail).toList())
                     .approvalToken(approvals.issue(userId, sessionId, pending))
                     // 中断之前已跑完的工具轨迹照常下发：计划路径可能执行过前几层，
                     // ReAct 路径可能已经查过订单才走到取消那一步。丢掉它们，
@@ -719,6 +720,20 @@ public class Agent {
         RetrievalOutcome outcome = retrievalOf(result);
         return outcome == null ? List.of() : outcome.chunks();
     }
+
+    /**
+     * 待确认操作的结构化投影 —— {@code {"tool": 工具名, "arguments": 入参}}，供前端渲染可读卡片。
+     * <p>
+     * 与字符串版 {@code describe()} 一起下发：字符串版是原始依据（绝不隐藏），
+     * 这一份是可读化的输入。前端两者都拿得到，渲染失败时能退回原文。
+     */
+    private static Map<String, Object> pendingDetail(PendingAction action) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("tool", action.tool());
+        detail.put("arguments", action.arguments());
+        return detail;
+    }
+
     /**
      * 把图结果收敛成一份任务状态 —— 显式迁移，非法边被记录而不是被静默吞掉。
      * <p>
@@ -1688,6 +1703,15 @@ public class Agent {
          * 前端据此渲染确认卡片。执行不认它，认的是 {@link #approvalToken} 里的载荷。
          */
         private List<String> pendingActions;
+        /**
+         * {@link #pendingActions} 的结构化版本：每项是 {@code {"tool": "...", "arguments": {...}}}。
+         * <p>
+         * <b>为什么与字符串版一起下发。</b>字符串版是用户核对授权对象的原始依据，
+         * 不能拿掉；结构化版让前端把 {@code cart_add(skuId=9, quantity=2)} 渲染成
+         * 「加入购物车：某商品 × 2」这样的可读卡片，而不必在前端反解析一个 Java 风格的字符串。
+         * 前端不认识某个工具时退回字符串版，信息量只增不减。
+         */
+        private List<Map<String, Object>> pendingActionDetails;
         /**
          * 待确认操作的签名令牌（{@link ApprovalTokens}）。与 {@link #pendingActions} 同时下发：
          * 用户点确认时带回它，服务端按签名里的载荷执行。

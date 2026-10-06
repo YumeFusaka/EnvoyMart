@@ -195,6 +195,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .recommendedProducts(extractProducts(executions))
                 .pendingPayments(extractPayments(executions))
                 .pendingActions(agentResp.getPendingActions())
+                .pendingActionDetails(agentResp.getPendingActionDetails())
                 .approvalToken(agentResp.getApprovalToken())
                 .evidenceLevel(agentResp.getEvidenceLevel())
                 // 阶段用 name() 而不是 toString()：枚举名是稳定契约，toString 可能被人

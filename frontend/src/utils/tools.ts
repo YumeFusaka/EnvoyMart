@@ -7,12 +7,26 @@
 
 import type { ChatUsage, ToolCall } from '@/types/models'
 
+/**
+ * 工具名 → 中文标签。
+ * <p>
+ * <b>这是一份必须与后端工具表保持一致的全量清单。</b>漏登记的后果不是显示空白，
+ * 而是用户在高危操作确认卡片上看到 `cart_checkout(...)` 这样的原始代码——
+ * 而那张卡片正是他判断「要点确认的是哪一件事」的唯一依据。
+ * 后端新增工具时，这里必须同步；漏了也不会报错，只会静默退化。
+ */
 const TOOL_LABELS: Record<string, string> = {
   product_search: '商品检索',
   order_query: '订单查询',
   logistics_query: '物流查询',
   order_cancel: '订单取消',
   interaction_check: '成分相互作用核查',
+  address_list: '收货地址查询',
+  cart_query: '购物车查询',
+  cart_add: '加入购物车',
+  cart_checkout: '提交订单',
+  after_sale_apply: '申请售后',
+  knowledge_search: '知识库检索',
 }
 
 /** 未知工具名原样显示 —— 服务端加了新工具而前端还没跟上时，看到 `coupon_query` 也比看到空白强 */
@@ -147,4 +161,45 @@ export function formatCost(cny: number | null | undefined): string {
 export function usageSummary(usage: ChatUsage): string {
   const tokens = `${formatTokens(usage.totalTokens)} tokens`
   return usage.costCny === null ? tokens : `${tokens} · ≈${formatCost(usage.costCny)}`
+}
+
+/** 参数名 → 中文标签：结构化卡片上把 `orderId` 显示成「订单号」 */
+const ARG_LABELS: Record<string, string> = {
+  orderId: '订单号',
+  orderNo: '订单编号',
+  spuId: '商品编号',
+  skuId: '规格编号',
+  quantity: '数量',
+  addressId: '收货地址',
+  type: '类型',
+  reason: '原因',
+  qualityIssue: '质量问题',
+  orderItemId: '订单行号',
+  keyword: '关键词',
+  receiverName: '收件人',
+  receiverPhone: '联系电话',
+  receiverProvince: '省份',
+  receiverCity: '城市',
+  receiverDistrict: '区县',
+  receiverDetail: '详细地址',
+  query: '检索词',
+}
+
+export function argLabel(key: string): string {
+  return ARG_LABELS[key] ?? key
+}
+
+/**
+ * 结构化参数摊成 [[标签, 取值]]，供确认卡片逐行渲染。
+ *
+ * 键名走中文映射、值保持原文——**取值不做任何翻译或截断**：它是用户核对
+ * 「要动的是哪一个对象」的依据，改了取值就等于替用户改了授权对象。
+ */
+export function argEntries(arguments_: Record<string, unknown> | undefined): [string, string][] {
+  if (!arguments_) {
+    return []
+  }
+  return Object.entries(arguments_)
+    .filter(([, value]) => value !== null && value !== undefined && value !== '')
+    .map(([key, value]) => [argLabel(key), Array.isArray(value) ? value.join('、') : String(value)] as [string, string])
 }

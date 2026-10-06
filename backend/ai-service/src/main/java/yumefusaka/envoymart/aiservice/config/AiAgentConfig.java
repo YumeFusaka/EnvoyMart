@@ -54,6 +54,7 @@ import yumefusaka.envoymart.aiservice.tool.AddToCartTool;
 import yumefusaka.envoymart.aiservice.tool.AddressTool;
 import yumefusaka.envoymart.aiservice.tool.AfterSaleTool;
 import yumefusaka.envoymart.aiservice.tool.CancelOrderTool;
+import yumefusaka.envoymart.aiservice.tool.CartQueryTool;
 import yumefusaka.envoymart.aiservice.tool.CheckoutTool;
 import yumefusaka.envoymart.aiservice.tool.InteractionCheckTool;
 import yumefusaka.envoymart.aiservice.tool.KnowledgeSearchTool;
@@ -221,6 +222,8 @@ public class AiAgentConfig {
                 // 它们改变交易状态，做错了得用户自己去收尾
                 new AddressTool(authClient),
                 new AddToCartTool(orderClient),
+                // 只读的购物车查询：能加购却查不了购物车，是能力划分里的缺口
+                new CartQueryTool(orderClient),
                 new CheckoutTool(orderClient),
                 new AfterSaleTool(orderClient),
                 new InteractionCheckTool(knowledgeClient),

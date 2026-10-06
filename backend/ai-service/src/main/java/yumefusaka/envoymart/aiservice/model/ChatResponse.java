@@ -96,6 +96,14 @@ public class ChatResponse {
     private List<String> pendingActions;
 
     /**
+     * {@link #pendingActions} 的结构化版本：每项 {@code {"tool": "...", "arguments": {...}}}。
+     * <p>
+     * 与字符串版同时下发：字符串版是用户核对授权对象的原始依据，结构版供前端渲染可读卡片。
+     * 前端不认识某工具时退回字符串版，信息量只增不减。
+     */
+    private List<java.util.Map<String, Object>> pendingActionDetails;
+
+    /**
      * 确认令牌：下发给前端，用户点确认时原样带回，服务端据此执行签名里的那批调用。
      * <p>
      * 与 {@link #pendingActions} 同时非空、同时为空。它替代了原先的请求级布尔
