@@ -53,3 +53,7 @@ backend/HELP.md
 
 # 商品图片上传目录（运行期产物）
 /backend/product-service/data/
+
+# 生产链路检索评测快照（管理台真跑一次生成的运行期产物，可随时重跑；
+# 含具体时间戳与耗时，不宜进版本库）
+/backend/ai-service/data/

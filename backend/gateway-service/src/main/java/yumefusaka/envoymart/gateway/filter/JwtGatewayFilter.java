@@ -81,6 +81,10 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 是这组数字可信的全部理由；报告里没有一条用户数据。
             // 真跑要花模型配额，在 /ai/admin/ 段下，由 ADMIN_SEGMENT 强制登录
             PublicRule.of("GET", "/ai/eval/grounding/report"),
+            // 生产链路检索报告：同为对外的质量声明。它展示的是「用户此刻在用的那条链路」
+            // （真实向量 + 图谱 + 重排 + 扩写）跑在生产语料上的成绩，报告里没有用户数据。
+            // 真跑要花 embedding / 重排配额，在 /ai/admin/ 段下，由 ADMIN_SEGMENT 强制登录
+            PublicRule.of("GET", "/ai/eval/retrieval/report"),
             // 上传的商品图片：与商品本身同为公开读。
             // <img> 标签不会带 Authorization 头，要求登录只会让图片全部加载失败，
             // 而图片里没有任何用户数据。上传接口在 /products/admin/media 下，由

@@ -44,8 +44,14 @@ public class RetrievalEvaluator {
     public List<CaseOutcome> evaluateEach(Retriever retriever, List<EvalCase> cases, int topK) {
         List<CaseOutcome> outcomes = new java.util.ArrayList<>(cases.size());
         for (EvalCase evalCase : cases) {
+            // 去重后再算：一次检索返回的是**切片**，同一篇文档常有多个切片同时命中，
+            // 文档级指标问的是「这篇文档有没有被找到」，不是「它贡献了几片落进 top-K」。
+            // 不去重会让 DCG 把同一篇相关文档数两遍（NDCG 可以 >1），也会把
+            // 「命中排位」算歪——一篇文档命中 3 次并不等于它排得更靠前。
+            // 保序去重（首次出现为准），因为排位问的是「第一次出现在第几名」。
             List<String> retrieved = retriever.retrieve(evalCase.query(), topK).stream()
                     .map(DocumentChunk::getDocId)
+                    .distinct()
                     .toList();
             int rank = hitRank(evalCase, retrieved);
             outcomes.add(new CaseOutcome(evalCase.query(), evalCase.relevantDocIds(), retrieved,

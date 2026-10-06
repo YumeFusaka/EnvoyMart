@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { getEvalReport, rerunEval } from '@/api/eval'
-import type { EvalCase, EvalRun } from '@/api/eval'
+import { getEvalReport, rerunEval, getProductionRetrievalReport, runProductionRetrievalEval } from '@/api/eval'
+import type { EvalCase, EvalRun, ProductionRetrievalReport } from '@/api/eval'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import { useUserStore } from '@/stores'
 import { formatDateTime } from '@/utils/format'
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 /**
  * 检索评测报告 —— 「AI 凭什么说检索靠谱」的现场证据。
@@ -62,6 +62,66 @@ async function rerun() {
 }
 
 onMounted(load)
+
+// ————————————————————————————————————————————————————————————————
+// 生产链路检索评测（真实向量 + 图谱 + RRF + 重排 + 扩写）
+//
+// 与上面「关键词路基线」是两个口径，页面分两栏陈述，不可互推：
+//   · 上面那一栏：90 篇短文档夹具 + 伪随机向量，确定性、可逐位复现、与 CI 同源 →
+//     回答「下限在哪、回归有没有退化」；
+//   · 下面那一栏：线上 47 篇文档 + 真实模型，跑一次几分钟、要计费、结果落盘成快照 →
+//     回答「用户此刻在用的链路有多好」。
+// 一个只展示基线的页面会让人把「35% 语义档」读成系统水平，这正是分两栏的原因。
+// ————————————————————————————————————————————————————————————————
+
+const production = ref<ProductionRetrievalReport | null>(null)
+const productionLoading = ref(true)
+const productionRunning = ref(false)
+let productionPoll: number | null = null
+
+async function loadProduction() {
+  try {
+    production.value = await getProductionRetrievalReport()
+  } catch {
+    // 生产评测读不到不该拖垮整页：基线栏照常显示，这一栏显示空态
+    production.value = null
+  } finally {
+    productionLoading.value = false
+  }
+}
+
+/** 轮询进度：真跑是异步的（几分钟），期间 status=RUNNING */
+function startProductionPolling() {
+  stopProductionPolling()
+  productionPoll = window.setInterval(async () => {
+    await loadProduction()
+    if (production.value && production.value.status !== 'RUNNING') {
+      stopProductionPolling()
+      productionRunning.value = false
+    }
+  }, 4000)
+}
+
+function stopProductionPolling() {
+  if (productionPoll !== null) {
+    window.clearInterval(productionPoll)
+    productionPoll = null
+  }
+}
+
+async function runProduction() {
+  productionRunning.value = true
+  try {
+    production.value = await runProductionRetrievalEval()
+    startProductionPolling()
+    ElMessage.success('已在后台运行，请等待完成（真实模型调用，通常 1~3 分钟）')
+  } catch {
+    productionRunning.value = false
+  }
+}
+
+onMounted(loadProduction)
+onBeforeUnmount(stopProductionPolling)
 
 /** 三档的展示色与一句话说明。颜色从蓝绿到红，对应「难度上去了」这一个叙事 */
 const STRATUM_META: Record<string, { color: string; desc: string }> = {
@@ -142,14 +202,130 @@ const deltaClass = (delta: number) =>
 <template>
   <div class="eval-page">
     <header class="eval-header">
-      <p class="eyebrow">Retrieval Evaluation</p>
       <h1>检索质量评测</h1>
       <p class="subcopy">
-        「AI 回答有依据」的前提是检索真能找对文档。这一页把这件事拆成数字：
-        120 条标注查询按三档难度算出命中率与排序指标，对照随机基线；
-        逐条明细含失败样本，末段说明这批数字的边界。
+        「AI 回答有依据」的前提是检索真能找对文档。这一页用两个口径回答它：
+        <b>上面</b>是用户此刻在用的生产链路（真实向量 + 图谱 + 重排 + 扩写，跑线上知识库本身），
+        <b>下面</b>是与 CI 同源、可逐位复现的关键词路基线。两者口径不同、不可互推——
+        前者是「现在有多好」，后者是「回归有没有退化」。
       </p>
     </header>
+
+    <!--
+      第一栏：生产链路。放在基线之前是刻意的——读者最先该看到的是「用户此刻在用的链路」，
+      而不是「一个可复现的下限」。基线降为参照系，仍在下方完整保留。
+    -->
+    <section class="prod" aria-label="生产链路检索评测">
+      <div class="prod__head">
+        <div>
+          <h2 class="prod__title">生产链路检索效果</h2>
+          <p class="prod__sub">
+            用户此刻真正在用的那一条：{{ production?.pipeline ?? '真实向量 + 词法 + 图谱 → RRF → 重排' }}。
+            语料是线上知识库本身（{{ production?.corpus.documents || '—' }} 篇），不是评测专用夹具。
+          </p>
+        </div>
+        <el-button
+          v-if="isAdmin"
+          type="primary"
+          size="small"
+          :loading="productionRunning"
+          @click="runProduction"
+        >
+          {{ production?.status === 'NEVER' ? '运行一次（真实模型）' : '重新运行（真实模型）' }}
+        </el-button>
+      </div>
+
+      <el-skeleton v-if="productionLoading" :rows="4" animated />
+
+      <div v-else-if="!production" class="prod__empty">
+        生产链路报告读取失败。它展示的是真实链路结果，读不到不影响下方基线栏。
+      </div>
+
+      <div v-else-if="production.status === 'RUNNING'" class="prod__running">
+        <el-progress
+          :percentage="production.corpus.cases ? Math.round((production.overall.caseCount / production.corpus.cases) * 100) : 0"
+          :stroke-width="10"
+        />
+        <p class="prod__running-note">
+          正在跑真实检索（要调 embedding 与重排），已完成
+          {{ production.overall.caseCount }} / {{ production.corpus.cases }} 条。完成后自动刷新。
+        </p>
+      </div>
+
+      <div v-else-if="production.status === 'FAILED'" class="prod__empty">
+        上一次运行失败了：{{ production.error || '未知原因' }}。可重新运行。
+      </div>
+
+      <div v-else-if="production.status !== 'COMPLETED'" class="prod__empty">
+        还没有跑过生产链路评测。
+        <template v-if="isAdmin">点右上角「运行一次」——它会用真实模型在你的知识库上跑一遍并保存结果。</template>
+        <template v-else>请管理员在管理台触发一次。</template>
+      </div>
+
+      <template v-else>
+        <div class="prod__meta">
+          <span>生成于 <b>{{ formatDateTime(production.generatedAt!) }}</b></span>
+          <span>耗时 {{ (production.durationMs / 1000).toFixed(1) }} s</span>
+          <span>语料 {{ production.corpus.documents }} 篇 × {{ production.corpus.cases }} 条</span>
+        </div>
+
+        <div class="prod__metrics">
+          <article class="prod-metric prod-metric--hero">
+            <p class="prod-metric__label">Hit Rate@{{ production.overall.topK }}</p>
+            <p class="prod-metric__value">{{ pct(production.overall.hitRate) }}<span>%</span></p>
+            <p class="prod-metric__hint">真实链路整体命中率（top-{{ production.overall.topK }}）</p>
+          </article>
+          <article class="prod-metric">
+            <p class="prod-metric__label">MRR@{{ production.overall.topK }}</p>
+            <p class="prod-metric__value">{{ fixed3(production.overall.mrr) }}</p>
+            <p class="prod-metric__hint">第一篇相关文档的平均排位质量</p>
+          </article>
+          <article class="prod-metric">
+            <p class="prod-metric__label">NDCG@{{ production.overall.topK }}</p>
+            <p class="prod-metric__value">{{ fixed3(production.overall.ndcg) }}</p>
+            <p class="prod-metric__hint">整体排序质量，越靠前权重越高</p>
+          </article>
+        </div>
+
+        <div class="prod__strata">
+          <article v-for="stratum in production.strata" :key="stratum.key" class="prod-stratum">
+            <div class="prod-stratum__head">
+              <span class="prod-stratum__label">{{ stratum.label }}</span>
+              <span class="prod-stratum__rate">{{ pct(stratum.metrics.hitRate) }}%</span>
+            </div>
+            <p class="prod-stratum__note">{{ stratum.note }}</p>
+            <p class="prod-stratum__sub">
+              {{ stratum.metrics.caseCount }} 条 · MRR {{ fixed3(stratum.metrics.mrr) }}
+            </p>
+          </article>
+        </div>
+
+        <details class="prod__cases">
+          <summary>逐条明细（{{ production.cases.length }} 条，未命中不做隐藏）</summary>
+          <ul class="prod-cases">
+            <li
+              v-for="item in production.cases"
+              :key="item.query"
+              class="prod-case"
+              :class="{ 'prod-case--miss': !item.hit }"
+            >
+              <span class="prod-case__tag">{{ item.hit ? `#${item.hitRank}` : '未中' }}</span>
+              <span class="prod-case__query">{{ item.query }}</span>
+              <span class="prod-case__docs">
+                期望 {{ item.relevantDocIds.map((id) => production!.cases.length ? (item.retrievedTitles[id] ?? id) : id).join('、') || '—' }}
+                ·
+                实际 {{ item.retrievedDocIds.map((id) => item.retrievedTitles[id] ?? id).join('、') || '—' }}
+              </span>
+            </li>
+          </ul>
+        </details>
+
+        <p class="prod__foot">
+          说明：这一栏跑的是真实模型链路，两次运行会因模型采样略有出入，因此结果<b>固化为快照</b>而非每次现场重算；
+          下面的「关键词路基线」则是确定性的、与 CI 同源、可逐位复现——两者口径不同，不可相互推算。
+        </p>
+      </template>
+    </section>
 
     <ErrorState v-if="failed" message="评测报告加载失败，请重试" :on-retry="load" />
 
@@ -960,6 +1136,217 @@ const deltaClass = (delta: number) =>
   .expansion-hero {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+/* ——————— 生产链路栏 ——————— */
+.prod {
+  margin-block: var(--ys-space-6);
+  padding: var(--ys-space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-lg);
+  background: var(--color-bg-surface);
+}
+
+.prod__head {
+  display: flex;
+  gap: var(--ys-space-4);
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: var(--ys-space-4);
+}
+
+.prod__title {
+  margin: 0;
+  font-size: var(--ys-font-lg);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.prod__sub {
+  margin: var(--ys-space-2) 0 0;
+  font-size: var(--ys-font-sm);
+  line-height: var(--ys-leading-base);
+  color: var(--color-text-secondary);
+  max-width: 62ch;
+}
+
+.prod__empty,
+.prod__running {
+  padding: var(--ys-space-5);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--ys-radius-md);
+  font-size: var(--ys-font-sm);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.prod__running-note {
+  margin: var(--ys-space-3) 0 0;
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-muted);
+}
+
+.prod__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ys-space-4);
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-muted);
+  margin-bottom: var(--ys-space-4);
+}
+
+.prod__metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--ys-space-3);
+}
+
+.prod-metric {
+  padding: var(--ys-space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-md);
+  background: var(--color-bg-surface-muted);
+}
+
+.prod-metric--hero {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-bg-surface));
+}
+
+.prod-metric__label {
+  margin: 0;
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-muted);
+}
+
+.prod-metric__value {
+  margin: var(--ys-space-1) 0 0;
+  font-size: var(--ys-font-2xl);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+
+.prod-metric__value span {
+  font-size: var(--ys-font-base);
+  font-weight: 500;
+  margin-left: 2px;
+}
+
+.prod-metric__hint {
+  margin: var(--ys-space-2) 0 0;
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-secondary);
+}
+
+.prod__strata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--ys-space-3);
+  margin-top: var(--ys-space-4);
+}
+
+.prod-stratum {
+  padding: var(--ys-space-3) var(--ys-space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-md);
+}
+
+.prod-stratum__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ys-space-2);
+}
+
+.prod-stratum__label {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.prod-stratum__rate {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.prod-stratum__note {
+  margin: var(--ys-space-1) 0 0;
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-secondary);
+}
+
+.prod-stratum__sub {
+  margin: var(--ys-space-1) 0 0;
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-muted);
+}
+
+.prod__cases {
+  margin-top: var(--ys-space-4);
+  font-size: var(--ys-font-sm);
+}
+
+.prod__cases summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+
+.prod-cases {
+  margin: var(--ys-space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--ys-space-1);
+}
+
+.prod-case {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr;
+  grid-template-areas: 'tag query' '. docs';
+  gap: 2px var(--ys-space-3);
+  padding: var(--ys-space-2) var(--ys-space-3);
+  border-radius: var(--ys-radius-sm);
+  background: var(--color-bg-surface-muted);
+}
+
+.prod-case--miss {
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-bg-surface));
+}
+
+.prod-case__tag {
+  grid-area: tag;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-muted);
+}
+
+.prod-case--miss .prod-case__tag {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.prod-case__query {
+  grid-area: query;
+  color: var(--color-text-primary);
+}
+
+.prod-case__docs {
+  grid-area: docs;
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-secondary);
+}
+
+.prod__foot {
+  margin-top: var(--ys-space-4);
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 640px) {
+  .prod__head {
+    flex-direction: column;
   }
 }
 </style>

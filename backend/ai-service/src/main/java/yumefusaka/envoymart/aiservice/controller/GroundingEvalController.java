@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import yumefusaka.envoymart.agent.rag.GroundingEvalRunner;
 import yumefusaka.envoymart.aiservice.eval.GroundingLiveEvalService;
+import yumefusaka.envoymart.aiservice.eval.ProductionRetrievalEvalService;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.RequireAdmin;
 
@@ -40,9 +41,31 @@ public class GroundingEvalController {
     }
 
     private final GroundingLiveEvalService liveEval;
+    private final ProductionRetrievalEvalService productionRetrievalEval;
 
-    public GroundingEvalController(GroundingLiveEvalService liveEval) {
+    public GroundingEvalController(GroundingLiveEvalService liveEval,
+                                   ProductionRetrievalEvalService productionRetrievalEval) {
         this.liveEval = liveEval;
+        this.productionRetrievalEval = productionRetrievalEval;
+    }
+
+    /**
+     * 生产链路检索评测报告 —— 与关键词路基线口径不同（见 {@link ProductionRetrievalEvalService}）。
+     * 报告页把两栏分开陈述：这一栏是「用户此刻在用的链路有多好」。
+     */
+    @GetMapping("/eval/retrieval/report")
+    public Result<ProductionRetrievalEvalService.Report> retrievalReport() {
+        return Result.success(productionRetrievalEval.current());
+    }
+
+    /**
+     * 触发一次生产链路检索真跑（异步）。要调真实 embedding / 重排，几分钟、要计费，
+     * 所以走管理员，且只返回「已开始」——前端轮询 {@link #retrievalReport()} 看进度。
+     */
+    @RequireAdmin
+    @PostMapping("/admin/eval/retrieval/run")
+    public Result<ProductionRetrievalEvalService.Report> retrievalRun() {
+        return Result.success(productionRetrievalEval.start());
     }
 
     @GetMapping("/eval/grounding/report")

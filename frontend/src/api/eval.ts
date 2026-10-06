@@ -212,3 +212,76 @@ export async function runGroundingEval() {
   const response = await request.post('/ai/admin/eval/grounding/run')
   return response.data.data as GroundingLiveRun
 }
+
+// ————————————————————————————————————————————————————————————————
+// 生产链路检索评测（真实向量 + 图谱 + RRF + 重排 + 扩写，跑生产语料）
+//
+// 与上面「检索评测（关键词路基线）」是两个口径：那一栏是「与 CI 同源、可逐位复现的下限」，
+// 这一栏是「用户此刻在用的那条链路，跑在生产语料上有多好」。两栏不可互推，必须分开陈述。
+// 真跑要调真实 embedding / 重排，几分钟、要计费 → 管理员触发；结果落盘成快照，报告页只读。
+// ————————————————————————————————————————————————————————————————
+
+export interface ProductionRetrievalMetrics {
+  topK: number
+  caseCount: number
+  hitRate: number
+  mrr: number
+  ndcg: number
+}
+
+export interface ProductionRetrievalCorpus {
+  documents: number
+  cases: number
+  topK: number
+}
+
+export interface ProductionRetrievalStratum {
+  key: string
+  label: string
+  /** 这一档的口径说明（字面 / 口语换说法 / 跨文档），页面逐档展示 */
+  note: string
+  metrics: ProductionRetrievalMetrics
+}
+
+/** 一条样本的现场结果。retrievedTitles 把召回编号翻成标题，明细里给人看的是标题 */
+export interface ProductionRetrievalCase {
+  query: string
+  stratum: string
+  relevantDocIds: string[]
+  retrievedDocIds: string[]
+  hit: boolean
+  hitRank: number
+  retrievedTitles: Record<string, string>
+}
+
+/**
+ * 生产链路检索评测报告。
+ *
+ * status：NEVER（从未跑过，页面显示空态 + 运行按钮）/ RUNNING（真跑进行中，轮询进度）/
+ * COMPLETED（有结果）/ FAILED（跑挂了，error 里是原因）。
+ */
+export interface ProductionRetrievalReport {
+  status: 'NEVER' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  trigger: string | null
+  generatedAt: string | null
+  durationMs: number
+  corpus: ProductionRetrievalCorpus
+  /** 本次跑的是哪条链路 —— 页面照它向读者交代，不让人猜 */
+  pipeline: string
+  overall: ProductionRetrievalMetrics
+  strata: ProductionRetrievalStratum[]
+  cases: ProductionRetrievalCase[]
+  error: string | null
+}
+
+/** 生产链路检索报告。公开可读；从未跑过时 status=NEVER */
+export async function getProductionRetrievalReport() {
+  const response = await request.get('/ai/eval/retrieval/report')
+  return response.data.data as ProductionRetrievalReport
+}
+
+/** 触发一次生产链路检索真跑（异步，几分钟）。仅管理员；已在跑时返回当前状态而非排队 */
+export async function runProductionRetrievalEval() {
+  const response = await request.post('/ai/admin/eval/retrieval/run')
+  return response.data.data as ProductionRetrievalReport
+}
