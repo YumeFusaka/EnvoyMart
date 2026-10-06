@@ -137,18 +137,51 @@ public class EpisodicMemory implements Memory {
     }
 
     /**
-     * 挑一个该走的。
+     * 挑一个该走的：先按类型分层，同层内再按重要性排序，最后才看新旧。
      * <p>
-     * 偏好没超额时整队跳过偏好，淘汰第一个事件；超额时第一个偏好就是最旧的那个。
-     * 遍历顺序即入库顺序（{@link ArrayDeque} 从队头到队尾）。
+     * <b>三层判据的顺序是刻意的。</b>类型在最前，是因为「偏好」这类记忆的丢失
+     * 是不可逆的——它是跨会话累积出来的结论，被挤掉就没有第二次机会；
+     * 而事件只是记录，少一条最多是这一轮不提起。把重要性放在类型之前，
+     * 会让一条普通的高分事件挤掉一条低分偏好，方向就反了。
+     * <p>
+     * <b>同层内先看重要性、同分才看新旧。</b>原先是纯 FIFO，于是留下哪条完全取决于
+     * 入库顺序——「用户是学生党」和「用户问过衬衫尺码」等价，谁先进谁先走。
+     * 现在低分先淘汰，同分时最旧的先走，两层都有确定含义。
      */
     private MemoryItem pickEviction(Deque<MemoryItem> deque, int preferences) {
+        MemoryItem worst = null;
         for (MemoryItem candidate : deque) {
-            if (!isPreference(candidate) || preferences > MAX_PREFERENCES_PER_USER) {
-                return candidate;
+            if (isPreference(candidate) && preferences <= MAX_PREFERENCES_PER_USER) {
+                continue;
+            }
+            if (worst == null || isWorse(candidate, worst)) {
+                worst = candidate;
             }
         }
-        return null;
+        return worst;
+    }
+
+    /**
+     * {@code candidate} 是否比 {@code incumbent} 更该被淘汰。
+     * <p>
+     * 先比重要性，低了就走；同分时比时间戳，旧的先走。
+     * <b>时间戳这一层不能省</b>：只按重要性的话，两条同分记忆谁走取决于遍历顺序，
+     * 而遍历顺序是实现细节（{@link ArrayDeque} 的迭代方向），
+     * 把它当成淘汰依据等于让一个不该影响结果的东西决定结果。
+     * <p>
+     * 时间戳为空按最旧处理：记忆条目理应有时间戳，缺失时保守地当作最旧、
+     * 优先淘汰它——一条连时间都记不下来的记忆，留着的价值本就最低。
+     */
+    private static boolean isWorse(MemoryItem candidate, MemoryItem incumbent) {
+        int byScore = Integer.compare(candidate.score(), incumbent.score());
+        if (byScore != 0) {
+            return byScore < 0;
+        }
+        return timestampOf(candidate).isBefore(timestampOf(incumbent));
+    }
+
+    private static java.time.Instant timestampOf(MemoryItem item) {
+        return item.getTimestamp() == null ? java.time.Instant.EPOCH : item.getTimestamp();
     }
 
     private static boolean isPreference(MemoryItem item) {

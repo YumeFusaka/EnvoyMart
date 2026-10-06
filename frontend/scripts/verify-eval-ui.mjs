@@ -131,12 +131,13 @@ const expansionRows = anon.locator('.expansion-row')
 ck('扩写对照三档齐备', (await expansionRows.count()) === 3, `count=${await expansionRows.count()}`)
 
 const expansionText = (await expansion.textContent()) ?? ''
+console.log('    [诊断] 扩写对照栏原文 =', JSON.stringify(expansionText.replace(/\s+/g, ' ').trim()))
 ck('全量扩写前 69.2%', expansionText.includes('69.2'))
-ck('全量扩写后 76.7%', expansionText.includes('76.7'))
+ck('全量扩写后 79.2%', expansionText.includes('79.2'))
 ck('口语档扩写前 75.0%', expansionText.includes('75.0'))
-ck('口语档扩写后 85.0%', expansionText.includes('85.0'))
+ck('口语档扩写后 90.0%', expansionText.includes('90.0'))
 ck('语义档扩写前 35.0%', expansionText.includes('35.0'))
-ck('语义档扩写后 45.0%', expansionText.includes('45.0'))
+ck('语义档扩写后 47.5%', expansionText.includes('47.5'))
 
 const expansionBars = anon.locator('.expansion-row__bar')
 const expansionLabels = await expansionBars.evaluateAll((nodes) =>

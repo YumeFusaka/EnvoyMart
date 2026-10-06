@@ -1,0 +1,6 @@
+# shell 脚本必须以 LF 检出。
+#
+# core.autocrlf=true 的 Windows 机器上，git 会把 .sh 也转成 CRLF，而 bash 读到
+# `set -o pipefail\r` 会直接报 `invalid option name` 并整段失败——症状是脚本「语法错误」，
+# 看不出是行尾问题。二进制的行尾转换不是风格偏好，是正确性问题。
+*.sh text eol=lf

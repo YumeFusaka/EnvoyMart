@@ -64,7 +64,7 @@ class InteractionCheckToolTest {
     @Test
     void 未收录的项不得被说成没有风险() {
         ToolResult result = run(new InteractionReport(true, null, List.of(
-                new InteractionReport.Item("维生素K2", "维生素K2", false, List.of(), List.of())
+                new InteractionReport.Item("维生素K2", "维生素K2", false, List.of(), List.of(), null)
         )), "维生素K2");
 
         assertThat(result.getOutput())
@@ -77,7 +77,7 @@ class InteractionCheckToolTest {
     @Test
     void 已收录且无风险才说未发现已知风险() {
         ToolResult result = run(new InteractionReport(true, null, List.of(
-                new InteractionReport.Item("维生素D3", "维生素D3", true, List.of(), List.of())
+                new InteractionReport.Item("维生素D3", "维生素D3", true, List.of(), List.of(), null)
         )), "维生素D3");
 
         assertThat(result.getOutput())
@@ -99,7 +99,7 @@ class InteractionCheckToolTest {
                                         List.of("鱼油软胶囊")),
                                 new Substance("spu5", "鱼油软胶囊", "深海鱼油", "深海鱼油", "INGREDIENT",
                                         List.of("鱼油软胶囊", "深海鱼油"))),
-                        List.of(risk))));
+                        List.of(risk), null)));
 
         String output = run(report, "SPU5").getOutput();
 
@@ -128,7 +128,7 @@ class InteractionCheckToolTest {
                 new InteractionReport.Item("华法林", "华法林", true,
                         List.of(new Substance("华法林", "华法林", "华法林", "华法林", "DRUG",
                                 List.of("华法林"))),
-                        List.of(risk))));
+                        List.of(risk), null)));
 
         assertThat(run(report, "华法林").getOutput())
                 .contains("人群禁忌")

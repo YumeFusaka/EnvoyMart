@@ -19,6 +19,7 @@ import { ArrowLeft, Plus, RefreshRight, Delete } from '@element-plus/icons-vue'
 import { createSpu, getSpu, updateSpu } from '@/api/admin/product'
 import { uploadProductImage } from '@/api/admin/media'
 import { listAttributes, listBrands, listCategoryTree } from '@/api/admin/catalog'
+import { getProductDocuments } from '@/api/admin/knowledge'
 import { formatPrice, formatPriceRange } from '@/api/product'
 import { parseYuan, toYuan } from '@/utils/format'
 import ErrorState from '@/components/ui/ErrorState.vue'
@@ -522,6 +523,34 @@ const priceRange = computed(() => {
   }
   return formatPriceRange(Math.min(...cents), Math.max(...cents))
 })
+
+/**
+ * 该商品在知识图谱里被哪些文档支持 —— 「说明书接上了没有」。
+ *
+ * 读图谱而不是文档表：两者没有外键，绑定是构建期实体链接的结果。
+ * 拉取失败不弹错、只留空列表：这是一个**辅助信息面板**，不该因为它拿不到
+ * 就让整个商品编辑页看起来出错。拿不到与「确实没有说明书」在这里不做区分，
+ * 因为对使用者来说下一步动作是一样的——去传一篇。
+ */
+const productDocs = ref<{ docNo: string; title: string; relations: number }[]>([])
+const docsLoading = ref(false)
+
+async function loadProductDocs() {
+  if (spuId.value === null) return
+  docsLoading.value = true
+  try {
+    productDocs.value = await getProductDocuments(`spu${spuId.value}`)
+  } catch {
+    productDocs.value = []
+  } finally {
+    docsLoading.value = false
+  }
+}
+
+// 保存后重新拉：新传的说明书要经过一次图谱构建才会出现在这里，
+// 所以这个面板天然是「刚才那次上传接上了没有」的即时反馈
+watch(spuId, () => { if (isEdit.value) void loadProductDocs() }, { immediate: true })
+
 </script>
 
 <template>
@@ -809,6 +838,34 @@ const priceRange = computed(() => {
         </el-form>
       </section>
 
+      <!-- 说明书覆盖：商品与说明书在库里没有外键，绑定是图谱构建期实体链接的结果。
+           所以这一栏读的是图，也只有**保存过并重建过索引**的文档才会出现。 -->
+      <section v-if="isEdit" class="admin-detail">
+        <h3 class="admin-section__title">说明书与知识依据</h3>
+        <p v-if="docsLoading" class="admin-empty">正在读取…</p>
+        <template v-else-if="productDocs.length > 0">
+          <p class="docs-hint">
+            这个商品当前有 {{ productDocs.length }} 篇文档在知识图谱里支持它。
+          </p>
+          <ul class="docs-list">
+            <li v-for="doc in productDocs" :key="doc.docNo">
+              <RouterLink :to="`/knowledge/${doc.docNo}`">{{ doc.title || doc.docNo }}</RouterLink>
+              <span class="docs-list__meta">{{ doc.docNo }} · {{ doc.relations }} 条关系</span>
+            </li>
+          </ul>
+        </template>
+        <p v-else class="admin-empty">
+          这个商品在知识图谱里还没有任何文档支持。上传它的说明书到
+          <RouterLink to="/admin/knowledge">知识库管理</RouterLink>
+          后，这里会出现对应的文档。
+          <br />
+          <span class="docs-hint">
+            注意：说明书正文里要写到这个商品，且图谱重建成功之后才会出现——
+            上传与建图是两步。
+          </span>
+        </p>
+      </section>
+
       <div class="edit-foot">
         <el-button @click="router.push('/admin/products')">取消</el-button>
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
@@ -818,6 +875,36 @@ const priceRange = computed(() => {
 </template>
 
 <style scoped>
+.docs-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.docs-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.docs-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--color-bg-subtle);
+}
+
+.docs-list__meta {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
 .edit-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

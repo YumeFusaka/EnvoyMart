@@ -572,6 +572,127 @@ public class KnowledgeGraphStore implements DisposableBean {
     }
 
     /**
+     * 图谱里离某个写法最近的一个实体 —— 只在精确与别名都落空时用。
+     * <p>
+     * <b>它要解决的问题：图上没有的实体，现在只能返回空。</b>用户问「鱼油怎么吃」，
+     * 而图上节点叫「深海鱼油」；问「维生素 D」，而语料写的是「维生素 D3」——
+     * 这些写法差一点点，却会得到与「图谱里根本没这东西」<b>完全相同</b>的空结果。
+     * 而这两件事的处置正好相反：一个是「换个名字再问一次」，一个是「确实没收录」。
+     * <p>
+     * <b>判据必须是「相似到一个程度才敢提」，不是「总能给一个最像的」。</b>
+     * 相似度低于 {@value #NEAREST_MIN_SCORE} 时返回空——图外实体兜底的价值全在
+     * 它敢不敢说「不知道」：宁可不给候选，也不能把「钙片」指到「铁剂」上，
+     * 那会给出一条张冠李戴的相互作用结论，比「没收录」有害得多。
+     * <p>
+     * <b>返回的是候选，不是结论。</b>调用方必须把它显式标注成「你是不是想问这个」，
+     * 不能直接拿它当命中替用户作答——把猜出来的东西说成事实，正是这条兜底最容易犯的错。
+     *
+     * @param normalized 规范化后的写法（{@code TripleValidator.normalizeName} 的产物）
+     * @return 最近实体与相似度；没有达到阈值的候选项时返回空
+     */
+    public java.util.Optional<NearestEntity> nearestEntity(String normalized) {
+        if (!isAvailable() || normalized == null || normalized.length() < 2) {
+            return java.util.Optional.empty();
+        }
+        String needle = TripleValidator.normalizeName(normalized);
+        if (needle.isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> {
+                var result = tx.run("MATCH (n:Entity) RETURN n.name AS name, n.label AS label");
+                NearestEntity best = null;
+                while (result.hasNext()) {
+                    Record r = result.next();
+                    String name = r.get("name").asString();
+                    String label = r.get("label").asString(null);
+                    // 展示名与规范名都是候选写法：用户可能按哪一个说
+                    best = betterNearest(best, score(needle, name), name, label == null ? name : label);
+                    if (label != null && !label.equals(name)) {
+                        best = betterNearest(best, score(needle, label), name, label);
+                    }
+                }
+                if (best == null || best.score() < NEAREST_MIN_SCORE) {
+                    return java.util.Optional.<NearestEntity>empty();
+                }
+                return java.util.Optional.of(best);
+            }, txConfig());
+        } catch (RuntimeException e) {
+            markUnavailable("最近实体 normalized=" + normalized, e);
+            return java.util.Optional.empty();
+        }
+    }
+
+    /** 相似度下限。设在 0.5 是因为「包含关系」与「一半以上字重合」都要能过，而牵强的联想过不去 */
+    private static final double NEAREST_MIN_SCORE = 0.5;
+
+    private static NearestEntity betterNearest(NearestEntity current, double score,
+                                               String name, String label) {
+        if (score <= 0) {
+            return current;
+        }
+        if (current == null || score > current.score()) {
+            return new NearestEntity(name, label, score);
+        }
+        return current;
+    }
+
+    /**
+     * 两个写法的相似度 —— 一个<b>确定、可解释</b>的组合，不用模型也不做模糊联想。
+     * <p>
+     * 三档从强到弱：包含关系（「鱼油」⊂「深海鱼油」）给 0.9；其余按<b>字符二元组 Dice 系数</b>
+     * 算字面重合。二元组而不是单字，是因为单字重合会把「钙片」和「铁剂」之外的
+     * 大量不相关短名拉进来（中文单字信息量太低）；而二元组天然照顾「维生素D3」与
+     * 「维生素D2」这类只差一字但结构相同的名字。
+     * <p>
+     * 包含关系给固定分而不是按长度比例：比例会让「油」这种单字命中「深海鱼油」拿到高分，
+     * 那正是最危险的一类误配。包含关系只在<b>双方都不短</b>时才认。
+     */
+    private static double score(String needle, String candidate) {
+        String other = TripleValidator.normalizeName(candidate);
+        if (other.isEmpty()) {
+            return 0;
+        }
+        if (needle.equals(other)) {
+            return 1.0;
+        }
+        if (needle.length() >= 2 && other.length() >= 2
+                && (needle.contains(other) || other.contains(needle))) {
+            return 0.9;
+        }
+        java.util.Set<String> a = bigrams(needle);
+        java.util.Set<String> b = bigrams(other);
+        if (a.isEmpty() || b.isEmpty()) {
+            return 0;
+        }
+        long common = a.stream().filter(b::contains).count();
+        return 2.0 * common / (a.size() + b.size());
+    }
+
+    /** 字符二元组集合。单字或空串没有二元组，返回空集让调用方走不到打分 */
+    private static java.util.Set<String> bigrams(String text) {
+        if (text.length() < 2) {
+            return java.util.Set.of();
+        }
+        java.util.Set<String> grams = new java.util.LinkedHashSet<>();
+        for (int i = 0; i + 2 <= text.length(); i++) {
+            grams.add(text.substring(i, i + 2));
+        }
+        return grams;
+    }
+
+    /**
+     * 「最近实体」的候选 —— 名字是图上的节点键，label 是展示名。
+     *
+     * @param name  <b>节点键</b>，调用方拿它去查图才有意义
+     * @param label 展示名，用于回显「你是不是想问这个」
+     * @param score 相似度，{@code [0,1]}。它只是「像不像」，不是「是不是」，
+     *              调用方必须在文案里保留这个不确定性
+     */
+    public record NearestEntity(String name, String label, double score) {
+    }
+
+    /**
      * 把用户手上的几样东西展开成「活性物质」集合 ——
      * 商品沿 {@code CONTAINS} / {@code PROVIDES} 走最多三跳。
      * <p>

@@ -43,6 +43,19 @@ public class ChatResponse {
     private ExpansionView expansion;
 
     /**
+     * 本轮<b>记忆注入</b>的事实：画像灌了几槽、情节记忆召回几条、各是什么类型。
+     * <p>
+     * <b>与 {@link #expansion} 同属「可观测性」，但补的是另一个盲区。</b>扩写那一栏让
+     * 「检索前发生了什么」可见；这一栏让「回答前，系统记不记得这个用户」可见。
+     * 在此之前，记忆注入没有任何对外观测口——「这轮到底注入了没有」只能翻日志。
+     * <p>
+     * <b>冷启动的新用户读数是 0，而不是 null。</b>「这一轮查过、确实没有可注入的记忆」
+     * 与「这一轮根本没去查记忆」是两件事：前者是新用户正常的起点，后者是链路断了。
+     * 用 null 表达前者会让这两种情况在界面上长得一样。
+     */
+    private MemoryTraceView memoryTrace;
+
+    /**
      * 本轮的请求标识 —— 与后台日志里的 {@code [requestId]} 是同一个值。
      * <p>
      * 下发给界面是为了让「用户报障」这件事可操作：他说得出「刚才那次回答不对」，
@@ -198,6 +211,35 @@ public class ChatResponse {
         /** 无扩写。降级路径与「判定无需扩写」共用这一个落点 */
         public static ExpansionView textOnly() {
             return new ExpansionView(null, List.of(), false);
+        }
+    }
+
+    /**
+     * 记忆注入的观测视图。
+     * <p>
+     * <b>它不是「记忆有几条」的展示，是「记忆这条路这一轮有没有真的跑、跑出了什么」的证据。</b>
+     * 两类数各有各的诊断价值：
+     * <ul>
+     *   <li>{@code profileSlots} 为 0 而 {@code recalled} 也 0 —— 新用户冷启动，正常；</li>
+     *   <li>{@code profileSlots} 长期为 0 而用户已经聊过很多轮 —— 画像抽取那一步没产出，
+     *       是故障信号；</li>
+     *   <li>{@code byType} 清一色 {@code MESSAGE} —— 召回回来的全是原始对话记录，
+     *       说明事实抽取与摘要压缩都没有沉淀出更凝练的条目。</li>
+     * </ul>
+     *
+     * @param profileSlots 注入的用户画像槽位数
+     * @param recalled     召回的情节记忆条数
+     * @param byType       召回条目按类型计数
+     * @param itemIds      召回条目的 id，便于按 id 回查是哪几条
+     * @param observationSources 本轮注入的感知观测来源；空是正常的（用户没开商品页）
+     */
+    public record MemoryTraceView(int profileSlots, int recalled,
+                                  java.util.Map<String, Integer> byType,
+                                  List<String> itemIds,
+                                  List<String> observationSources) {
+
+        public static MemoryTraceView empty() {
+            return new MemoryTraceView(0, 0, java.util.Map.of(), List.of(), List.of());
         }
     }
 

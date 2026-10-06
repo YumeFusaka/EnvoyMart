@@ -317,7 +317,7 @@ await addItem(16, 2)
 await addItem(11, 1)
 const c42 = await checkout(uc5)
 ck('范围内不足门槛拒绝', c42.code === 409, `code=${c42.code}`)
-ck('文案按范围内金额算差额（还差 3100 分）', c42.msg === '优惠券适用范围内的商品金额未达到使用门槛，还差 3100 分', c42.msg)
+ck('文案按范围内金额算差额（还差 31 元）', c42.msg === '优惠券适用范围内的商品金额未达到使用门槛，还差 31 元', c42.msg)
 ck('券仍未被消耗', (await couponStatus(uc5)) === 'UNUSED')
 
 // 4.3 范围内够门槛 → 核销；取消未支付订单 → 券退回

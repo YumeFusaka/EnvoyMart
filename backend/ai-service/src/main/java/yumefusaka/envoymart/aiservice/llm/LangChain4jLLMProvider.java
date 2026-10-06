@@ -377,6 +377,9 @@ public class LangChain4jLLMProvider implements LLMProvider {
                     .latencyMs(result.getLatencyMs())
                     .rawData(result.getRawData())
                     .facts(result.getFacts())
+                    // 实体名必须一起带出去：引用校验靠它认商品行有没有出处，
+                    // 少带这一个字段，ReAct 路径的商品表又会被整行删掉（P0-A）
+                    .entities(result.getEntities())
                     .build());
 
             log.debug("[Tool] {} success={} output={}", request.name(), result.isSuccess(), output);

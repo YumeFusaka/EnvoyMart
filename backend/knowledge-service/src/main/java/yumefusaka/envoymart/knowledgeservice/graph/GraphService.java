@@ -187,7 +187,16 @@ public class GraphService {
             String raw = rawByKey.get(input);
             String key = resolved.get(input);
             if (key == null) {
-                items.add(new InteractionReport.Item(raw, raw, false, List.of(), List.of()));
+                // 图外实体兜底：解析不到不代表图上没有相近的东西，可能只是叫法不同
+                // （用户说「鱼油」、节点叫「深海鱼油」）。带上「最近实体」让答案从
+                // 「没有收录」变成「没有收录，你是不是想问这个」——前者会让用户以为
+                // 图谱里查不到任何相关信息，后者才给了下一步动作。
+                // **只提示、不代答**：拿一个猜出来的实体去跑相互作用，等于把
+                // 「像它」当成「是它」，那会给出一个张冠李戴的风险结论
+                String nearHint = graphStore.nearestEntity(input)
+                        .map(KnowledgeGraphStore.NearestEntity::label)
+                        .orElse(null);
+                items.add(new InteractionReport.Item(raw, raw, false, List.of(), List.of(), nearHint));
                 continue;
             }
 
@@ -222,7 +231,7 @@ public class GraphService {
             // 回答里的名字用**用户自己的写法**（raw），不用图谱里的键：他问的是
             // 「鱼油软胶囊」，回一句「spu5 没有风险」既对不上号也看不懂
             String label = mine.isEmpty() ? raw : mine.get(0).rootLabel();
-            items.add(new InteractionReport.Item(raw, label, !mine.isEmpty(), mine, mineRisks));
+            items.add(new InteractionReport.Item(raw, label, !mine.isEmpty(), mine, mineRisks, null));
         }
 
         // 读的过程中图谱可能挂了：几个查询方法会各自吞掉异常并把可用性翻成 false。
@@ -316,6 +325,49 @@ public class GraphService {
             }
         }
         return List.of();
+    }
+
+    /**
+     * 某个商品在图上被哪些文档支持 —— 「这个商品的说明书接上了没有」。
+     * <p>
+     * <b>为什么要单独有这个方法，而不是让前端自己拉邻域再挑。</b>商品与说明书在库里
+     * <b>没有外键</b>，两者的绑定是构建期实体链接的结果。管理台要回答「我给它传的说明书
+     * 到底接上没有」，唯一的事实来源就是图上这个商品节点的边——拉到邻域、按 docId 去重，
+     * 就是它当前的文档覆盖。前端各写一遍这段聚合，两边口径迟早会分叉。
+     * <p>
+     * 只取一跳且只认 {@code CONTAINS}：这份视图的问题是「有没有说明书」，
+     * 不是「它连着什么」。走深了会把「别人的说明书里顺带提到这个成分」也算成本商品的文档。
+     *
+     * @param spuKey 商品键，形如 {@code spu7}（大小写与空白不敏感）
+     * @return 覆盖该商品的文档，按文档号升序；每篇带支持它的关系条数
+     */
+    public List<ProductDocRef> documentsOfProduct(String spuKey) {
+        List<GraphEdge> edges = neighborhood(spuKey, 1);
+        Map<String, int[]> counts = new LinkedHashMap<>();
+        Map<String, String> titles = new LinkedHashMap<>();
+        for (GraphEdge edge : edges) {
+            if (!"CONTAINS".equals(edge.relation()) || edge.docId() == null) {
+                continue;
+            }
+            counts.computeIfAbsent(edge.docId(), k -> new int[1])[0]++;
+            if (edge.docTitle() != null) {
+                titles.put(edge.docId(), edge.docTitle());
+            }
+        }
+        return counts.entrySet().stream()
+                .map(e -> new ProductDocRef(e.getKey(), titles.get(e.getKey()), e.getValue()[0]))
+                .sorted(java.util.Comparator.comparing(ProductDocRef::docNo))
+                .toList();
+    }
+
+    /**
+     * 一个商品当前的文档覆盖。
+     *
+     * @param docNo   文档编号
+     * @param title   文档标题。文档被停用后标题仍要显示，所以不在这里过滤状态
+     * @param relations 该文档在这个商品上的关系条数 —— 0 表示文档里提到过但没抽出可用关系
+     */
+    public record ProductDocRef(String docNo, String title, int relations) {
     }
 
     /**

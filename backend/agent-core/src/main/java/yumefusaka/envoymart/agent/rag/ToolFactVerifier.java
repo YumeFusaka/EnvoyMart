@@ -6,6 +6,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -72,7 +74,8 @@ public final class ToolFactVerifier {
             return new Verdict(reply, List.of(), false);
         }
         Map<String, String> facts = declaredFacts(executions);
-        if (facts.isEmpty()) {
+        Set<String> entities = declaredEntities(executions);
+        if (facts.isEmpty() && entities.isEmpty()) {
             return new Verdict(reply, List.of(), false);
         }
 
@@ -81,9 +84,13 @@ public final class ToolFactVerifier {
         List<int[]> spans = new ArrayList<>();
         Matcher matcher = SENTENCE.matcher(reply);
         while (matcher.find()) {
-            String contradiction = contradiction(matcher.group(), facts);
-            if (contradiction != null) {
-                mismatches.add(contradiction);
+            String sentence = matcher.group();
+            String problem = contradiction(sentence, facts);
+            if (problem == null) {
+                problem = fabrication(sentence, entities);
+            }
+            if (problem != null) {
+                mismatches.add(problem);
                 spans.add(new int[] {matcher.start(), matcher.end()});
             }
         }
@@ -110,6 +117,81 @@ public final class ToolFactVerifier {
             });
         }
         return facts;
+    }
+
+    /**
+     * 本轮工具返回过的全部业务实体。
+     * <p>
+     * 同样只认<b>成功</b>的调用：一次失败的检索什么都没有返回，
+     * 它声明不了任何东西存在。
+     */
+    private static Set<String> declaredEntities(List<ToolExecution> executions) {
+        Set<String> entities = new LinkedHashSet<>();
+        for (ToolExecution execution : executions) {
+            if (!execution.isSuccess() || execution.getEntities() == null) {
+                continue;
+            }
+            for (String entity : execution.getEntities()) {
+                if (entity != null && !entity.isBlank()) {
+                    entities.add(entity);
+                }
+            }
+        }
+        return entities;
+    }
+
+    /**
+     * 这句话和工具事实对得上吗。对得上返回 {@code null}，对不上返回一句可直接展示给用户的说明。
+     * <p>
+     * 只认标签的<b>第一次出现</b>：一句话里对同一个字段下了两个相反的断言，那句话本身就该重写，
+     * 逐处报只会让用户看到两条几乎一样的提示。而「物流状态」这类误报也是从第二处冒出来的。
+     */
+    private static final Pattern SPU_CODE = Pattern.compile("(?i)\\bSPU\\s*0*(\\d+)\\b");
+
+    /** SKU 编号同上：机器生成的键，只认逐字相同 */
+    private static final Pattern SKU_CODE = Pattern.compile("(?i)\\bSKU\\s*0*(\\d+)\\b");
+
+    /**
+     * 这句话提到的业务实体，工具真的返回过吗。
+     * <p>
+     * <b>这是「编造」而不是「写错」。</b>{@link #contradiction} 管的是「取值与工具说的不一致」
+     *（金额写成 ¥182），这一条管的是「这个东西根本不存在」——回答里推荐了一个
+     * {@code product_search} 从没搜到过的商品编号。两者都要拦，但说明的话完全不同：
+     * 前者是「工具返回的是 X」，后者是「这个编号不在本轮检索结果里」。
+     * <p>
+     * <b>只认编号，不认商品名。</b>商品名是自由文本，模型会简写
+     *（「益生菌粉」对应「SPU5 益生菌粉」）、会用类目词（「钙片」「蛋白粉」），
+     * 拿它做存在性判定会把大量正常回答判成编造——误伤比漏检严重得多。
+     * 而编号是机器生成的专有键：模型只有在工具真的给过它的时候才可能写得出，
+     * 写了一个不存在的，那就是编的。
+     * <p>
+     * <b>编号归一化后再比。</b>工具返回 {@code SPU7}，模型写 {@code spu007}，
+     * 指的是同一个商品（见 {@code ProductTool} 的编号容忍规则）——
+     * 按字符串比会把这个正确写法判成编造。
+     */
+    private static String fabrication(String sentence, Set<String> entities) {
+        if (entities.isEmpty()) {
+            return null;
+        }
+        String fabricated = firstUnknown(sentence, SPU_CODE, entities, "SPU");
+        if (fabricated == null) {
+            fabricated = firstUnknown(sentence, SKU_CODE, entities, "SKU");
+        }
+        return fabricated == null
+                ? null
+                : "回答里提到的 %s 不在本轮工具返回的商品里".formatted(fabricated);
+    }
+
+    /** 句子里第一个不在实体名单里的编号；全都在名单里返回 null */
+    private static String firstUnknown(String sentence, Pattern pattern, Set<String> entities, String prefix) {
+        Matcher matcher = pattern.matcher(sentence);
+        while (matcher.find()) {
+            String normalized = prefix + Long.parseLong(matcher.group(1));
+            if (!entities.contains(normalized)) {
+                return normalized;
+            }
+        }
+        return null;
     }
 
     /**

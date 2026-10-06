@@ -170,4 +170,57 @@ class AgentToolEvidenceTest {
                 .extracting(DocumentChunk::getChunkId)
                 .containsExactly("c1");
     }
+    /**
+     * P0-A：商品表的出处是 product_search 的工具返回，不是 [n] 也不是《文档名》。
+     * <p>
+     * 实测失效（2026-10-06）：一张完全正确的商品表被引用校验逐行判成「讲事实没出处」
+     * 删掉，用户只看到一行表头。这条断言锁的是「工具声明过的实体名算出处」这条判据，
+     * 以及它一路从 ToolResult 带到这里没有丢——中间任何一环漏带字段，这条都会红。
+     */
+    @Test
+    void 商品行凭工具声明的实体名通过引用校验() {
+        ToolExecution search = ToolExecution.builder()
+                .tool("product_search").input("query=益生菌").success(true)
+                .output("找到 1 个商品：\n- 编号 SPU5：益生菌粉（每袋 100 亿活菌，独立包装），价格 158.00 元")
+                .entities(List.of("SPU5", "益生菌粉", "每袋 100 亿活菌，独立包装", "SKU9"))
+                .build();
+        String answer = "每日补充益生菌有助于维持肠道菌群平衡 [1]。\n\n"
+                + "| 商品 | 价格 | 说明 |\n|---|---|---|\n"
+                + "| SPU5 益生菌粉 | 158 元 | 每袋 100 亿活菌，独立包装 |";
+        Agent agent = agent(new StubGraph(answer, List.of(search)));
+
+        Agent.AgentResponse response = agent.chat("u1", "s1", "最近肠道不好，应该吃什么", null);
+
+        assertThat(response.isUnsupportedStripped())
+                .as("商品行有工具出处，不该被剔除")
+                .isFalse();
+        assertThat(response.getReply())
+                .as("商品行必须还在——这是用户唯一能看到商品的地方")
+                .contains("SPU5 益生菌粉");
+    }
+
+    /**
+     * 反面：模型编一个商品检索从没返回过的编号，不能因为「它长得像商品」就放行。
+     * <p>
+     * 与上一条是同一个判据的两侧：识别面收窄到「工具真的返回过」，
+     * 放宽任何一点，这道闸就从一个防编造的装置变成一个装饰。
+     */
+    @Test
+    void 编造的商品编号被剔除() {
+        ToolExecution search = ToolExecution.builder()
+                .tool("product_search").input("query=益生菌").success(true)
+                .output("找到 1 个商品：\n- 编号 SPU5：益生菌粉")
+                .entities(List.of("SPU5", "益生菌粉"))
+                .build();
+        String answer = "平台有这些验证依据 [1]。\n\n"
+                + "| 商品 | 价格 |\n|---|---|\n"
+                + "| SPU99 神奇益生菌 | 999 元 |";
+        Agent agent = agent(new StubGraph(answer, List.of(search)));
+
+        Agent.AgentResponse response = agent.chat("u1", "s1", "最近肠道不好，应该吃什么", null);
+
+        assertThat(response.getReply())
+                .as("SPU99 从没被检索到过，这是一条编造的商品")
+                .doesNotContain("SPU99");
+    }
 }

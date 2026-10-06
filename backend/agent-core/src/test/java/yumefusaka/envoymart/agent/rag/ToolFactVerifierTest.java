@@ -158,4 +158,76 @@ class ToolFactVerifierTest {
                 .doesNotContain("⚠️")
                 .contains("请以实际账单为准");
     }
+
+    private static ToolExecution products(java.util.List<String> entities) {
+        return ToolExecution.builder()
+                .tool("product_search").input("{query=益生菌}").output("...").success(true)
+                .entities(entities)
+                .build();
+    }
+
+    /**
+     * P0-A 的另一半：回答里提到了一个商品编号，而 product_search 从没返回过它。
+     * <p>
+     * 这条抓的是「编造」而不是「写错」——引用校验管的是「有没有出处」，
+     * 一个编造的商品编号在它眼里完全站得住（那个句子本来就不需要引用）。
+     */
+    @Test
+    void 编造的商品编号被剔除并报告() {
+        ToolFactVerifier.Verdict verdict = ToolFactVerifier.verify(
+                "给你推荐 SPU99 神奇益生菌，每袋 500 亿活菌。",
+                List.of(products(java.util.List.of("SPU5", "SPU6", "SKU9", "SKU10"))));
+
+        assertThat(verdict.mismatches()).
+                as("SPU99 不在本轮工具返回的商品里，这就是编造").isNotEmpty();
+        assertThat(verdict.reply()).doesNotContain("SPU99");
+    }
+
+    /** 工具真的返回过的编号，怎么写都不该被判成编造 */
+    @Test
+    void 工具返回过的商品编号不算编造() {
+        ToolFactVerifier.Verdict verdict = ToolFactVerifier.verify(
+                "给你推荐 SPU5 益生菌粉，也可以用 SKU9 这个规格。",
+                List.of(products(java.util.List.of("SPU5", "SKU9"))));
+
+        assertThat(verdict.mismatches()).isEmpty();
+        assertThat(verdict.reply()).contains("SPU5");
+    }
+
+    /**
+     * 编号归一化：工具返回 SPU7，模型写 spu007 / SPU 7，指的是同一个商品。
+     * <p>
+     * 按字符串比会把这两种正确写法判成编造——而它们恰恰是 ProductTool 自己容许的写法。
+     */
+    @Test
+    void 编号写法差异不算编造() {
+        ToolFactVerifier.Verdict verdict = ToolFactVerifier.verify(
+                "这瓶 spu007 的鱼油软胶囊不错。",
+                List.of(products(java.util.List.of("SPU7"))));
+
+        assertThat(verdict.mismatches()).isEmpty();
+    }
+
+    /** 没执行商品检索时不做实体判定——否则每一句带「SPU」的话都会中招 */
+    @Test
+    void 没有实体声明时不做编造判定() {
+        ToolFactVerifier.Verdict verdict = ToolFactVerifier.verify(
+                "SPU99 是一个不存在的编号。", List.of(order(Map.of("订单状态", "已支付"))));
+
+        assertThat(verdict.mismatches())
+                .as("本轮没有商品工具，它声明不了任何商品存在与否，不该凭空判编造")
+                .isEmpty();
+    }
+
+    /** 失败的工具不参与实体认定：它什么都没返回 */
+    @Test
+    void 失败的工具声明不了实体() {
+        ToolExecution failed = ToolExecution.builder().tool("product_search").success(false)
+                .entities(java.util.List.of("SPU5")).build();
+        ToolFactVerifier.Verdict verdict = ToolFactVerifier.verify("推荐 SPU5 益生菌粉。", List.of(failed));
+
+        assertThat(verdict.mismatches())
+                .as("这次检索根本没成，它没有返回过任何商品")
+                .isEmpty();
+    }
 }

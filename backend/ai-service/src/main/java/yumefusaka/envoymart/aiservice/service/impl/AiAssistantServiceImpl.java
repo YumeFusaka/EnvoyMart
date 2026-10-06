@@ -186,6 +186,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .reply(agentResp.getReply())
                 .retrievalQuery(agentResp.getRetrievalQuery())
                 .expansion(expandView(agentResp.getExpansion()))
+                .memoryTrace(memoryTraceView(agentResp.getMemoryTrace()))
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
                 .recommendedProducts(extractProducts(executions))
@@ -254,6 +255,23 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         }
         return new ChatResponse.ExpansionView(
                 expansions.hypothetical(), expansions.angles(), true);
+    }
+
+    /**
+     * 记忆注入事实的对外翻译，理由与 {@link #expandView} 相同：内部字段名不是对外契约。
+     * <p>
+     * <b>没有记录时返回「空读数」而不是 null。</b>null 会让前端无法区分
+     * 「这一轮查过、没有相关记忆」（新用户冷启动，正常）与「这一轮没走记忆这条路」
+     * （链路问题）。只有明确两类情况真的不可区分时，才该退到 null。
+     */
+    private ChatResponse.MemoryTraceView memoryTraceView(
+            yumefusaka.envoymart.agent.core.Agent.MemoryTrace trace) {
+        if (trace == null) {
+            return ChatResponse.MemoryTraceView.empty();
+        }
+        return new ChatResponse.MemoryTraceView(
+                trace.profileSlots(), trace.recalled(), trace.byType(), trace.itemIds(),
+                trace.observationSources());
     }
 
     /**

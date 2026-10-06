@@ -30,8 +30,19 @@ public record InteractionReport(boolean available, String note, List<Item> items
      * @param found      图谱里是否有这个节点。false 表示<b>没有收录</b>，不等于安全
      * @param substances 由它展开出的活性物质，含它自己
      * @param risks      这些物质命中的相互作用 / 人群禁忌。空列表 + found=true 才是「未发现风险」
+     * @param nearest    {@code found=false} 时图上一个<b>相近</b>实体的展示名，没有相近项时为 null
      */
     public record Item(String input, String label, boolean found,
-                       List<Substance> substances, List<GraphEdge> risks) {
+                       List<Substance> substances, List<GraphEdge> risks, String nearest) {
+
+        /**
+         * 图里没有这个实体，但有一个名字相近的 —— 调用方可以据此提示「你是不是想问这个」。
+         * <p>
+         * <b>它只是一个候选写法，不是结论。</b>拿到它以后必须让用户确认或换个名字重查，
+         * 绝不能直接拿它替用户作答：相似度只说明「像」，不说明「是」。
+         */
+        public boolean hasNearestHint() {
+            return !found && nearest != null && !nearest.isBlank();
+        }
     }
 }

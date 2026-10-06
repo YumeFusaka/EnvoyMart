@@ -39,4 +39,14 @@ public class ToolExecution implements java.io.Serializable {
      * 声明出来的事实供 {@code ToolFactVerifier} 拿回答逐条核对。
      */
     private java.util.Map<String, String> facts;
+
+    /**
+     * 这次调用<b>返回过哪些业务实体</b>——商品编号与名称这类「回答里提到就应该是真的」的东西。
+     * <p>
+     * 与 {@link #facts} 是两条不同的线：facts 核对「取值对不对」
+     *（订单状态写错成已发货），entities 核对「这个东西存不存在」
+     *（回答里推荐了一个从没搜到的商品）。前者是写错，后者是编造。
+     * <p>消费者是 {@code ToolFactVerifier} 的实体校验。
+     */
+    private java.util.List<String> entities;
 }

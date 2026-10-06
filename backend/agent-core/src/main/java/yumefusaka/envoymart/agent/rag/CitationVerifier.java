@@ -74,6 +74,14 @@ public final class CitationVerifier {
     private static final int FACT_MIN_LENGTH = 12;
 
     /**
+     * 工具返回值参与「命中出处」判定的最小长度。
+     * <p>
+     * 工具返回里会出现「元」「袋」这类一两个字的碎片，拿它们做包含匹配，
+     * 几乎每一句都能命中——那道闸就形同虚设。商品名与编号没有这么短的。
+     */
+    private static final int MIN_TOOL_STRING_LENGTH = 3;
+
+    /**
      * 出现这些词，说明这句话在陈述一条规则、标准或时效，而不是随口一说。
      * <p>
      * <b>数字单列</b>：金额、天数、浓度、上限——事实性断言绝大多数由它携带，
@@ -235,7 +243,20 @@ public final class CitationVerifier {
     }
 
     /**
-     * 带「用户本轮问了什么」的完整版 —— <b>U39 真正收口的那一版</b>。
+     * 带用户消息的 5 参版本，转发到带工具值的完整版。
+     * <p>
+     * 保留它是为了不动已有调用方：商品实体是后补的一条判据，
+     * 而评测与离线调用那边没有工具执行记录，走这条路即可。
+     */
+    public static Verdict verify(String reply, int evidenceCount, boolean hasToolEvidence,
+                                 Set<String> citableTitles, String userMessage) {
+        return verify(reply, evidenceCount, hasToolEvidence, citableTitles, userMessage, null);
+    }
+
+    /**
+     * 带「用户本轮问了什么」与「工具返回过哪些值」的完整版 —— <b>U39 真正收口的那一版</b>。
+     * <p>
+     * <b>toolStrings 是 P0-A 的商品误剔除修的那一条。</b>商品表的每一个字都来自
      * <p>
      * <b>为什么光看回答收不掉寒暄横幅。</b>「回答里有没有关于平台的陈述」这条判据，
      * 在词表层面无法与「助手自我介绍」分开：模型对「你好」返回的是
@@ -260,13 +281,16 @@ public final class CitationVerifier {
      *
      * @param userMessage 用户本轮的原话；为 null 时退化为不设意图门槛
      *                    （评测与离线调用没有用户消息，保持与历史一致）
+     * @param toolStrings 本轮工具返回过的字符串（商品编号与名称等）。
+     *                    与 citableTitles 同一层：都是平台自己声明过的值，只是形态不同。
+     *                    为 null 表示调用方没提供，退化成只看 [n] 与书名号。
      */
     public static Verdict verify(String reply, int evidenceCount, boolean hasToolEvidence,
-                                 Set<String> citableTitles, String userMessage) {
+                                 Set<String> citableTitles, String userMessage,
+                                 Set<String> toolStrings) {
         if (reply == null || reply.isBlank()) {
             return new Verdict(reply, List.of(), 0, 0, false, false);
         }
-
         List<String> unsupported = new ArrayList<>();
         // 违规句的区间先攒着：此刻还不知道最终会不会剔除（见下面的预算判断），
         // 但区间必须在这里取——断句的 Matcher 就握在手上，事后按文本回找会误伤重复句
@@ -294,7 +318,7 @@ public final class CitationVerifier {
             // 「上限 4000IU [1][7]」摘掉 [7] 仍算有出处，而「上限 4000IU [7]」摘完就是一句无出处的断言
             String sanitized = without(sentence, outOfRange);
 
-            if (hasValidCitation(sanitized, evidenceCount, citableTitles)) {
+            if (hasValidCitation(sanitized, evidenceCount, citableTitles, toolStrings)) {
                 cited++;
                 continue;
             }
@@ -363,7 +387,8 @@ public final class CitationVerifier {
         return result;
     }
 
-    private static boolean hasValidCitation(String sentence, int evidenceCount, Set<String> citableTitles) {
+    private static boolean hasValidCitation(String sentence, int evidenceCount, Set<String> citableTitles,
+                                             Set<String> toolStrings) {
         Matcher refs = CITATION.matcher(sentence);
         while (refs.find()) {
             int no = Integer.parseInt(refs.group(1));
@@ -371,18 +396,47 @@ public final class CitationVerifier {
                 return true;
             }
         }
-        if (citableTitles.isEmpty()) {
+        if (!citableTitles.isEmpty()) {
+            Matcher titles = TITLE_CITATION.matcher(sentence);
+            while (titles.find()) {
+                if (citableTitles.contains(normalizeTitle(titles.group(1)))) {
+                    return true;
+                }
+            }
+        }
+        return mentionsToolString(sentence, toolStrings);
+    }
+
+    /**
+     * 这句话有没有点名「工具本轮真的返回过」的一个值（商品编号或商品名）。
+     * <p>
+     * <b>为什么商品要有这一条。</b>商品表的出处是 {@code product_search} 的返回，
+     * 它既没有 {@code [n]} 角标（编号空间只属于 prompt 证据），也不在「出处：」行的书名号里。
+     * 不认它，一张完全正确的商品表会被判成「讲事实没出处」逐行删掉，用户看到只剩表头的空表格。
+     * <p>
+     * <b>识别面收窄到「工具真的返回过」。</b>判据是逐字包含（忽略空白），不做模糊相似：
+     * 集合里装的是 {@code ToolExecution.entities} 声明的值，模型编一个相近的名字仍然过不了。
+     * <p>
+     * <b>长度门槛。</b>工具返回里可能有「元」「袋」这类一两个字的碎片，
+     * 用它们做包含匹配几乎每句都能命中。低于 3 个字的值一律不参与——
+     * 商品名与编号没有这么短的。
+     */
+    private static boolean mentionsToolString(String sentence, Set<String> toolStrings) {
+        if (toolStrings == null || toolStrings.isEmpty()) {
             return false;
         }
-        Matcher titles = TITLE_CITATION.matcher(sentence);
-        while (titles.find()) {
-            if (citableTitles.contains(normalizeTitle(titles.group(1)))) {
+        String compact = normalizeTitle(sentence);
+
+        for (String value : toolStrings) {
+            if (value == null || value.codePointCount(0, value.length()) < MIN_TOOL_STRING_LENGTH) {
+                continue;
+            }
+            if (compact.contains(normalizeTitle(value))) {
                 return true;
             }
         }
         return false;
     }
-
     /**
      * 从证据切片的标题/位置里收集可引用标题 —— 平台自己声明过的出处。
      * <p>

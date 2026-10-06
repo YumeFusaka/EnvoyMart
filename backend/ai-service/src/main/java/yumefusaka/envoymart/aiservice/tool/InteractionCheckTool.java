@@ -165,6 +165,18 @@ public class InteractionCheckTool implements Tool {
                 anyMissing = true;
                 sb.append("\n【").append(item.input()).append("】图谱中没有收录\n")
                         .append("  没有收录不等于安全，只是平台查不到这样东西。\n");
+                if (item.hasNearestHint()) {
+                    // 只是候选：让模型去问一句「你是不是想问这个」，而不是自己替用户认下来。
+                    // 若在这里直接改用 nearest 重查，猜错一次就会给出一条张冠李戴的风险结论
+                    sb.append("  图谱里有一样名字相近的：").append(item.nearest())
+                            .append("。如果用户说的其实就是它，");
+                    if (item.input() != null && item.input().startsWith("spu")) {
+                        sb.append("带上它的商品编号");
+                    } else {
+                        sb.append("用这个名字");
+                    }
+                    sb.append("重新检查一次；否则照实说没有收录。\n");
+                }
                 continue;
             }
             sb.append("\n【").append(item.label()).append("】已收录\n");

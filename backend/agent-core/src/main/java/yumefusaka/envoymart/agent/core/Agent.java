@@ -18,6 +18,7 @@ import yumefusaka.envoymart.agent.memory.ContextBudget;
 import yumefusaka.envoymart.agent.memory.Memory;
 import yumefusaka.envoymart.agent.memory.MemoryConsolidator;
 import yumefusaka.envoymart.agent.memory.MemoryItem;
+import yumefusaka.envoymart.agent.memory.PerceptualMemory;
 import yumefusaka.envoymart.agent.memory.ProfileEntry;
 import yumefusaka.envoymart.agent.memory.ShortTermMemoryStore;
 import yumefusaka.envoymart.agent.memory.UserProfile;
@@ -32,6 +33,7 @@ import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
 import yumefusaka.envoymart.agent.rag.RetrievalOutcome;
 import yumefusaka.envoymart.agent.rag.ToolFactVerifier;
+import yumefusaka.envoymart.agent.core.task.HealthQueryCoverage;
 import yumefusaka.envoymart.agent.core.task.IntentDriftDetector;
 import yumefusaka.envoymart.agent.core.task.TaskCheckpoint;
 import yumefusaka.envoymart.agent.core.task.TaskState;
@@ -44,6 +46,7 @@ import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -91,6 +94,15 @@ public class Agent {
     private final Memory shortTermMemory;
     private final Memory episodicMemory;
     private final UserProfileStore profileStore;
+    /**
+     * 感知记忆 —— 本轮用户眼前的观测（打开的商品页、选中的商品、上传的文件）。
+     * <p>
+     * <b>自建实例而不是构造注入。</b>它的生命周期是「一轮」，没有任何跨请求状态需要
+     * 与外部共享；做成必填参数会让全部现有装配点（含大量单测）都要传一个自己新建的
+     * 空对象，而那个参数的语义是「我这里没有任何观测」——那正是默认值的含义。
+     * 需要写入观测的调用方通过 {@link #getPerceptualMemory()} 拿到它。
+     */
+    private final PerceptualMemory perceptualMemory = new PerceptualMemory();
     private final RAGEngine ragEngine;
     private final MemoryConsolidator consolidator;
     private final QueryRewriter queryRewriter;
@@ -254,7 +266,11 @@ public class Agent {
         // 召回必须带 userId：记忆是"对这个用户成立的事实"，不带用户维度的检索会召回别人的人生
         List<MemoryItem> episodes = episodicMemory.recall(userId, retrievalQuery, config.getLongTermRecallTopK());
         UserProfile profile = profileStore.get(userId);
-        String systemPrompt = buildSystemPrompt(profile, episodes, knowledge, evidence);
+        // 感知记忆：本轮调用方写入的观测（打开的商品页、选中的商品等）。
+        // 读而非写 —— 写入由入口层完成，因为它才知道用户此刻在看什么；
+        // Agent 只负责把它注入这一轮的 prompt
+        List<PerceptualMemory.Observation> observations = perceptualMemory.current(scopedSession);
+        String systemPrompt = buildSystemPrompt(profile, episodes, knowledge, evidence, observations);
         // 上一轮中断的现场以提示的形式进 prompt：让模型知道「有个操作在等你点头」，
         // 于是用户说「那就确认吧」时它能把话接上，而不是从头再规划一遍、
         // 把用户已经审过的那次调用重新推导成另一个样子
@@ -292,12 +308,21 @@ public class Agent {
         // 扩写随响应下发。只在真有扩写时给值：没有扩写时下发一个空对象，
         // 前端会以为「扩写跑了但没产出」，与「压根没跑」是两回事
         response.setExpansion(retrieval.expansions().isEmpty() ? null : retrieval.expansions());
+        // 记忆注入同样随响应下发。与扩写那条相反：**没有记忆时下发的是「查过、是空的」，
+        // 不是 null**——冷启动的新用户本来就该是 0，把它做成 null 就等于把
+        // 「这一轮没查」伪装成「这一轮查了但什么都没有」，而这两件事的排查方向完全不同
+        response.setMemoryTrace(MemoryTrace.of(profile, episodes, observations));
 
         // 3. 记录回复
         rememberMessage(userId, scopedSession, "assistant: " + response.getReply());
 
         // 4. 沉淀长期记忆
         consolidateMemory(userId, sessionId);
+
+        // 5. 清掉本轮观测。**必须在返回前清**：感知记忆描述的是「此刻他眼前的画面」，
+        // 而下一轮用户可能已经换了页面——留着它，模型会拿着过期上下文作答，
+        // 而那段内容读起来和新鲜的一样可信。失效条件是「本轮结束」，不是「池子满了」
+        perceptualMemory.clear(scopedSession);
 
         return response;
     }
@@ -389,6 +414,7 @@ public class Agent {
                 .latencyMs(result.getLatencyMs())
                 .rawData(result.getRawData())
                 .facts(result.getFacts())
+                .entities(result.getEntities())
                 .build();
     }
 
@@ -464,7 +490,7 @@ public class Agent {
         log.info("[Agent] loops {}", guard.summary());
         // 跑偏观测：这轮最终执行了什么 vs 首轮冻结的意图。
         // 读的是收尾后的完整步骤列表——执行中途读到的是还在长的一份
-        observe(userId, graphResult);
+        observe(userId, message, graphResult);
 
         // 图的「中断出口」：撞上高危操作，图在此结束，等用户确认后作为新请求重入。
         // 两条路径都会走到这里——计划路径在执行前拦整批计划；ReAct 路径无从预知模型
@@ -795,7 +821,7 @@ public class Agent {
      * 代价远大于晚一点知道。它要回答的是「这一轮有没有跑到跟目的无关的地方」——
      * 多轮任务最隐蔽的失败就是这个，而每一步单独看都是成功的。
      */
-    private void observe(String userId, AgentGraph.GraphResult graphResult) {
+    private void observe(String userId, String userMessage, AgentGraph.GraphResult graphResult) {
         // steps 可能为 null：GraphResult 是 @Builder 出来的，未显式赋值的集合字段就是 null。
         // 观测层必须容忍这一点 —— 它读不到东西时该安静地什么都不做，
         // 而不是把一个「没数据」变成一次异常。（真实执行图总会填 steps，
@@ -815,6 +841,14 @@ public class Agent {
                     userId, graphResult.getCoreIntent(), verdict.detail());
         } else {
             log.debug("[Agent][Drift] userId={} {}", userId, verdict.detail());
+        }
+
+        // 症状类提问的覆盖检查：问了身体不适，这一轮到底有没有去找过商品。
+        // 与跑偏检测同层、同样只记日志——它回答的是「结论是不是在没查过的情况下下的」
+        HealthQueryCoverage.Verdict coverage =
+                HealthQueryCoverage.check(userMessage, tools);
+        if (coverage.uncovered()) {
+            log.warn("[Agent][Coverage] 症状类提问未检索商品 userId={} {}", userId, coverage.detail());
         }
     }
 
@@ -874,6 +908,7 @@ public class Agent {
 
         // 可引用标题 = 本轮证据切片的标题/位置 + 工具输出中「出处：」行里的书名号。
         // 集合只装平台自己声明过的出处：模型写的《XX 规范》若不在其中，引用校验不认它
+        Set<String> toolStrings = new LinkedHashSet<>();
         Set<String> citableTitles = new LinkedHashSet<>();
         for (DocumentChunk chunk : evidence) {
             CitationVerifier.collectTitles(citableTitles, chunk.getTitle(), chunk.getPosition());
@@ -881,6 +916,11 @@ public class Agent {
         if (response.getToolExecutions() != null) {
             for (ToolExecution execution : response.getToolExecutions()) {
                 CitationVerifier.collectToolTitles(citableTitles, execution.getOutput());
+                // 工具返回过的实体名（商品编号与名称）：商品表的出处就在这里。
+                // 少了它，一张正确的商品表会被判成「讲事实没出处」逐行删掉（P0-A）
+                if (execution.getEntities() != null) {
+                    toolStrings.addAll(execution.getEntities());
+                }
             }
         }
 
@@ -888,7 +928,7 @@ public class Agent {
                 // 带上用户本轮原话：无依据横幅只在「用户在问平台的事」时才该出现，
                 // 否则纯寒暄轮会被模型那段自我介绍的能力清单顶上横幅（U39）
                 CitationVerifier.verify(report.reply(), evidenceCount, hasToolEvidence, citableTitles,
-                        userMessage);
+                        userMessage, toolStrings);
 
         // 事实核对排在最后一道：它比的是「工具当时返回了什么」，而引用校验会改文本，
         // 放在它前面才核对的是用户真正看到的那一版。
@@ -995,7 +1035,7 @@ public class Agent {
      * 以及权限判定永不读记忆。这里做的是第三层：降低误读概率，并让越界行为有迹可循。
      */
     private String buildSystemPrompt(UserProfile profile, List<MemoryItem> episodes, List<DocumentChunk> knowledge,
-                                     EvidenceGate.Decision evidence) {
+                                     EvidenceGate.Decision evidence, List<PerceptualMemory.Observation> observations) {
         StringBuilder sb = new StringBuilder(config.getDefaultSystemPrompt());
 
         // 语言约束放在最前面，且不带条件 —— 它是一条**输出契约**，不是业务规则。
@@ -1009,6 +1049,34 @@ public class Agent {
                 ## 输出语言
                 无论用户用什么语言提问、消息里是否夹杂英文或编号，你的回答一律使用**简体中文**。
                 专有名词、商品型号、工具返回的字段名可以保留原文，但句子必须是中文。""");
+        // 症状 / 健康类提问必须先落进商品库，再说有没有。
+        //
+        // 实测的失效（2026-10-06，alice 会话「最近肠道不好，应该吃什么药」）：
+        // 模型只查了知识库、**一次 product_search 都没调**，就回答「平台知识库里没有
+        // 查到对应的用药依据」，然后反问用户。它没有说谎——知识库里确实没有"用药依据"，
+        // 但用户问的是"该吃什么"，而平台上有益生菌、膳食纤维这类对症商品，它没去找。
+        //
+        // 根因是「没有依据」这个结论被当成了一次检索的终点，而它其实只覆盖了知识库这一条路。
+        // 所以这条规则的重心是**顺序**：先搜商品，再谈依据。
+        // 写进 system prompt 而不是只靠工具描述，是因为工具描述只在模型已经决定要调工具时
+        // 才被读到，而这次的失效恰恰发生在它决定不调工具的那一刻。
+        sb.append("""
+
+                ## 症状与健康类提问（必做）
+                用户描述身体不适、症状或健康诉求（「最近肠道不好」「睡不好」「缺钙吗」等），
+                并问该吃什么/用什么时，**必须先调用商品检索工具**，再回答。
+                顺序不能反：先用用户的症状词与相关成分词检索商品，看平台有没有对症的商品，
+                再结合知识库里的说明书依据（适用人群、禁忌、用量）作答。
+
+                **只有在商品库与知识库都查不到任何相关商品/依据时，才可以说「没有」。**
+                不得因为用户问的是「药」而知识库里只有保健食品，就跳过商品检索直接回答
+                「没有用药依据」——那是把一次没做的检索说成了结论。
+
+                查到相关商品时，要给出：推荐的是什么、为什么适合他这种情况、有什么作用，
+                并提醒保健食品不能替代药物治疗。信息不足以判断时，先问清楚
+                （比如「肠道不好」是便秘、腹泻还是腹胀——三者适用的商品完全不同），
+                问清之后再做评估，不要拿模糊输入硬查、也不要就此拒答。
+                """);
 
         List<ProfileEntry> profileEntries = profile == null ? List.of() : profile.injectionEntries();
         if (!profileEntries.isEmpty()) {
@@ -1025,6 +1093,20 @@ public class Agent {
             for (MemoryItem episode : episodes) {
                 sb.append("- [").append(episode.getTimestamp().atZone(java.time.ZoneId.systemDefault()).toLocalDate())
                         .append("] ").append(episode.getContent()).append("\n");
+            }
+        }
+
+        // 感知记忆：本轮用户眼前的观测。**必须与「相关记忆」分开成段**——
+        // 模型对这两段的处理方式不同：历史记忆是「以前发生过的事实」，
+        // 观测是「此刻他眼前是什么」。混在一段里，模型会把当前打开的商品页
+        // 说成「您之前提到过」，而用户从没提过
+        if (observations != null && !observations.isEmpty()) {
+            sb.append("\n\n## 当前观测\n");
+            sb.append("以下是用户**此刻**看到的界面状态，只在本次回答里有效；")
+                    .append("不要把它当成用户说过的话，也不要认为它在之前的对话里提到过。\n");
+            for (PerceptualMemory.Observation observation : observations) {
+                sb.append("- ").append(observation.source()).append("：")
+                        .append(observation.content()).append("\n");
             }
         }
 
@@ -1115,6 +1197,10 @@ public class Agent {
         return shortTermMemory;
     }
 
+    public PerceptualMemory getPerceptualMemory() {
+        return perceptualMemory;
+    }
+
     public Memory getEpisodicMemory() {
         return episodicMemory;
     }
@@ -1152,6 +1238,25 @@ public class Agent {
          * 这个是**扩写器**产出的变体。改写在前、扩写在后，链路上一前一后两道。
          */
         private QueryExpansions expansion;
+        /**
+         * 本轮记忆注入的事实：画像灌了几槽、情节记忆召回了几条、各自是什么类型。
+         * <p>
+         * <b>它补的是「每一步都运行」闭环里唯一缺的一环。</b>检索有
+         * {@link #expansion} 与图谱事实、护栏有 {@link #unsupportedClaims}，
+         * 唯独记忆注入没有任何可观测字段——于是「这一轮到底有没有把用户画像与历史
+         * 注入进去」只能靠翻日志或读代码推断。而这件事恰恰有过真实故障：
+         * 某次记忆召回的重新 builder 不传时间戳，所有历史条目在读出时都变成"此刻"，
+         * 不报错、不抛异常，只是静默按错误前提计算。
+         * <p>
+         * <b>判据同 {@link RetrievalOutcome}：下游推不出来的事实，必须由上游带出来。</b>
+         * 注入了哪些记忆只有 {@code Agent} 自己知道——调用方拿到最终 prompt 也推不出来
+         * （prompt 里那段文字没有条数、没有类型、没有 id）。
+         * <p>
+         * 没有记忆可注入时下发的是<b>条数为 0 的事实</b>，不是 null：
+         * 「这一轮查过、确实没有相关记忆」与「这一轮根本没查」是两件事，
+         * 前者是新用户正常的冷启动，后者是链路断了。
+         */
+        private MemoryTrace memoryTrace;
         private List<DocumentChunk> knowledge;
         /**
          * 本轮证据门的判定，随 {@link #knowledge} 一同下发。
@@ -1242,6 +1347,57 @@ public class Agent {
          * 非任务路径（确定性流程、直接对话）为 null——那里本来就没有任务状态可言。
          */
         private TaskState taskState;
+    }
+
+    /**
+     * 本轮记忆注入的事实清单 —— 「记忆这条路这一轮真的跑过、跑出了什么」。
+     * <p>
+     * <b>为什么要有它，而不是从 system prompt 里反推。</b>prompt 里那段「## 用户画像」
+     * 「## 相关记忆」是拼好的文本，看不出「召回了 3 条还是一条都没有」、
+     * 更看不出「召回的条目类型是不是清一色 MESSAGE（说明事实抽取那一步没产出）」。
+     * 这两个问题的答案只有在记忆这一层才有。见 {@link AgentResponse#memoryTrace}。
+     *
+     * @param profileSlots 注入的画像槽位数
+     * @param recalled     召回的情节记忆条数
+     * @param byType       召回条目按类型计数（{@code MESSAGE}/{@code FACT}/…），
+     *                     用来区分「有记忆」与「只有原始对话记录」——后者说明
+     *                     抽取与摘要那两步都没产出
+     * @param itemIds      召回条目的 id，便于按 id 回查是哪几条
+     * @param observationSources 本轮注入的感知观测来源（如 {@code product_page}）；
+     *                           空表示本轮没有观测——这是最常见的正常情况（用户没开商品页）
+     */
+    public record MemoryTrace(int profileSlots, int recalled,
+                              java.util.Map<String, Integer> byType,
+                              List<String> itemIds,
+                              List<String> observationSources) {
+
+        /** 查过、没有可注入的记忆 —— 与「没查」不同，见 {@link AgentResponse#memoryTrace} */
+        public static MemoryTrace empty() {
+            return new MemoryTrace(0, 0, java.util.Map.of(), List.of(), List.of());
+        }
+
+        public static MemoryTrace of(UserProfile profile, List<MemoryItem> episodes) {
+            return of(profile, episodes, List.of());
+        }
+
+        public static MemoryTrace of(UserProfile profile, List<MemoryItem> episodes,
+                                     List<PerceptualMemory.Observation> observations) {
+            Map<String, Integer> byType = new LinkedHashMap<>();
+            List<String> ids = new ArrayList<>();
+            for (MemoryItem episode : episodes) {
+                byType.merge(String.valueOf(episode.getType()), 1, Integer::sum);
+                if (episode.getId() != null) {
+                    ids.add(episode.getId());
+                }
+            }
+            int slots = 0;
+            if (profile != null) {
+                slots = profile.slots().size();
+            }
+            List<String> sources = observations == null ? List.of()
+                    : observations.stream().map(PerceptualMemory.Observation::source).toList();
+            return new MemoryTrace(slots, episodes.size(), Map.copyOf(byType), List.copyOf(ids), sources);
+        }
     }
 
     @Data

@@ -102,6 +102,18 @@ export async function listDocumentsAdmin(params: {
   }
 }
 
+/**
+ * 某个商品当前被哪些文档支持 —— 商品编辑页的「说明书」面板读它。
+ *
+ * 读的是**图**不是文档表：商品与说明书在库里没有外键，绑定是构建期实体链接的结果。
+ * 返回空数组是正常的中间态（说明书还没传、或正文没提到这个商品），不是错误 ——
+ * 页面要把它显示成「还没有说明书」，而不是一次失败。
+ */
+export async function getProductDocuments(spuKey: string) {
+  const response = await request.get(`/knowledge/admin/products/${encodeURIComponent(spuKey)}/documents`)
+  return (response.data.data ?? []) as { docNo: string; title: string; relations: number }[]
+}
+
 export async function getDocumentAdmin(docNo: string) {
   const response = await request.get(`/knowledge/documents/${docNo}`)
   return response.data.data as DocumentDetail

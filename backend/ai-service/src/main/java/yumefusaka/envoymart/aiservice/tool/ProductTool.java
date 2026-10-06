@@ -196,6 +196,9 @@ public class ProductTool implements Tool {
                     // {$0.skuId} 直接引用——文字输出里的「规格：SKU29」是给人/模型读的，
                     // 而引用解析走的是这份结构化数据，两者必须都拿得到同一个值
                     .rawData(withDefaultSku(products))
+                    // 返回过哪些商品：回答里提到它们就算有依据，提到别的就是编的。
+                    // 只装本轮真的返回给模型的那些——多写一个，等于放行一个编造。
+                    .entities(entityNamesOf(products))
                     .build();
         } catch (Exception e) {
             return Downstream.failure("商品检索", e);
@@ -238,21 +241,68 @@ public class ProductTool implements Tool {
         return enriched;
     }
 
-    /** 取某个 SPU 的第一个规格编号；查不到返回 null（不猜、不编） */
-    private Long defaultSkuId(Long spuId) {
+    /**
+     * 本轮返回过的商品名与编号，交给 {@code ToolFactVerifier} 核对回答里提到的商品真不真。
+     * <p>
+     * <b>编号连名字一起收</b>：模型可能只写「SPU5」，也可能只写商品名，还可能两个都写。
+     * 少收一种，那一轮的商品行就会被判成「提到了不存在的商品」而删掉——
+     * 那不是安全，是把正确答案改错。
+     * <p>
+     * <b>不比全部规格编号。</b>规格是逐条查详情才拿到的事实，而这里只需要回答
+     * 「这个商品存不存在」；把没展示给模型的规格也收进来，等于认定模型可以提它——
+     * 而它其实没见过。收回来的只能是本轮真的印进 output 的那些。
+     */
+    private List<String> entityNamesOf(List<ProductSummary> products) {
+        List<String> names = new java.util.ArrayList<>();
+        for (ProductSummary product : products) {
+            if (product.getId() != null) {
+                names.add(key(product.getId()));
+            }
+            if (product.getName() != null && !product.getName().isBlank()) {
+                names.add(product.getName());
+            }
+            // 副标题（「每袋 100 亿活菌，独立包装」）是商品描述的原文，模型会把它单独
+            // 写成一句「规格细节」。它里面没有商品名也没有编号，若不计入出处，
+            // 那一句会被引用校验判成「讲事实没出处」删掉——用户看到的是商品行少了半句话。
+            if (product.getSubtitle() != null && !product.getSubtitle().isBlank()) {
+                names.add(product.getSubtitle());
+            }
+            ProductDetail detail = skuDetail(product.getId());
+            if (detail == null || detail.getSkus() == null) {
+                continue;
+            }
+            detail.getSkus().stream().limit(SKU_LIMIT)
+                    .map(SkuView::getId).filter(java.util.Objects::nonNull)
+                    .forEach(id -> names.add("SKU" + id));
+        }
+        return names;
+    }
+
+    /**
+     * 取某个 SPU 的规格明细，失败返回 null。
+     * <p>
+     * 三处要用它（默认规格、输出规格行、实体名单），各查一次是三次下游往返——
+     * 而它们要的是同一份数据。收在一处，失败语义也只剩一种写法。
+     */
+    private ProductDetail skuDetail(Long spuId) {
         if (spuId == null) {
             return null;
         }
         try {
-            ProductDetail detail = Downstream.read("商品服务", () -> productClient.getProduct(spuId));
-            if (detail == null || detail.getSkus() == null || detail.getSkus().isEmpty()) {
-                return null;
-            }
-            return detail.getSkus().get(0).getId();
+            return Downstream.read("商品服务", () -> productClient.getProduct(spuId));
         } catch (Exception e) {
-            log.warn("[ProductTool] 取商品 {} 的默认规格失败: {}", spuId, e.getMessage());
+            log.warn("[ProductTool] 取商品 {} 的规格失败: {}", spuId, e.getMessage());
             return null;
         }
+    }
+
+    /** 取某个 SPU 的第一个规格编号；查不到返回 null（不猜、不编） */
+    private Long defaultSkuId(Long spuId) {
+        ProductDetail detail = skuDetail(spuId);
+        if (detail == null || detail.getSkus() == null || detail.getSkus().isEmpty()) {
+            return null;
+        }
+        return detail.getSkus().get(0).getId();
     }
 
     /**
@@ -273,16 +323,7 @@ public class ProductTool implements Tool {
      * 「这里没列全」，而不是以为规格就这么多。
      */
     private void appendSkus(StringBuilder sb, Long spuId, int limit) {
-        if (spuId == null) {
-            return;
-        }
-        ProductDetail detail;
-        try {
-            detail = Downstream.read("商品服务", () -> productClient.getProduct(spuId));
-        } catch (Exception e) {
-            log.warn("[ProductTool] 取商品 {} 的规格失败，本次不输出规格: {}", spuId, e.getMessage());
-            return;
-        }
+        ProductDetail detail = skuDetail(spuId);
         if (detail == null || detail.getSkus() == null || detail.getSkus().isEmpty()) {
             return;
         }

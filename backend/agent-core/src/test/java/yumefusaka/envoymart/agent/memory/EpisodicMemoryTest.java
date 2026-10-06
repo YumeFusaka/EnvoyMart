@@ -223,4 +223,51 @@ class EpisodicMemoryTest {
                 .contains("偏好 59")
                 .doesNotContain("偏好 0");
     }
+
+    /**
+     * 容量压力下先淘汰低价值的事件 —— 这是「重要性过滤」的落地判据。
+     * <p>
+     * 原先是纯 FIFO：同样两条事件，「用户是学生党、预算有限」与「用户问过衬衫尺码」
+     * 完全等价，谁先进谁先走。<b>留下哪条纯属运气</b>，而前者的丢失会让后面
+     * 每一次推荐都失去约束。这条用例把「低分先走」固定下来。
+     */
+    @Test
+    void 容量压力下先淘汰低价值事件() {
+        RecordingVectorStore store = new RecordingVectorStore();
+        EpisodicMemory memory = new EpisodicMemory(store);
+        // 先塞满低价值噪声（时间上也更早），再放进一条含约束的高价值事实
+        for (int i = 0; i < 205; i++) {
+            memory.add(item("u2001", "好的"));
+        }
+        memory.add(item("u2001", "用户是学生党，预算有限"));
+
+        List<String> kept = memory.recentOf("u2001", 300).stream()
+                .map(MemoryItem::getContent)
+                .toList();
+
+        assertThat(kept)
+                .as("含约束词的高价值事实不该被一堆「好的」挤掉")
+                .contains("用户是学生党，预算有限");
+    }
+
+    /** 打分是确定的：同样的内容必须得到同样的分，否则「为什么这条丢了」永远答不出来 */
+    @Test
+    void 重要性打分确定且显式标注优先() {
+        MemoryItem plain = item("u3001", "用户问过衬衫尺码");
+        MemoryItem constrained = item("u3001", "用户对花生过敏，必须避开");
+        MemoryItem marked = MemoryItem.builder()
+                .id("m1").userId("u3001").type(MemoryItem.Type.MESSAGE)
+                .content("一条普通对话")
+                .importance(90)
+                .build();
+
+        assertThat(constrained.score()).isGreaterThan(plain.score());
+        assertThat(constrained.score()).isEqualTo(constrained.score());
+        assertThat(marked.score())
+                .as("显式标注一旦给出就完全覆盖启发式，让上游有办法纠正算错的分数")
+                .isEqualTo(90);
+        assertThat(item("u3001", "好的").score())
+                .as("过短内容没有信息量，是被淘汰的那一类")
+                .isLessThan(plain.score());
+    }
 }
