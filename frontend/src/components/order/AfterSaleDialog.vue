@@ -256,7 +256,7 @@ watch(type, runPreview)
   width: 56px;
   height: 56px;
   border-radius: var(--ys-radius-sm);
-  border: 1px solid var(--color-border-subtle);
+  border: 1px solid var(--color-border);
   object-fit: cover;
 }
 </style>

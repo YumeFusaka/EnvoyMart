@@ -742,6 +742,7 @@ async function removeBrand(brand: AdminBrand) {
   display: flex;
   align-items: center;
   gap: var(--ys-space-3);
+  min-width: 0;
 }
 
 .brand-cell__logo {

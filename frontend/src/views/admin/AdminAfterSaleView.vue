@@ -364,8 +364,8 @@ function operatorText(log: StatusLogView): string {
           <el-table-column label="售后单" :width="colW[0]">
             <template #default="{ row }">
               <div class="admin-stack">
-                <span class="admin-cell--strong">{{ row.afterSaleNo }}</span>
-                <span class="admin-cell--tiny">订单 {{ row.orderNo }}</span>
+                <span class="admin-cell--strong admin-nowrap">{{ row.afterSaleNo }}</span>
+                <span class="admin-cell--tiny admin-nowrap">订单 {{ row.orderNo }}</span>
                 <span class="admin-cell--muted admin-cell--ellipsis">{{ row.spuName ?? '—' }}</span>
               </div>
             </template>
@@ -391,7 +391,7 @@ function operatorText(log: StatusLogView): string {
           <el-table-column   align="right" label="退款金额" :width="colW[3]">
             <template #default="{ row }">
               <div class="admin-stack admin-stack--end">
-                <span class="admin-cell--num">{{ formatPrice(row.refundAmount) }}</span>
+                <span class="admin-cell--num admin-nowrap">{{ formatPrice(row.refundAmount) }}</span>
                 <span v-if="row.maxRefundable !== null" class="admin-cell--tiny">
                   最多 {{ formatPrice(row.maxRefundable) }}
                 </span>

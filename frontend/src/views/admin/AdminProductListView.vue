@@ -131,7 +131,7 @@ const statusOptions = [
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item admin-filters__item--mid">
         <label class="admin-filters__label" for="spu-category">类目</label>
         <el-tree-select
           id="spu-category"
@@ -294,6 +294,7 @@ const statusOptions = [
   display: flex;
   align-items: flex-start;
   gap: var(--ys-space-3);
+  min-width: 0;
 }
 
 .spu-cell__img {

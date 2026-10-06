@@ -410,7 +410,7 @@ async function copy(value: string) {
           <el-table-column label="订单" :width="colW[0]">
             <template #default="{ row }">
               <div class="admin-stack">
-                <span class="admin-cell--strong">{{ row.orderNo }}</span>
+                <span class="admin-cell--strong admin-nowrap">{{ row.orderNo }}</span>
                 <span class="admin-cell--muted admin-cell--ellipsis">
                   {{ row.firstItemName ?? '—' }}
                   <template v-if="row.itemCount > 1">等 {{ row.itemCount }} 种</template>
@@ -424,15 +424,15 @@ async function copy(value: string) {
 
           <el-table-column label="用户" :width="colW[1]">
             <template #default="{ row }">
-              <span class="admin-cell--tiny">{{ row.userId }}</span>
+              <span class="admin-cell--tiny admin-nowrap">{{ row.userId }}</span>
             </template>
           </el-table-column>
 
           <el-table-column label="收货人" :width="colW[2]">
             <template #default="{ row }">
               <div class="admin-stack">
-                <span>{{ row.receiverName }}</span>
-                <span class="admin-cell--tiny">{{ row.receiverPhone }}</span>
+                <span class="admin-nowrap">{{ row.receiverName }}</span>
+                <span class="admin-cell--tiny admin-nowrap">{{ row.receiverPhone }}</span>
               </div>
             </template>
           </el-table-column>
@@ -440,8 +440,8 @@ async function copy(value: string) {
           <el-table-column label="金额" :width="colW[3]" align="right">
             <template #default="{ row }">
               <div class="admin-stack admin-stack--end">
-                <span class="admin-cell--num">{{ formatPrice(row.payAmount) }}</span>
-                <span v-if="row.discountAmount > 0" class="admin-cell--tiny">
+                <span class="admin-cell--num admin-nowrap">{{ formatPrice(row.payAmount) }}</span>
+                <span v-if="row.discountAmount > 0" class="admin-cell--tiny admin-nowrap">
                   已减 {{ formatPrice(row.discountAmount) }}
                 </span>
               </div>
@@ -459,8 +459,8 @@ async function copy(value: string) {
           <el-table-column label="物流" :width="colW[5]">
             <template #default="{ row }">
               <div v-if="row.trackingNo" class="admin-stack">
-                <span class="admin-cell--tiny">{{ row.carrierName ?? '—' }}</span>
-                <span class="admin-cell--tiny">{{ row.trackingNo }}</span>
+                <span class="admin-cell--tiny admin-nowrap">{{ row.carrierName ?? '—' }}</span>
+                <span class="admin-cell--tiny admin-nowrap">{{ row.trackingNo }}</span>
               </div>
               <span v-else class="admin-cell--muted">—</span>
             </template>

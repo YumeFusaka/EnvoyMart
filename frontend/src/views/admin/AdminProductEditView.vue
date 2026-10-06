@@ -897,12 +897,12 @@ watch(spuId, () => { if (isEdit.value) void loadProductDocs() }, { immediate: tr
   align-items: baseline;
   padding: 6px 10px;
   border-radius: 6px;
-  background: var(--color-bg-subtle);
+  background: var(--color-bg-sunken);
 }
 
 .docs-list__meta {
   font-size: 12px;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-muted);
   white-space: nowrap;
 }
 .edit-grid {

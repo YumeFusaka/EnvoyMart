@@ -257,7 +257,7 @@ const isDisabled = computed(() => active.value?.status === 0)
                 </el-avatar>
                 <div class="admin-stack">
                   <span class="admin-cell--strong">{{ row.nickname || row.username }}</span>
-                  <span class="admin-cell--tiny">{{ row.username }} · {{ row.id }}</span>
+                  <span class="admin-cell--tiny user-cell__id">{{ row.username }} · {{ row.id }}</span>
                 </div>
               </div>
             </template>
@@ -413,6 +413,15 @@ const isDisabled = computed(() => active.value?.status === 0)
   display: flex;
   align-items: center;
   gap: var(--ys-space-3);
+  min-width: 0;
+}
+
+/* 账号 ID 是 32 位十六进制串，中间没有空格可折 —— 让它自由换行会折成三行，
+   把整行行高从 56 撑到 111。截断成一行，完整值在详情抽屉里 */
+.user-cell__id {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .user-cell__avatar {

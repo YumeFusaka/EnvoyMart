@@ -359,46 +359,44 @@ const coveragePercent = computed(() => {
 </script>
 
 <template>
-  <section class="admin-page">
-    <header class="admin-head">
-      <div>
-        <h1 class="admin-head__title">知识库</h1>
-        <p class="admin-head__sub">
-          上传或编辑后自动切分并同步进向量库与知识图谱，AI 立刻引用得到它；
-          「重建索引」是兜底入口，只有在需要整库重抽时才点（会花几十秒、并按整库计费）
-        </p>
+  <section class="kb">
+    <div class="admin-panel kb-head">
+      <div class="admin-toolbar">
+        <h2 class="admin-toolbar__title">知识库</h2>
+        <span class="admin-toolbar__count">
+          上传或编辑后自动切分并同步进向量库与知识图谱，AI 立刻引用得到它
+        </span>
+        <div class="admin-toolbar__actions">
+          <el-button
+            :icon="Refresh"
+            :loading="reindexing"
+            title="整库重抽：上传/编辑后的单篇已自动生效，这里只用于兜底或全量修复"
+            @click="reindex"
+            >重建索引</el-button
+          >
+          <el-button type="primary" @click="openCreate">上传文档</el-button>
+        </div>
       </div>
-      <div class="admin-head__actions">
-        <el-button
-          :icon="Refresh"
-          :loading="reindexing"
-          title="整库重抽：上传/编辑后的单篇已自动生效，这里只用于兜底或全量修复"
-          @click="reindex"
-          >重建索引</el-button
-        >
-        <el-button type="primary" @click="openCreate">上传文档</el-button>
+
+      <el-alert
+        v-if="indexHint"
+        class="admin-index-hint"
+        :title="indexHint"
+        :type="reindexing ? 'warning' : 'info'"
+        :closable="false"
+        show-icon
+      />
+
+      <div v-if="indexStatus && !indexStatus.running && !staleIndex" class="admin-index-meta">
+        <span v-if="indexStatus.finishedAt">
+          上次重建：{{ formatDateTime(indexStatus.finishedAt) }}
+        </span>
+        <span v-if="indexStatus.result">
+          文档 {{ indexStatus.result.documentCount ?? '—' }} 篇 ·
+          切片 {{ indexStatus.result.chunkCount ?? '—' }} 片
+        </span>
       </div>
-    </header>
-
-    <el-alert
-      v-if="indexHint"
-      class="admin-index-hint"
-      :title="indexHint"
-      :type="reindexing ? 'warning' : 'info'"
-      :closable="false"
-      show-icon
-    />
-
-    <div v-if="indexStatus && !indexStatus.running && !staleIndex" class="admin-index-meta">
-      <span v-if="indexStatus.finishedAt">
-        上次重建：{{ formatDateTime(indexStatus.finishedAt) }}
-      </span>
-      <span v-if="indexStatus.result">
-        文档 {{ indexStatus.result.documentCount ?? '—' }} 篇 ·
-        切片 {{ indexStatus.result.chunkCount ?? '—' }} 片
-      </span>
     </div>
-
     <!-- 商品资料覆盖率：这是「多少商品答得上来」的读数，不是文档列表的附属统计。
          它排在文档列表之前，因为缺资料的商品才是要去处理的那批。 -->
     <section class="coverage" aria-label="商品资料覆盖率">
@@ -468,59 +466,60 @@ const coveragePercent = computed(() => {
         </div>
       </template>
     </section>
-    <div class="admin-filters">
-      <div class="admin-filters__item">
-        <label class="admin-filters__label" for="kb-keyword">标题 / 标签</label>
-        <el-input
-          id="kb-keyword"
-          v-model="query.keyword"
-          placeholder="标题或标签关键词"
-          clearable
-          @keyup.enter="search"
-        />
+
+    <div class="admin-panel">
+      <div class="admin-filters">
+        <div class="admin-filters__item">
+          <label class="admin-filters__label" for="kb-keyword">标题 / 标签</label>
+          <el-input
+            id="kb-keyword"
+            v-model="query.keyword"
+            placeholder="标题或标签关键词"
+            clearable
+            @keyup.enter="search"
+          />
+        </div>
+
+        <div class="admin-filters__item admin-filters__item--narrow">
+          <label class="admin-filters__label" for="kb-scope">领域</label>
+          <el-select id="kb-scope" v-model="query.scope" clearable placeholder="全部领域">
+            <el-option v-for="s in SCOPE_OPTIONS" :key="s.value" :label="s.label" :value="s.value" />
+          </el-select>
+        </div>
+
+        <div class="admin-filters__item admin-filters__item--narrow">
+          <label class="admin-filters__label" for="kb-status">状态</label>
+          <el-select id="kb-status" v-model="query.status" clearable placeholder="全部状态">
+            <el-option label="启用" :value="1" />
+            <el-option label="停用" :value="0" />
+          </el-select>
+        </div>
+
+        <div class="admin-filters__actions">
+          <el-button type="primary" :icon="Search" @click="search">查询</el-button>
+          <el-button :icon="Refresh" @click="onReset">重置</el-button>
+        </div>
+      </div>
+      <div class="admin-toolbar">
+        <h2 class="admin-toolbar__title">文档</h2>
+        <span class="admin-toolbar__count">共 {{ records.length }} 篇</span>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
-        <label class="admin-filters__label" for="kb-scope">领域</label>
-        <el-select id="kb-scope" v-model="query.scope" clearable placeholder="全部领域">
-          <el-option v-for="s in SCOPE_OPTIONS" :key="s.value" :label="s.label" :value="s.value" />
-        </el-select>
-      </div>
+      <ErrorState v-if="error" :message="error" :on-retry="() => load()" />
 
-      <div class="admin-filters__item admin-filters__item--narrow">
-        <label class="admin-filters__label" for="kb-status">状态</label>
-        <el-select id="kb-status" v-model="query.status" clearable placeholder="全部状态">
-          <el-option label="启用" :value="1" />
-          <el-option label="停用" :value="0" />
-        </el-select>
-      </div>
-
-      <div class="admin-filters__actions">
-        <el-button type="primary" :icon="Search" @click="search">查询</el-button>
-        <el-button :icon="Refresh" @click="onReset">重置</el-button>
-      </div>
-    </div>
-
-    <div class="admin-toolbar">
-      <h2 class="admin-toolbar__title">文档</h2>
-      <span class="admin-toolbar__count">共 {{ records.length }} 篇</span>
-    </div>
-
-    <ErrorState v-if="error" :message="error" :on-retry="() => load()" />
-
-    <template v-else>
-      <div ref="tableRef" class="admin-table">
-        <!-- 列宽由 useResponsiveColumns 按容器实测宽度算：声明值之和装不下时收缩，
-             否则 Element Plus 会把最宽的列砍到极限（标题一列一个字），
-             而带 fixed 列的表格还会让最右列被盖住且滚不到。 -->
-        <el-table v-loading="loading" :data="records" style="width: 100%">
-          <el-table-column label="文档" :width="colW[0]">
-            <template #default="{ row }">
-              <div class="admin-stack">
-                <span class="admin-cell--strong">{{ row.title }}</span>
-                <span class="admin-cell--tiny">{{ row.docNo }} · {{ row.version }}</span>
-              </div>
-            </template>
+      <template v-else>
+        <div ref="tableRef" class="admin-table">
+          <!-- 列宽由 useResponsiveColumns 按容器实测宽度算：声明值之和装不下时收缩，
+               否则 Element Plus 会把最宽的列砍到极限（标题一列一个字），
+               而带 fixed 列的表格还会让最右列被盖住且滚不到。 -->
+          <el-table v-loading="loading" :data="records" style="width: 100%">
+            <el-table-column label="文档" :width="colW[0]">
+              <template #default="{ row }">
+                <div class="admin-stack">
+                  <span class="admin-cell--strong">{{ row.title }}</span>
+                  <span class="admin-cell--tiny">{{ row.docNo }} · {{ row.version }}</span>
+                </div>
+              </template>
           </el-table-column>
 
           <el-table-column label="来源 / 领域" :width="colW[1]">
@@ -582,7 +581,8 @@ const coveragePercent = computed(() => {
           </template>
         </el-table>
       </div>
-    </template>
+      </template>
+    </div>
 
     <el-drawer
       v-model="editing"
@@ -646,6 +646,19 @@ const coveragePercent = computed(() => {
 </template>
 
 <style scoped>
+/* 知识库是唯一「多块并列」的管理页：覆盖率与文档列表各自一张卡。
+   其余九页是一张卡装下全部，所以这里不套 admin-panel 的单一外壳 */
+.kb {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ys-space-5);
+}
+
+/* 页头卡：toolbar 之后紧跟状态提示，底部要留白（其余页只有 toolbar，交给下方表格自带内边距） */
+.kb-head {
+  padding-bottom: var(--ys-space-5);
+}
+
 .admin-index-hint {
   margin-bottom: var(--ys-space-4);
 }
@@ -654,8 +667,8 @@ const coveragePercent = computed(() => {
   display: flex;
   gap: var(--ys-space-4);
   margin-bottom: var(--ys-space-4);
-  font-size: var(--ys-font-size-xs);
-  color: var(--ys-color-text-tertiary);
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-muted);
 }
 
 .kb-form__row {
@@ -666,8 +679,8 @@ const coveragePercent = computed(() => {
 
 .kb-form__hint {
   margin-top: var(--ys-space-2);
-  font-size: var(--ys-font-size-xs);
-  color: var(--ys-color-text-tertiary);
+  font-size: var(--ys-font-xs);
+  color: var(--color-text-muted);
   line-height: 1.6;
 }
 

@@ -48,6 +48,12 @@
   max-width: 320px;
 }
 
+/* 下拉类筛选（类目树、品牌）比状态宽一点：选项文字更长，
+   但绝不该跟关键词输入框一样宽 —— 那是输入框专用的档位 */
+.admin-filters__item--mid {
+  width: 180px;
+}
+
 .admin-filters__item--narrow {
   width: 140px;
 }
@@ -126,10 +132,25 @@
   word-break: break-word;
 }
 
+/* 订单号 / 手机号 / SKU 编码这类标识符：中间没有空格可折，放任换行会
+   在任意字符处断开（实测 20 位订单号折成两行、32 位用户 ID 折成四行），
+   把整行行高撑得参差。截断成一行，完整值在详情抽屉里 */
+.admin-nowrap {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .admin-stack {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* 表格单元格里「图标 + 两行文字」的排版：外层 flex 收缩时，
+     文字块默认 min-width 为 auto（等于内容宽），会把单元格撑破，
+     超出部分被 el-table 的 overflow:hidden 直接裁掉（不是出现滚动条——
+     fixed 列的表走的是「收缩」分支，见 useResponsiveColumns 注释）。
+     显式给 0 之后，下面的 ellipsis 才有生效的高度 */
+  min-width: 0;
 }
 
 /* 同一行里并排的「次要文字 + 标签」。

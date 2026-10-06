@@ -120,7 +120,7 @@ onMounted(async () => {
         :key="card.key"
         type="button"
         class="pending-card"
-        :class="`pending-card--${card.tone}`"
+        :class="[`pending-card--${card.tone}`, { 'pending-card--empty': !(adminStore[card.key] ?? 0) }]"
         @click="open(card)"
       >
         <span class="pending-card__label">{{ card.title }}</span>
@@ -128,7 +128,9 @@ onMounted(async () => {
           {{ adminStore[card.key] ?? '—' }}
         </strong>
         <span class="pending-card__hint">{{ card.hint }}</span>
-        <span class="pending-card__action">{{ card.action }} →</span>
+        <span class="pending-card__action">{{
+          (adminStore[card.key] ?? 0) > 0 ? `${card.action} →` : '暂无待办'
+        }}</span>
       </button>
     </section>
 
@@ -240,6 +242,12 @@ onMounted(async () => {
   border-inline-start-color: var(--color-warning);
 }
 
+/* 欠账为 0 时把左侧色条降为中性：红/橙条在「没有欠账」的卡片上
+   会制造虚假的紧迫感，一眼扫过去以为有事要做 */
+.pending-card--empty {
+  border-inline-start-color: var(--color-border-strong);
+}
+
 .pending-card--danger {
   border-inline-start-color: var(--color-danger);
 }
@@ -266,6 +274,13 @@ onMounted(async () => {
   color: var(--color-primary-strong);
   font-size: var(--ys-font-sm);
   font-weight: 600;
+}
+
+/* 0 待办的卡片动作文案降为弱色：主色加粗的「去发货 →」会让空卡片
+   看起来也有活要干 */
+.pending-card--empty .pending-card__action {
+  color: var(--color-text-muted);
+  font-weight: 400;
 }
 
 .stage-strip {

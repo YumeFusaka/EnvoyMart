@@ -376,14 +376,14 @@ function isWaiting(ticket: AdminTicketSummary): boolean {
               >
             </div>
             <div class="queue__meta">
-              <span class="admin-cell--tiny">{{ ticket.ticketNo }}</span>
-              <span class="admin-cell--tiny">{{ ticket.categoryText }}</span>
+              <span class="queue__no admin-cell--tiny">{{ ticket.ticketNo }}</span>
+              <span class="queue__time admin-cell--tiny"
+                >{{ formatDate(ticket.updatedAt) }}</span
+              >
             </div>
             <div class="queue__meta">
-              <span class="admin-cell--tiny">{{ ticket.userId }}</span>
-              <span class="admin-cell--tiny"
-                >{{ ballSide(ticket) }} · {{ formatDate(ticket.updatedAt) }}</span
-              >
+              <span class="queue__cat admin-cell--tiny">{{ ticket.categoryText }}</span>
+              <span class="queue__ball admin-cell--tiny">{{ ballSide(ticket) }}</span>
             </div>
           </button>
 
@@ -412,7 +412,12 @@ function isWaiting(ticket: AdminTicketSummary): boolean {
 
         <ErrorState v-else-if="detailError" :message="detailError" :on-retry="loadDetail" />
 
-        <p v-else-if="!detail" class="admin-empty">从左边选一条工单</p>
+        <div v-else-if="!detail" class="thread__placeholder">
+          <p class="thread__placeholder-title">选一条工单开始处理</p>
+          <p class="thread__placeholder-hint">
+            左边队列默认只列「等你回复」的那几条 —— 球在客服这边，才需要动作。
+          </p>
+        </div>
 
         <template v-else>
           <header class="thread__head">
@@ -568,10 +573,27 @@ function isWaiting(ticket: AdminTicketSummary): boolean {
   font-size: var(--ys-font-sm);
 }
 
+/* 两行元信息用同一套两列网格，而不是 space-between。
+   space-between 把左右两项推到各自边缘，左项长度一变（工单号 20 位、用户 ID 4 位），
+   右项起始位置就跟着漂，一列工单扫下来「分类」根本不在一条竖线上 */
 .queue__meta {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
   gap: var(--ys-space-2);
+}
+
+.queue__no,
+.queue__cat {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.queue__time,
+.queue__ball {
+  text-align: end;
+  white-space: nowrap;
 }
 
 .workbench__thread {
@@ -582,6 +604,31 @@ function isWaiting(ticket: AdminTicketSummary): boolean {
   border: 1px solid var(--color-border);
   border-radius: var(--ys-radius-md);
   background: var(--color-bg-surface);
+}
+
+/* 未选中任何工单时的空态：竖直居中，别让一句提示孤零零挂在左上角。
+   右侧这块有 800px 宽，居中是唯一能让它看起来「是有意留白」而不是「没渲染完」的排法 */
+.thread__placeholder {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ys-space-2);
+  text-align: center;
+}
+
+.thread__placeholder-title {
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-base);
+  font-weight: 600;
+}
+
+.thread__placeholder-hint {
+  max-width: 32ch;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-sm);
+  line-height: var(--ys-leading-base);
 }
 
 .thread__head {
