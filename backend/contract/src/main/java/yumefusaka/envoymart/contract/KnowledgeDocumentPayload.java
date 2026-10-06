@@ -43,4 +43,14 @@ public class KnowledgeDocumentPayload {
     private List<String> tags;
     /** 正文全文 */
     private String content;
+    /**
+     * 这篇文档**主体**对应的商品 id（上传时人工声明的归属），可能为空或有多个。
+     * <p>
+     * <b>为什么要随语料下发到 ai-service</b>：图谱里「SPUx -CONTAINS-> 成分」这条边原先
+     * 完全依赖模型从正文里抽出来，实测会漏抽（37 个商品里 13 个因此没有节点）。而这条边
+     * 其实不需要模型判断——「这篇文档讲的是哪个商品」在上传时已经被人工声明过。
+     * 把它随语料带过去，图谱构建期就能<b>确定性地</b>补出商品端，模型只负责抽成分。
+     */
+    private List<Long> subjectSpuIds;
+
 }

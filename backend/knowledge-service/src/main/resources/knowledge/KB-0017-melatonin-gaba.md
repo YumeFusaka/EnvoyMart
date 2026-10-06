@@ -3,6 +3,7 @@ id: KB-0017
 title: 褪黑素与 γ-氨基丁酸类助眠产品说明书
 source: manual
 scope: nutrition
+subjects: 16,17
 version: v2026.04
 tags: 褪黑素,松果体,助眠,睡眠,GABA,γ-氨基丁酸,倒时差,用量,相互作用
 ---

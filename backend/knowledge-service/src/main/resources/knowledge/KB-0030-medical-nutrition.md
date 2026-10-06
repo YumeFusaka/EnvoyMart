@@ -3,6 +3,7 @@ id: KB-0030
 title: 全营养配方粉产品说明书
 source: manual
 scope: nutrition
+subjects: 13
 version: v2026.04
 tags: 特殊医学用途配方食品,全营养,整蛋白,肠内营养,鼻饲,用量,禁忌,相互作用
 ---

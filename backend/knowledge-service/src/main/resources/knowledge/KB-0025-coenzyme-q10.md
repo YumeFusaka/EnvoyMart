@@ -3,6 +3,7 @@ id: KB-0025
 title: 辅酶 Q10 软胶囊产品说明书
 source: manual
 scope: nutrition
+subjects: 8
 version: v2026.04
 tags: 辅酶Q10,泛醌,心脏,抗氧化,他汀,华法林,用量,禁忌,相互作用
 ---

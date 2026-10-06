@@ -3,6 +3,7 @@ id: KB-0043
 title: 维生素 AD 滴剂产品说明书
 source: manual
 scope: nutrition
+subjects: 35
 version: v2026.04
 tags: 维生素A,维生素D,滴剂,婴幼儿,儿童,脂溶性,中毒,过量,用量,禁忌
 ---

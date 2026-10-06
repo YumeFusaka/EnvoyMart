@@ -3,6 +3,7 @@ id: KB-0022
 title: 复合维生素矿物质片产品说明书
 source: manual
 scope: nutrition
+subjects: 2
 version: v2026.04
 tags: 复合维生素,多种维生素,矿物质,维生素A,维生素B族,维生素C,维生素D,维生素E,钙,铁,锌,硒,用量,相互作用
 ---

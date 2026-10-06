@@ -3,6 +3,7 @@ id: KB-0019
 title: 氨糖软骨素钙片产品说明书
 source: manual
 scope: nutrition
+subjects: 24
 version: v2026.04
 tags: 氨基葡萄糖,氨糖,硫酸软骨素,关节,软骨,钙,用量,相互作用
 ---

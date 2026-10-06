@@ -3,6 +3,7 @@ id: KB-0007
 title: 乳清蛋白粉产品规格与食用指南
 source: spec
 scope: nutrition
+subjects: 3
 version: v2026.02
 tags: 乳清蛋白,蛋白粉,健身,增肌,冲泡,乳糖不耐
 ---

@@ -3,6 +3,7 @@ id: KB-0042
 title: 纳豆激酶胶囊产品说明书
 source: manual
 scope: nutrition
+subjects: 34
 version: v2026.04
 tags: 纳豆激酶,纳豆,心脑血管,抗凝,出血,手术,维生素K,用量,禁忌,相互作用
 ---

@@ -3,6 +3,7 @@ id: KB-0033
 title: 孕妇钙片产品说明书
 source: manual
 scope: nutrition
+subjects: 25
 version: v2026.04
 tags: 孕妇,孕期,哺乳期,柠檬酸钙,钙,维生素D3,左甲状腺素,四环素,喹诺酮,用量,禁忌,相互作用
 ---

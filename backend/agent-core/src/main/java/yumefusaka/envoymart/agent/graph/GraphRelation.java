@@ -23,8 +23,19 @@ import java.util.stream.Collectors;
  */
 public enum GraphRelation {
 
-    /** 商品 → 成分。「用户买的那个东西到底含什么」的唯一入口 */
-    CONTAINS("含有", EnumSet.of(EntityKind.PRODUCT), EnumSet.of(EntityKind.INGREDIENT)),
+    /**
+     * 商品 → 成分/营养素。「用户买的那个东西到底含什么」的唯一入口。
+     * <p>
+     * <b>尾端同时收 INGREDIENT 与 NUTRIENT，不是放宽，是对齐既成事实。</b>
+     * 模型对「锌」「铁」「钙」这类东西的类型标注本来就在两者之间摇摆（有时写 INGREDIENT、
+     * 有时写 NUTRIENT），而 {@code EntityAliases} 会把它们统一规范化成 NUTRIENT——
+     * 于是模型明明给的是 {@code PRODUCT=SPU21 -CONTAINS-> INGREDIENT=锌}，经过别名解析后
+     * 尾端变成 NUTRIENT，只收 INGREDIENT 的话整条被判「词表不符」丢弃。
+     * 实测：KB-0038/0039 的 CONTAINS 边因此全军覆没，商品在图上没有节点。
+     * 商品含有某种营养素，与商品含有某种成分，对「这个商品里有什么」这个查询是同一件事。
+     */
+    CONTAINS("含有", EnumSet.of(EntityKind.PRODUCT),
+            EnumSet.of(EntityKind.INGREDIENT, EntityKind.NUTRIENT)),
 
     /** 成分 → 营养素。胆钙化醇提供维生素 D */
     PROVIDES("提供", EnumSet.of(EntityKind.INGREDIENT), EnumSet.of(EntityKind.NUTRIENT)),

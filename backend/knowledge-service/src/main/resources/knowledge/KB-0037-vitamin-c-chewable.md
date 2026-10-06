@@ -3,6 +3,7 @@ id: KB-0037
 title: 维生素 C 咀嚼片产品说明书
 source: manual
 scope: nutrition
+subjects: 29
 version: v2026.04
 tags: 维生素C,维C,抗坏血酸,抗氧化,免疫,草酸,肾结石,铁吸收,用量,禁忌,相互作用
 ---

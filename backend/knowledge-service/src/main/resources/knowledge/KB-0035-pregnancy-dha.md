@@ -3,6 +3,7 @@ id: KB-0035
 title: 孕期 DHA 藻油软胶囊产品说明书
 source: manual
 scope: nutrition
+subjects: 12
 version: v2026.04
 tags: 孕期,妊娠期,哺乳期,DHA,藻油,欧米伽3,出血,抗凝,用量,禁忌,相互作用
 ---

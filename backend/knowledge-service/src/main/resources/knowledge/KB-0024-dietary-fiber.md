@@ -3,6 +3,7 @@ id: KB-0024
 title: 膳食纤维粉产品说明书
 source: manual
 scope: nutrition
+subjects: 6
 version: v2026.04
 tags: 膳食纤维,水溶性膳食纤维,菊粉,血糖,血脂,肠道,用量,相互作用
 ---

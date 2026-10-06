@@ -3,6 +3,7 @@ id: KB-0032
 title: 儿童多种维生素软糖产品说明书
 source: manual
 scope: nutrition
+subjects: 15
 version: v2026.04
 tags: 儿童,多种维生素,软糖,维生素A,维生素C,维生素D,铁,锌,用量,禁忌,相互作用
 ---

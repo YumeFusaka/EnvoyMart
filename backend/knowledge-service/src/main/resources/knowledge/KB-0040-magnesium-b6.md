@@ -3,6 +3,7 @@ id: KB-0040
 title: 镁维 B6 缓释片产品说明书
 source: manual
 scope: nutrition
+subjects: 32
 version: v2026.04
 tags: 镁,维生素B6,睡眠,肌肉,肾功能,腹泻,用量,禁忌,相互作用
 ---

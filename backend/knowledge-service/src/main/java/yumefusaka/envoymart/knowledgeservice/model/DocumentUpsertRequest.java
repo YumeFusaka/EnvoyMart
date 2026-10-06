@@ -36,4 +36,13 @@ public class DocumentUpsertRequest {
 
     /** 全文。切分与图谱抽取都以它为准 */
     private String content;
+    /**
+     * 本文档主体对应的商品 id。**上传商品文档时由运营选择，领域文档留空。**
+     * 支持多个：一篇「褪黑素与 GABA 类助眠产品说明书」可以同时是两个商品的说明书。
+     * <p>
+     * 它是「这篇文档讲的是哪个商品」的一次人工声明，不该让模型去猜——
+     * 模型猜错的代价是把 A 商品的资料挂到 B 商品上，而系统看不出任何异常。
+     */
+    private java.util.List<Long> subjectSpuIds;
+
 }

@@ -3,6 +3,7 @@ id: KB-0023
 title: 植物蛋白粉产品说明书
 source: manual
 scope: nutrition
+subjects: 4
 version: v2026.04
 tags: 植物蛋白,豌豆蛋白,糙米蛋白,素食,蛋白质,氨基酸,用量,相互作用
 ---

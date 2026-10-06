@@ -27,7 +27,7 @@ class TripleValidatorTest {
 
     private static Triple triple(String headKind, String headName, String relation,
                                  String tailKind, String tailName, String quote) {
-        return new Triple(headKind, headName, null, relation, tailKind, tailName, null, null, quote);
+        return new Triple(headKind, headName, null, relation, tailKind, tailName, null, null, quote, false);
     }
 
     private static TripleValidator.Result validate(Triple... triples) {
@@ -90,7 +90,7 @@ class TripleValidatorTest {
     void 展示名也能作为锚定的依据() {
         // 模型给端点用的是别名，正文里只有展示名——两个写法都算出自原文
         Triple t = new Triple("INGREDIENT", "鱼油", "鱼油软胶囊", "INTERACTS_WITH",
-                "DRUG", "华法林", null, null, "本品与华法林等抗凝药物合用可能增加出血风险");
+                "DRUG", "华法林", null, null, "本品与华法林等抗凝药物合用可能增加出血风险", false);
         TripleValidator.Result result = validate(t);
 
         assertThat(result.accepted()).hasSize(1);
@@ -277,7 +277,7 @@ class TripleValidatorTest {
 
     private static Triple combo(String members, String tailKind, String tailName, String quote) {
         return new Triple("COMBINATION", members, null, "COMBINED_WITH", tailKind, tailName,
-                null, "三者同服可能增加结石风险", quote);
+                null, "三者同服可能增加结石风险", quote, false);
     }
 
     @Test

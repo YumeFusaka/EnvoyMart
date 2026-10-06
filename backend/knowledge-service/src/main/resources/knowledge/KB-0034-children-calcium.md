@@ -3,6 +3,7 @@ id: KB-0034
 title: 儿童钙软糖产品说明书
 source: manual
 scope: nutrition
+subjects: 26
 version: v2026.04
 tags: 儿童,钙,软糖,维生素D,补钙,用量,禁忌,相互作用
 ---

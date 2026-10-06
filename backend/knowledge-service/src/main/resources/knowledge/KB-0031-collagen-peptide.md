@@ -3,6 +3,7 @@ id: KB-0031
 title: 胶原蛋白肽粉产品说明书
 source: manual
 scope: nutrition
+subjects: 14
 version: v2026.04
 tags: 胶原蛋白,胶原蛋白肽,小分子肽,皮肤,关节,用量,相互作用
 ---

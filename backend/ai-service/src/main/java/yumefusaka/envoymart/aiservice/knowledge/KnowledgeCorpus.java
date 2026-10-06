@@ -118,6 +118,8 @@ public class KnowledgeCorpus {
                 .version(payload.getVersion())
                 .tags(payload.getTags())
                 .content(payload.getContent())
+                // 归属随语料带过来，图谱构建期据此确定性地补商品→成分边
+                .subjectSpuIds(payload.getSubjectSpuIds())
                 .build();
     }
 

@@ -3,6 +3,7 @@ id: KB-0046
 title: 褪黑素片产品说明书
 source: manual
 scope: nutrition
+subjects: 38
 version: v2026.04
 tags: 褪黑素,睡眠,昼夜节律,驾驶,孕期,儿童,用量,禁忌,相互作用
 ---

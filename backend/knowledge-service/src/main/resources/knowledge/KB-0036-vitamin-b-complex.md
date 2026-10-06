@@ -3,6 +3,7 @@ id: KB-0036
 title: 维生素 B 族复合片产品说明书
 source: manual
 scope: nutrition
+subjects: 28
 version: v2026.04
 tags: 维生素B,B族,叶酸,B12,能量代谢,尿液,神经,用量,禁忌,相互作用
 ---

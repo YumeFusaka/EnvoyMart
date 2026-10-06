@@ -289,9 +289,15 @@ public class KnowledgeGraphBuilder {
                 return null;
             }
             List<GraphTriplePayload> linked = linkProducts(parsed, catalog);
-            log.info("[Graph] 文档 {} 抽取 {} 条，商品链接后 {} 条",
-                    doc.getId(), parsed.size(), linked.size());
-            return linked;
+            // **确定性地补出「商品→成分」这条边。**
+            // 它原先是纯靠模型抽的，实测会漏抽（37 个商品里 13 个因此没有节点）。
+            // 而这件事根本不需要模型判断：文档讲的是哪个商品在上传时已被人工声明，
+            // 随语料下发到这边（{@code doc.getSubjectSpuIds()}）。
+            // 模型只负责抽成分，商品端由这里补齐——两者合起来才是完整的 CONTAINS。
+            List<GraphTriplePayload> augmented = augmentSubjectEdges(doc, linked, catalog);
+            log.info("[Graph] 文档 {} 抽取 {} 条，商品链接后 {} 条，补主体边后 {} 条",
+                    doc.getId(), parsed.size(), linked.size(), augmented.size());
+            return augmented;
         } catch (Exception e) {
             // 单篇失败不拖垮整批：一篇文档抽不出来，不影响其余文档的图谱
             log.warn("[Graph] 文档 {} 抽取失败，本次跳过（保留其已有边）：{}", doc.getId(), e.getMessage());
@@ -363,6 +369,105 @@ public class KnowledgeGraphBuilder {
     }
 
     /**
+     * 按**人工声明的归属**确定性补出 {@code SPUx -CONTAINS-> 成分} 边。
+     * <p>
+     * <b>为什么必须由代码补，而不是指望模型抽</b>：这条边是「商品有没有资料」的唯一判据
+     * （见 {@code GraphService.documentsOfProduct} / {@code coverage}），而它原先完全依赖
+     * 模型从「本品含 X」这句话里抽出商品端。实测这条边会被漏抽——37 个商品里 13 个因此
+     * 在图上没有节点，覆盖率永远到不了 100%，而缺失没有任何现象（文档在库里、也进了向量库）。
+     * <p>
+     * <b>补边的输入来自两处</b>：归属由运营在上传时声明（{@code subjectSpuIds}），
+     * 成分来自模型从正文里抽出的、已经过校验的 {@code CONTAINS} 或 {@code PROVIDES} 边。
+     * 两边都是真的，拼起来的这条边也就是真的。
+     * <p>
+     * <b>只在文档确实抽出成分时才补</b>：一篇抽不出任何成分的文档，硬造一条
+     * {@code SPUx -CONTAINS-> ???} 只会往图上灌一个没有依据的节点。这种情况下
+     * 商品在覆盖率里显示为「有节点、无边」——那正是需要运营去补正文的信号，
+     * 不该被一条编出来的边掩盖。
+     * <p>
+     * <b>为什么用「文档声明的全部商品」× 「文档抽出的全部成分」做笛卡尔积</b>：
+     * 一篇「褪黑素与 GABA 类助眠产品说明书」同时是两个商品的说明书，正文里也同时写了
+     * 两种成分。哪条成分属于哪个商品，模型有时会错标商品端——而正文里既然两个商品都在，
+     * 两个商品都含这两种成分是这个语料里的正确读法。
+     */
+    private List<GraphTriplePayload> augmentSubjectEdges(Document doc, List<GraphTriplePayload> triples,
+                                                         List<ProductSummary> catalog) {
+        List<Long> subjects = doc.getSubjectSpuIds();
+        if (subjects == null || subjects.isEmpty()) {
+            // 领域文档（退货政策、监管规范）本就不属于任何商品，不需要补
+            return triples;
+        }
+        Map<String, ProductSummary> byKey = new LinkedHashMap<>();
+        for (ProductSummary p : catalog) {
+            byKey.put(key(p.getId()), p);
+        }
+        // 收集这篇文档里出现的成分名（已经过 knowledge-service 的引文校验，是正文里真有的）。
+        //
+        // **成分可能出现在任一端，两端都要收。** 原实现只认 `X -CONTAINS-> 成分` 的尾端，
+        // 于是「碳酸钙 D3 咀嚼片」这类文档——模型把成分写在头端（`钙 -INTERACTS_WITH-> 四环素类`）
+        // 而没有产出任何 CONTAINS——就一条主体边都补不出来，商品在图上继续不存在，
+        // 而这正是这次要根治的那 13 个商品里的典型一篇。
+        //
+        // 这样放宽不会放进幻觉：成分本身仍要过 knowledge-service 的端点与引文双锚定，
+        // 这里只是把「文档里确实出现过的成分」这个集合取全。
+        Map<String, String> ingredients = new LinkedHashMap<>();
+        for (GraphTriplePayload t : triples) {
+            if (isCompositionPart(t.getHeadKind())) {
+                ingredients.putIfAbsent(t.getHeadName(), t.getHeadLabel());
+            }
+            if (isCompositionPart(t.getTailKind())) {
+                ingredients.putIfAbsent(t.getTailName(), t.getTailLabel());
+            }
+        }
+        if (ingredients.isEmpty()) {
+            log.debug("[Graph] 文档 {} 声明了 {} 个主体商品，但没抽出任何成分，不补主体边",
+                    doc.getId(), subjects.size());
+            return triples;
+        }
+        // 已经由模型抽出的商品→成分对，避免重复
+        java.util.Set<String> existing = new java.util.HashSet<>();
+        for (GraphTriplePayload t : triples) {
+            existing.add(t.getHeadName() + "\u0000" + t.getTailName());
+        }
+        List<GraphTriplePayload> out = new ArrayList<>(triples);
+        int added = 0;
+        for (Long spuId : subjects) {
+            String spuKey = key(spuId);
+            ProductSummary product = byKey.get(spuKey);
+            if (product == null) {
+                // 声明的商品不在目录里（下架、或编号错）：不补。补出来的节点永远连不上目录，
+                // 查询时表现为「这个商品没有已知相互作用」—— 一个不报错的错误答案
+                log.warn("[Graph] 文档 {} 声明的商品 {} 不在目录中，跳过主体边", doc.getId(), spuKey);
+                continue;
+            }
+            for (Map.Entry<String, String> e : ingredients.entrySet()) {
+                if (existing.contains(spuKey + "\u0000" + e.getKey())) {
+                    continue;
+                }
+                out.add(GraphTriplePayload.builder()
+                        .headKind(EntityKind.PRODUCT.name())
+                        .headName(spuKey)
+                        .headLabel(product.getName())
+                        .relation(GraphRelation.CONTAINS.name())
+                        .tailKind(EntityKind.INGREDIENT.name())
+                        .tailName(e.getKey())
+                        .tailLabel(e.getValue())
+                        // 依据是「文档声明了主体 + 正文里有这个成分」这个组合事实，不是某一句话，
+                        // 所以不带 quote，改为置 declared 标志——knowledge-service 的校验据此免引文
+                        // 校验（见 TripleValidator，豁免范围只到这一种边）。
+                        .declared(true)
+                        .build());
+                existing.add(spuKey + "\u0000" + e.getKey());
+                added++;
+            }
+        }
+        if (added > 0) {
+            log.info("[Graph] 文档 {} 按声明的归属补出 {} 条商品→成分边", doc.getId(), added);
+        }
+        return out;
+    }
+
+    /**
      * 是不是组合三元组。
      * <p>
      * 判据是<b>关系名</b>而不是头类型：{@code COMBINATION} 这个类型名不该出现在
@@ -370,6 +475,19 @@ public class KnowledgeGraphBuilder {
      * 组合是结构不是知识，列进去会让模型到处去建组合节点）。所以这里靠关系名分流，
      * 与 {@code GraphRelation.COMBINED_WITH} 是同一份判据。
      */
+    /**
+     * 一个类型名是不是「商品的组成」。
+     * <p>
+     * 同时收 INGREDIENT 与 NUTRIENT：模型对「锌」这类东西的标注在两者间摇摆，
+     * 而 EntityAliases 会把它统一成 NUTRIENT。判据与 {@code GraphRelation.CONTAINS}
+     * 的尾端词表保持一致——两处不一致时，这里补出的边会被那边丢掉，
+     * 表现为「补了边但商品还是没节点」。
+     */
+    private static boolean isCompositionPart(String kind) {
+        EntityKind k = EntityKind.parse(kind);
+        return k == EntityKind.INGREDIENT || k == EntityKind.NUTRIENT;
+    }
+
     private static boolean isCombination(GraphTriplePayload t) {
         return GraphRelation.COMBINED_WITH == GraphRelation.parse(t.getRelation());
     }

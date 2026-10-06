@@ -216,23 +216,42 @@ public final class TripleValidator {
         // 这里必须用模型写的名字，不能用规范名。别名表把「富马酸亚铁」并到了
         // 「铁剂」，而文档里写的是前者——拿规范名去正文里找，这一条会被判成
         // 「端点无出处」整体丢掉。<b>并入一个更通用的名字，不该让一条本来有出处的边变成没出处。</b>
-        if (!body.anchors(headKind, headWritten, t.headLabel())
-                || !body.anchors(tailKind, tailWritten, t.tailLabel())) {
+        // **声明补出的商品→成分边，头端不参与锚定。**
+        // 它的头是「这篇文档属于哪个商品」，而一份说明书通篇写「本品」，正文里**不可能**
+        // 出现商品名，更不会出现 SPU 编号——要求头端锚定，等于要求这条边永远进不来。
+        // 实测正是如此：补出的边全部倒在「端点无出处」，13 个商品至今没有节点。
+        // 头端的依据是关联表里的人工声明（比正文锚定更强的证据），尾端（成分）照常锚定。
+        boolean anchored = t.declared()
+                ? body.anchors(tailKind, tailWritten, t.tailLabel())
+                : body.anchors(headKind, headWritten, t.headLabel())
+                        && body.anchors(tailKind, tailWritten, t.tailLabel());
+        if (!anchored) {
             return Verdict.reject(RejectReason.UNANCHORED);
         }
 
-        // 引文锚定。找不到原文就不入库——这是本类存在的主要理由
+        // **声明补出的商品→成分边免引文校验。**
+        // 它的依据是两个已成立的事实之组合：文档的归属由运营在上传时人工声明（在关联表里），
+        // 成分由模型从正文里抽出并已过引文校验。它不是从某一句话推出来的，所以没有那句话可引——
+        // 而这两端仍然要锚定（上面那道检查照跑），端点凭空造出来的一样会被拦。
+        // 判据是显式的 declared 标志，不是「引文为空」：后者会给所有幻觉边开门。
+        // 引文锚定。找不到原文就不入库——这是本类存在的主要理由。
+        // 声明补出的边（declared=true）没有那句话可引，跳过拒绝判定；
+        // 但上面的端点锚定照跑，端点凭空造出来的一样会被拦。
         String quote = t.quote() == null ? "" : t.quote().strip();
-        int[] span = quote.isEmpty() ? null : body.locate(quote);
+        int[] span = body.locate(quote);
         if (span == null) {
-            return Verdict.reject(RejectReason.UNGROUNDED);
+            if (!t.declared()) {
+                return Verdict.reject(RejectReason.UNGROUNDED);
+            }
         }
 
         return Verdict.accept(new GroundedTriple(head.kind(), head.name(),
                 displayLabel(head, headWritten, t.headLabel(), t.headName()),
                 relation, tail.kind(), tail.name(),
                 displayLabel(tail, tailWritten, t.tailLabel(), t.tailName()),
-                truncate(t.effect()), docId, chunkIdAt(chunks, span[0]), span[0], span[1], quote));
+                truncate(t.effect()), docId,
+                span == null ? null : chunkIdAt(chunks, span[0]),
+                span == null ? null : span[0], span == null ? null : span[1], quote));
     }
 
     /**

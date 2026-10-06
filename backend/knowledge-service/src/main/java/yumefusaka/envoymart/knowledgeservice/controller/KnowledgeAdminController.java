@@ -13,6 +13,7 @@ import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.RequireAdmin;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentUpsertRequest;
 import yumefusaka.envoymart.knowledgeservice.graph.GraphService;
+import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocBindingService;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocumentService;
 
 /**
@@ -40,10 +41,13 @@ public class KnowledgeAdminController {
 
     private final KnowledgeDocumentService documentService;
     private final GraphService graphService;
+    private final KnowledgeDocBindingService bindingService;
 
-    public KnowledgeAdminController(KnowledgeDocumentService documentService, GraphService graphService) {
+    public KnowledgeAdminController(KnowledgeDocumentService documentService, GraphService graphService,
+                                    KnowledgeDocBindingService bindingService) {
         this.documentService = documentService;
         this.graphService = graphService;
+        this.bindingService = bindingService;
     }
 
     /**
@@ -82,6 +86,27 @@ public class KnowledgeAdminController {
      * 停用而不删除：引用是跨会话存在的历史事实，删掉会让已经发出去的 {@code [3]}
      * 点开是 404。停用只让它退出检索索引（{@code corpus()} 只下发启用状态的文档）。
      */
+    /**
+     * 某个商品的**归属**文档 —— 与 {@link #productDocuments} 是两件事，不是重复。
+     * <p>
+     * {@code productDocuments} 读的是**图**（模型从正文里抽出来的边），回答「这个商品在图上
+     * 连着什么资料」；这里读的是**关联表**（上传时人工声明的归属），回答「这个商品在册的
+     * 说明书是哪几篇」。两者不一致本身就是有价值的信号：
+     * 关联表有而图上没有 → 声明了归属但图谱没建出边（抽取漏了商品端）；
+     * 图上有而关联表没有 → 历史数据没回填。
+     * 合成一个接口会让这两种状态无法区分，而它们的处置完全不同。
+     */
+    @GetMapping("/products/{spuId}/bindings")
+    public Result<java.util.List<String>> productBindings(@PathVariable("spuId") Long spuId) {
+        return Result.success(bindingService.subjectDocsOf(spuId));
+    }
+
+    /** 一篇文档归属的商品 id */
+    @GetMapping("/documents/{docNo}/bindings")
+    public Result<java.util.List<Long>> documentBindings(@PathVariable("docNo") String docNo) {
+        return Result.success(bindingService.subjectSpusOf(docNo));
+    }
+
     @PutMapping("/documents/{docNo}/status")
     public Result<Void> changeStatus(@PathVariable("docNo") String docNo,
                                      @RequestParam("status") int status) {

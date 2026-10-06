@@ -3,6 +3,7 @@ id: KB-0028
 title: 柠檬酸钙胶囊产品说明书
 source: manual
 scope: nutrition
+subjects: 11
 version: v2026.04
 tags: 柠檬酸钙,钙,补钙,胃酸,乳糖不耐受,左甲状腺素,四环素,喹诺酮,用量,禁忌,相互作用
 ---

@@ -37,8 +37,14 @@ public record GroundedTriple(
         String effect,
         String docId,
         String chunkId,
-        int quoteStart,
-        int quoteEnd,
+        /**
+         * 引用在正文中的偏移。<b>可为 null</b>——归属声明补出的商品→成分边没有引用句，
+         * 它在正文里没有可锚定的位置。这一点必须用包装类型表达：声明成 {@code int} 时，
+         * 那条「没有引文」的边会在三元表达式里被拆箱成 null 而抛 NPE，
+         * 且抛在写入路径上——一篇文档因此整个写入失败，症状是「重建图谱时总有几篇莫名失败」。
+         */
+        Integer quoteStart,
+        Integer quoteEnd,
         String quote) {
 
     public String display() {

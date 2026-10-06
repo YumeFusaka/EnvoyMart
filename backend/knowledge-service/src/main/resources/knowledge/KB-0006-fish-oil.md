@@ -3,6 +3,7 @@ id: KB-0006
 title: 深海鱼油软胶囊产品说明书
 source: manual
 scope: nutrition
+subjects: 7
 version: v2026.01
 tags: 鱼油,欧米伽3,Omega3,EPA,DHA,血脂,用量
 ---

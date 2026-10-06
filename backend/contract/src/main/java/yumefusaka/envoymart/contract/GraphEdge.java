@@ -30,8 +30,13 @@ public record GraphEdge(
         String docId,
         String docTitle,
         String chunkId,
-        int quoteStart,
-        int quoteEnd,
+        /**
+         * 引用在正文中的偏移。<b>可为 null</b>——由归属声明补出的商品→成分边没有引用句，
+         * 在正文里没有可锚定的位置。用包装类型是为了让「没有出处」这件事有地方表示，
+         * 而不是被写成 {@code 0}（那会指向文档第一句，是一个看得见的假出处）。
+         */
+        Integer quoteStart,
+        Integer quoteEnd,
         String quote,
         GraphNode counterpart,
         List<String> chain) {

@@ -3,6 +3,7 @@ id: KB-0041
 title: 深海鱼油胶丸（高纯度）产品说明书
 source: manual
 scope: nutrition
+subjects: 33
 version: v2026.04
 tags: 鱼油,EPA,DHA,心脑血管,血脂,抗凝,出血,手术,用量,禁忌,相互作用
 ---

@@ -3,6 +3,7 @@ id: KB-0026
 title: 维生素 K2 软胶囊产品说明书
 source: manual
 scope: nutrition
+subjects: 9
 version: v2026.04
 tags: 维生素K2,甲萘醌,骨钙素,钙,骨质疏松,抗凝,华法林,用量,禁忌,相互作用
 ---

@@ -3,6 +3,7 @@ id: KB-0044
 title: 儿童铁锌口服液产品说明书
 source: manual
 scope: nutrition
+subjects: 36
 version: v2026.04
 tags: 儿童,铁,锌,口服液,补铁,挑食,钙,吸收,用量,禁忌,相互作用
 ---

@@ -3,6 +3,7 @@ id: KB-0047
 title: 氨糖维 D 钙片（中老年）产品说明书
 source: manual
 scope: nutrition
+subjects: 39
 version: v2026.04
 tags: 氨糖,氨基葡萄糖,软骨素,钙,维生素D3,关节,中老年,甲壳类,过敏,用量,禁忌,相互作用
 ---

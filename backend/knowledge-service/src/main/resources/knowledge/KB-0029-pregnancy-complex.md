@@ -3,6 +3,7 @@ id: KB-0029
 title: 孕期复合营养包产品说明书
 source: manual
 scope: nutrition
+subjects: 12
 version: v2026.04
 tags: 孕期,妊娠期,哺乳期,叶酸,铁,钙,DHA,左旋多巴,用量,禁忌,相互作用
 ---

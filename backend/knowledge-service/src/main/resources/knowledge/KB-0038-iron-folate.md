@@ -3,6 +3,7 @@ id: KB-0038
 title: 铁叶酸片产品说明书
 source: manual
 scope: nutrition
+subjects: 30
 version: v2026.04
 tags: 铁,叶酸,补铁,孕期,备孕,贫血,钙,吸收,用量,禁忌,相互作用
 ---

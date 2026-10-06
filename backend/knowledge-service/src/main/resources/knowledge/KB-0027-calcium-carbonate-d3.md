@@ -3,6 +3,7 @@ id: KB-0027
 title: 碳酸钙 D3 咀嚼片产品说明书
 source: manual
 scope: nutrition
+subjects: 10
 version: v2026.04
 tags: 碳酸钙,钙,维生素D3,补钙,骨质疏松,左甲状腺素,四环素,喹诺酮,用量,禁忌,相互作用
 ---

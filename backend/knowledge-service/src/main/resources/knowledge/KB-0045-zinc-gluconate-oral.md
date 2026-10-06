@@ -3,6 +3,7 @@ id: KB-0045
 title: 葡萄糖酸锌口服液产品说明书
 source: manual
 scope: nutrition
+subjects: 37
 version: v2026.04
 tags: 锌,葡萄糖酸锌,口服液,儿童,味觉,食欲,铜,用量,禁忌,相互作用
 ---

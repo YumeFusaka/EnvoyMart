@@ -3,6 +3,7 @@ id: KB-0039
 title: 锌硒宝片产品说明书
 source: manual
 scope: nutrition
+subjects: 31
 version: v2026.04
 tags: 锌,硒,微量元素,免疫,铜,用量,禁忌,相互作用
 ---

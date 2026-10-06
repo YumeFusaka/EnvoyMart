@@ -19,12 +19,16 @@ import yumefusaka.envoymart.knowledgeservice.model.ChunkRef;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentDetail;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentSummary;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentUpsertRequest;
+import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeDocProductEntity;
+import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocBindingService;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocumentService;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -32,6 +36,8 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
     private final KnowledgeDocumentMapper documentMapper;
     private final KnowledgeChunkMapper chunkMapper;
+    /** 商品-文档绑定。上传商品文档时把「这篇讲的是哪个商品」落进关联表 */
+    private final KnowledgeDocBindingService bindingService;
     /** 与 ai-service 建索引时用的是同一个实现、同一组参数，见 StructuralSplitter.standard() */
     private final TextSplitter splitter = StructuralSplitter.standard();
 
@@ -50,9 +56,11 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                     "promotion", "food_safety");
 
     public KnowledgeDocumentServiceImpl(KnowledgeDocumentMapper documentMapper,
-                                        KnowledgeChunkMapper chunkMapper) {
+                                        KnowledgeChunkMapper chunkMapper,
+                                        KnowledgeDocBindingService bindingService) {
         this.documentMapper = documentMapper;
         this.chunkMapper = chunkMapper;
+        this.bindingService = bindingService;
     }
 
     @Override
@@ -148,10 +156,17 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
     @Override
     public List<KnowledgeDocumentPayload> corpus() {
-        return documentMapper.selectList(Wrappers.<KnowledgeDocumentEntity>lambdaQuery()
+        List<KnowledgeDocumentEntity> docs = documentMapper.selectList(
+                Wrappers.<KnowledgeDocumentEntity>lambdaQuery()
                         .eq(KnowledgeDocumentEntity::getStatus, 1)
-                        .orderByAsc(KnowledgeDocumentEntity::getDocNo))
-                .stream().map(KnowledgeDocumentServiceImpl::toPayload).toList();
+                        .orderByAsc(KnowledgeDocumentEntity::getDocNo));
+        // 一次把全部 SUBJECT 关联查出来再分组，避免逐篇查（N+1）。
+        // 这份映射随语料下发给 ai-service，供图谱构建期确定性地补出「商品→成分」这条边
+        Map<String, List<Long>> subjectsByDoc = bindingService.all().stream()
+                .filter(r -> KnowledgeDocProductEntity.Role.SUBJECT.name().equals(r.getRole()))
+                .collect(Collectors.groupingBy(KnowledgeDocProductEntity::getDocNo,
+                        Collectors.mapping(KnowledgeDocProductEntity::getSpuId, Collectors.toList())));
+        return docs.stream().map(doc -> toPayload(doc, subjectsByDoc)).toList();
     }
 
     // ==================== 种子导入 ====================
@@ -192,6 +207,11 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                     .build();
         }
         upsertInternal(stored, false);
+        // 归属声明必须在文档落库之后：先有文档行，才谈得上它属于谁。
+        // 整体替换这一篇的 SUBJECT 集合——运营编辑文档时可能改了归属，
+        // 不替换的话旧归属会留着，商品下架时会连坐一篇已经不相关了的文档
+        bindingService.declareSubjects(stored.getId(), request.getSubjectSpuIds(),
+                KnowledgeDocProductEntity.MatchedBy.MANUAL);
         return stored.getId();
     }
 
@@ -249,6 +269,16 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             // 判断「要不要重切」交给数据库：先查出来比对再写回是读-改-写，两个实例同时启动会各写一次
             rowChanged = documentMapper.updateIfChanged(updated) > 0;
             doc = rowChanged ? requireDocument(seed.getId()) : existing;
+        }
+
+        // 归属声明与文档行一起落库：语料 front-matter 里的 subjects 是**人工声明的事实**，
+        // 不是模型推测。它必须在这里（种子/上传两条路都经过的地方）写入关联表，
+        // 否则图谱构建期就没有依据去补「SPUx -CONTAINS-> 成分」那条确定性边，
+        // 商品会在图上凭空消失。空声明的语义是「这篇文档不属于任何商品」，
+        // 因此在种子模式下只对带 subjects 的文档做替换，避免误清人工在管理台改过的归属。
+        if (seedMode && seed.getSubjectSpuIds() != null && !seed.getSubjectSpuIds().isEmpty()) {
+            bindingService.declareSubjects(seed.getId(), seed.getSubjectSpuIds(),
+                    KnowledgeDocProductEntity.MatchedBy.BACKFILL);
         }
 
         List<DocumentChunk> expected = splitter.split(toDocument(doc));
@@ -448,7 +478,8 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .build();
     }
 
-    private static KnowledgeDocumentPayload toPayload(KnowledgeDocumentEntity doc) {
+    private static KnowledgeDocumentPayload toPayload(KnowledgeDocumentEntity doc,
+                                                      Map<String, List<Long>> subjectsByDoc) {
         return KnowledgeDocumentPayload.builder()
                 .docNo(doc.getDocNo())
                 .title(doc.getTitle())
@@ -458,6 +489,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .tags(doc.getTags() == null || doc.getTags().isBlank()
                         ? List.of() : List.of(doc.getTags().split(",")))
                 .content(doc.getContent())
+                .subjectSpuIds(subjectsByDoc.getOrDefault(doc.getDocNo(), List.of()))
                 .build();
     }
 }

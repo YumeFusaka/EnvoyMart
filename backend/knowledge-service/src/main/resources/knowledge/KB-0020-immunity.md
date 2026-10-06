@@ -3,6 +3,7 @@ id: KB-0020
 title: 维生素 C 咀嚼片与锌硒宝片产品说明书
 source: manual
 scope: nutrition
+subjects: 20,21
 version: v2026.04
 tags: 维生素C,锌,硒,免疫,用量,相互作用
 ---

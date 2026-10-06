@@ -3,6 +3,7 @@ id: KB-0021
 title: 共轭亚油酸软胶囊与白芸豆膳食纤维片产品说明书
 source: manual
 scope: nutrition
+subjects: 22,23
 version: v2026.04
 tags: 共轭亚油酸,CLA,白芸豆,膳食纤维,体重管理,用量,相互作用
 ---

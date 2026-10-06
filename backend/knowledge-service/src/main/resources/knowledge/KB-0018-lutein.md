@@ -3,6 +3,7 @@ id: KB-0018
 title: 叶黄素酯软胶囊与越橘叶黄素片产品说明书
 source: manual
 scope: nutrition
+subjects: 18,19
 version: v2026.04
 tags: 叶黄素,叶黄素酯,越橘,花青素,护眼,黄斑,玉米黄质,用量,相互作用
 ---

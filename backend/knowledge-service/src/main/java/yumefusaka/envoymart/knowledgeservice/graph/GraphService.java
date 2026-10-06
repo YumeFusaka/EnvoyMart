@@ -111,7 +111,8 @@ public class GraphService {
 
     private static Triple toCandidate(GraphTriplePayload t) {
         return new Triple(t.getHeadKind(), t.getHeadName(), t.getHeadLabel(), t.getRelation(),
-                t.getTailKind(), t.getTailName(), t.getTailLabel(), t.getEffect(), t.getQuote());
+                t.getTailKind(), t.getTailName(), t.getTailLabel(), t.getEffect(), t.getQuote(),
+                Boolean.TRUE.equals(t.getDeclared()));
     }
 
     /** 整批重建后清理已无文档支持的实体 */

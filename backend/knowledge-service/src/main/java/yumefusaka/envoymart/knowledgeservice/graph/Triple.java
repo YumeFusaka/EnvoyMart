@@ -29,7 +29,12 @@ public record Triple(
         String tailName,
         String tailLabel,
         String effect,
-        String quote) {
+        String quote,
+        /**
+         * 这条边由代码按人工声明的归属补出，不需要引文。见 {@code GraphTriplePayload#declared}。
+         * <b>豁免范围只到「归属声明推出的商品→成分边」，不给「无引文」开通用口子。</b>
+         */
+        boolean declared) {
 
     /** 供日志与测试断言使用的紧凑表示 */
     public String display() {

@@ -3,6 +3,7 @@ id: KB-0005
 title: 维生素 D3 软胶囊产品说明书
 source: manual
 scope: nutrition
+subjects: 1
 version: v2026.03
 tags: 维生素D3,钙,骨质疏松,用量,禁忌,补充剂
 ---

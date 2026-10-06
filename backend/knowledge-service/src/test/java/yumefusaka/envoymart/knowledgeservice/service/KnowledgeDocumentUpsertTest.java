@@ -10,6 +10,8 @@ import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeDocumentEntity;
 import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeChunkMapper;
 import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeDocumentMapper;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentUpsertRequest;
+import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocBindingService;
+import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocBindingService;
 import yumefusaka.envoymart.knowledgeservice.service.impl.KnowledgeDocumentServiceImpl;
 
 import java.util.ArrayList;
@@ -49,6 +51,7 @@ class KnowledgeDocumentUpsertTest {
 
     private KnowledgeDocumentMapper documentMapper;
     private KnowledgeChunkMapper chunkMapper;
+    private KnowledgeDocBindingService bindingService;
     private KnowledgeDocumentServiceImpl service;
 
     /** 记录 insert 到文档表的实体，供断言编号与字段 */
@@ -60,6 +63,7 @@ class KnowledgeDocumentUpsertTest {
     void setUp() {
         documentMapper = mock(KnowledgeDocumentMapper.class);
         chunkMapper = mock(KnowledgeChunkMapper.class);
+        bindingService = mock(KnowledgeDocBindingService.class);
         inserted.clear();
         insertedChunks.clear();
 
@@ -77,7 +81,7 @@ class KnowledgeDocumentUpsertTest {
             return 1;
         });
 
-        service = new KnowledgeDocumentServiceImpl(documentMapper, chunkMapper);
+        service = new KnowledgeDocumentServiceImpl(documentMapper, chunkMapper, bindingService);
     }
 
     private DocumentUpsertRequest request(String title, String content) {

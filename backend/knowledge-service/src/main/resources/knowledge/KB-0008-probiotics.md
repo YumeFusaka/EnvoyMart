@@ -3,6 +3,7 @@ id: KB-0008
 title: 益生菌冻干粉使用与贮存指南
 source: manual
 scope: nutrition
+subjects: 5
 version: v2026.04
 tags: 益生菌,肠道,活菌,贮存,冷藏,抗生素
 ---
