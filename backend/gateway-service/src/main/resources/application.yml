@@ -2,6 +2,11 @@ server:
   port: 8080
 
 spring:
+  # 共享的 Nacos 注册容错（见 common/src/main/resources/envoymart-nacos.yml）。
+  # 放在这里而不是复制进每个服务：九份副本迟早分叉，而它防的是一个只在
+  # 「九个服务同时冷启动」时才出现的竞态——分叉了也没人能在单服务启动时发现。
+  config:
+    import: classpath:envoymart-nacos.yml
   application:
     name: gateway-service
   # 未显式指定 profile 时默认走 standalone：用静态实例列表代替注册中心，开箱即可路由

@@ -5,8 +5,13 @@ package yumefusaka.envoymart.agent.loop;
  * <p>
  * <b>两件本该由我们决定的事，靠前两个键送进工具循环：</b>循环边界与调用者身份。
  * 它们的共同点是<b>都不能由模型提供</b>——模型既不知道真实用户是谁，
- * 也不该有权决定自己还能调用几次。放进 toolContext 由循环实现读取，
+ * 也不该有权决定自己还能调用几次。放进这张 per-request 的 Map、由图传给
+ * {@code LLMProvider} 的 {@code chatWithTools(...)}，由循环实现读出来，
  * 使这些判断在模型可见的范围之外。
+ * <p>
+ * <b>它不是框架的 toolContext</b>：迁移到 LangChain4j 之后工具循环由
+ * {@code LangChain4jLLMProvider} 自己驱动，这张 Map 只是它与调用方之间的参数，
+ * 循环内部会被解成 {@code LoopContext}。
  * <p>
  * 这里<b>没有</b>「用户已确认」这个键，是刻意的：确认不是循环的一个开关，
  * 而是一份绑定了具体动作的签名载荷（见 {@code ApprovalTokens}），
@@ -14,7 +19,7 @@ package yumefusaka.envoymart.agent.loop;
  * 循环里撞上它只有一条路：拦下、记进 {@link #PENDING_ACTIONS}、中断。
  * <p>
  * 第三个键方向相反（{@link #PENDING_ACTIONS}）：循环里拦下的高危操作靠它
- * 传回给调用方。进出都走这一个上下文，是因为循环的调用方与实现之间
+ * 传回给调用方。进出都走这一张 Map，是因为循环的调用方与实现之间
  * 本就只有这一个 per-request 通道。
  */
 public final class ToolContextKeys {

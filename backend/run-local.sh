@@ -135,6 +135,11 @@ export PAYMENT_MOCK_ENABLED="${PAYMENT_MOCK_ENABLED:-true}"
 # 建检索索引，拉不到就拒绝启动（空语料的 AI 会对着每一句话回「知识库中没有相关依据」，
 # 而健康检查是绿的——那比起不来更危险）。ai-service 侧有重试，所以这个顺序是优化
 # 而不是硬约束；但让它先起能少等一轮重试。
+# 服务就绪等待窗口（秒）。它是「从发出启动命令到最慢的服务自报就绪」的上限。
+# 实测九服务冷启动各自在 40 秒内就绪（ai-service 的索引重建已改到后台，不再占启动期），
+# 留 180 秒是给机器满载、首次建索引、Docker 刚起来这类情况的余量。
+# 调小只影响脚本判定，不影响服务自身。
+WAIT_HEALTHY_SECONDS=${WAIT_HEALTHY_SECONDS:-180}
 SERVICES=(gateway-service auth-service product-service order-service knowledge-service ai-service payment-service review-service promotion-service)
 # 与 SERVICES 逐位对齐，改 SERVICES 的顺序必须同步改这里——
 # 错位的后果是某个服务连上别人的库，而且它能正常启动、直到第一次查表才报「表不存在」
@@ -155,6 +160,31 @@ index_of() {
 # 别的进程，而服务自己按 yml 绑 9008，一切看起来正常。事实源只有一个，才不会有第二处能写错。
 port_of() {
   sed -n 's/^  port: *\([0-9]\{1,\}\).*/\1/p' "$1/src/main/resources/application.yml" | head -1
+}
+
+# 批量启动前的一次全量重编。
+#
+# 为什么要有这一步：start_one 里原本每服务各做一次 clean compile（U71 的 ECJ 桩 class 防呆），
+# 九次串行实测约 113 秒——而它防的只是"单服务被单独重启时跑到旧 class"。批量启动时，
+# 一次全量 clean compile 给出同样的保证（clean 删掉全部 ECJ 桩、compile 保证 class 来自本次源码），
+# 代价只有一次。脚本开头已经把 contract / common / agent-core 装进本地仓库，
+# 这里的目标因此是九个服务模块。
+#
+# 记 PRECOMPILED=1 让 start_one 跳过自己的那一遍。单独重启某个服务（./run-local.sh stop X 后
+# 再 start X）时这个开关不在，单个服务仍然自带那一遍——那条路径上的防呆没有削弱。
+precompile_all() {
+  echo "预编译九个服务（一次全量，替代九次串行 clean compile）..."
+  local t0=$SECONDS
+  # 模块列表用 -pl 的逗号语法一次传入。不写成 $(IFS=,; echo ...) 那种子 shell 技巧：
+  # 它的正确性依赖 IFS 在子 shell 里的展开时机，读的人第一眼看不出来它拼的是什么。
+  local modules
+  modules=$(printf ",%s" "${SERVICES[@]}")
+  modules=${modules:1}
+  if ! mvn -q -B -pl "$modules" clean compile >> "$LOG_DIR/compile-all.log" 2>&1; then
+    echo "预编译失败，终止启动（详见 $LOG_DIR/compile-all.log）" >&2
+    return 1
+  fi
+  echo "预编译完成（$((SECONDS - t0)) 秒）"
 }
 
 start_one() {
@@ -201,14 +231,20 @@ start_one() {
   mkdir -p "$LOG_DIR"
   rotate_log "$svc"
   echo "启动 $svc (端口 $(port_of "$svc")) → $LOG_DIR/$svc.log"
-  # 启动前强制重编（U71）：VSCode 的 Java 扩展（ECJ）编译失败时照样往 target/classes 写桩 class，
-  # 而 Maven 增量编译按时间戳判断"class 比源码新"于是跳过重编，直接跑那个坏 class——
-  # 三种面孔都见过：接口 500、启动即 NoClassDefFoundError、以及最阴的"代码改了但行为没变"。
-  # clean 会删掉 ECJ 写的桩，compile 保证目标目录里的 class 一定来自这次源码。
-  mvn -q -B -pl "$svc" clean compile >> "$LOG_DIR/$svc.log" 2>&1 || {
-    echo "  ⚠ $svc 编译失败，跳过启动（详见 $LOG_DIR/$svc.log）" >&2
-    return 1
-  }
+  # 单服务启动时自己重编一次（U71 防呆）：VSCode 的 Java 扩展（ECJ）编译失败时照样往
+  # target/classes 写桩 class，而 Maven 增量编译按时间戳判断"class 比源码新"于是跳过重编，
+  # 直接跑那个坏 class——三种面孔都见过：接口 500、启动即 NoClassDefFoundError、
+  # 以及最阴的"代码改了但行为没变"。clean 会删掉 ECJ 写的桩。
+  #
+  # 但批量启动时不在这里做：一次 clean compile 实测 12.5 秒，九个串行近两分钟，
+  # 而它防的是"单服务被单独重启时跑旧 class"这一种情形。批量的等价保证由
+  # precompile_all() 一次全量完成（同样 clean，覆盖全部模块）。
+  if [ "${PRECOMPILED:-0}" != "1" ]; then
+    mvn -q -B -pl "$svc" clean compile >> "$LOG_DIR/$svc.log" 2>&1 || {
+      echo "  ⚠ $svc 编译失败，跳过启动（详见 $LOG_DIR/$svc.log）" >&2
+      return 1
+    }
+  fi
   env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run "${agent_args[@]}" > "$LOG_DIR/$svc.log" 2>&1 &
   # disown 不是可选项：只写 nohup ... & 时，MSYS/Git Bash 会在脚本退出时
   # 回收整个作业组，服务随之被杀——而日志里只留下 Spring 正常关闭的样子，
@@ -292,13 +328,25 @@ stop_services() {
 # /actuator/health 会走它的路由落到下游并返回 404——那恰恰说明它已经在转发了。
 # wait_healthy 与补启轮的复查共用这个函数；两处各写一份的话，迟早分叉成
 # 「脚本说全就绪、实际有个服务半死」或反向的假红灯。
-svc_ready() { # 服务名
+#
+# 三态返回，因为「端口在监听、但端点说还没好」是**正常的启动中间态**，不是失败：
+#   0 就绪（200，或网关那种 404）
+#   2 启动中（503——Spring 的 readiness 还是 OUT_OF_SERVICE，典型的是应用在跑
+#     ApplicationReadyEvent 里的启动任务。ai-service 建全量检索索引要几分钟，
+#     这几分钟里它每一条日志都正常、进程也健康，只是还不能接流量）
+#   1 未响应/未监听（进程没起来、崩了，或端口不通）
+#
+# 2026-10-06 踩到的坑：把 503 和「没起来」揉成同一种失败，补启轮就会反复 kill 掉
+# 一个正在正常建索引的 ai-service，索引从头再建一遍，永远追不上等待窗口——
+# 表现是「ai-service 补启两轮仍未就绪」，而它其实每次都跑得好好的。
+svc_ready() { # 服务名 → 0 就绪 / 2 启动中 / 1 未响应
   local port code
   port=$(port_of "$1")
   port_listening "$port" || return 1
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/actuator/health" 2>/dev/null)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:$port/actuator/health" 2>/dev/null)
   case "$code" in
     200|404) return 0 ;;
+    503) return 2 ;;
     *) return 1 ;;
   esac
 }
@@ -307,8 +355,12 @@ svc_ready() { # 服务名
 # 机器正忙），而它触发的动作是 kill + 重启一个**本来健康**的服务——2026-10-03
 # 冷启动实测里 auth-service 就这样被误杀过一次（被杀前日志毫无异常）。
 # 两次都失败才判失败。
-svc_ready_confirm() { # 服务名
-  svc_ready "$1" && return 0
+#
+# 返回 0 就绪、2 启动中（活着，**不能杀**）、1 失败（可以补启）。
+svc_ready_confirm() { # 服务名 → 0 就绪 / 2 启动中 / 1 失败
+  local rc
+  svc_ready "$1"; rc=$?
+  [ "$rc" -eq 0 ] && return 0
   sleep 2
   svc_ready "$1"
 }
@@ -333,17 +385,27 @@ wait_healthy() { # [服务名...]，不传则检查全部；未全就绪返回 1
   for svc in "${targets[@]}"; do state[$svc]=0; done
 
   local pending
-  for _ in $(seq 1 90); do   # 90 轮 × 2 秒 = 180 秒总余量（实测最慢服务带 agent 启动 66 秒）
+  # 用墙钟截止而不是轮数预算：每轮要对每个 pending 服务串行做 netstat + curl，
+  # 未监听的端口上 curl 要耗满 --max-time，一轮最坏能到十几秒——「90 轮」这种写法
+  # 名义 180 秒、实际窗口随负载剧烈浮动，实测最晚起的 ai-service 就卡在预算边缘被
+  # 误报成「未就绪」。窗口必须与每轮耗时解耦。
+  local deadline=$(( $(date +%s) + WAIT_HEALTHY_SECONDS ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
     pending=()
     for svc in "${targets[@]}"; do
       [ "${state[$svc]}" -ne 0 ] && continue
-      if svc_ready "$svc"; then
-        state[$svc]=1; printf '%-18s就绪\n' "$svc"
-      elif grep -qE "Application run failed|BUILD FAILURE|Process terminated with exit code" "$LOG_DIR/$svc.log" 2>/dev/null; then
-        state[$svc]=2; printf '%-18s启动失败（看 %s/%s.log）\n' "$svc" "$LOG_DIR" "$svc"
-      else
-        pending+=("$svc")
-      fi
+      svc_ready "$svc"; local rc=$?
+      case "$rc" in
+        0) state[$svc]=1; printf '%-18s就绪\n' "$svc" ;;
+        2) pending+=("$svc") ;;   # 端口通、readiness 还是 OUT_OF_SERVICE：正在初始化，继续等
+        *)
+          if grep -qE "Application run failed|BUILD FAILURE|Process terminated with exit code" "$LOG_DIR/$svc.log" 2>/dev/null; then
+            state[$svc]=2; printf '%-18s启动失败（看 %s/%s.log）\n' "$svc" "$LOG_DIR" "$svc"
+          else
+            pending+=("$svc")
+          fi
+          ;;
+      esac
     done
     [ ${#pending[@]} -eq 0 ] && break
     sleep 2
@@ -353,7 +415,7 @@ wait_healthy() { # [服务名...]，不传则检查全部；未全就绪返回 1
   for svc in "${targets[@]}"; do
     case "${state[$svc]}" in
       1) ;;
-      0) printf '%-18s未就绪（180 秒内没等到，看 %s/%s.log）\n' "$svc" "$LOG_DIR" "$svc"; ok=0 ;;
+      0) printf '%-18s未就绪（%s 秒内没等到，看 %s/%s.log）\n' "$svc" "$WAIT_HEALTHY_SECONDS" "$LOG_DIR" "$svc"; ok=0 ;;
       *) ok=0 ;;
     esac
   done
@@ -639,21 +701,37 @@ EOF
 start_all_services() {
   local svc port round
   local failed=()
+  precompile_all
+  export PRECOMPILED=1
   for svc in "${SERVICES[@]}"; do
     port=$(port_of "$svc")
     if port_listening "$port"; then
       echo "跳过 $svc（端口 $port 已在监听）"
     else
       start_one "$svc"
-      sleep 8
+      # 错峰从 8 秒收到 2 秒。原先那 8 秒是为了绕开 Nacos 注册竞态，而竞态的真正修法是
+      # 配置层的容错参数（已提为九服务共享的 envoymart-nacos.yml，见 common 模块）——
+      # 靠拉长错峰只是降低概率，治不了根。竞态修掉后，这里的错峰只剩"别让九个 JVM
+      # 在同一毫秒抢 CPU"的作用，2 秒足够，九个服务因此少等 54 秒。
+      # 真实失败仍由补启轮兜底，"最终全部就绪"这个承诺不变。
+      sleep 2
     fi
   done
   wait_healthy
 
   for round in 1 2; do
     failed=()
+    starting=()
     for svc in "${SERVICES[@]}"; do
-      svc_ready_confirm "$svc" || failed+=("$svc")
+      svc_ready_confirm "$svc"; rc=$?
+      case "$rc" in
+        0) ;;
+        # 仍在初始化（readiness 说 OUT_OF_SERVICE）：**绝不能补启**。
+        # 它的进程是好的，杀它等于把已经跑了半程的启动任务清零重来——
+        # ai-service 建全量索引要几分钟，被这样反复杀掉就永远到不了就绪。
+        2) starting+=("$svc") ;;
+        *) failed+=("$svc") ;;
+      esac
     done
     [ ${#failed[@]} -eq 0 ] && break
     echo "第 $round 轮补启：${failed[*]}"
@@ -662,15 +740,25 @@ start_all_services() {
       # （等满 180 秒仍不响应）——那类不清掉，新进程绑不上端口。
       kill_port "$svc" "$(port_of "$svc")"
       start_one "$svc"
-      sleep 8
+      sleep 2
     done
     wait_healthy "${failed[@]}"
   done
 
-  failed=()
+  # 终判也分三态：仍在初始化的服务**不算失败**，它的启动任务还在跑，
+  # 该做的只是把这件事说清楚，而不是回一个「环境没起来」。
+  failed=(); starting=()
   for svc in "${SERVICES[@]}"; do
-    svc_ready "$svc" || failed+=("$svc")
+    svc_ready "$svc"; rc=$?
+    case "$rc" in
+      0) ;;
+      2) starting+=("$svc") ;;
+      *) failed+=("$svc") ;;
+    esac
   done
+  if [ ${#starting[@]} -gt 0 ]; then
+    echo "仍在初始化（端口已通，暂不能接流量）：${starting[*]}——启动任务在后台继续跑，不必重启"
+  fi
   if [ ${#failed[@]} -gt 0 ]; then
     echo "补启两轮后仍未就绪：${failed[*]}（看 $LOG_DIR/<服务>.log 末尾的报错）" >&2
     return 1
@@ -685,19 +773,34 @@ start_all_services() {
 #   mode=master 前端走生产产物（vite build + preview）
 run_all() { # mode
   local mode="$1"
+  # 分段计时：启动慢的时候，「慢在预检/中间件/服务/前端」必须一眼看得出来，
+  # 而不是靠人肉盯日志猜。整段结束打印一行阶段汇总。
+  local t_begin=$SECONDS t_pre=$SECONDS t_mid t_svc t_derived t_fe
 
   preflight || { echo "预检未过，环境没启动" >&2; exit 1; }
+  t_pre=$((SECONDS - t_pre))
 
   # 只有生产产物才需要提前构建；dev 模式现编译，无需这一步。
   # 构建与中间件/服务零依赖，放进后台与启动并行（见 frontend_build_bg）。
   [ "$mode" = "master" ] && frontend_build_bg
 
+  t_mid=$SECONDS
   middleware_up || exit 1
+  t_mid=$((SECONDS - t_mid))
 
+  t_svc=$SECONDS
   start_all_services || exit 1
+  t_svc=$((SECONDS - t_svc))
+  t_derived=$SECONDS
   resync_derived
+  t_derived=$((SECONDS - t_derived))
 
+  t_fe=$SECONDS
   frontend_up "$mode" || exit 1
+  t_fe=$((SECONDS - t_fe))
+
+  printf '启动阶段耗时：预检 %s 秒 · 中间件 %s 秒 · 服务 %s 秒 · 派生数据 %s 秒 · 前端 %s 秒 · 合计 %s 秒\n' \
+    "$t_pre" "$t_mid" "$t_svc" "$t_derived" "$t_fe" "$((SECONDS - t_begin))"
   print_entries "$mode"
 }
 

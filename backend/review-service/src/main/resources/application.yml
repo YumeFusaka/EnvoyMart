@@ -2,6 +2,11 @@ server:
   port: 9006
 
 spring:
+  # 共享的 Nacos 注册容错（见 common/src/main/resources/envoymart-nacos.yml）。
+  # 放在这里而不是复制进每个服务：九份副本迟早分叉，而它防的是一个只在
+  # 「九个服务同时冷启动」时才出现的竞态——分叉了也没人能在单服务启动时发现。
+  config:
+    import: classpath:envoymart-nacos.yml
   application:
     name: review-service
   datasource:
@@ -12,6 +17,11 @@ spring:
   sql:
     init:
       mode: always
+  cloud:
+    nacos:
+      discovery:
+        enabled: ${NACOS_ENABLED:false}
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
   # 同 (商品, IP) 的短窗口评价计数（刷评治理①）。Redis 不可用时该计数 fail-open，
   # 评价本身照常写入 —— 见 ReviewFloodGuard
   data:

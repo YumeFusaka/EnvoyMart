@@ -79,7 +79,17 @@ public class KnowledgeIndexer {
                     + "本次运行中检索将恒为空，AI 回答会全部落到「知识库中没有相关依据」");
             return;
         }
-        rebuild();
+        // 异步建，**不能同步**。这句曾经是 rebuild()：它把整库 embedding + 全量图谱抽取
+        // 压在 ApplicationReadyEvent 的同步监听器里，而 readiness 探针要等这个事件广播完
+        // 才把实例标成 ACCEPTING_TRAFFIC——于是服务在「已启动、正在建索引」的几分钟里
+        // /actuator/health 一直是 503 OUT_OF_SERVICE。后果不是慢，是**起不来**：
+        // run-local.sh 的 svc_ready 只认 200/404，会把 503 当未就绪，补启轮再 kill 掉它
+        // 重启，索引从头再建一遍，永远追不上脚本的等待窗口（2026-10-06 实测三轮全失败）。
+        //
+        // 语料从 15 篇涨到 47 篇后，这段阻塞从七十几秒涨到三分多钟，才把这个一直存在的
+        // 设计问题暴露出来。异步化后：readiness 立刻可用，索引在后台建，进度由
+        // status() / 管理台接口可观测；期间检索会偏空，这是「索引尚未建完」的如实结果。
+        rebuildAsync();
     }
 
     /**

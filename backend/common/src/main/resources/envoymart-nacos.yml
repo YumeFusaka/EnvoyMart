@@ -1,0 +1,21 @@
+# 九个服务共享的 Nacos 注册配置，由各服务的 application.yml 用 spring.config.import 引入。
+#
+# 为什么必须共享：这套容错参数原先只有 review-service 配了（它当时是唯一崩溃的那个），
+# 其余八个继续裸用默认值。2026-10-06 冷启动实测，knowledge / payment / promotion /
+# ai 四个服务同时崩在同一个地方——Nacos 客户端的 gRPC 长连接还停在 STARTING 就发注册，
+# 被拒后 failFast 直接终止进程（日志：Failed to start bean 'webServerStartStop' →
+# NamingGrpcClientProxy.registerServiceForEphemeral）。**谁裸用默认值谁就是下一个倒霉蛋**，
+# 逐个服务去补只是在轮换受害者。
+#
+# 为什么不是关掉 failFast：注册本来就该重试。真的连不上 Nacos 时这里仍然会失败退出，
+# 只是不再把「九个 JVM 同时抢建连」这个瞬时拥塞也判成永久故障。
+spring:
+  cloud:
+    nacos:
+      discovery:
+        register-enabled: true
+        # 建连失败不直接判死，先按下面的超时重试
+        failure-tolerance-enabled: true
+        # 拉长建连窗口，覆盖九个服务同时冷启动的资源竞争期。
+        # 默认值在单服务启动时够用，并发时不够——而并发正是 run-local.sh 的常态。
+        watch-delay: 10000

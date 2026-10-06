@@ -24,9 +24,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 这里的设计要点是<b>统一</b>：
  * <ul>
  *   <li>执行图里的 ACT → EVALUATE → REPLAN 环，由节点直接调用；</li>
- *   <li>ReAct 的工具循环：由执行图在组装请求时把同一个护栏放进 provider 的循环上下文
- *       （{@code AgentGraph} 写入 {@link ToolContextKeys#LOOP_GUARD}），
- *       {@code LangChain4jLLMProvider} 在自己的循环体里读出来判定。
+ *   <li>ReAct 的工具循环：由执行图把同一个护栏放进调用参数里的 per-request 上下文
+ *       （{@code AgentGraph} 写入 {@link ToolContextKeys#LOOP_GUARD} 这个键，
+ *       {@code LangChain4jLLMProvider.chatWithTools(...)} 收到后解成 {@code LoopContext}），
+ *       在 provider 自己的循环体里读出来判定。
  *       <b>护栏是循环体内的一个局部判断，不是包在工具外的装饰器</b>——
  *       {@code ChatModel.chat()} 那次迁移之后工具循环是框架自驱的，
  *       可拦截的位置只有循环体内部这一处。</li>
