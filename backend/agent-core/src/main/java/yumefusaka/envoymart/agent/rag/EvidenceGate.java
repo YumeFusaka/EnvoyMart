@@ -58,6 +58,17 @@ public final class EvidenceGate {
         public boolean isSufficient() {
             return level == Level.SUFFICIENT;
         }
+
+        /**
+         * 「本轮没有知识依据」的判定。
+         * <p>
+         * 用在「检索还没发生」的时刻：此时确实没有依据，而下游的 prompt 组装要一个判定
+         * 才不会把切片误当依据。用一个显式工厂而不是 {@code null}，是为了让调用点读起来
+         * 就是「这里判定为无依据」，而不是「这里忘了传」。
+         */
+        public static Decision none() {
+            return new Decision(Level.NONE, null, "未检索");
+        }
     }
 
     /**

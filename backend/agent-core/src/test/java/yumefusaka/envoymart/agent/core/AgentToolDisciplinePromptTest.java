@@ -69,7 +69,8 @@ class AgentToolDisciplinePromptTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
+                               java.util.function.Supplier<RetrievalResult> retriever) {
             this.lastSystemPrompt = systemPrompt == null ? "" : systemPrompt;
             return GraphResult.builder().answer("stub").steps(List.of()).build();
         }

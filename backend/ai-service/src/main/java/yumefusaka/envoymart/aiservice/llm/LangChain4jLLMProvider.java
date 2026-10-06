@@ -504,8 +504,17 @@ public class LangChain4jLLMProvider implements LLMProvider {
 
     @Override
     public List<PlanStep> plan(String userMessage, List<ToolDefinition> availableTools, String context) {
+        // 只取计划部分：既有调用方（评测、单测）不关心检索意图
+        return planWithIntent(userMessage, availableTools, context).plan();
+    }
+
+    @Override
+    public yumefusaka.envoymart.agent.llm.PlanWithIntent planWithIntent(
+            String userMessage, List<ToolDefinition> availableTools, String context) {
         if (availableTools.isEmpty()) {
-            return List.of();
+            // 没有可用工具时仍可能要检索：用户问「七天无理由怎么算」没有工具能答，
+            // 答案在政策文档里。所以这里不能直接回 needRetrieval=false
+            return new yumefusaka.envoymart.agent.llm.PlanWithIntent(List.of(), true);
         }
 
         String toolList = availableTools.stream()
@@ -543,6 +552,14 @@ public class LangChain4jLLMProvider implements LLMProvider {
                                 不要把驼峰改成下划线——工具按声明名取参数，写错的键取不到值。
                                 只输出 JSON，不要任何解释。
 
+                                另外，在同一份 JSON 里判断本轮是否需要先查平台知识库（说明书 / 政策 / 成分说明）。
+                                输出格式改为一个对象：
+                                {"plan":[...上面的数组...],"needRetrieval":true|false}。
+                                needRetrieval 只在纯闲聊（「你好」「你是谁」）或纯业务操作
+                                （加购 / 查订单 / 取消 / 退款，答案全在工具里、不需要知识库）时为 false；
+                                其余一律为 true：商品咨询、成分与禁忌、规则与政策、健康与症状类提问，
+                                答案的依据都在知识库里。拿不准时填 true——漏检索会让回答没有依据。
+
                                 可用工具：
                                 """ + toolList + background)
                         .build(),
@@ -557,14 +574,58 @@ public class LangChain4jLLMProvider implements LLMProvider {
                     .maxTokens(defaultConfig.getMaxTokens())
                     .build();
             LLMResponse response = chat(messages, planConfig);
-            return parsePlan(response.getContent());
+            return parsePlanWithIntent(response.getContent());
         } catch (Exception e) {
             log.warn("[LangChain4jLLMProvider] plan failed, fallback to rule-based: {}", e.getMessage());
-            return List.of();
+            // 解析失败时退回「计划为空 + 需要检索」：这是最保守的一侧——
+            // 少了检索会让模型没有依据，而多一次检索只是慢一点
+            return new yumefusaka.envoymart.agent.llm.PlanWithIntent(List.of(), true);
         }
     }
 
-/**
+    /**
+     * 解析规划器的输出：既可能是新格式 {@code {"plan":[...],"needRetrieval":bool}}，
+     * 也可能是旧格式的裸数组 {@code [...]}。
+     * <p>
+     * <b>两种都要认</b>：模型偶尔会忽略格式要求直接回数组，而评测夹具里也是裸数组。
+     * 只认一种的话，另一种会被当成「解析失败 → 计划为空」，症状是「明明有工具却一步都没执行」。
+     */
+    @SuppressWarnings("unchecked")
+    private yumefusaka.envoymart.agent.llm.PlanWithIntent parsePlanWithIntent(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return new yumefusaka.envoymart.agent.llm.PlanWithIntent(List.of(), true);
+        }
+        // 输出可能是新格式的对象，也可能是旧格式的裸数组；两种都从第一个 JSON 起始符截到最后一个结束符，
+        // 容忍模型在 JSON 前后附带的解释性文字
+        int objStart = raw.indexOf('{');
+        int arrStart = raw.indexOf('[');
+        boolean asObject = objStart >= 0 && (arrStart < 0 || objStart < arrStart);
+        int start = asObject ? objStart : arrStart;
+        int end = asObject ? raw.lastIndexOf('}') : raw.lastIndexOf(']');
+        if (start < 0 || end <= start) {
+            return new yumefusaka.envoymart.agent.llm.PlanWithIntent(List.of(), true);
+        }
+        String json = raw.substring(start, end + 1);
+        try {
+            if (asObject) {
+                Object parsed = MAPPER.readValue(json, Object.class);
+                if (!(parsed instanceof java.util.Map<?, ?> map)) {
+                    return new yumefusaka.envoymart.agent.llm.PlanWithIntent(List.of(), true);
+                }
+                Object planNode = map.get("plan");
+                String planJson = MAPPER.writeValueAsString(planNode == null ? List.of() : planNode);
+                boolean needRetrieval = !Boolean.FALSE.equals(map.get("needRetrieval"));
+                return new yumefusaka.envoymart.agent.llm.PlanWithIntent(parsePlan(planJson), needRetrieval);
+            }
+            // 裸数组：旧格式，按需要检索处理（与缺省一致）
+            return new yumefusaka.envoymart.agent.llm.PlanWithIntent(parsePlan(json), true);
+        } catch (Exception e) {
+            log.warn("[LangChain4jLLMProvider] 解析规划输出失败，按「无计划 + 需要检索」处理：{}", e.getMessage());
+            return new yumefusaka.envoymart.agent.llm.PlanWithIntent(List.of(), true);
+        }
+    }
+
+    /**
      * 执行失败后的自我诊断：让模型先说清「为什么会失败」，再决定换什么策略。
      * <p>
      * <b>与 plan() 的分工</b>：plan() 产出可执行计划，本方法只产出<b>一句诊断</b>，

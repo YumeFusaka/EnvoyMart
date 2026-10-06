@@ -105,7 +105,8 @@ class AgentApprovalTokenTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
+                               java.util.function.Supplier<RetrievalResult> retriever) {
             runs.incrementAndGet();
             if (actions == null) {
                 return GraphResult.builder().answer("图给的回答").steps(List.of()).build();

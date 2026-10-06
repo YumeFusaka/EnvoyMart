@@ -66,7 +66,8 @@ class AgentApprovalExitTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
+                               java.util.function.Supplier<RetrievalResult> retriever) {
             return GraphResult.builder()
                     .pendingActions(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))))
                     .toolExecutions(executions)

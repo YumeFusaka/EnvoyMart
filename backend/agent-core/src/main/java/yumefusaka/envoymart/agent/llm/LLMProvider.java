@@ -87,6 +87,22 @@ public interface LLMProvider {
     }
 
     /**
+     * 规划 + 检索意图，<b>一次调用两件事</b>。
+     * <p>
+     * 默认实现退回只做规划、且假定需要检索（{@link PlanWithIntent#of}）：
+     * 不知道意图时按老办法走，是最不容易出错的一侧——多检索一次只是慢一点，
+     * 而漏检索会让模型拿不到依据、只能拒答或编。
+     * <p>
+     * 真实实现（{@code LangChain4jLLMProvider}）在规划提示词里多要一个
+     * {@code needRetrieval} 字段，因此<b>不多花一次调用</b>。
+     */
+    default PlanWithIntent planWithIntent(String userMessage,
+                                          List<yumefusaka.envoymart.agent.tool.ToolDefinition> availableTools,
+                                          String context) {
+        return PlanWithIntent.of(plan(userMessage, availableTools, context));
+    }
+
+    /**
      * 对一份失败/空结果的执行轨迹做一次「自我诊断」，判断接下来该换什么策略。
      * <p>
      * <b>为什么要在重规划之外单独加一层</b>：重规划问的是「下一步做什么」，模型的默认反应

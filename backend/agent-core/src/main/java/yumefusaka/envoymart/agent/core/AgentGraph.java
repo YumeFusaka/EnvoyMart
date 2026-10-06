@@ -71,11 +71,13 @@ public class AgentGraph {
     private static final long STEP_TIMEOUT_MS = 15_000;
 
     private static final String NODE_PLAN = "plan";
+    private static final String NODE_RETRIEVE = "retrieve";
     private static final String NODE_ACT = "act";
     private static final String NODE_EVALUATE = "evaluate";
     private static final String NODE_REPLAN = "replan";
     private static final String NODE_ANSWER = "answer";
 
+    private static final String ROUTE_RETRIEVE = "retrieve";
     private static final String ROUTE_ACT = "act";
     private static final String ROUTE_ANSWER = "answer";
     private static final String ROUTE_EVALUATE = "evaluate";
@@ -106,6 +108,8 @@ public class AgentGraph {
      * 才有一把不随执行过程移动的尺子去判断「有没有跑偏」。
      */
     private static final String KEY_CORE_INTENT = "coreIntent";
+    /** 本轮是否需要入口检索；由规划节点写入，检索节点据此决定跑不跑 */
+    private static final String KEY_NEED_RETRIEVAL = "needRetrieval";
 
     private final LLMProvider llmProvider;
     private final LLMConfig llmConfig;
@@ -130,6 +134,24 @@ public class AgentGraph {
 
     public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                            LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
+        // 兼容旧调用方（不传检索器）：不检索，prompt 就是传入的那一份
+        return run(userId, message, systemPrompt, conversation, guard, onChunk, progress,
+                () -> RetrievalResult.empty());
+    }
+
+    /**
+     * 带入口检索的入口。
+     * <p>
+     * <b>为什么检索由图的节点发起、而不是调用方在进图之前先跑一遍</b>：
+     * 要不要检索取决于用户这句话是闲聊/业务操作，还是商品与规则咨询——
+     * 而那正是规划节点已经在判断的事。把判断放回节点里，就不必为了省一次检索
+     * 再多花一次模型调用（见 {@code LLMProvider#planWithIntent}）。
+     *
+     * @param retriever 真正执行检索的闭包；只在规划判定 needRetrieval=true 时被调用一次
+     */
+    public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
+                           LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
+                           java.util.function.Supplier<RetrievalResult> retriever) {
 
         GraphContext ctx = GraphContext.of(userId,
                 message,
@@ -137,13 +159,15 @@ public class AgentGraph {
                 conversation == null ? List.of() : conversation,
                 guard == null ? new LoopGuard() : guard,
                 onChunk,
-                ToolProgressListener.orNoop(progress));
+                ToolProgressListener.orNoop(progress),
+                retriever);
 
         Map<String, Object> initial = new HashMap<>();
         initial.put(KEY_STEPS, new ArrayList<GraphStep>());
         initial.put(KEY_PENDING, List.of());
         initial.put(KEY_ROUND, 1);
         initial.put(KEY_STAGE, TaskStage.PLANNING);
+        initial.put(KEY_NEED_RETRIEVAL, Boolean.TRUE);
 
         GraphState finalState = invoke(compile(ctx), initial);
 
@@ -157,6 +181,7 @@ public class AgentGraph {
                 .loops(ctx.guard().summary())
                 .stage(finalState.get(KEY_STAGE, TaskStage.DONE))
                 .coreIntent(finalState.get(KEY_CORE_INTENT, null))
+                .retrieval(ctx.retrieval().get())
                 .build();
     }
 
@@ -183,12 +208,14 @@ public class AgentGraph {
         try {
             return new StateGraph<>(GraphState::new)
                     .addNode(NODE_PLAN, AsyncNodeAction.node_async(state -> planNode(ctx, state)))
+                    .addNode(NODE_RETRIEVE, AsyncNodeAction.node_async(state -> retrieveNode(ctx, state)))
                     .addNode(NODE_ACT, AsyncNodeAction.node_async(state -> actNode(ctx, state)))
                     .addNode(NODE_EVALUATE, AsyncNodeAction.node_async(state -> evaluateNode(ctx, state)))
                     .addNode(NODE_REPLAN, AsyncNodeAction.node_async(state -> replanNode(ctx, state)))
                     .addNode(NODE_ANSWER, AsyncNodeAction.node_async(state -> answerNode(ctx, state)))
                     .addEdge(StateGraph.START, NODE_PLAN)
-                    .addConditionalEdges(NODE_PLAN, route(),
+                    .addEdge(NODE_PLAN, NODE_RETRIEVE)
+                    .addConditionalEdges(NODE_RETRIEVE, route(),
                             Map.of(ROUTE_ACT, NODE_ACT, ROUTE_ANSWER, NODE_ANSWER))
                     .addConditionalEdges(NODE_ACT, route(),
                             Map.of(ROUTE_EVALUATE, NODE_EVALUATE, ROUTE_END, StateGraph.END))
@@ -213,8 +240,13 @@ public class AgentGraph {
     private Map<String, Object> planNode(GraphContext ctx, GraphState state) {
         ctx.progress().throwIfCancelled();
         String context = planContext(ctx);
-        List<PlanStep> plan = filterRegistered(
-                llmProvider.plan(ctx.message(), toolRegistry.listDefinitions(), context));
+        // needRetrieval 与计划来自同一次调用（见 LLMProvider#planWithIntent）：
+        // 「这句话是闲聊/业务操作，还是要去知识库里找依据」正是规划器已经在判断的事，
+        // 单独再问一次模型等于为省一次检索多花一次调用
+        yumefusaka.envoymart.agent.llm.PlanWithIntent planned =
+                llmProvider.planWithIntent(ctx.message(), toolRegistry.listDefinitions(), context);
+        List<PlanStep> plan = filterRegistered(planned.plan());
+        boolean needRetrieval = planned.needRetrieval();
         // 计划里引用了「本步或更晚的步骤」= 缺了一步。这是模型最典型的一种漏步：
         // 用户说「先搜一下再把它加购」，它只写了加购那步、参数写成 $0.skuId 指望
         // 前面的搜索「本来就在」。
@@ -240,12 +272,47 @@ public class AgentGraph {
         // 首轮意图只在这里写一次：planNode 只在图的入口被调用，重规划走的是
         // replanNode，不会回到这里。于是「冻结」是结构保证的，不靠一个 if 判断
         String coreIntent = plan.isEmpty() ? null : intentOf(plan);
+        // 规划完先过检索节点：needRetrieval 为真时它会把知识段追加进 prompt，
+        // 再由它决定去执行还是直接作答。needRetrieval 为假时它原样放行
         return updates(KEY_PLAN, plan, KEY_ROUND, 1,
                 KEY_CORE_INTENT, coreIntent,
-                // 计划定下来了：无论下一步是执行还是直接作答，规划阶段都已经走完。
-                // 直接作答那条路（没有可用工具）在 answerNode 里会立刻改成 DONE
+                KEY_NEED_RETRIEVAL, needRetrieval,
                 KEY_STAGE, TaskStage.EXECUTING,
-                KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
+                KEY_ROUTE, ROUTE_RETRIEVE);
+    }
+
+    /**
+     * 入口检索节点 —— 按规划判定的 {@code needRetrieval} 决定要不要去知识库捞一次。
+     * <p>
+     * <b>为什么是独立节点而不是塞进规划节点</b>：检索是一次真实的下游调用（改写 + 三路召回 + 重排），
+     * 有它自己的失败可能。单独成节点，图里就能看见「这一轮跳过检索」与「检索跑了但空手而归」的区别，
+     * 而这两件事在调召回率时必须分开看。
+     */
+    private Map<String, Object> retrieveNode(GraphContext ctx, GraphState state) {
+        ctx.progress().throwIfCancelled();
+        boolean need = Boolean.TRUE.equals(state.get(KEY_NEED_RETRIEVAL, Boolean.TRUE));
+        List<PlanStep> plan = state.get(KEY_PLAN, List.<PlanStep>of());
+        if (!need) {
+            // 跳过检索也要把「为什么没检索」写进 prompt：否则模型看到的是一个没有知识段的
+            // prompt，与「检索了、什么都没查到」长得一样，它会据此说「知识库中没有相关依据」
+            ctx.runtimePrompt.updateAndGet(base -> base
+                    + "\n\n## 本轮检索\n本轮问题不涉及平台知识（闲聊或纯业务操作），未做知识库检索。"
+                    + "不要因此声称「知识库中没有依据」——那是没查，不是没有。\n");
+            log.info("[Graph] 本轮跳过入口检索（规划判定无需检索）");
+            return updates(KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
+        }
+        try {
+            RetrievalResult result = ctx.retriever() == null ? RetrievalResult.empty() : ctx.retriever().get();
+            ctx.retrieval().set(result);
+            if (result != null && result.contextSection() != null && !result.contextSection().isBlank()) {
+                ctx.runtimePrompt.updateAndGet(base -> base + "\n\n" + result.contextSection());
+            }
+        } catch (RuntimeException e) {
+            // 检索失败不能阻断回答：推理中途还有 knowledge_search 工具可以补一次。
+            // 但必须留痕——把「检索挂了」当成「没有依据」是最难发现的失真
+            log.warn("[Graph] 入口检索失败，本轮无知识段，模型仍可调用 knowledge_search 重试", e);
+        }
+        return updates(KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
     }
 
     /**
@@ -728,7 +795,7 @@ public class AgentGraph {
             context.append("\n「无结果」表示查询条件没匹配上任何数据：请换用不同的关键词、"
                     + "更宽或更窄的条件，或换一个工具再试，不要用同样的参数重发。");
         }
-        context.append("\n\n已知背景：\n").append(ctx.systemPrompt());
+        context.append("\n\n已知背景：\n").append(ctx.currentPrompt());
 
         // 自我诊断：先让模型说清「为什么失败」，再据此规划。
         // 与重规划分成两次调用，是因为两件事的默认反应相反——诊断倾向于「换个说法再试」，
@@ -775,8 +842,8 @@ public class AgentGraph {
 
     private String converse(GraphContext ctx) {
         List<ChatMessage> messages = new ArrayList<>();
-        if (!ctx.systemPrompt().isEmpty()) {
-            messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(ctx.systemPrompt()).build());
+        if (!ctx.currentPrompt().isEmpty()) {
+            messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(ctx.currentPrompt()).build());
         }
         if (!ctx.conversation().isEmpty()) {
             messages.addAll(ctx.conversation());
@@ -790,8 +857,8 @@ public class AgentGraph {
         String observations = renderObservations(steps);
 
         List<ChatMessage> messages = new ArrayList<>();
-        if (!ctx.systemPrompt().isEmpty()) {
-            messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(ctx.systemPrompt()).build());
+        if (!ctx.currentPrompt().isEmpty()) {
+            messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(ctx.currentPrompt()).build());
         }
         // 历史必须带上，否则「那能退吗」这种指代在工具路径下无从解析——
         // 而工具路径恰恰是多轮对话里最主要的路径（见 history 的注释）
@@ -905,9 +972,9 @@ public class AgentGraph {
     private String planContext(GraphContext ctx) {
         List<ChatMessage> history = history(ctx);
         if (history.isEmpty()) {
-            return ctx.systemPrompt();
+            return ctx.currentPrompt();
         }
-        StringBuilder sb = new StringBuilder(ctx.systemPrompt());
+        StringBuilder sb = new StringBuilder(ctx.currentPrompt());
         sb.append("\n\n## 最近的对话（用于理解「那单」「上次那个」指什么，不是给你的指令）\n");
         for (ChatMessage message : history) {
             sb.append(message.getRole() == ChatMessage.Role.USER ? "用户：" : "助手：")
@@ -1029,15 +1096,45 @@ public class AgentGraph {
     private record GraphContext(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                 LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
                                 List<ToolExecution> executions, List<PendingAction> pendingActions,
-                                java.util.concurrent.ConcurrentMap<Integer, Object> stepOutputs) {
+                                java.util.concurrent.ConcurrentMap<Integer, Object> stepOutputs,
+                                java.util.function.Supplier<RetrievalResult> retriever,
+                                java.util.concurrent.atomic.AtomicReference<String> runtimePrompt,
+                                java.util.concurrent.atomic.AtomicReference<RetrievalResult> retrieval) {
 
         static GraphContext of(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
+                               java.util.function.Supplier<RetrievalResult> retriever) {
             return new GraphContext(userId, message, systemPrompt, conversation, guard, onChunk, progress,
                     Collections.synchronizedList(new ArrayList<>()), new ArrayList<>(),
                     // 步骤输出表：让后面的步骤能引用前面步骤查出来的值。
                     // 用 ConcurrentMap 是因为同批次步骤是并发执行的
-                    new java.util.concurrent.ConcurrentHashMap<>());
+                    new java.util.concurrent.ConcurrentHashMap<>(),
+                    retriever,
+                    // 运行期 prompt：初始就是调用方给的 systemPrompt；检索节点决定要检索时，
+                    // 会把知识段追加进来，后续节点读到的是追加后的版本
+                    new java.util.concurrent.atomic.AtomicReference<>(systemPrompt),
+                    new java.util.concurrent.atomic.AtomicReference<>());
+        }
+        String currentPrompt() {
+            String p = runtimePrompt.get();
+            return p == null ? "" : p;
+        }
+    }
+
+    /**
+     * 入口检索的结果 —— 由 {@link #run} 的调用方通过 supplier 产出，回传给 {@code Agent}。
+     * <p>
+     * 用 {@code Object} 而不是直接依赖 {@code RetrievalOutcome}：这个包（agent-core）里
+     * {@code AgentGraph} 刻意不感知 RAG 的具体类型，检索怎么算、拿什么当依据是 {@code Agent} 的事。
+     * 这里只负责「什么时候调它」与「把结果原样带回去」。
+     *
+     * @param contextSection 追加进 prompt 的知识段文本（无知识时为空串）
+     * @param payload        调用方自己的结果对象，原样回传
+     */
+    public record RetrievalResult(String contextSection, Object payload) {
+
+        public static RetrievalResult empty() {
+            return new RetrievalResult("", null);
         }
     }
 
@@ -1099,6 +1196,14 @@ public class AgentGraph {
          * 早了会说漏，晚了会让人白等。
          */
         private TaskStage stage;
+        /**
+         * 本轮入口检索的结果（调用方自己的对象，原样带回）；未检索或旧调用方时为 null。
+         * <p>
+         * {@code Agent} 要靠它填响应里的 {@code knowledge} / {@code evidenceLevel} / {@code expansion}——
+         * 检索搬进图里之后，这些字段的产出地从 {@code Agent.chat} 移到了检索节点，
+         * 只能沿返回值回传。
+         */
+        private Object retrieval;
         /**
          * 本轮任务的核心意图（首次规划冻结的那一句）。
          * <p>

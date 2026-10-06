@@ -340,22 +340,9 @@ public class Agent {
         // 1. 记录用户消息
         rememberMessage(userId, scopedSession, "user: " + message);
 
-        // 2. RAG 检索 + 长期记忆召回 → system prompt
-        //    检索用改写句（有历史时），回答侧仍用用户原话——分工的理由见 QueryRewriter
-        RetrievalOutcome retrieval = ragEngine.retrieveWithOutcome(retrievalQuery, config.getRagTopK());
-        List<DocumentChunk> knowledge = retrieval.chunks();
-        // 证据门判定在这里算一次，同时喂给 prompt 和响应体。
-        //
-        // 为什么必须共用同一个判定：prompt 里 WEAK 分支明说「不得作为结论依据」，
-        // 而用户界面那一侧原先把同一批切片标成「依据 N 条」并附上相关度小数点——
-        // 对模型说「别信」，对用户说「这是依据」，两边对同一份数据给出相反的定性。
-        // 让响应体带上判定，前端就不必自己重算阈值：那会把「两把尺子 + 图谱豁免」
-        // 这套规则复制出第二份，两边迟早不一致
-        // 判定必须拿到「本轮图谱路触达过哪几片」这一请求级事实：图谱切片正文是转述、
-        // 重排分天然低，会被 topK 截断而不在 knowledge 里——只看结果列表的话，
-        // 图谱豁免分支在真实链路里永远没有输入（U76 第三层）
-        EvidenceGate.Decision evidence =
-                EvidenceGate.evaluate(knowledge, config.getRagGateThresholds(), retrieval.graphChunkIds());
+        // 2. 长期记忆召回 → system prompt
+        //    RAG 检索**不在这里做**：要不要检索由规划节点判定（见 G5），
+        //    检索本身由执行图的 retrieve 节点在判定为需要时发起。这里只准备检索的闭包。
         // 召回必须带 userId：记忆是"对这个用户成立的事实"，不带用户维度的检索会召回别人的人生
         List<MemoryItem> episodes = episodicMemory.recall(userId, retrievalQuery, config.getLongTermRecallTopK());
         UserProfile profile = profileStore.get(userId);
@@ -375,7 +362,32 @@ public class Agent {
         // （用户问完益生菌改问订单，把「腹泻」带过去会让订单查询也带着一个症状条件）
         ClarificationTracker.Progress clarification = ClarificationTracker.advance(
                 switchVerdict.switched() ? null : progressOf(sessionContext), retrievalQuery);
-        String systemPrompt = buildSystemPrompt(profile, episodes, knowledge, evidence, observations,
+        // 检索闭包：执行图判定需要检索时才会调用它。它把「改写句 → 三路召回 → 证据门判定」
+        // 一次做完，并返回可直接追加进 prompt 的知识段。
+        //
+        // 为什么把 evidence 的产出放在闭包里：知识段文本取决于证据门判定
+        // （SUFFICIENT 才把切片当依据，WEAK 要给「先换词再查」的出路，NONE 直接说没有）。
+        // 判定与文本必须是同一次计算的产物，否则 prompt 与前端会各算一份、迟早分叉
+        java.util.concurrent.atomic.AtomicReference<RetrievalOutcome> retrievalRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<EvidenceGate.Decision> evidenceRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.function.Supplier<AgentGraph.RetrievalResult> retriever = () -> {
+            RetrievalOutcome outcome = ragEngine.retrieveWithOutcome(retrievalQuery, config.getRagTopK());
+            EvidenceGate.Decision decision = EvidenceGate.evaluate(
+                    outcome.chunks(), config.getRagGateThresholds(), outcome.graphChunkIds());
+            retrievalRef.set(outcome);
+            evidenceRef.set(decision);
+            boolean canSearchAgain = toolRegistry.get(KnowledgePrompt.SEARCH_TOOL_NAME).isPresent();
+            KnowledgePrompt.Section section =
+                    KnowledgePrompt.render(outcome.chunks(), decision, canSearchAgain);
+            log.info("[Agent] 证据门 {} 切片={} —— {}", decision.level(), outcome.chunks().size(), decision.reason());
+            return new AgentGraph.RetrievalResult(section.text(), outcome);
+        };
+        // 基础 prompt 不含知识段——知识段由检索节点追加。这里传空列表与 NONE 判定，
+        // 使 buildSystemPrompt 里那段「知识依据」逻辑不产出任何文本
+        String systemPrompt = buildSystemPrompt(profile, episodes, List.of(),
+                EvidenceGate.Decision.none(), observations,
                 switchVerdict.switched() ? null : sessionContext,
                 switchVerdict.switched() ? null : clarification);
         // 上一轮中断的现场以提示的形式进 prompt：让模型知道「有个操作在等你点头」，
@@ -386,8 +398,17 @@ public class Agent {
         }
 
         AgentResponse response;
+        List<DocumentChunk> knowledge;
+        EvidenceGate.Decision evidence;
         try {
-            response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, knowledge, onChunk, progress);
+            response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, retriever, onChunk, progress);
+            // 检索在图里跑完才回填：轮空（闲聊/业务操作）时两个引用都还是 null，
+            // 此时按「没检索」处理，而不是按「检索了、没有依据」——两者对用户说法不同
+            RetrievalOutcome outcome = retrievalRef.get();
+            knowledge = outcome == null ? List.of() : outcome.chunks();
+            evidence = evidenceRef.get() == null ? EvidenceGate.Decision.none() : evidenceRef.get();
+            response.setKnowledge(knowledge);
+            response.setRetrieval(outcome);
             response.setEvidenceLevel(evidence.level());
         } catch (Exception e) {
             // 取消不是故障，不该走降级：用户已经叫停，替他编一句「暂时不可用」既不对题，
@@ -397,10 +418,14 @@ public class Agent {
                 throw AgentCancelledException.unwrap(e);
             }
             log.error("[Agent] chat failed, degrade to fallback reply", e);
+            knowledge = retrievalRef.get() == null ? List.of() : retrievalRef.get().chunks();
+            evidence = evidenceRef.get() == null ? EvidenceGate.Decision.none() : evidenceRef.get();
             response = AgentResponse.builder()
                     .reply("抱歉，智能助手暂时不可用，请稍后再试或换个说法。")
                     .source("fallback")
                     .knowledge(knowledge)
+                    .retrieval(retrievalRef.get())
+
                     .evidenceLevel(evidence.level())
                     // 降级也是一次完整的收尾：没有再在跑的东西，界面不该继续显示「正在执行」
                     .stage(TaskStage.DONE)
@@ -414,7 +439,9 @@ public class Agent {
         response.setRetrievalQuery(retrievalQuery.equals(message) ? null : retrievalQuery);
         // 扩写随响应下发。只在真有扩写时给值：没有扩写时下发一个空对象，
         // 前端会以为「扩写跑了但没产出」，与「压根没跑」是两回事
-        response.setExpansion(retrieval.expansions().isEmpty() ? null : retrieval.expansions());
+        RetrievalOutcome finalRetrieval = response.getRetrieval();
+        response.setExpansion(finalRetrieval == null || finalRetrieval.expansions().isEmpty()
+                ? null : finalRetrieval.expansions());
         // 记忆注入同样随响应下发。与扩写那条相反：**没有记忆时下发的是「查过、是空的」，
         // 不是 null**——冷启动的新用户本来就该是 0，把它做成 null 就等于把
         // 「这一轮没查」伪装成「这一轮查了但什么都没有」，而这两件事的排查方向完全不同
@@ -572,7 +599,8 @@ public class Agent {
      * 能过、执行时抽不到订单号，两者用的是同一句话这个前提就断了。
      */
     private AgentResponse execute(String userId, String sessionId, String message, String retrievalQuery,
-                                  String systemPrompt, List<DocumentChunk> knowledge,
+                                  String systemPrompt,
+                                  java.util.function.Supplier<AgentGraph.RetrievalResult> retriever,
                                   Consumer<String> onChunk, ToolProgressListener progress) {
 
         Optional<DeterministicFlow> flowOpt = intentRouter.route(retrievalQuery);
@@ -587,7 +615,8 @@ public class Agent {
             return AgentResponse.builder()
                     .reply(result.getOutput())
                     .source("flow")
-                    .knowledge(knowledge)
+                    // 确定性流程自己完成检索与作答，不经过执行图：没有入口检索结果
+                    .knowledge(List.of())
                     // 确定性流程一步到位：没有规划、没有工具编排，产出即完成
                     .stage(TaskStage.DONE)
                     .build();
@@ -598,7 +627,7 @@ public class Agent {
         LoopGuard guard = new LoopGuard(config.getLoopBudget());
         AgentGraph.GraphResult graphResult = agentGraph.run(
                 userId, message, systemPrompt,
-                recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk, progress);
+                recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk, progress, retriever);
         log.info("[Agent] loops {}", guard.summary());
         // 跑偏观测：这轮最终执行了什么 vs 首轮冻结的意图。
         // 读的是收尾后的完整步骤列表——执行中途读到的是还在长的一份
@@ -633,7 +662,8 @@ public class Agent {
             return AgentResponse.builder()
                     .reply(reply)
                     .source("approval")
-                    .knowledge(knowledge)
+                    .knowledge(knowledgeOf(graphResult))
+                    .retrieval(retrievalOf(graphResult))
                     .pendingActions(pending.stream().map(PendingAction::describe).toList())
                     .approvalToken(approvals.issue(userId, sessionId, pending))
                     // 中断之前已跑完的工具轨迹照常下发：计划路径可能执行过前几层，
@@ -663,7 +693,8 @@ public class Agent {
         return AgentResponse.builder()
                 .reply(graphResult.getAnswer())
                 .source(graphResult.getSteps().isEmpty() ? "react" : "plan")
-                .knowledge(knowledge)
+                .knowledge(knowledgeOf(graphResult))
+                .retrieval(retrievalOf(graphResult))
                 .toolExecutions(graphResult.getToolExecutions())
                 // 阶段由执行图带出来，而不是在这里一律写 DONE。图走到这一步理论上
                 // 必定是 DONE（中断已在上面 return），但直接透传能让「图里写的」
@@ -675,6 +706,19 @@ public class Agent {
                 .build();
     }
 
+    /** 从图结果里取回本轮检索的完整结果；没检索或旧调用方时为 null。 */
+    private static RetrievalOutcome retrievalOf(AgentGraph.GraphResult result) {
+        if (result == null) {
+            return null;
+        }
+        return result.getRetrieval() instanceof RetrievalOutcome outcome ? outcome : null;
+    }
+
+    /** 从图结果里取回本轮检索到的切片；没检索或旧调用方时为「空」。 */
+    private static List<DocumentChunk> knowledgeOf(AgentGraph.GraphResult result) {
+        RetrievalOutcome outcome = retrievalOf(result);
+        return outcome == null ? List.of() : outcome.chunks();
+    }
     /**
      * 把图结果收敛成一份任务状态 —— 显式迁移，非法边被记录而不是被静默吞掉。
      * <p>
@@ -1621,6 +1665,13 @@ public class Agent {
          * 前者是新用户正常的冷启动，后者是链路断了。
          */
         private MemoryTrace memoryTrace;
+        /**
+         * 本轮入口检索的完整结果（切片 + 扩写 + 图谱触达的切片 id）。
+         * <p>
+         * 检索搬进执行图之后，{@code Agent} 只能从图结果里把它读回来再挂到响应上——
+         * 扩写（{@link #expansion}）与前端要的图谱事实都从这里取。本轮没检索时为空列表。
+         */
+        private RetrievalOutcome retrieval;
         private List<DocumentChunk> knowledge;
         /**
          * 本轮证据门的判定，随 {@link #knowledge} 一同下发。

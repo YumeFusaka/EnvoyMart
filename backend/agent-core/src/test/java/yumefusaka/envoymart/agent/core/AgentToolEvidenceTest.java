@@ -80,10 +80,14 @@ class AgentToolEvidenceTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
+                               java.util.function.Supplier<RetrievalResult> retriever) {
             // steps 不能留空：Agent 用它区分 react / plan 两个出口（getSteps().isEmpty()）
+            // 检索的产物由执行图回传——桩图绕开了图，就得自己调一次检索闭包，
+            // 否则 Agent 会当作「本轮没有入口检索」，依据列表随之空掉
             return GraphResult.builder()
                     .answer(answer).steps(List.of()).toolExecutions(executions)
+                    .retrieval(retriever == null ? null : retriever.get())
                     .build();
         }
     }

@@ -80,8 +80,11 @@ class AgentConflictIsolationTest {
 
         @Override
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
-                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress) {
-            return GraphResult.builder().answer(answer).steps(List.of()).build();
+                               LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
+                               java.util.function.Supplier<RetrievalResult> retriever) {
+            return GraphResult.builder().answer(answer).steps(List.of())
+                    .retrieval(retriever == null ? null : retriever.get())
+                    .build();
         }
     }
 
