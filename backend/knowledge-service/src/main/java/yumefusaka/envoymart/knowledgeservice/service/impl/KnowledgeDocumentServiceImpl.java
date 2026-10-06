@@ -34,6 +34,7 @@ import java.util.stream.Collectors;
 @Service
 public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
+
     private final KnowledgeDocumentMapper documentMapper;
     private final KnowledgeChunkMapper chunkMapper;
     /** 商品-文档绑定。上传商品文档时把「这篇讲的是哪个商品」落进关联表 */
@@ -217,17 +218,47 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
     @Override
     @Transactional
-    public void changeStatus(String docNo, int status) {
+    public void changeStatus(String docNo, int status, String disabledBy) {
         if (status != 0 && status != 1) {
             throw new IllegalArgumentException("status 只能是 0（停用）或 1（启用）");
         }
         KnowledgeDocumentEntity doc = requireDocument(docNo);
-        KnowledgeDocumentEntity updated = new KnowledgeDocumentEntity();
-        updated.setId(doc.getId());
-        updated.setStatus(status);
-        updated.setUpdatedAt(LocalDateTime.now());
-        documentMapper.updateById(updated);
-        log.info("[Knowledge] 文档 {} 状态改为 {}", docNo, status == 1 ? "启用" : "停用");
+        // 启用时把原因清掉：disabledBy 描述的是「这一次为什么停用」，
+        // 文档已经是启用的状态还留着一个停用原因，会让「谁停用了它」查出来是错的。
+        //
+        // 这里必须走 update + set，不能 updateById 传一个字段为 null 的实体：
+        // MyBatis-Plus 默认的字段策略是 NOT_NULL，null 字段**不会**进 SQL，
+        // 于是「上架恢复」会只改 status、把 PRODUCT_OFF 留在库里——
+        // 症状是文档明明启用了，却仍被标成「因商品下架而停用」，下一次上架判据读到的原因是错的
+        String reason = status == 1 ? null : normalizeDisabledBy(disabledBy);
+        documentMapper.update(null, Wrappers.<KnowledgeDocumentEntity>lambdaUpdate()
+                .eq(KnowledgeDocumentEntity::getId, doc.getId())
+                .set(KnowledgeDocumentEntity::getStatus, status)
+                .set(KnowledgeDocumentEntity::getDisabledBy, reason)
+                .set(KnowledgeDocumentEntity::getUpdatedAt, LocalDateTime.now()));
+        log.info("[Knowledge] 文档 {} 状态改为 {}（原因 {}）", docNo,
+                status == 1 ? "启用" : "停用", reason == null ? "-" : reason);
+    }
+
+    /**
+     * 停用原因的取值收口。
+     * <p>
+     * 未指定一律记为 {@code MANUAL}：默认值必须落在「最保守」的那一侧——
+     * 记成 MANUAL 时商品上架不会自动恢复它，需要有人再看一眼；
+     * 记成 PRODUCT_OFF 则相反，一个来源不明的停用会被商品的动作悄悄打开。
+     */
+    private static String normalizeDisabledBy(String disabledBy) {
+        return DISABLED_BY_PRODUCT_OFF.equalsIgnoreCase(disabledBy) ? DISABLED_BY_PRODUCT_OFF : DISABLED_BY_MANUAL;
+    }
+
+    @Override
+    public int statusOf(String docNo) {
+        return requireDocument(docNo).getStatus();
+    }
+
+    @Override
+    public String disabledByOf(String docNo) {
+        return requireDocument(docNo).getDisabledBy();
     }
 
     /**

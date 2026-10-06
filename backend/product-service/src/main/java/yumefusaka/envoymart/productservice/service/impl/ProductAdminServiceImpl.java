@@ -100,6 +100,7 @@ public class ProductAdminServiceImpl implements ProductAdminService {
     private final CategoryService categoryService;
     /** 写完之后必然要刷新的两份派生副本（缓存、ES 索引） */
     private final ProductDerivedRefresh derivedRefresh;
+    private final KnowledgeLifecycleSync knowledgeLifecycleSync;
 
     public ProductAdminServiceImpl(ProductSpuMapper spuMapper,
                                    ProductSkuMapper skuMapper,
@@ -111,7 +112,8 @@ public class ProductAdminServiceImpl implements ProductAdminService {
                                    StockLogMapper stockLogMapper,
                                    ProductAssembler assembler,
                                    CategoryService categoryService,
-                                   ProductDerivedRefresh derivedRefresh) {
+                                   ProductDerivedRefresh derivedRefresh,
+                                        KnowledgeLifecycleSync knowledgeLifecycleSync) {
         this.spuMapper = spuMapper;
         this.skuMapper = skuMapper;
         this.specMapper = specMapper;
@@ -123,6 +125,7 @@ public class ProductAdminServiceImpl implements ProductAdminService {
         this.assembler = assembler;
         this.categoryService = categoryService;
         this.derivedRefresh = derivedRefresh;
+        this.knowledgeLifecycleSync = knowledgeLifecycleSync;
     }
 
     // ==================== 读 ====================
@@ -250,6 +253,9 @@ public class ProductAdminServiceImpl implements ProductAdminService {
         spu.setUpdatedAt(Times.now());
         updateSpu(spu);
         derivedRefresh.afterCommit(spuId);
+        // 商品下架 → 它名下的说明书同步退出检索；上架 → 只恢复「因它下架而停用」的那些。
+        // 与 derivedRefresh 一样放在提交之后：事务回滚了就不该有知识层的改动。
+        knowledgeLifecycleSync.afterCommit(spuId, status == STATUS_ON);
         log.info("[管理] 商品 {} spuId={}", status == STATUS_ON ? "上架" : "下架", spuId);
     }
 

@@ -13,6 +13,7 @@ import yumefusaka.envoymart.agent.rag.HybridRetriever;
 import yumefusaka.envoymart.agent.rag.TextSplitter;
 import yumefusaka.envoymart.agent.rag.VectorStore;
 import yumefusaka.envoymart.aiservice.llm.ModelPricing;
+import yumefusaka.envoymart.contract.KnowledgeIndexResult;
 
 import java.time.Instant;
 import java.util.List;
@@ -49,6 +50,21 @@ public class KnowledgeIndexer {
 
     /** 后台重建的互斥位。见 {@link #rebuildAsync()}：它挡的是「重复发起」，不是「并发写」 */
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    /**
+     * 排队等待重建的文档编号 —— 见 {@link #rebuildOneAsync(String)}。
+     * <p>
+     * <b>为什么是队列而不是「忙就丢弃」</b>：单篇重建的调用方是商品上下架联动，
+     * 它要的语义是「这件事一定会发生」。忙时直接返回会让**下架的说明书继续留在索引里**，
+     * 而调用方只看到一条「已发起」的日志，没有任何地方会报错——
+     * 一个静默的丢请求。队列把「忙」变成「稍后」，恢复的是「不丢」而不是「不排队」。
+     * <p>
+     * 同一个 docNo 重复入队只留一个（{@link java.util.concurrent.ConcurrentLinkedQueue} 允许重复，
+     * 这里用 {@code contains} 去重）：连续上下架同一个商品时，
+     * 最终态才是要紧的，中间态重建不重建都不影响结果，而每次重建都是一次模型调用。
+     */
+    private final java.util.concurrent.ConcurrentLinkedQueue<String> pendingDocs =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     /**
      * 最近一次重建的状态。{@code volatile} 而不是加锁：读写双方都只做一次引用赋值/读取，
@@ -218,7 +234,7 @@ public class KnowledgeIndexer {
      * @param docNo 变化的文档编号
      * @return 这一篇的处理结果；文档不存在于当前语料时返回 deletedOnly=true 的结果
      */
-    public synchronized IncrementalResult rebuildOne(String docNo) {
+    public synchronized KnowledgeIndexResult rebuildOne(String docNo) {
         Instant startedAt = Instant.now();
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             List<Document> documents = corpus.reload();
@@ -239,7 +255,7 @@ public class KnowledgeIndexer {
                 retriever.rebuild(chunks);
                 // 空 triples 会把这篇在图上的边整体替换成空，等于删掉它的边
                 boolean graphOk = graphBuilder.rebuildOne(docNo, null);
-                IncrementalResult result = new IncrementalResult(docNo, true, 0, chunks.size(),
+                KnowledgeIndexResult result = new KnowledgeIndexResult(docNo, true, 0, chunks.size(),
                         graphOk, null);
                 log.info("[Knowledge] 单篇增量：文档 {} 已不在语料中，仅执行删除（切片总数 {}）",
                         docNo, chunks.size());
@@ -258,12 +274,79 @@ public class KnowledgeIndexer {
             retriever.rebuild(all);
 
             boolean graphOk = graphBuilder.rebuildOne(docNo, target);
-            IncrementalResult result = new IncrementalResult(docNo, false, own.size(), all.size(),
+            KnowledgeIndexResult result = new KnowledgeIndexResult(docNo, false, own.size(), all.size(),
                     graphOk, null);
             log.info("[Knowledge] 单篇增量完成：文档 {} 切片 {} 片（语料共 {} 片），图谱{}",
                     docNo, own.size(), all.size(), graphOk ? "已更新" : "未更新（保持上一版）");
             logCost("单篇增量", ledger.snapshot());
             return result;
+        }
+    }
+
+    /**
+     * 单篇增量重建的<b>异步</b>入口 —— 供服务间调用（商品上下架联动）。
+     * <p>
+     * <b>为什么它必须是异步的</b>：单篇重建要走一次图谱抽取，那是模型调用，
+     * 实测这一篇花了约 120 秒；而商品服务侧 Feign 的读超时是 30 秒。
+     * 同步版本在这里的表现是「调用方 100% 超时报失败，而索引其实建好了」——
+     * 一条永远报错、实际成功的链路，比没有还难排查。
+     * <p>
+     * <b>与管理台那条同步接口的分工</b>：管理台是人在点、能等一会儿、要立刻看到结果，
+     * 而且 FE 的请求走网关、超时口径可以按需放宽；联动是商品上架事务提交后的尾巴，
+     * 只要求「一定会发生」，不要求「在这一个请求里发生完」。
+     * 所以这里复用后台任务那套 {@code running} 状态，发起即返回，进度由 {@link #status()} 观察。
+     * <p>
+     * 正在跑时再调它<b>不排队、不阻塞</b>：直接把当前状态回给调用方——同 {@link #rebuildAsync()}。
+     *
+     * @return 当前状态；刚发起时为 {@code running=true}
+     */
+    public Status rebuildOneAsync(String docNo) {
+        // 先入队再尝试起线程：即使此刻正有重建在跑，这一篇也不会丢，会在当前那次结束后被排空。
+        // 去重是因为连续上下架同一个商品时「最终态」才要紧，而每次重建都要花一次模型调用的钱
+        if (!pendingDocs.contains(docNo)) {
+            pendingDocs.add(docNo);
+        }
+        if (running.compareAndSet(false, true)) {
+            status = new Status(true, Instant.now(), null, status.result(), null);
+            Thread.ofVirtual().name("knowledge-reindex-one").start(this::drainPending);
+        }
+        return status;
+    }
+
+    /**
+     * 排空待重建队列 —— 一次只跑一篇，跑完再取下一篇，直到队列空。
+     * <p>
+     * <b>为什么在这里循环而不是每篇各起一个线程</b>：重建之间是互斥的（{@link #rebuildOne(String)}
+     * 的 {@code synchronized} 与全量重建共用同一把锁），并发起多个线程只会让它们互相等，
+     * 还会让 {@code status} 的读写变得难以推理。串行排空既满足互斥，又不丢请求。
+     */
+    private void drainPending() {
+        Instant startedAt = status.startedAt();
+        String lastError = null;
+        try {
+            String docNo;
+            while ((docNo = pendingDocs.poll()) != null) {
+                try {
+                    KnowledgeIndexResult result = rebuildOne(docNo);
+                    if (result != null && result.getError() != null) {
+                        lastError = result.getError();
+                    }
+                    log.info("[Knowledge] 待重建队列出队并完成：docNo={}（剩余 {}）", docNo, pendingDocs.size());
+                } catch (Throwable e) {
+                    log.error("[Knowledge] 单篇后台重建失败 docNo={}", docNo, e);
+                    lastError = e.getMessage();
+                }
+            }
+        } finally {
+            // 先放锁再落状态：放锁之后可能有新请求入队并立刻起新线程，
+            // 那时它会写一份更新的 status；这里若在锁内写会把它覆盖成旧的
+            running.set(false);
+            status = new Status(false, startedAt, Instant.now(), status.result(), lastError);
+            // 兜住「跑完一篇、正在写状态」这一瞬入队的请求：从入队到起线程之间没有锁，
+            // 可能发生「入队时 running 还是 true，等 running 变 false 时没人再来排空」
+            if (!pendingDocs.isEmpty() && running.compareAndSet(false, true)) {
+                Thread.ofVirtual().name("knowledge-reindex-one").start(this::drainPending);
+            }
         }
     }
 
@@ -275,9 +358,6 @@ public class KnowledgeIndexer {
      * @param totalChunks 更新后语料的总切片数，便于调用方判断索引规模
      * @param graphUpdated 图谱是否更新成功。false 时图谱保持上一版，检索不受影响
      */
-    public record IncrementalResult(String docNo, boolean deletedOnly, int chunkCount,
-                                    int totalChunks, boolean graphUpdated, String error) {
-    }
 
     /**
      * 后台重建，<b>立即返回</b>——这是管理台调用的那个入口。
@@ -307,6 +387,11 @@ public class KnowledgeIndexer {
                     log.error("[Knowledge] 后台重建失败", e);
                 } finally {
                     running.set(false);
+                    // 全量重建期间入队的单篇请求不能丢：全量已经把整库刷成最新，
+                    // 但这些请求里可能有刚被停用的文档，它的旧向量得被清掉才算落地
+                    if (!pendingDocs.isEmpty() && running.compareAndSet(false, true)) {
+                        Thread.ofVirtual().name("knowledge-reindex-one").start(this::drainPending);
+                    }
                 }
             });
         }

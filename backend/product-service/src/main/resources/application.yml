@@ -48,7 +48,19 @@ spring:
   sql:
     init:
       mode: always
+      # 已存在的库不会被 create table if not exists 改表结构，所以 MySQL 下额外跑一份
+      # schema-mysql.sql 做幂等加列/加索引（H2 下不执行，单测表由 schema.sql 全新建）。
+      platform: ${DB_SQL_PLATFORM:}
   cloud:
+    # 外部调用必须有超时：默认 readTimeout 是 60 秒，下游一卡就把调用方线程占满。
+    # 知识层同步是管理动作，可以容忍比其它调用长一点（单篇重建要调一次模型），
+    # 但必须有上限——没有上限的等待不是一个可观测的状态。
+    openfeign:
+      client:
+        config:
+          default:
+            connect-timeout: 2000
+            read-timeout: 30000
     nacos:
       discovery:
         enabled: ${NACOS_ENABLED:false}

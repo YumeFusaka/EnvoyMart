@@ -96,7 +96,7 @@ class ProductAdminServiceImplTest {
         derivedRefresh = mock(ProductDerivedRefresh.class);
         service = new ProductAdminServiceImpl(spuMapper, skuMapper, specMapper, specValueMapper,
                 skuSpecMapper, attributeMapper, spuAttributeValueMapper, stockLogMapper,
-                mock(ProductAssembler.class), categoryService, derivedRefresh);
+                mock(ProductAssembler.class), categoryService, derivedRefresh, mock(KnowledgeLifecycleSync.class));
     }
 
     // ==================== 库存调整 ====================

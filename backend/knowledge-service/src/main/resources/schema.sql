@@ -25,6 +25,13 @@ create table if not exists knowledge_document (
     -- 0 停用 / 1 启用。停用后不再进入检索索引，但历史引用仍能反查到它——
     -- 停用一份文档不该让已经给出的回答失去依据
     status tinyint not null default 1,
+    -- 这条「停用」是谁造成的：MANUAL 运营手动停用 / PRODUCT_OFF 因商品下架级联停用。
+    --
+    -- **为什么要区分**：商品重新上架时只该恢复「因它下架而被停用」的那些文档。
+    -- 不区分的话，运营手动停用过的文档会在商品上架时被悄悄打开——
+    -- 一份被下架的说明书重新进入检索，而没有任何人做过这个决定。
+    -- 用 NULL 表示「当前是启用的、没有停用原因」，而不是空串：两者在查询里语义不同
+    disabled_by varchar(32) null,
     content text not null,
     created_at datetime not null,
     updated_at datetime not null,

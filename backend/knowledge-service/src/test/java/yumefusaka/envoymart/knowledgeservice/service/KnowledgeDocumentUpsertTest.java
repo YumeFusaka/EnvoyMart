@@ -159,7 +159,7 @@ class KnowledgeDocumentUpsertTest {
 
     @Test
     void 停用状态只接受零和一() {
-        assertThatThrownBy(() -> service.changeStatus("KB-0001", 2))
+        assertThatThrownBy(() -> service.changeStatus("KB-0001", 2, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("status");
     }

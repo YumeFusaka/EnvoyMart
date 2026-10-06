@@ -137,6 +137,52 @@ class KnowledgeIndexerStatusTest {
         verify(vectorStore, never()).deleteByDocId(anyString());
     }
 
+    /**
+     * 单篇重建在「已有重建在跑」时<b>必须排队，不能丢</b>。
+     * <p>
+     * 起因是一次真实缺陷：商品下架联动调用单篇重建，而此刻 ai-service 的启动全量重建
+     * 还没跑完，{@code running.compareAndSet} 直接失败、方法静静返回——
+     * 调用方只看到一条「已发起」的成功日志，而<b>那篇刚停用的说明书仍然留在索引里</b>。
+     * 没有任何地方会报错，用户问到时照样被检索到。
+     * <p>
+     * 这条断言锁的是「不丢」，不是「不排队」：忙的时候等一下没关系，
+     * 悄悄把请求吃掉才是要命的。
+     */
+    @Test
+    void 全量重建进行中发起的单篇重建会排队而不是被丢弃() throws Exception {
+        CountDownLatch 卡住全量 = new CountDownLatch(1);
+        CountDownLatch 全量已进入 = new CountDownLatch(1);
+        AtomicInteger 拉取次数 = new AtomicInteger();
+        KnowledgeCorpus corpus = mock(KnowledgeCorpus.class);
+        when(corpus.reload()).thenAnswer(invocation -> {
+            int n = 拉取次数.incrementAndGet();
+            if (n == 1) {
+                全量已进入.countDown();
+                卡住全量.await(10, TimeUnit.SECONDS);
+            }
+            return List.<Document>of();
+        });
+        KnowledgeIndexer indexer = newIndexer(corpus);
+
+        indexer.rebuildAsync();
+        assertThat(全量已进入.await(10, TimeUnit.SECONDS)).as("全量重建应当先跑起来并卡住").isTrue();
+
+        // 全量还在跑的时候发起单篇：这一篇不能被丢掉
+        indexer.rebuildOneAsync("KB-0005");
+
+        // 放行全量，等队列被排空
+        卡住全量.countDown();
+        Instant deadline = Instant.now().plus(WAIT_LIMIT);
+        while (Instant.now().isBefore(deadline) && 拉取次数.get() < 2) {
+            Thread.sleep(20);
+        }
+
+        assertThat(拉取次数.get())
+                .as("全量重建结束后，排队的单篇重建必须真的被执行（否则那篇文档的旧索引永远留在库里）")
+                .isGreaterThanOrEqualTo(2);
+        等待结束(indexer);
+    }
+
     private static KnowledgeIndexer newIndexer(KnowledgeCorpus corpus) {
         return newIndexer(corpus, mock(VectorStore.class), mock(TextSplitter.class));
     }

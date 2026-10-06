@@ -160,7 +160,11 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             // 它本身幂等、不写用户数据，但它是「我一个请求让整条派生链路全量跑一遍」的
             // 放大器——公开出去等于给每个匿名请求一个打满 product-service 与 ES 的开关。
             // 运维/演示从 review-service 端口直连调用（run-local.sh demo 就是这么做的）
-            "/reviews/internal/");
+            "/reviews/internal/",
+            // AI 服务的索引重建内部通道：商品上下架联动时由 product-service 调用。
+            // 管理台那条重建接口在 /ai/admin/ 下（要人来点、验身份）；这一条没有调用方身份，
+            // 靠够不着建立信任。公开出去等于给任何匿名请求一个「清空并重算索引」的开关
+            "/ai/internal/");
 
     /** 路径模式：以 {@code /**} 结尾表示前缀匹配，否则精确匹配。 */
     private record PublicRule(String method, String path) {

@@ -110,7 +110,8 @@ public class KnowledgeAdminController {
     @PutMapping("/documents/{docNo}/status")
     public Result<Void> changeStatus(@PathVariable("docNo") String docNo,
                                      @RequestParam("status") int status) {
-        documentService.changeStatus(docNo, status);
+        // 管理台是人工动作，原因记为 MANUAL：商品重新上架时不该把它打开
+        documentService.changeStatus(docNo, status, null);
         return Result.success();
     }
 }

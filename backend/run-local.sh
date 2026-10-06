@@ -118,6 +118,9 @@ mvn -q -B install -DskipTests -pl contract,common,agent-core || {
 }
 
 export DB_DRIVER="${DB_DRIVER:-com.mysql.cj.jdbc.Driver}"
+# 驱动是 MySQL 时额外执行 schema-mysql.sql 做幂等加列：
+# create table if not exists 不会给已存在的表补列，新加的列在老库上永远是"表里没有这一列"。
+export DB_SQL_PLATFORM="${DB_SQL_PLATFORM:-mysql}"
 export DB_HOST="${DB_HOST:-127.0.0.1}"
 export DB_PORT="${DB_PORT:-3306}"
 export DB_USERNAME="${DB_USERNAME:-yumefusaka}"

@@ -17,6 +17,9 @@ spring:
   sql:
     init:
       mode: always
+      # 已存在的库不会被 create table if not exists 改表结构，所以 MySQL 下额外跑一份
+      # schema-mysql.sql 做幂等加列/加索引（H2 下不执行，单测表由 schema.sql 全新建）。
+      platform: ${DB_SQL_PLATFORM:}
   cloud:
     nacos:
       discovery:

@@ -34,6 +34,46 @@ public class KnowledgeDocBindingService {
     }
 
     /**
+     * 商品上下架时，同步它名下**主体文档**的状态。
+     * <p>
+     * <b>这是「商品下架了，说明书还在被检索到」的唯一治本点。</b>在此之前，
+     * 绑定只存在于图谱一条模型抽出来的边里，商品下架时系统不知道该停谁——
+     * 四格里这一格全空。现在归属在关联表里，反查是一次主键查询。
+     * <p>
+     * <b>只动 role=SUBJECT 的行</b>：一篇政策文档顺带提过某个商品，不该因它下架而消失。
+     * <p>
+     * <b>上架只恢复 PRODUCT_OFF 的文档。</b>不区分原因的话，运营手动停用过的文档
+     * 会在这里被悄悄打开——那是「没有人做过这个决定」的改动。
+     *
+     * @param on true 商品上架 / false 商品下架
+     * @return 状态**真的发生变化**的文档编号。调用方据此只重建这几篇，
+     *         而不是不管有没有变化都触发一次全量重建（那是分钟级 + 计费动作）
+     */
+    @Transactional
+    public List<String> syncProductStatus(Long spuId, boolean on, KnowledgeDocumentService documentService) {
+        List<String> docs = subjectDocsOf(spuId);
+        List<String> changed = new ArrayList<>();
+        for (String docNo : docs) {
+            int target = on ? 1 : 0;
+            int current = documentService.statusOf(docNo);
+            if (current == target) {
+                continue;
+            }
+            // 上架时只碰「因商品下架而停用」的：手动停用的保持停用，这是一条业务判据，
+            // 不是优化——恢复一份被手动下架的说明书会重新引入运营已经判定为不该出现的内容
+            if (on && !KnowledgeDocumentService.DISABLED_BY_PRODUCT_OFF.equals(documentService.disabledByOf(docNo))) {
+                continue;
+            }
+            documentService.changeStatus(docNo, target,
+                    on ? null : KnowledgeDocumentService.DISABLED_BY_PRODUCT_OFF);
+            changed.add(docNo);
+        }
+        log.info("[Binding] 商品 {} {}，{} 篇主体文档状态随之变化：{}",
+                spuId, on ? "上架" : "下架", changed.size(), changed);
+        return changed;
+    }
+
+    /**
      * 声明「这些文档的主体是这些商品」。
      * <p>
      * 上传/编辑文档时由 {@code source=manual} 且运营指定了商品触发。

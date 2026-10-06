@@ -16,6 +16,11 @@ import java.util.List;
  */
 public interface KnowledgeDocumentService {
 
+    /** 停用原因：运营手动停用。商品重新上架时不该恢复这一类 */
+    String DISABLED_BY_MANUAL = "MANUAL";
+    /** 停用原因：因所属商品下架而级联停用。商品重新上架时只恢复这一类 */
+    String DISABLED_BY_PRODUCT_OFF = "PRODUCT_OFF";
+
     /**
      * 文档列表。
      *
@@ -73,6 +78,16 @@ public interface KnowledgeDocumentService {
      * 停用是「不再被检索到」而不是删除：引用是跨会话存在的历史事实，
      * 删掉文档会让已经发出去的 {@code [3]} 点开是 404。停用只让它不再进入
      * 检索索引（{@link #corpus()} 只下发启用状态的文档）。
+     *
+     * @param disabledBy 停用原因（{@code MANUAL} / {@code PRODUCT_OFF}），启用时传 null。
+     *                   它决定了商品重新上架时这篇文档会不会被自动恢复——
+     *                   运营手动停用的不该被商品的动作打开
      */
-    void changeStatus(String docNo, int status);
+    void changeStatus(String docNo, int status, String disabledBy);
+
+    /** 文档当前状态（1 启用 / 0 停用）。找不到抛业务异常 */
+    int statusOf(String docNo);
+
+    /** 文档当前的停用原因（启用状态返回 null） */
+    String disabledByOf(String docNo);
 }

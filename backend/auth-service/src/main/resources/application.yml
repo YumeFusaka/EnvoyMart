@@ -19,6 +19,9 @@ spring:
   sql:
     init:
       mode: always
+      # 已存在的库不会被 create table if not exists 改表结构，所以 MySQL 下额外跑一份
+      # schema-mysql.sql 做幂等加列/加索引（H2 下不执行，单测表由 schema.sql 全新建）。
+      platform: ${DB_SQL_PLATFORM:}
   # 认证态：禁用用户 / 改角色要立刻对存量 Token 生效（JWT 签出去就管不着了，
   # 靠这条外部记录兜住）。写入失败必须让管理操作回滚，见 AuthStateStore
   data:

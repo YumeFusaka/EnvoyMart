@@ -30,6 +30,12 @@ public class KnowledgeDocumentEntity {
     private String tags;
     /** 0 停用 / 1 启用 */
     private Integer status;
+    /**
+     * 停用原因：{@code MANUAL} 运营手动停用 / {@code PRODUCT_OFF} 商品下架级联停用。
+     * 启用状态下为 {@code null}。商品重新上架时只恢复 {@code PRODUCT_OFF} 的文档——
+     * 不区分的话，运营手动停用的文档会被悄悄打开
+     */
+    private String disabledBy;
     private String content;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

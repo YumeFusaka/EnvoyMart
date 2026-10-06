@@ -2,6 +2,8 @@ package yumefusaka.envoymart.knowledgeservice.controller;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -13,6 +15,7 @@ import yumefusaka.envoymart.contract.KnowledgeDocumentPayload;
 import yumefusaka.envoymart.contract.ProductCoverageRequest;
 import yumefusaka.envoymart.contract.ProductGraphCoverage;
 import yumefusaka.envoymart.knowledgeservice.graph.GraphService;
+import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocBindingService;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocumentService;
 
 import java.util.List;
@@ -31,10 +34,29 @@ public class KnowledgeInternalController {
 
     private final KnowledgeDocumentService documentService;
     private final GraphService graphService;
+    private final KnowledgeDocBindingService bindingService;
 
-    public KnowledgeInternalController(KnowledgeDocumentService documentService, GraphService graphService) {
+    public KnowledgeInternalController(KnowledgeDocumentService documentService, GraphService graphService,
+                                       KnowledgeDocBindingService bindingService) {
         this.documentService = documentService;
         this.graphService = graphService;
+        this.bindingService = bindingService;
+    }
+
+    /**
+     * 商品上下架联动 —— 由 product-service 在状态变更后调用。
+     * <p>
+     * <b>为什么由 product-service 发起，而不是知识库订阅商品事件</b>：上下架是一个同步的
+     * 管理动作，运营点完「下架」立刻看到说明书也跟着下架，是可以被观察到的因果；
+     * 走消息则要多一个「消息到了没有」的状态，而这条链路没有吞吐压力。
+     * <p>
+     * 返回**状态真的变化了**的文档编号。调用方只重建这几篇——
+     * 没有变化时重建一篇文档要调模型，是明显的浪费。
+     */
+    @PostMapping("/products/{spuId}/sync-status")
+    public Result<List<String>> syncProductStatus(@PathVariable("spuId") Long spuId,
+                                                  @RequestParam("on") boolean on) {
+        return Result.success(bindingService.syncProductStatus(spuId, on, documentService));
     }
 
     /**

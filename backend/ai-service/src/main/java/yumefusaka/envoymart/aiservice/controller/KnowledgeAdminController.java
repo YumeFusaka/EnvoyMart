@@ -75,7 +75,7 @@ public class KnowledgeAdminController {
      * 会执行「只删不写」，把它的向量与图谱边清掉。
      */
     @PostMapping("/reindex/{docNo}")
-    public Result<KnowledgeIndexer.IncrementalResult> reindexOne(
+    public Result<yumefusaka.envoymart.contract.KnowledgeIndexResult> reindexOne(
             @PathVariable("docNo") String docNo) {
         return Result.success(indexer.rebuildOne(docNo));
     }
