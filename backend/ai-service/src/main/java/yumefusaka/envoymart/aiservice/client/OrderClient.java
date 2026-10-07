@@ -35,6 +35,10 @@ public interface OrderClient {
     Result<OrderResponse> cancelOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                       @PathVariable("id") Long id);
 
+    @PostMapping("/orders/by-no/{orderNo}/cancel")
+    Result<OrderResponse> cancelOrderByNo(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+                                          @PathVariable("orderNo") String orderNo);
+
     /**
      * 售后资格预览 —— 判定在 order-service 的政策引擎里，这里只取结论。
      * <p>

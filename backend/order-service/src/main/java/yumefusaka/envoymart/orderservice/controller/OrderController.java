@@ -99,6 +99,13 @@ public class OrderController {
         return Result.success(orderDomainService.cancelOrder(userId, id));
     }
 
+    @PostMapping("/by-no/{orderNo}/cancel")
+    public Result<OrderResponse> cancelOrderByNo(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("orderNo") String orderNo) {
+        return Result.success(orderDomainService.cancelOrderByNo(userId, orderNo));
+    }
+
     /**
      * 确认收货。用户动作 —— 它是售后与评价的前置条件：
      * 没有这一步，订单永远停在「已发货」，政策引擎要求的「已收货」不可达。

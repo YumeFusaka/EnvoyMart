@@ -79,6 +79,9 @@ public interface OrderDomainService {
     /** 取消订单（高危操作，仅供已确认的调用方使用） */
     OrderResponse cancelOrder(String userId, Long orderId);
 
+    /** 按用户可见订单号取消，内部仍复用数字 ID 的并发安全取消逻辑。 */
+    OrderResponse cancelOrderByNo(String userId, String orderNo);
+
     /**
      * 发货。**管理侧动作，没有调用方用户身份。**
      * <p>

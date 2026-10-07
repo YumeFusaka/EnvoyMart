@@ -659,6 +659,21 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         throw new IllegalStateException("订单" + current.text() + "，请通过售后申请退款");
     }
 
+    @Override
+    @Transactional
+    public OrderResponse cancelOrderByNo(String userId, String orderNo) {
+        if (orderNo == null || orderNo.isBlank()) {
+            throw new IllegalArgumentException("订单号不能为空");
+        }
+        OrderEntity order = orderMapper.selectOne(new LambdaQueryWrapper<OrderEntity>()
+                .eq(OrderEntity::getOrderNo, orderNo)
+                .eq(OrderEntity::getUserId, userId));
+        if (order == null) {
+            throw new IllegalArgumentException("订单不存在");
+        }
+        return cancelOrder(userId, order.getId());
+    }
+
     /** 未支付订单取消：不涉及资金，关闭并回补库存、退还优惠券 */
     private OrderResponse cancelUnpaidOrder(OrderEntity order, String userId) {
         OrderStatus current = OrderStatus.parse(order.getStatus());
