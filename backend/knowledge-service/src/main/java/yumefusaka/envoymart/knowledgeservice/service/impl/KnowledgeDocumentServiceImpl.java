@@ -195,6 +195,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
     @Transactional
     public String upsert(DocumentUpsertRequest request) {
         Document document = toDocument(request);
+        validateSubjectBinding(request);
         Document stored = document;
         if (stored.getId() == null || stored.getId().isBlank()) {
             stored = Document.builder()
@@ -214,6 +215,17 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         bindingService.declareSubjects(stored.getId(), request.getSubjectSpuIds(),
                 KnowledgeDocProductEntity.MatchedBy.MANUAL);
         return stored.getId();
+    }
+
+    private static void validateSubjectBinding(DocumentUpsertRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("文档请求不能为空");
+        }
+        if ("manual".equalsIgnoreCase(request.getSource())
+                && (request.getSubjectSpuIds() == null || request.getSubjectSpuIds().stream()
+                .filter(java.util.Objects::nonNull).distinct().findAny().isEmpty())) {
+            throw new IllegalArgumentException("产品说明书必须绑定至少一个商品");
+        }
     }
 
     @Override

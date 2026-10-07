@@ -33,6 +33,7 @@ import yumefusaka.envoymart.agent.rag.QueryExpansions;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
 import yumefusaka.envoymart.agent.rag.RetrievalOutcome;
+import yumefusaka.envoymart.agent.rag.SemanticGroundingVerifier;
 import yumefusaka.envoymart.agent.rag.ToolFactVerifier;
 import yumefusaka.envoymart.agent.core.task.ClarificationTracker;
 import yumefusaka.envoymart.agent.core.task.HealthQueryCoverage;
@@ -315,8 +316,6 @@ public class Agent {
         // 一次真实计费的调用，且都给了模型一次「把执行内容想成别的什么」的机会
         if (approvalToken != null && !approvalToken.isBlank()) {
             AgentResponse confirmed = executeApproved(userId, sessionId, message, approvalToken, onChunk, progress);
-            // 确认轮跑完，现场就作废了：留着它，下一轮又会被当成「有个操作在等确认」
-            taskStateStore.clear(userId, taskId(userId, sessionId));
             remember(scopedSession, userId, sessionId, message, confirmed);
             return confirmed;
         }
@@ -497,6 +496,8 @@ public class Agent {
                     .build();
         }
 
+        Optional<TaskCheckpoint> checkpoint = taskStateStore.load(userId, taskId(userId, sessionId));
+        String continuationPrompt = checkpoint.map(TaskCheckpoint::continuationPrompt).orElse(null);
         List<ToolExecution> executions = new ArrayList<>();
         try {
             for (PendingAction action : actions.get()) {
@@ -517,6 +518,26 @@ public class Agent {
         String reply = renderApproved(executions);
         log.info("[Agent] 确认轮执行完成 userId={} 操作数={} 成功={}", userId, executions.size(),
                 executions.stream().filter(ToolExecution::isSuccess).count());
+        if (continuationPrompt != null && !continuationPrompt.isBlank()
+                && executions.stream().allMatch(ToolExecution::isSuccess)) {
+            taskStateStore.clear(userId, taskId(userId, sessionId));
+            emit(onChunk, reply);
+            String continuationMessage = continuationPrompt + "\n\n本批已确认执行结果：\n" + reply
+                    + "\n请立即继续执行未完成步骤；不要重复本批已经成功执行的操作。";
+            AgentResponse continuation = doChat(userId, sessionId, continuationMessage,
+                    null, onChunk, progress);
+            continuation.setReply(reply + "\n\n" + continuation.getReply());
+            List<ToolExecution> merged = new ArrayList<>(executions);
+            if (continuation.getToolExecutions() != null) {
+                merged.addAll(continuation.getToolExecutions());
+            }
+            continuation.setToolExecutions(List.copyOf(merged));
+            log.info("[Agent] 确认后继续未完成复合任务 userId={} 后续阶段={}",
+                    userId, continuation.getStage());
+            return continuation;
+        }
+        // 没有后续计划时，确认现场在这里作废；有后续计划的分支已由嵌套续作负责保存新现场。
+        taskStateStore.clear(userId, taskId(userId, sessionId));
         emit(onChunk, reply);
         return AgentResponse.builder()
                 .reply(reply)
@@ -651,7 +672,7 @@ public class Agent {
         if (pending != null && !pending.isEmpty()) {
             // 落一份断点：这一轮到此为止，用户可能过一会儿才点确认。
             // 存的是**载荷**——恢复时要执行的是那次调用本身，不是关于它的一句话
-            saveCheckpoint(userId, sessionId, graphResult, pending);
+            saveCheckpoint(userId, sessionId, graphResult, pending, message);
             // 句子里刻意不抄一遍 pendingActions：那是形如 order_cancel(orderId=22) 的
             // 机器可读描述，工具名不该出现在给用户看的话里。要确认哪一单由前端渲染的
             // 确认卡片负责（它会翻译成中文标签），卡片就在下面、与本句同时出现。
@@ -665,7 +686,9 @@ public class Agent {
                     .knowledge(knowledgeOf(graphResult))
                     .retrieval(retrievalOf(graphResult))
                     .pendingActions(pending.stream().map(PendingAction::describe).toList())
-                    .pendingActionDetails(pending.stream().map(Agent::pendingDetail).toList())
+                    .pendingActionDetails(pending.stream()
+                            .map(action -> pendingDetail(action, graphResult.getToolExecutions(),
+                                    graphResult.getSteps())).toList())
                     .approvalToken(approvals.issue(userId, sessionId, pending))
                     // 中断之前已跑完的工具轨迹照常下发：计划路径可能执行过前几层，
                     // ReAct 路径可能已经查过订单才走到取消那一步。丢掉它们，
@@ -727,11 +750,80 @@ public class Agent {
      * 与字符串版 {@code describe()} 一起下发：字符串版是原始依据（绝不隐藏），
      * 这一份是可读化的输入。前端两者都拿得到，渲染失败时能退回原文。
      */
-    private static Map<String, Object> pendingDetail(PendingAction action) {
+    private static Map<String, Object> pendingDetail(PendingAction action, List<ToolExecution> executions,
+                                                     List<AgentGraph.GraphStep> steps) {
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("tool", action.tool());
-        detail.put("arguments", action.arguments());
+        Map<String, Object> arguments = new LinkedHashMap<>(action.arguments());
+        if ("cart_add".equals(action.tool())) {
+            enrichCartAdd(arguments, executions, steps);
+        } else if ("order_cancel".equals(action.tool())) {
+            enrichOrderCancel(arguments, executions, steps);
+        }
+        detail.put("arguments", arguments);
         return detail;
+    }
+
+    /** 确认卡同时展示用户可见订单号与真正执行所需的数字内部 ID。 */
+    private static void enrichOrderCancel(Map<String, Object> arguments,
+                                          List<ToolExecution> executions,
+                                          List<AgentGraph.GraphStep> steps) {
+        List<String> outputs = new ArrayList<>();
+        if (executions != null) {
+            executions.stream().filter(ToolExecution::isSuccess)
+                    .map(ToolExecution::getOutput).filter(java.util.Objects::nonNull).forEach(outputs::add);
+        }
+        if (steps != null) {
+            steps.stream().filter(AgentGraph.GraphStep::isSuccess)
+                    .filter(step -> "order_query".equals(step.getTool()))
+                    .map(AgentGraph.GraphStep::getOutput).filter(java.util.Objects::nonNull).forEach(outputs::add);
+        }
+        for (String output : outputs) {
+            java.util.regex.Matcher order = java.util.regex.Pattern
+                    .compile("订单ID：\\s*(\\d+)\\s*，订单号：\\s*([A-Za-z0-9-]+)").matcher(output);
+            if (order.find() && String.valueOf(arguments.get("orderId")).equals(order.group(1))) {
+                arguments.put("orderNo", order.group(2));
+                return;
+            }
+        }
+    }
+
+    /** 确认卡只补展示字段，不修改签名载荷；执行仍严格使用原始 skuId/quantity。 */
+    private static void enrichCartAdd(Map<String, Object> arguments, List<ToolExecution> executions,
+                                      List<AgentGraph.GraphStep> steps) {
+        Object sku = arguments.get("skuId");
+        if (sku == null || executions == null) {
+            return;
+        }
+        String skuToken = "SKU" + String.valueOf(sku).replaceAll("^0+", "");
+        List<String> outputs = new ArrayList<>();
+        if (executions != null) {
+            executions.stream().filter(ToolExecution::isSuccess)
+                    .map(ToolExecution::getOutput).filter(java.util.Objects::nonNull).forEach(outputs::add);
+        }
+        if (steps != null) {
+            steps.stream().filter(AgentGraph.GraphStep::isSuccess)
+                    .filter(step -> "product_search".equals(step.getTool()))
+                    .map(AgentGraph.GraphStep::getOutput).filter(java.util.Objects::nonNull).forEach(outputs::add);
+        }
+        for (String output : outputs) {
+            if (!output.toUpperCase(java.util.Locale.ROOT)
+                    .contains(skuToken.toUpperCase(java.util.Locale.ROOT))) {
+                continue;
+            }
+            java.util.regex.Matcher product = java.util.regex.Pattern
+                    .compile("- 编号\\s+SPU\\d+：(.+?)(?:，价格|，类目|，品牌|\\n)").matcher(output);
+            if (product.find()) {
+                arguments.put("productName", product.group(1).trim());
+            }
+            java.util.regex.Matcher specification = java.util.regex.Pattern
+                    .compile("规格：[^\\n]*?" + java.util.regex.Pattern.quote(skuToken) + "[^\\n]*")
+                    .matcher(output);
+            if (specification.find()) {
+                arguments.put("specification", specification.group().trim());
+            }
+            return;
+        }
     }
 
     /**
@@ -915,6 +1007,12 @@ public class Agent {
      */
     private void saveCheckpoint(String userId, String sessionId,
                                 AgentGraph.GraphResult graphResult, List<PendingAction> pending) {
+        saveCheckpoint(userId, sessionId, graphResult, pending, null);
+    }
+
+    private void saveCheckpoint(String userId, String sessionId,
+                                AgentGraph.GraphResult graphResult, List<PendingAction> pending,
+                                String originalMessage) {
         TaskCheckpoint checkpoint = new TaskCheckpoint(
                 taskId(userId, sessionId),
                 userId,
@@ -935,10 +1033,34 @@ public class Agent {
                         .toList(),
                 (graphResult.getSteps() == null || graphResult.getSteps().isEmpty()) ? 1
                         : graphResult.getSteps().get(graphResult.getSteps().size() - 1).getRound(),
+                continuationPromptOf(originalMessage, graphResult, pending),
                 System.currentTimeMillis());
         taskStateStore.save(checkpoint);
         log.info("[Agent] 已保存断点 taskId={} stage={} 待确认={} 项",
                 checkpoint.taskId(), checkpoint.stage(), checkpoint.pendingActions().size());
+    }
+
+    private static String continuationPromptOf(String originalMessage,
+                                               AgentGraph.GraphResult result,
+                                               List<PendingAction> pending) {
+        if (originalMessage == null || originalMessage.isBlank()
+                || result == null || result.getPlan() == null || result.getPlan().isEmpty()
+                || pending == null || pending.isEmpty()) {
+            return null;
+        }
+        int completed = result.getSteps() == null ? 0 : result.getSteps().size();
+        if (result.getPlan().size() <= completed + pending.size()) {
+            return null;
+        }
+        String done = result.getSteps() == null ? "无"
+                : result.getSteps().stream().map(AgentGraph.GraphStep::getTool)
+                .filter(java.util.Objects::nonNull).distinct()
+                .reduce((a, b) -> a + "、" + b).orElse("无");
+        return "【复合任务续作】原始用户任务：" + originalMessage
+                + "\n已完成步骤：" + done
+                + "。当前确认批次执行成功后，仍有原计划步骤未完成。"
+                + "请只处理原始任务中尚未完成的部分，不重复已完成步骤，"
+                + "并在下一项不可逆操作前再次请求用户确认。";
     }
 
     /**
@@ -1254,11 +1376,13 @@ public class Agent {
             }
         }
 
+        Set<String> semanticExemptions = semanticExemptions(report.reply(), userMessage, evidence,
+                response.getToolExecutions(), evidenceCount, citableTitles, toolStrings);
         CitationVerifier.Verdict verdict =
                 // 带上用户本轮原话：无依据横幅只在「用户在问平台的事」时才该出现，
                 // 否则纯寒暄轮会被模型那段自我介绍的能力清单顶上横幅（U39）
                 CitationVerifier.verify(report.reply(), evidenceCount, hasToolEvidence, citableTitles,
-                        userMessage, toolStrings);
+                        userMessage, toolStrings, semanticExemptions);
 
         // 事实核对排在最后一道：它比的是「工具当时返回了什么」，而引用校验会改文本，
         // 放在它前面才核对的是用户真正看到的那一版。
@@ -1286,6 +1410,33 @@ public class Agent {
                     verdict.stripped() ? verdict.unsupported().size() : 0,
                     verdict.ungrounded(), report.conflicts().size(), facts.mismatches().size());
         }
+    }
+
+    private Set<String> semanticExemptions(String reply, String userMessage,
+                                            List<DocumentChunk> evidence,
+                                            List<ToolExecution> executions,
+                                            int evidenceCount, Set<String> citableTitles,
+                                            Set<String> toolStrings) {
+        List<String> candidates = CitationVerifier.candidates(reply, evidenceCount, citableTitles, toolStrings);
+        if (candidates.isEmpty() || conflictChecker == null) {
+            return Set.of();
+        }
+        String facts = executions == null ? "" : executions.stream()
+                .filter(ToolExecution::isSuccess)
+                .map(ToolExecution::getOutput)
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        SemanticGroundingVerifier.Verdict verdict = SemanticGroundingVerifier.verify(
+                conflictChecker, conflictCheckConfig(), userMessage, reply, candidates, evidence, facts);
+        if (!verdict.evaluated()) {
+            log.warn("[Agent] 语义溯源审核不可用，保留规则审核结果");
+            return Set.of();
+        }
+        Set<String> exemptions = new LinkedHashSet<>(candidates);
+        exemptions.removeAll(verdict.unsupported());
+        log.debug("[Agent] 语义溯源审核候选={} 无依据={} 保留={}",
+                candidates.size(), verdict.unsupported().size(), exemptions.size());
+        return exemptions;
     }
 
     /**

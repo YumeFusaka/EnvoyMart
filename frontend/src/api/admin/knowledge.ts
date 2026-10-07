@@ -18,6 +18,7 @@ export async function upsertDocument(payload: {
   version?: string
   tags?: string[]
   content: string
+  subjectSpuIds?: number[]
 }) {
   const response = await request.post('/knowledge/admin/documents', payload)
   return response.data.data as string
@@ -117,6 +118,12 @@ export async function getProductDocuments(spuKey: string) {
 export async function getDocumentAdmin(docNo: string) {
   const response = await request.get(`/knowledge/documents/${docNo}`)
   return response.data.data as DocumentDetail
+}
+
+/** 文档明确归属的商品。说明书绑定读关联表，不依赖图谱抽取是否成功。 */
+export async function getDocumentBindings(docNo: string) {
+  const response = await request.get(`/knowledge/admin/documents/${encodeURIComponent(docNo)}/bindings`)
+  return (response.data.data ?? []) as number[]
 }
 
 /**

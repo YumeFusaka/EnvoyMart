@@ -32,8 +32,8 @@ public class OrderTool implements Tool {
     public ToolDefinition getDefinition() {
         return ToolDefinition.builder()
                 .name("order_query")
-                .description("按订单编号查询当前用户的订单详情：状态、金额、商品明细、收货信息。"
-                        + "订单编号是用户在订单列表看到的数字 id。只能查自己的订单。")
+                .description("按订单内部 ID 查询当前用户的订单详情：状态、金额、商品明细、收货信息。"
+                        + "参数 orderId 必须是数字 ID；用户看到的 YS 开头订单号是 orderNo，不能直接作为 orderId 传入。")
                 .parameters(Map.of(
                         "orderId", ToolDefinition.ParameterSpec.builder()
                                 .type("integer").description("订单编号").required(true).build()
@@ -55,7 +55,7 @@ public class OrderTool implements Tool {
             }
 
             StringBuilder sb = new StringBuilder();
-            sb.append("订单 ").append(order.getOrderNo())
+            sb.append("订单ID：").append(order.getId()).append("，订单号：").append(order.getOrderNo())
                     // 写「订单状态」而不是「状态」：模型复述输出，标签跟着一起过去，
                     // 事实核对才找得到锚点（「状态」会撞上「物流状态」）
                     .append("，订单状态：").append(text(order.getStatusText(), order.getStatus())).append("\n");

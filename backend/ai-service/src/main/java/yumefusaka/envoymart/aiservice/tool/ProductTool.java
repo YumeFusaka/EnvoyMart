@@ -192,7 +192,7 @@ public class ProductTool implements Tool {
             return ToolResult.builder()
                     .success(true)
                     .output(sb.toString())
-                    // rawData 带上每条商品的默认 skuId（第一个规格），让后续步骤能写
+                    // rawData 只在商品只有一个规格时带 skuId，让后续步骤能安全引用
                     // {$0.skuId} 直接引用——文字输出里的「规格：SKU29」是给人/模型读的，
                     // 而引用解析走的是这份结构化数据，两者必须都拿得到同一个值
                     .rawData(withDefaultSku(products))
@@ -261,9 +261,19 @@ public class ProductTool implements Tool {
             if (detail == null || detail.getSkus() == null) {
                 continue;
             }
-            detail.getSkus().stream().limit(SKU_LIMIT)
-                    .map(SkuView::getId).filter(java.util.Objects::nonNull)
-                    .forEach(id -> names.add("SKU" + id));
+            detail.getSkus().stream().limit(SKU_LIMIT).forEach(sku -> {
+                if (sku.getId() != null) {
+                    names.add("SKU" + sku.getId());
+                }
+                if (sku.getSpecText() != null && !sku.getSpecText().isBlank()) {
+                    names.add(sku.getSpecText());
+                }
+                if (sku.getPrice() != null) {
+                    String price = Money.yuan(sku.getPrice());
+                    names.add(price);
+                    names.add((sku.getSpecText() == null ? "" : sku.getSpecText()) + price);
+                }
+            });
         }
         return names;
     }
@@ -286,10 +296,10 @@ public class ProductTool implements Tool {
         }
     }
 
-    /** 取某个 SPU 的第一个规格编号；查不到返回 null（不猜、不编） */
+    /** 取某个 SPU 的唯一规格编号；多规格或查不到都返回 null（不替用户猜） */
     private Long defaultSkuId(Long spuId) {
         ProductDetail detail = skuDetail(spuId);
-        if (detail == null || detail.getSkus() == null || detail.getSkus().isEmpty()) {
+        if (detail == null || detail.getSkus() == null || detail.getSkus().size() != 1) {
             return null;
         }
         return detail.getSkus().get(0).getId();
@@ -336,6 +346,9 @@ public class ProductTool implements Tool {
         }
         if (skus.size() > shown) {
             sb.append("；还有 ").append(skus.size() - shown).append(" 个规格");
+        }
+        if (skus.size() > 1) {
+            sb.append("。该商品有多个规格，加入购物车前必须让用户明确选择规格，不得默认选择");
         }
         sb.append("\n");
     }

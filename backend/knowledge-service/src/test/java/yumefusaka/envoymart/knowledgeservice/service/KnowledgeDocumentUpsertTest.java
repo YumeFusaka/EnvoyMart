@@ -91,6 +91,7 @@ class KnowledgeDocumentUpsertTest {
         req.setSource("manual");
         req.setScope("nutrition");
         req.setVersion("v1");
+        req.setSubjectSpuIds(List.of(1L));
         return req;
     }
 

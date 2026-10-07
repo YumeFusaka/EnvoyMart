@@ -28,10 +28,31 @@ SET @ddl := IF(@t_migration_warning = 0,
   'DO 0');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- disabled_by：文档停用原因（MANUAL 运营手动 / PRODUCT_OFF 商品下架级联）。
-SET @t_knowledge_document_disabled_by := (SELECT COUNT(*) FROM information_schema.TABLES
-  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'knowledge_document');
-SET @c_knowledge_document_disabled_by := (SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'knowledge_document' AND COLUMN_NAME = 'disabled_by');
-SET @ddl := IF(@t_knowledge_document_disabled_by = 0, 'DO 0', IF(@c_knowledge_document_disabled_by = 0, 'ALTER TABLE knowledge_document ADD COLUMN disabled_by varchar(32) NULL', 'DO 0'));
+-- 退款业务单号：同一笔支付对同一个业务单号只退一次。
+SET @t_refund_biz_no := (SELECT COUNT(*) FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'refund');
+SET @c_refund_biz_no := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'refund' AND COLUMN_NAME = 'biz_no');
+SET @ddl := IF(@t_refund_biz_no = 0, 'DO 0', IF(@c_refund_biz_no = 0, 'ALTER TABLE refund ADD COLUMN biz_no varchar(64) NULL', 'DO 0'));
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- 先加列、再补约束：列可能已存在而索引还没建
+SET @t_uk_refund_biz_no := (SELECT COUNT(*) FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'refund');
+SET @i_uk_refund_biz_no := (SELECT COUNT(*) FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'refund' AND INDEX_NAME = 'uk_refund_biz_no');
+SET @d_uk_refund_biz_no := 0;
+SET @dupsql_uk_refund_biz_no := IF(@t_uk_refund_biz_no = 0 OR @i_uk_refund_biz_no > 0, 'DO 0',
+  'SELECT COUNT(*) INTO @d_uk_refund_biz_no FROM (SELECT 1 FROM refund WHERE payment_id IS NOT NULL AND biz_no IS NOT NULL GROUP BY payment_id, biz_no HAVING COUNT(*) > 1) x');
+PREPARE dupstmt FROM @dupsql_uk_refund_biz_no; EXECUTE dupstmt; DEALLOCATE PREPARE dupstmt;
+
+-- 有重复值：写进 migration_warning（管理员能查到）并跳过约束，不让启动挂掉
+SET @warnsql_uk_refund_biz_no := IF(@d_uk_refund_biz_no > 0, CONCAT(
+  'INSERT INTO migration_warning(script,target,detail) VALUES (''schema-mysql.sql'',''uk_refund_biz_no'', CONCAT(''refund.payment_id, biz_no 有 '', ',
+  @d_uk_refund_biz_no,
+  ', '' 组重复值，唯一约束未创建；请先归并这些行再重启''))'), 'DO 0');
+PREPARE warnstmt FROM @warnsql_uk_refund_biz_no; EXECUTE warnstmt; DEALLOCATE PREPARE warnstmt;
+
+SET @ddl := IF(@t_uk_refund_biz_no = 0, 'DO 0', IF(@i_uk_refund_biz_no > 0, 'DO 0',
+  IF(@d_uk_refund_biz_no > 0, 'DO 0', 'ALTER TABLE refund ADD UNIQUE KEY uk_refund_biz_no (payment_id, biz_no)')));
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;

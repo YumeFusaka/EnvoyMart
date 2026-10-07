@@ -1,100 +1,6 @@
 import request from '@/utils/axios'
 
-/**
- * 检索评测报告接口。读报告**公开**、重跑**仅管理员**，两个都是刻意的：
- * 「检索质量 0.633」是个对外的质量声明，让任何人打开报告、现场重跑核对，
- * 是它可信的全部理由；而重跑会替换全站共享的快照，属于改共享状态的管理动作，
- * 网关对 /admin 段强制登录、下游 @RequireAdmin 判角色，两层把关。
- */
-
-/** 一组聚合指标。hitRate/mrr/ndcg 都是 [0,1] 的小数，展示层再转百分比 */
-export interface EvalMetrics {
-  topK: number
-  caseCount: number
-  hitRate: number
-  mrr: number
-  ndcg: number
-}
-
-export interface EvalCorpus {
-  documents: number
-  cases: number
-  chunkSize: number
-  chunkOverlap: number
-}
-
-/** 随机排序基线 —— 「63.3% 是高是低」的参照系，与实测值并排显示才有意义 */
-export interface EvalBaseline {
-  hitRateAt3: number
-  hitRateAt5: number
-}
-
-export interface EvalStratum {
-  key: string
-  label: string
-  metrics: EvalMetrics
-}
-
-/** 一条样本的现场结果。hit=false 的行是报告页上信息量最大的行 */
-export interface EvalCase {
-  query: string
-  stratum: string
-  relevantDocIds: string[]
-  retrievedDocIds: string[]
-  hit: boolean
-  hitRank: number
-}
-
-/**
- * 查询扩写的对照读数：同一批样本、同一条关键词路，再跑一遍带扩写的。
- *
- * 三个字段（capturedAt / model / recordedQueries）不是装饰 —— 扩写数据是**预录夹具**，
- * 是某一时刻某个模型的真实输出，不是"现在的表现"。不把它们显示出来，
- * 这一栏数字就会被读成实时结果。
- *
- * 它只体现「角度改写」那一半的收益（换个说法重问，词法路才捞得到）；
- * 假想答案（HyDE）那条路要靠真实向量服务，这里是伪随机向量，测不出效果。
- */
-export interface EvalExpansion {
-  capturedAt: string
-  model: string
-  recordedQueries: number
-  overallAt3: EvalMetrics
-  strata: EvalStratum[]
-}
-
-export interface EvalRun {
-  generatedAt: string
-  /** STARTUP = 服务启动时自动生成；MANUAL = 管理台手动重跑 */
-  trigger: string
-  corpus: EvalCorpus
-  overallAt3: EvalMetrics
-  overallAt5: EvalMetrics
-  baseline: EvalBaseline
-  strata: EvalStratum[]
-  cases: EvalCase[]
-  expansion: EvalExpansion
-}
-
-/** 最近一次评测快照（服务启动时生成；启动失败则本次现场补跑）。公开可读 */
-export async function getEvalReport() {
-  const response = await request.get('/knowledge/eval/report')
-  return response.data.data as EvalRun
-}
-
-/** 现场重跑（毫秒级）并替换快照。仅管理员 */
-export async function rerunEval() {
-  const response = await request.post('/knowledge/admin/eval/run')
-  return response.data.data as EvalRun
-}
-
-// ————————————————————————————————————————————————————————————————
-// 回答质量评测（幻觉率 / 引用准确率 / 拒答准确率 / 多跳命中率）
-//
-// 与上面的检索评测是两个不同的量：检索评测回答「找得对不对」，这里回答
-// 「答得有没有依据、该不该答」。两组数字都公开可读 —— 它们是质量声明，
-// 让任何人自己核对是唯一可信的姿势；触发真跑要管理员（要花模型配额）。
-// ————————————————————————————————————————————————————————————————
+// 回答质量评测：只展示真实 Agent 链路生成的快照。
 
 /** 用例类型。UNANSWERABLE 不是"更难"，是"期望行为不同"——该拒答而不是该答对 */
 export type GroundingKind = 'ANSWERABLE' | 'UNANSWERABLE' | 'MULTI_HOP'
@@ -153,20 +59,6 @@ export interface GroundingMetrics {
   multiHopCases: number
 }
 
-/** 离线重放：把夹具里的冻结答案喂给判定链。纯函数、毫秒级、每次读现算 */
-export interface GroundingRun {
-  generatedAt: string
-  trigger: string
-  /** 夹具采集时间 —— 必须跟着数字一起展示，否则旧答案会被读成"现在的表现" */
-  capturedAt: string
-  /** 采集时的对话模型 */
-  model: string
-  metrics: GroundingMetrics
-  /** id → 问题原文。判定结果里没有它，逐条明细要显示 */
-  questions: Record<string, string>
-  cases: GroundingCaseOutcome[]
-}
-
 export interface GroundingLiveCase {
   /** 问题原文 */
   question: string
@@ -195,31 +87,18 @@ export interface GroundingLiveRun {
   cases: GroundingLiveCase[]
 }
 
-/** 一次响应并排两条链路，来源必须分别标注 */
+/** 回答质量报告只返回真实链路快照。 */
 export interface GroundingReport {
-  offline: GroundingRun
   live: GroundingLiveRun
 }
 
-/** 回答质量报告。公开可读；offline 每次现算，live 是最近一次真跑 */
+/** 回答质量报告。公开只读，来源是最近一次真实链路快照。 */
 export async function getGroundingReport() {
   const response = await request.get('/ai/eval/grounding/report')
   return response.data.data as GroundingReport
 }
 
-/** 触发一次真实重跑（异步，约两分钟）。仅管理员；已在跑时返回当前状态而非排队 */
-export async function runGroundingEval() {
-  const response = await request.post('/ai/admin/eval/grounding/run')
-  return response.data.data as GroundingLiveRun
-}
-
-// ————————————————————————————————————————————————————————————————
-// 生产链路检索评测（真实向量 + 图谱 + RRF + 重排 + 扩写，跑生产语料）
-//
-// 与上面「检索评测（关键词路基线）」是两个口径：那一栏是「与 CI 同源、可逐位复现的下限」，
-// 这一栏是「用户此刻在用的那条链路，跑在生产语料上有多好」。两栏不可互推，必须分开陈述。
-// 真跑要调真实 embedding / 重排，几分钟、要计费 → 管理员触发；结果落盘成快照，报告页只读。
-// ————————————————————————————————————————————————————————————————
+// 生产链路检索评测（真实向量 + 图谱 + RRF + 重排 + 扩写，跑生产语料）。
 
 export interface ProductionRetrievalMetrics {
   topK: number
@@ -257,8 +136,7 @@ export interface ProductionRetrievalCase {
 /**
  * 生产链路检索评测报告。
  *
- * status：NEVER（从未跑过，页面显示空态 + 运行按钮）/ RUNNING（真跑进行中，轮询进度）/
- * COMPLETED（有结果）/ FAILED（跑挂了，error 里是原因）。
+ * status：NEVER（暂无快照）/ COMPLETED（有结果）/ FAILED（快照生成失败）。
  */
 export interface ProductionRetrievalReport {
   status: 'NEVER' | 'RUNNING' | 'COMPLETED' | 'FAILED'
@@ -274,14 +152,8 @@ export interface ProductionRetrievalReport {
   error: string | null
 }
 
-/** 生产链路检索报告。公开可读；从未跑过时 status=NEVER */
+/** 生产链路检索报告。公开只读。 */
 export async function getProductionRetrievalReport() {
   const response = await request.get('/ai/eval/retrieval/report')
-  return response.data.data as ProductionRetrievalReport
-}
-
-/** 触发一次生产链路检索真跑（异步，几分钟）。仅管理员；已在跑时返回当前状态而非排队 */
-export async function runProductionRetrievalEval() {
-  const response = await request.post('/ai/admin/eval/retrieval/run')
   return response.data.data as ProductionRetrievalReport
 }

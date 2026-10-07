@@ -299,7 +299,7 @@ function isWaiting(ticket: AdminTicketSummary): boolean {
 <template>
   <div class="admin-panel">
     <div class="admin-filters">
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="ticket-keyword">关键词</label>
         <el-input
           id="ticket-keyword"
@@ -310,7 +310,7 @@ function isWaiting(ticket: AdminTicketSummary): boolean {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="ticket-category">分类</label>
         <el-select id="ticket-category" v-model="query.category" clearable placeholder="全部分类">
           <el-option
@@ -322,14 +322,14 @@ function isWaiting(ticket: AdminTicketSummary): boolean {
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="ticket-status">状态</label>
         <el-select id="ticket-status" v-model="query.status" clearable placeholder="全部状态">
           <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="ticket-user">用户 ID</label>
         <el-input
           id="ticket-user"

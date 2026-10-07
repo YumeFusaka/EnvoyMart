@@ -28,10 +28,24 @@ SET @ddl := IF(@t_migration_warning = 0,
   'DO 0');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- disabled_by：文档停用原因（MANUAL 运营手动 / PRODUCT_OFF 商品下架级联）。
-SET @t_knowledge_document_disabled_by := (SELECT COUNT(*) FROM information_schema.TABLES
-  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'knowledge_document');
-SET @c_knowledge_document_disabled_by := (SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'knowledge_document' AND COLUMN_NAME = 'disabled_by');
-SET @ddl := IF(@t_knowledge_document_disabled_by = 0, 'DO 0', IF(@c_knowledge_document_disabled_by = 0, 'ALTER TABLE knowledge_document ADD COLUMN disabled_by varchar(32) NULL', 'DO 0'));
+-- 禁用留痕三列：这是「让一个人用不了系统」的动作，事后必须答得出是谁、什么时候、因为什么。
+SET @t_sys_user_disabled_reason := (SELECT COUNT(*) FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_user');
+SET @c_sys_user_disabled_reason := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_user' AND COLUMN_NAME = 'disabled_reason');
+SET @ddl := IF(@t_sys_user_disabled_reason = 0, 'DO 0', IF(@c_sys_user_disabled_reason = 0, 'ALTER TABLE sys_user ADD COLUMN disabled_reason varchar(255) NULL', 'DO 0'));
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @t_sys_user_disabled_by := (SELECT COUNT(*) FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_user');
+SET @c_sys_user_disabled_by := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_user' AND COLUMN_NAME = 'disabled_by');
+SET @ddl := IF(@t_sys_user_disabled_by = 0, 'DO 0', IF(@c_sys_user_disabled_by = 0, 'ALTER TABLE sys_user ADD COLUMN disabled_by varchar(32) NULL', 'DO 0'));
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @t_sys_user_disabled_at := (SELECT COUNT(*) FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_user');
+SET @c_sys_user_disabled_at := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_user' AND COLUMN_NAME = 'disabled_at');
+SET @ddl := IF(@t_sys_user_disabled_at = 0, 'DO 0', IF(@c_sys_user_disabled_at = 0, 'ALTER TABLE sys_user ADD COLUMN disabled_at datetime NULL', 'DO 0'));
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;

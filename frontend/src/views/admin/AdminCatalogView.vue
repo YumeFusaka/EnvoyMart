@@ -388,12 +388,20 @@ async function removeBrand(brand: AdminBrand) {
 </script>
 
 <template>
-  <div class="admin-panel">
+  <div class="catalog-page">
     <div class="admin-toolbar">
-      <h2 class="admin-toolbar__title">类目与品牌</h2>
+      <div>
+        <p class="catalog-eyebrow">商品基础资料</p>
+        <h2 class="admin-toolbar__title">类目与品牌</h2>
+        <p class="catalog-subtitle">先维护商品归属，再配置该类目的参数模板和品牌资料。</p>
+      </div>
       <span class="admin-toolbar__count"
         >{{ categoryTree.length }} 个一级类目 · {{ brands.length }} 个品牌</span
       >
+      <div class="admin-toolbar__actions">
+        <el-button :icon="Plus" @click="openCreateCategory(null)">新建类目</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreateBrand">新建品牌</el-button>
+      </div>
     </div>
 
     <ErrorState v-if="loadError" :message="loadError" :on-retry="reloadAll" />
@@ -401,9 +409,10 @@ async function removeBrand(brand: AdminBrand) {
     <el-skeleton v-else-if="loading" :rows="8" animated />
 
     <div v-else class="catalog-grid">
-      <section class="admin-detail">
+      <section class="admin-detail admin-panel catalog-card">
         <h3 class="admin-section__title">
-          类目树
+          <span>类目树</span>
+          <small>决定商品的归属和筛选路径</small>
           <el-button :icon="Plus" text type="primary" @click="openCreateCategory(null)"
             >一级类目</el-button
           >
@@ -463,9 +472,10 @@ async function removeBrand(brand: AdminBrand) {
         <p v-if="categoryTree.length === 0" class="admin-empty">还没有类目</p>
       </section>
 
-      <section class="admin-detail">
+      <section class="admin-detail admin-panel catalog-card">
         <h3 class="admin-section__title">
-          参数模板
+          <span>参数模板</span>
+          <small>{{ selectedCategory ? `当前：${selectedCategory.name}` : '选择类目后配置' }}</small>
           <el-button
             :icon="Plus"
             text
@@ -525,9 +535,10 @@ async function removeBrand(brand: AdminBrand) {
         </template>
       </section>
 
-      <section class="admin-detail catalog-grid__brands">
+      <section class="admin-detail admin-panel catalog-card catalog-grid__brands">
         <h3 class="admin-section__title">
-          品牌
+          <span>品牌</span>
+          <small>商品详情和搜索中的品牌信息</small>
           <el-button :icon="Plus" text type="primary" @click="openCreateBrand">新建品牌</el-button>
         </h3>
         <div class="admin-table">
@@ -701,6 +712,43 @@ async function removeBrand(brand: AdminBrand) {
   grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.4fr);
   gap: var(--ys-space-4);
   align-items: start;
+  padding: var(--ys-space-4) 0;
+}
+
+.catalog-card {
+  min-width: 0;
+  padding: var(--ys-space-5);
+}
+
+.catalog-eyebrow {
+  margin: 0 0 4px;
+  color: var(--color-primary-strong);
+  font-size: var(--ys-font-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.catalog-subtitle {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-sm);
+}
+
+.admin-section__title {
+  display: flex;
+  align-items: center;
+  gap: var(--ys-space-2);
+}
+
+.admin-section__title small {
+  flex: 1;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  font-weight: 400;
+}
+
+.admin-toolbar > div:first-child {
+  min-width: 0;
 }
 
 .catalog-grid__brands {

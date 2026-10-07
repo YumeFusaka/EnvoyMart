@@ -120,7 +120,7 @@ const statusOptions = [
 <template>
   <div class="admin-panel">
     <div class="admin-filters">
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="spu-keyword">关键词</label>
         <el-input
           id="spu-keyword"
@@ -131,7 +131,7 @@ const statusOptions = [
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--mid">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="spu-category">类目</label>
         <el-tree-select
           id="spu-category"
@@ -146,14 +146,14 @@ const statusOptions = [
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="spu-brand">品牌</label>
         <el-select id="spu-brand" v-model="query.brandId" clearable placeholder="全部品牌">
           <el-option v-for="b in brands" :key="b.id" :label="b.name" :value="b.id" />
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="spu-status">状态</label>
         <el-select id="spu-status" v-model="query.status" clearable placeholder="全部状态">
           <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />

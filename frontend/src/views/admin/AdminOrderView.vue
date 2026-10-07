@@ -349,7 +349,7 @@ async function copy(value: string) {
 <template>
   <div class="admin-panel">
     <div class="admin-filters">
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="order-keyword">关键词</label>
         <el-input
           id="order-keyword"
@@ -360,7 +360,7 @@ async function copy(value: string) {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="order-user">用户 ID</label>
         <el-input
           id="order-user"
@@ -371,14 +371,14 @@ async function copy(value: string) {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="order-status">状态</label>
         <el-select id="order-status" v-model="query.status" clearable placeholder="全部状态">
           <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="order-range">下单时间</label>
         <el-date-picker
           id="order-range"

@@ -165,10 +165,12 @@ export function usageSummary(usage: ChatUsage): string {
 
 /** 参数名 → 中文标签：结构化卡片上把 `orderId` 显示成「订单号」 */
 const ARG_LABELS: Record<string, string> = {
-  orderId: '订单号',
+  orderId: '订单内部 ID',
   orderNo: '订单编号',
   spuId: '商品编号',
   skuId: '规格编号',
+  productName: '商品',
+  specification: '规格与价格',
   quantity: '数量',
   addressId: '收货地址',
   type: '类型',

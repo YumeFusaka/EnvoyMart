@@ -280,23 +280,6 @@ class JwtGatewayFilterTest {
     }
 
     /**
-     * 检索评测报告匿名可读 —— 与知识库文档同理：「你不信这个 0.633，就自己点开重跑一遍」
-     * 是它可信的全部理由，只给登录用户看就没有意义了。
-     * <p>
-     * 白名单只放行「读报告」这一个端点：重跑接口 {@code /knowledge/admin/eval/run}
-     * 在 /admin 段下，已被 {@link #管理路径不应被公开前缀放行} 扫源码自动纳入。
-     */
-    @Test
-    void 检索评测报告应匿名放行() {
-        MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.get("/knowledge/eval/report").build());
-
-        filter.filter(exchange, chain).block();
-
-        assertThat(forwarded.get()).as("公开的评测报告应当照常转发").isNotNull();
-    }
-
-    /**
      * 商品评价匿名可读：详情页公开，评价是详情的一部分，
      * 「详情能看、评价要登录」是自相矛盾的。
      * <p>

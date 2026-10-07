@@ -25,6 +25,7 @@ import java.util.List;
  * @param executedTools  已经真正执行过的工具名，按执行顺序。恢复时据此跳过重复调用
  * @param pendingActions 待用户确认的调用载荷。为空表示不是在等确认
  * @param round          已用掉的规划轮次。恢复时接着它继续计数，护栏预算才不会被重置绕过
+ * @param continuationPrompt 确认成功后继续未完成复合任务的服务端指令；为空表示本批已是最后一步
  * @param savedAtEpochMs 保存时刻，用于过期判断与可观测
  */
 public record TaskCheckpoint(String taskId,
@@ -35,11 +36,19 @@ public record TaskCheckpoint(String taskId,
                              List<String> executedTools,
                              List<PendingCall> pendingActions,
                              int round,
+                             String continuationPrompt,
                              long savedAtEpochMs) {
 
     public TaskCheckpoint {
         executedTools = executedTools == null ? List.of() : List.copyOf(executedTools);
         pendingActions = pendingActions == null ? List.of() : List.copyOf(pendingActions);
+    }
+
+    public TaskCheckpoint(String taskId, String userId, String sessionId, TaskStage stage,
+                          String coreIntent, List<String> executedTools,
+                          List<PendingCall> pendingActions, int round, long savedAtEpochMs) {
+        this(taskId, userId, sessionId, stage, coreIntent, executedTools,
+                pendingActions, round, null, savedAtEpochMs);
     }
 
     /**

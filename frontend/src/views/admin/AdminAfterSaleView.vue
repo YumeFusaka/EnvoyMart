@@ -296,7 +296,7 @@ function operatorText(log: StatusLogView): string {
 <template>
   <div class="admin-panel">
     <div class="admin-filters">
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="as-keyword">关键词</label>
         <el-input
           id="as-keyword"
@@ -307,7 +307,7 @@ function operatorText(log: StatusLogView): string {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="as-user">用户 ID</label>
         <el-input
           id="as-user"
@@ -318,21 +318,21 @@ function operatorText(log: StatusLogView): string {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="as-status">状态</label>
         <el-select id="as-status" v-model="query.status" clearable placeholder="全部状态">
           <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="as-type">类型</label>
         <el-select id="as-type" v-model="query.type" clearable placeholder="全部类型">
           <el-option v-for="t in typeOptions" :key="t.value" :label="t.label" :value="t.value" />
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="as-range">申请时间</label>
         <el-date-picker
           id="as-range"

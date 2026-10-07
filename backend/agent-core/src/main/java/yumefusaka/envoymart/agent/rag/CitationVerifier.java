@@ -288,6 +288,12 @@ public final class CitationVerifier {
     public static Verdict verify(String reply, int evidenceCount, boolean hasToolEvidence,
                                  Set<String> citableTitles, String userMessage,
                                  Set<String> toolStrings) {
+        return verify(reply, evidenceCount, hasToolEvidence, citableTitles, userMessage, toolStrings, Set.of());
+    }
+
+    public static Verdict verify(String reply, int evidenceCount, boolean hasToolEvidence,
+                                 Set<String> citableTitles, String userMessage,
+                                 Set<String> toolStrings, Set<String> semanticExemptions) {
         if (reply == null || reply.isBlank()) {
             return new Verdict(reply, List.of(), 0, 0, false, false);
         }
@@ -319,6 +325,10 @@ public final class CitationVerifier {
             String sanitized = without(sentence, outOfRange);
 
             if (hasValidCitation(sanitized, evidenceCount, citableTitles, toolStrings)) {
+                cited++;
+                continue;
+            }
+            if (semanticExemptions.contains(sentence.trim())) {
                 cited++;
                 continue;
             }
@@ -374,6 +384,24 @@ public final class CitationVerifier {
             cleaned = TextRanges.tidy(cleaned);
         }
         return new Verdict(cleaned, reported, sentences, cited, stripped, ungrounded);
+    }
+
+    /** 输出给语义审核器的候选句；硬规则仍在 verify 中最终执行。 */
+    public static List<String> candidates(String reply, int evidenceCount,
+                                          Set<String> citableTitles, Set<String> toolStrings) {
+        if (reply == null || reply.isBlank()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        Matcher matcher = SENTENCE.matcher(reply);
+        while (matcher.find()) {
+            String sentence = matcher.group();
+            if (!hasValidCitation(sentence, evidenceCount, citableTitles, toolStrings)
+                    && needsCitation(sentence)) {
+                result.add(sentence.trim());
+            }
+        }
+        return List.copyOf(result);
     }
 
     /** 把已判定越界的编号 token 从句子文本里去掉；没命中就原样返回 */

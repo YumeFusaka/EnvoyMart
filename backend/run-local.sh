@@ -705,6 +705,11 @@ start_all_services() {
   local svc port round
   local failed=()
   precompile_all
+  # 库模块已在脚本开头重新安装；旧 JVM 可能仍持有旧 contract/common/agent-core。
+  # 若继续按端口跳过，会把新旧类混在同一套服务里，直到某个接口首次触发缺失类才 500。
+  # 这里统一重启服务，保证本次启动的所有 JVM 与刚安装的库版本一致。
+  echo "库模块已同步，重启已有 Java 服务以避免旧类残留..."
+  stop_services "${SERVICES[@]}"
   export PRECOMPILED=1
   for svc in "${SERVICES[@]}"; do
     port=$(port_of "$svc")

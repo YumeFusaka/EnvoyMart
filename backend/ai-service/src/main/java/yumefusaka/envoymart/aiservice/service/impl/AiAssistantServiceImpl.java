@@ -192,7 +192,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .memoryTrace(memoryTraceView(agentResp.getMemoryTrace()))
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
-                .recommendedProducts(extractProducts(executions))
+                .recommendedProducts(extractProducts(executions, agentResp.getReply()))
                 .pendingPayments(extractPayments(executions))
                 .pendingActions(agentResp.getPendingActions())
                 .pendingActionDetails(agentResp.getPendingActionDetails())
@@ -372,7 +372,10 @@ public class AiAssistantServiceImpl implements AiAssistantService {
      * 按商品编号去重而不是按对象相等：同一件商品可能同时出现在「关键词搜到」与
      * 「按编号查详情」两次调用里，两张一模一样的卡片并排渲染是纯粹的视觉噪音。
      */
-    private List<ProductSummary> extractProducts(List<ToolExecution> executions) {
+    private List<ProductSummary> extractProducts(List<ToolExecution> executions, String reply) {
+        if (reply == null || reply.isBlank()) {
+            return List.of();
+        }
         return executions.stream()
                 .filter(ToolExecution::isSuccess)
                 .map(ToolExecution::getRawData)
@@ -381,6 +384,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .flatMap(data -> ((List<?>) data).stream())
                 .map(this::toProductSummary)
                 .filter(Objects::nonNull)
+                .filter(product -> mentionsProduct(reply, product))
                 .collect(java.util.stream.Collectors.collectingAndThen(
                         java.util.stream.Collectors.toMap(
                                 p -> p.getId() == null ? String.valueOf(System.identityHashCode(p)) : p.getId(),
@@ -388,6 +392,20 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                                 (first, ignored) -> first,
                                 java.util.LinkedHashMap::new),
                         map -> List.copyOf(map.values())));
+    }
+
+    /** 只有最终回答明确提到的商品才生成商品卡片，避免把检索候选集误当成推荐结果。 */
+    private boolean mentionsProduct(String reply, ProductSummary product) {
+        String normalizedReply = compact(reply);
+        boolean named = product.getName() != null && !product.getName().isBlank()
+                && normalizedReply.contains(compact(product.getName()));
+        boolean keyed = product.getId() != null
+                && normalizedReply.matches("(?s).*\\b(?i:spu)\\s*0*" + product.getId() + "\\b.*");
+        return named || keyed;
+    }
+
+    private String compact(String text) {
+        return text.replaceAll("\\s+", "");
     }
 
     /** 一条工具结果的原始数据 → SPU 摘要。认不出形状时返回 null（跳过，而不是崩） */

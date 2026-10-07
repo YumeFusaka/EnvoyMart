@@ -2,14 +2,18 @@ package yumefusaka.envoymart.aiservice.eval;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import yumefusaka.envoymart.agent.core.Agent;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.EvidenceGate;
-import yumefusaka.envoymart.agent.rag.GroundingEvalRunner;
 import yumefusaka.envoymart.agent.rag.GroundingEvaluator;
 import yumefusaka.envoymart.agent.rag.GroundingFixtures;
 
 import java.time.OffsetDateTime;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -17,15 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 回答质量的<b>线上真跑</b>评测 —— 拿夹具里的问题重新问一遍真实 Agent。
  * <p>
- * 与离线重放（{@link GroundingEvalRunner}）的分工：
- * <ul>
- *   <li>离线重放吃的是冻结答案，测<b>判定逻辑有没有退化</b>，进 CI，跑一次几毫秒；</li>
- *   <li>这里跑的是当前模型 + 当前知识库 + 当前图谱，测<b>系统现在表现如何</b>，
- *       只在管理员点按钮时跑，跑一次两分钟左右，要花真金白银的 token。</li>
- * </ul>
- * 两边用同一个 {@link GroundingEvaluator}，所以报告页上两组数字可以直接并排——
- * <b>但来源必须标出来</b>：一份是"某次采集时的模型"，一份是"刚才"。混着讲就是拿旧数据
- * 冒充新结论。
+ * 这里跑的是当前模型、当前知识库和当前图谱，完成后落盘为只读快照。
  * <p>
  * <b>为什么是异步 + 单飞。</b>24 条用例串行调模型，同步请求会超时，而并发跑多个评测
  * 除了互相抢配额没有别的作用。所以：一个时刻只允许一个任务，重复触发直接返回当前状态，
@@ -39,12 +35,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Service
 public class GroundingLiveEvalService {
 
+    private static final Path SNAPSHOT_FILE = Path.of("data", "eval", "production-grounding.json");
+
     /**
      * 一条用例的真跑结果。
      *
      * @param question 问题原文。判定结果里没有它（判定层不需要），但逐条明细要显示——
      *                 只给一个 G-01，读者没法核对这一条在问什么
-     * @param outcome  判定结论（与离线重放同一套算法算出来的）
+     * @param outcome  对真实回答做确定性判定后的结果
      * @param answer   这一轮的真实回答，报告页要能逐字读——指标是摘要，答案才是证据
      * @param error    单条失败的原因。一条失败不该让整轮作废，但也不能悄悄消失：
      *                 它会把这一条从分母里摘掉，不写出来就成了"少算了一条"
@@ -70,6 +68,7 @@ public class GroundingLiveEvalService {
     }
 
     private final Agent agent;
+    private final ObjectMapper objectMapper;
 
     /** 单飞闸：评测要花 token，并发触发只会有多个任务抢同一份配额 */
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -77,13 +76,27 @@ public class GroundingLiveEvalService {
     /** 最近一次结果。volatile 只赋值不原地改，与检索评测的快照同一套发布方式 */
     private volatile LiveRun latest;
 
-    public GroundingLiveEvalService(Agent agent) {
+    public GroundingLiveEvalService(Agent agent, ObjectMapper objectMapper) {
         this.agent = agent;
+        this.objectMapper = objectMapper;
     }
 
     public LiveRun current() {
         LiveRun current = latest;
-        return current == null ? LiveRun.idle(GroundingFixtures.CASES.size()) : current;
+        if (current != null) {
+            return current;
+        }
+        if (Files.exists(SNAPSHOT_FILE)) {
+            try {
+                LiveRun snapshot = objectMapper.readValue(Files.readString(SNAPSHOT_FILE, StandardCharsets.UTF_8),
+                        new TypeReference<>() { });
+                latest = snapshot;
+                return snapshot;
+            } catch (Exception e) {
+                log.warn("[AI] 回答质量真实快照读取失败：{}", e.getMessage());
+            }
+        }
+        return LiveRun.idle(GroundingFixtures.CASES.size());
     }
 
     /**
@@ -128,6 +141,7 @@ public class GroundingLiveEvalService {
             latest = new LiveRun("COMPLETED", latest.startedAt(), OffsetDateTime.now().toString(),
                     GroundingFixtures.CASES.size(), results.size(), failed, null, userId, metrics,
                     List.copyOf(results));
+            persist(latest);
             log.info("[AI] 回答质量真跑完成：cases={} 失败={} 幻觉率={} 引用准确率={} 拒答准确率={} 多跳命中率={}",
                     results.size(), failed, metrics.hallucinationRate(), metrics.citationAccuracy(),
                     metrics.refusalAccuracy(), metrics.multiHopHitRate());
@@ -139,6 +153,17 @@ public class GroundingLiveEvalService {
                     List.copyOf(results));
         } finally {
             running.set(false);
+        }
+    }
+
+    private void persist(LiveRun report) {
+        try {
+            Files.createDirectories(SNAPSHOT_FILE.getParent());
+            Files.writeString(SNAPSHOT_FILE,
+                    objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(report),
+                    StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.error("[AI] 回答质量真实快照落盘失败：{}", e.getMessage());
         }
     }
 

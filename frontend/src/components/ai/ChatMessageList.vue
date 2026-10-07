@@ -372,6 +372,7 @@ async function handleCopy(message: ChatMessage) {
         :evidence-level="message.evidenceLevel"
         :retrieval-query="message.retrievalQuery"
         :expansion="message.expansion"
+        :tool-calls="message.toolCalls"
         :active-index="activeCite?.messageId === message.id ? activeCite.index : null"
       />
 

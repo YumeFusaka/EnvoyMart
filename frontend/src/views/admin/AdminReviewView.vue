@@ -284,7 +284,7 @@ function spuLabel(review: AdminReviewSummary): string {
 <template>
   <div class="admin-panel">
     <div class="admin-filters">
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="review-keyword">关键词</label>
         <el-input
           id="review-keyword"
@@ -295,7 +295,7 @@ function spuLabel(review: AdminReviewSummary): string {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="review-spu">商品 SPU</label>
         <el-input
           id="review-spu"
@@ -306,7 +306,7 @@ function spuLabel(review: AdminReviewSummary): string {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="review-order">订单 ID</label>
         <el-input
           id="review-order"
@@ -317,7 +317,7 @@ function spuLabel(review: AdminReviewSummary): string {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="review-user">用户 ID</label>
         <el-input
           id="review-user"
@@ -328,21 +328,21 @@ function spuLabel(review: AdminReviewSummary): string {
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="review-rating">评分</label>
         <el-select id="review-rating" v-model="query.rating" clearable placeholder="全部评分">
           <el-option v-for="r in ratingOptions" :key="r.value" :label="r.label" :value="r.value" />
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="review-status">状态</label>
         <el-select id="review-status" v-model="query.status" clearable placeholder="全部状态">
           <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="review-reply">商家回复</label>
         <el-select id="review-reply" v-model="replyFilter" placeholder="全部">
           <el-option label="全部" value="all" />
@@ -351,7 +351,7 @@ function spuLabel(review: AdminReviewSummary): string {
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="review-range">评价时间</label>
         <el-date-picker
           id="review-range"

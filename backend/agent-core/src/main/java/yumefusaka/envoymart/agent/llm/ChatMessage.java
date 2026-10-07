@@ -28,6 +28,14 @@ public class ChatMessage {
     /** 工具调用结果（tool 角色返回） */
     private String toolResult;
 
+    public static ChatMessage system(String content) {
+        return ChatMessage.builder().role(Role.SYSTEM).content(content).build();
+    }
+
+    public static ChatMessage user(String content) {
+        return ChatMessage.builder().role(Role.USER).content(content).build();
+    }
+
     @Data
     @Builder
     public static class ToolCallRequest {

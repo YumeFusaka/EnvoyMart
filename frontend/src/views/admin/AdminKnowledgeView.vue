@@ -20,11 +20,13 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
+import { listSpus } from '@/api/admin/product'
 import {
   changeDocumentStatus,
   fetchKnowledgeCoverage,
   fetchReindexStatus,
   getDocumentAdmin,
+  getDocumentBindings,
   listDocumentsAdmin,
   reindexDocument,
   reindexKnowledge,
@@ -146,7 +148,22 @@ const form = ref({
   version: 'v1',
   tags: '',
   content: '',
+  subjectSpuIds: [] as number[],
 })
+const productOptions = ref<{ id: number; name: string; spuCode: string; status: number }[]>([])
+const productOptionsLoading = ref(false)
+
+async function loadProductOptions() {
+  productOptionsLoading.value = true
+  try {
+    const page = await listSpus({ status: 1, page: 0, size: 500, sort: 'updated_desc' })
+    productOptions.value = page.records
+  } catch {
+    productOptions.value = []
+  } finally {
+    productOptionsLoading.value = false
+  }
+}
 
 function openCreate() {
   form.value = {
@@ -157,7 +174,9 @@ function openCreate() {
     version: 'v1',
     tags: '',
     content: '',
+    subjectSpuIds: [],
   }
+  void loadProductOptions()
   editing.value = true
 }
 
@@ -171,9 +190,21 @@ function openEdit(row: DocumentSummary) {
     version: row.version,
     tags: row.tags ?? '',
     content: '',
+    subjectSpuIds: [],
   }
   editing.value = true
-  void loadContent(row.docNo)
+  void Promise.all([loadContent(row.docNo), loadBindings(row.docNo), loadProductOptions()])
+}
+
+async function loadBindings(docNo: string) {
+  try {
+    const ids = await getDocumentBindings(docNo)
+    if (form.value.docNo === docNo) {
+      form.value.subjectSpuIds = ids
+    }
+  } catch {
+    form.value.subjectSpuIds = []
+  }
 }
 
 async function loadContent(docNo: string) {
@@ -197,6 +228,10 @@ async function save() {
     ElMessage.warning('请填写正文 —— 切分与图谱抽取都以它为准')
     return
   }
+  if (form.value.source === 'manual' && form.value.subjectSpuIds.length === 0) {
+    ElMessage.warning('产品说明书必须绑定至少一个商品')
+    return
+  }
   saving.value = true
   try {
     const docNo = await upsertDocument({
@@ -210,6 +245,7 @@ async function save() {
         .map((t) => t.trim())
         .filter(Boolean),
       content: form.value.content,
+      subjectSpuIds: form.value.source === 'manual' ? form.value.subjectSpuIds : [],
     })
     await syncOne(docNo)
     editing.value = false
@@ -480,14 +516,14 @@ const coveragePercent = computed(() => {
           />
         </div>
 
-        <div class="admin-filters__item admin-filters__item--narrow">
+        <div class="admin-filters__item">
           <label class="admin-filters__label" for="kb-scope">领域</label>
           <el-select id="kb-scope" v-model="query.scope" clearable placeholder="全部领域">
             <el-option v-for="s in SCOPE_OPTIONS" :key="s.value" :label="s.label" :value="s.value" />
           </el-select>
         </div>
 
-        <div class="admin-filters__item admin-filters__item--narrow">
+        <div class="admin-filters__item">
           <label class="admin-filters__label" for="kb-status">状态</label>
           <el-select id="kb-status" v-model="query.status" clearable placeholder="全部状态">
             <el-option label="启用" :value="1" />
@@ -596,7 +632,10 @@ const coveragePercent = computed(() => {
 
         <div class="kb-form__row">
           <el-form-item label="来源">
-            <el-select v-model="form.source">
+            <el-select
+              v-model="form.source"
+              @change="form.source !== 'manual' && (form.subjectSpuIds = [])"
+            >
               <el-option
                 v-for="s in SOURCE_OPTIONS"
                 :key="s.value"
@@ -619,6 +658,35 @@ const coveragePercent = computed(() => {
             <el-input v-model="form.version" placeholder="v2026.03" />
           </el-form-item>
         </div>
+
+        <el-form-item v-if="form.source === 'manual'" label="绑定商品" required>
+          <el-select
+            v-model="form.subjectSpuIds"
+            class="kb-form__product-select"
+            multiple
+            filterable
+            clearable
+            :loading="productOptionsLoading"
+            placeholder="选择这份说明书对应的商品，可多选"
+          >
+            <el-option
+              v-for="product in productOptions"
+              :key="product.id"
+              :label="`${product.name}（${product.spuCode}）`"
+              :value="product.id"
+            />
+          </el-select>
+          <p class="kb-form__hint kb-form__hint--required">
+            商品说明书必须绑定商品。系统按这个绑定维护商品上下架、向量库和知识图谱的一致性，不根据标题猜商品。
+          </p>
+        </el-form-item>
+        <el-alert
+          v-else
+          type="info"
+          :closable="false"
+          title="领域文档不绑定商品"
+          description="平台政策、监管规范等建立在业务领域上，不属于某个商品，可以留空。"
+        />
 
         <el-form-item label="标签（逗号分隔）">
           <el-input v-model="form.tags" placeholder="维生素D3,钙,用量" />
@@ -675,6 +743,14 @@ const coveragePercent = computed(() => {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: var(--ys-space-3);
+}
+
+.kb-form__product-select {
+  width: 100%;
+}
+
+.kb-form__hint--required {
+  color: var(--color-warning);
 }
 
 .kb-form__hint {

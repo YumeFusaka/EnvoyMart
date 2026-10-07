@@ -20,12 +20,30 @@
 
 /* ==================== 筛选条 ==================== */
 
+/* 筛选区：所有项排在同一行的栅格里，每一项只占一列。
+ *
+ * 布局用的是「栅格 + 右侧留白」而不是「栅格 + 按钮占一列」：
+ * 按钮组只有一组，却要给每条筛选留位置，占一列等于把可用宽度再切一块走，
+ * 5 项 / 6 列的页面会被挤成两行。改成让整条栅格右侧留出按钮的宽度，
+ * 那么无论项数是 3 还是 8，项都排在自己的格里，按钮浮在留白里。
+ *
+ * 为什么不用 flex-wrap（原实现）：栅格项默认 min-width:auto，会被内容撑开，
+ * 明明还有空格也会把控件挤到下一行；而 min-width:0 之后 flex 容器又能收缩到
+ * 内容以下，把「查询 / 重置」两个按钮拆成上下两行（1440 / 1280 这两个最常用的
+ * 宽度上必现）。栅格 + 留白没有这两种反直觉行为。
+ *
+ * 为什么列宽一律相等：这条栅格要同时容纳 3～8 个筛选项，每个页面项数都不同。
+ * 给某项加宽（关键词占两列等）会让「整数倍项数」的页面把按钮挤下去，
+ * 于是「项数不同 = 布局不同」。列宽相等，7 个页面才是同一个形状。 */
 .admin-filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--ys-space-3);
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  /* 右侧留白 = 按钮组宽度（约 180px）+ 间距，并留出下限：
+     窗口变窄时栅格先让位，不把按钮挤出去。 */
   padding: var(--ys-space-4) var(--ys-space-5);
+  padding-inline-end: max(var(--ys-space-5), 208px);
+  align-items: end;
+  gap: var(--ys-space-3);
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -39,29 +57,34 @@
 .admin-filters__label {
   color: var(--color-text-secondary);
   font-size: var(--ys-font-xs);
+  /* 标签按语义换行（「下单 / 时间」），不按汉字逐字折断成竖排文字 */
+  white-space: nowrap;
 }
 
-/* 关键词这类需要宽一点，状态这类固定宽度就够。
-   用属性写宽度而不是给每个页面调 style，是为了让八个页面的输入框一样宽 */
-.admin-filters__item--wide {
-  flex: 1 1 220px;
-  max-width: 320px;
-}
-
-/* 下拉类筛选（类目树、品牌）比状态宽一点：选项文字更长，
-   但绝不该跟关键词输入框一样宽 —— 那是输入框专用的档位 */
-.admin-filters__item--mid {
-  width: 180px;
-}
-
-.admin-filters__item--narrow {
-  width: 140px;
-}
-
+/* 筛选按钮组：浮在右侧留白里，对齐筛选块的下沿 —— 与「查询/重置」并排的表单一致 */
 .admin-filters__actions {
   display: flex;
+  grid-area: 1 / -1 / -1 / -1;
   gap: var(--ys-space-2);
-  margin-inline-start: auto;
+  align-self: end;
+  justify-content: flex-end;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+/* 窄屏：退成单列，否则每个控件只剩几十像素 */
+@media (max-width: 900px) {
+  .admin-filters {
+    grid-template-columns: 1fr;
+    /* 单列时按钮另起一行，不再需要右侧留白 */
+    padding-inline-end: var(--ys-space-5);
+  }
+
+  .admin-filters__actions {
+    grid-column: auto;
+    grid-area: auto;
+    justify-content: flex-start;
+  }
 }
 
 /* ==================== 工具行 ==================== */

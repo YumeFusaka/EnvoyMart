@@ -14,6 +14,8 @@ import yumefusaka.envoymart.common.web.RequireAdmin;
 import yumefusaka.envoymart.knowledgeservice.model.DocumentUpsertRequest;
 import yumefusaka.envoymart.knowledgeservice.graph.GraphService;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocBindingService;
+import yumefusaka.envoymart.knowledgeservice.entity.MigrationWarningEntity;
+import yumefusaka.envoymart.knowledgeservice.mapper.MigrationWarningMapper;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocumentService;
 
 /**
@@ -42,12 +44,33 @@ public class KnowledgeAdminController {
     private final KnowledgeDocumentService documentService;
     private final GraphService graphService;
     private final KnowledgeDocBindingService bindingService;
+    private final MigrationWarningMapper migrationWarningMapper;
 
     public KnowledgeAdminController(KnowledgeDocumentService documentService, GraphService graphService,
-                                    KnowledgeDocBindingService bindingService) {
+                                    KnowledgeDocBindingService bindingService,
+                                    MigrationWarningMapper migrationWarningMapper) {
         this.documentService = documentService;
         this.graphService = graphService;
         this.bindingService = bindingService;
+        this.migrationWarningMapper = migrationWarningMapper;
+    }
+
+    /**
+     * 启动期迁移留下的告警。
+     * <p>
+     * <b>为什么要有这个接口，而不是让它只躺在表里。</b>迁移脚本在加唯一约束撞上历史重复
+     * 数据时会跳过该约束并写一条告警 —— 这是对的取舍（宁可少一个约束，也别让服务起不来），
+     * 但「跳过」必须有人看得见，否则只是把「启动失败」换成了「约束静默缺失」。
+     * 查询接口让管理台一次性回答「本机有没有欠着的迁移」。
+     * <p>
+     * 倒序返回最近 50 条：这张表平时是空的，真出事时也只需要看最近那几条。
+     */
+    @GetMapping("/migration-warnings")
+    public Result<java.util.List<MigrationWarningEntity>> migrationWarnings() {
+        return Result.success(migrationWarningMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<MigrationWarningEntity>()
+                        .orderByDesc("at", "id")
+                        .last("limit 50")));
     }
 
     /**

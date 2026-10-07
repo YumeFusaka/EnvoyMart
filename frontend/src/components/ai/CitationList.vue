@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ChatResponse, EvidenceLevel, KnowledgeSnippet } from '@/types/models'
+import type { ChatResponse, EvidenceLevel, KnowledgeSnippet, ToolCall } from '@/types/models'
 import { relevanceText, sourceLabel } from '@/utils/knowledge'
 import { computed } from 'vue'
 
@@ -24,6 +24,8 @@ const props = defineProps<{
    * 用户问「太贵了怎么办」时前者为 null、后者有内容。
    */
   expansion?: ChatResponse['expansion']
+  /** 业务工具返回的是业务事实，不应被 RAG 分数提示覆盖。 */
+  toolCalls?: ToolCall[]
 }>()
 
 /**
@@ -36,7 +38,11 @@ const props = defineProps<{
  * `SUFFICIENT` 与 `null` 都按依据渲染：老响应或未走的检索路径没有判定，
  * 沿用原文案，不因为缺一个字段就把正常引用降级成「参考」。
  */
-const weak = computed(() => props.evidenceLevel === 'WEAK')
+const businessBacked = computed(() => props.toolCalls?.some((call) =>
+  call.success && ['product_search', 'cart_query', 'order_query', 'logistics_query',
+    'interaction_check', 'address_list'].includes(call.tool),
+) ?? false)
+const weak = computed(() => props.evidenceLevel === 'WEAK' && !businessBacked.value)
 const title = computed(() => (weak.value ? '参考' : '依据'))
 /**
  * 一条都没检回来。

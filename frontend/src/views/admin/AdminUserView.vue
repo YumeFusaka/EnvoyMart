@@ -208,7 +208,7 @@ const isDisabled = computed(() => active.value?.status === 0)
 <template>
   <div class="admin-panel">
     <div class="admin-filters">
-      <div class="admin-filters__item admin-filters__item--wide">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="user-keyword">关键词</label>
         <el-input
           id="user-keyword"
@@ -219,14 +219,14 @@ const isDisabled = computed(() => active.value?.status === 0)
         />
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="user-role">角色</label>
         <el-select id="user-role" v-model="query.role" clearable placeholder="全部角色">
           <el-option v-for="r in roleOptions" :key="r.value" :label="r.label" :value="r.value" />
         </el-select>
       </div>
 
-      <div class="admin-filters__item admin-filters__item--narrow">
+      <div class="admin-filters__item">
         <label class="admin-filters__label" for="user-status">状态</label>
         <el-select id="user-status" v-model="query.status" clearable placeholder="全部状态">
           <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />
