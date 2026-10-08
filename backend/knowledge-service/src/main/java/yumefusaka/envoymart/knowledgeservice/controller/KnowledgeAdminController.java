@@ -17,6 +17,7 @@ import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocBindingService;
 import yumefusaka.envoymart.knowledgeservice.entity.MigrationWarningEntity;
 import yumefusaka.envoymart.knowledgeservice.mapper.MigrationWarningMapper;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocumentService;
+import yumefusaka.envoymart.knowledgeservice.entity.GraphBuildFailureEntity;
 
 /**
  * 知识库管理接口 —— 上架一篇文档、停用一篇文档。
@@ -71,6 +72,27 @@ public class KnowledgeAdminController {
                 new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<MigrationWarningEntity>()
                         .orderByDesc("at", "id")
                         .last("limit 50")));
+    }
+
+    @GetMapping("/graph/failures")
+    public Result<java.util.List<GraphBuildFailureEntity>> graphFailures(
+            @RequestParam(required = false) String batchId,
+            @RequestParam(required = false) String docNo,
+            @RequestParam(required = false) String stage,
+            @RequestParam(required = false) String reasonCode,
+            @RequestParam(defaultValue = "100") int limit) {
+        return Result.success(graphService.failures(batchId, docNo, stage, reasonCode, limit));
+    }
+
+    @GetMapping("/graph/failures/{id}")
+    public Result<GraphBuildFailureEntity> graphFailure(@PathVariable Long id) {
+        GraphBuildFailureEntity value = graphService.failure(id);
+        return value == null ? Result.error(404, "图谱失败记录不存在") : Result.success(value);
+    }
+
+    @GetMapping("/graph/failures/stats")
+    public Result<java.util.Map<String, Object>> graphFailureStats(@RequestParam(required = false) String batchId) {
+        return Result.success(graphService.failureStats(batchId));
     }
 
     /**

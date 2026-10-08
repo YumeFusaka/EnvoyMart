@@ -145,3 +145,43 @@ export async function fetchKnowledgeCoverage() {
     reason?: string | null
   }
 }
+
+export type GraphBuildFailure = {
+  id: number
+  batchId: string
+  docNo?: string | null
+  entityKey?: string | null
+  stage: string
+  reasonCode: string
+  detail?: string | null
+  retryable: boolean
+  occurredAt: string
+}
+
+export async function listGraphBuildFailures(params: {
+  batchId?: string
+  docNo?: string
+  stage?: string
+  reasonCode?: string
+  limit?: number
+}) {
+  const response = await request.get('/knowledge/admin/graph/failures', { params })
+  return (response.data.data ?? []) as GraphBuildFailure[]
+}
+
+export interface GraphFailureRecord {
+  id: number
+  batchId: string
+  docNo: string
+  entityKey?: string | null
+  stage: string
+  reasonCode: string
+  detail: string
+  retryable: boolean
+  occurredAt: string
+}
+
+export async function fetchGraphFailures(params?: { batchId?: string; docNo?: string; stage?: string; reasonCode?: string; limit?: number }) {
+  const response = await request.get('/knowledge/admin/graph/failures', { params })
+  return (response.data.data ?? []) as GraphFailureRecord[]
+}

@@ -71,6 +71,43 @@ export async function dismissApproval(sessionId: string, messageId: string) {
   await request.post(`/ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/dismiss-approval`)
 }
 
+export type BadCaseReason = 'FACT_ERROR' | 'NO_ANSWER' | 'IRRELEVANT_EVIDENCE' | 'TOOL_ERROR' | 'HARD_TO_READ' | 'OTHER'
+export interface BadCase {
+  badCaseId: string
+  userId?: string
+  sessionId: string
+  assistantMessageId: string
+  userMessageId: string
+  selectedMessageIds: string[]
+  reasonCodes: BadCaseReason[]
+  comment?: string | null
+  question: string
+  answer: string
+  responseSnapshot: ChatResponse
+  createdAt: string
+  updatedAt: string
+  status: 'ACTIVE' | 'REVIEWED' | 'IN_TEST_SET' | 'REJECTED' | 'REVOKED'
+}
+
+export async function getBadCase(sessionId: string, messageId: string) {
+  const response = await request.get(`/ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/bad-case`)
+  return response.data.data as BadCase | null
+}
+
+export async function fetchSessionBadCases(sessionId: string) {
+  const response = await request.get(`/ai/sessions/${encodeURIComponent(sessionId)}/bad-cases`)
+  return response.data.data as BadCase[]
+}
+
+export async function saveBadCase(sessionId: string, messageId: string, payload: { reasonCodes: BadCaseReason[]; selectedMessageIds: string[]; comment?: string }) {
+  const response = await request.put(`/ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/bad-case`, payload)
+  return response.data.data as BadCase
+}
+
+export async function revokeBadCase(sessionId: string, messageId: string) {
+  await request.delete(`/ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/bad-case`)
+}
+
 /**
  * 工具执行进度事件（SSE `tool`）。
  *

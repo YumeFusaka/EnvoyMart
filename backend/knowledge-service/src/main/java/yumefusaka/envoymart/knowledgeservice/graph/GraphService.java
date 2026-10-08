@@ -16,6 +16,9 @@ import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeChunkEntity;
 import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeDocumentEntity;
 import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeChunkMapper;
 import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeDocumentMapper;
+import yumefusaka.envoymart.knowledgeservice.mapper.GraphBuildFailureMapper;
+import yumefusaka.envoymart.knowledgeservice.entity.GraphBuildFailureEntity;
+import java.time.LocalDateTime;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -48,13 +51,22 @@ public class GraphService {
     private final KnowledgeDocumentMapper documentMapper;
     private final KnowledgeChunkMapper chunkMapper;
     private final KnowledgeGraphStore graphStore;
+    private final GraphBuildFailureMapper failureMapper;
 
     public GraphService(KnowledgeDocumentMapper documentMapper,
                         KnowledgeChunkMapper chunkMapper,
-                        KnowledgeGraphStore graphStore) {
+                        KnowledgeGraphStore graphStore, GraphBuildFailureMapper failureMapper) {
         this.documentMapper = documentMapper;
         this.chunkMapper = chunkMapper;
         this.graphStore = graphStore;
+        this.failureMapper = failureMapper;
+    }
+
+    /** 兼容只读查询单测；失败记录仅在写入路径需要。 */
+    public GraphService(KnowledgeDocumentMapper documentMapper,
+                        KnowledgeChunkMapper chunkMapper,
+                        KnowledgeGraphStore graphStore) {
+        this(documentMapper, chunkMapper, graphStore, null);
     }
 
     public KnowledgeGraphStore store() {
@@ -89,6 +101,10 @@ public class GraphService {
 
         TripleValidator.Result result = TripleValidator.validate(candidates, doc.getDocNo(),
                 doc.getContent(), chunks);
+        String batchId = payload.getBatchId() == null || payload.getBatchId().isBlank()
+                ? "legacy-" + System.currentTimeMillis() : payload.getBatchId();
+        result.rejectedTriples().forEach(rejected -> recordFailure(batchId, doc.getDocNo(),
+                rejected.head(), "VALIDATION", rejected.reason().name(), rejected.detail(), false));
 
         boolean available = graphStore.isAvailable();
         if (available) {
@@ -107,6 +123,62 @@ public class GraphService {
                 .stored(available ? result.accepted().size() : 0)
                 .available(available)
                 .build();
+    }
+
+    public void recordFailure(String batchId, String docNo, String entityKey, String stage,
+                              String reasonCode, String detail, boolean retryable) {
+        GraphBuildFailureEntity entity = new GraphBuildFailureEntity();
+        entity.setBatchId(batchId == null || batchId.isBlank() ? "unknown" : batchId);
+        entity.setDocNo(docNo);
+        entity.setEntityKey(entityKey);
+        entity.setStage(normalizeStage(stage));
+        entity.setReasonCode(normalizeReason(reasonCode));
+        String safeDetail = detail == null ? "" : detail.replaceAll("[\\r\\n\\t]", " ");
+        entity.setDetail(safeDetail.substring(0, Math.min(safeDetail.length(), 500)));
+        entity.setRetryable(retryable);
+        entity.setOccurredAt(LocalDateTime.now());
+        if (failureMapper != null) {
+            failureMapper.insert(entity);
+        }
+    }
+
+    private String normalizeStage(String stage) {
+        if (stage == null || stage.isBlank()) return "UNKNOWN";
+        return switch (stage.toUpperCase()) {
+            case "EXTRACT", "NORMALIZE", "LINK", "RELATION_VALIDATE", "WRITE", "VALIDATION", "CATALOG" -> stage.toUpperCase();
+            default -> "UNKNOWN";
+        };
+    }
+
+    private String normalizeReason(String reason) {
+        if (reason == null || reason.isBlank()) return "UNKNOWN";
+        return reason.toUpperCase().replace('-', '_').replace(' ', '_');
+    }
+
+    public List<GraphBuildFailureEntity> failures(String batchId, String docNo, String stage,
+                                                   String reasonCode, int limit) {
+        var query = Wrappers.<GraphBuildFailureEntity>lambdaQuery()
+                .orderByDesc(GraphBuildFailureEntity::getOccurredAt)
+                .last("limit " + Math.clamp(limit, 1, 200));
+        if (batchId != null && !batchId.isBlank()) query.eq(GraphBuildFailureEntity::getBatchId, batchId);
+        if (docNo != null && !docNo.isBlank()) query.eq(GraphBuildFailureEntity::getDocNo, docNo);
+        if (stage != null && !stage.isBlank()) query.eq(GraphBuildFailureEntity::getStage, stage);
+        if (reasonCode != null && !reasonCode.isBlank()) query.eq(GraphBuildFailureEntity::getReasonCode, reasonCode);
+        return failureMapper == null ? List.of() : failureMapper.selectList(query);
+    }
+
+    public GraphBuildFailureEntity failure(long id) {
+        return failureMapper == null ? null : failureMapper.selectById(id);
+    }
+
+    public Map<String, Object> failureStats(String batchId) {
+        List<GraphBuildFailureEntity> rows = failures(batchId, null, null, null, 200);
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("failed", rows.size());
+        stats.put("retryable", rows.stream().filter(GraphBuildFailureEntity::getRetryable).count());
+        stats.put("batches", rows.stream().map(GraphBuildFailureEntity::getBatchId).distinct().count());
+        stats.put("status", rows.isEmpty() ? "NO_FAILURES_RECORDED" : "FAILED");
+        return stats;
     }
 
     private static Triple toCandidate(GraphTriplePayload t) {

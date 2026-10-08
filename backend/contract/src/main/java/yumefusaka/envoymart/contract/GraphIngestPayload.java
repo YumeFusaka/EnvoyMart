@@ -23,6 +23,8 @@ public class GraphIngestPayload {
 
     /** 文档编号，形如 KB-0010。图谱按它做「先删后写」的归属单位 */
     private String docNo;
+    /** 本次重建批次号，供管理端按批次追踪失败原因。 */
+    private String batchId;
     /** 本次抽取的全部候选三元组，可为空列表（表示这篇确实没有可用关系） */
     private List<GraphTriplePayload> triples;
 }

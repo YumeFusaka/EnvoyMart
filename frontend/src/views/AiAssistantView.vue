@@ -656,6 +656,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
           <ChatMessageList
             v-else
             :messages="messages"
+            :session-id="activeSessionId"
             :streaming-index="loading ? messages.length - 1 : -1"
             :live-tools="liveTools"
             :live-tools-index="liveTools.length ? messages.length - 1 : -1"

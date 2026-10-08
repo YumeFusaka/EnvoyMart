@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PostMapping;
 import yumefusaka.envoymart.agent.memory.ShortTermMemoryStore;
 import yumefusaka.envoymart.aiservice.memory.ChatHistoryStore;
+import yumefusaka.envoymart.aiservice.memory.BadCaseStore;
 import yumefusaka.envoymart.aiservice.service.CommerceCardAssembler;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
@@ -48,12 +49,14 @@ public class ChatSessionController {
     private final ChatHistoryStore history;
     private final ShortTermMemoryStore shortTermMemory;
     private final CommerceCardAssembler commerceCards;
+    private final BadCaseStore badCases;
 
     public ChatSessionController(ChatHistoryStore history, ShortTermMemoryStore shortTermMemory,
-                                 CommerceCardAssembler commerceCards) {
+                                 CommerceCardAssembler commerceCards, BadCaseStore badCases) {
         this.history = history;
         this.shortTermMemory = shortTermMemory;
         this.commerceCards = commerceCards;
+        this.badCases = badCases;
     }
 
     @GetMapping
@@ -112,6 +115,40 @@ public class ChatSessionController {
         // 那样清的是一个从未存在过的键，接口照样回 200，实际这段上下文还留着
         shortTermMemory.clear(ShortTermMemoryStore.scoped(userId, sessionId));
         log.info("[History] 会话已删除 user={} session={}", userId, sessionId);
+        return Result.success();
+    }
+
+    @org.springframework.web.bind.annotation.PutMapping("/{sessionId}/messages/{messageId}/bad-case")
+    public Result<BadCaseStore.BadCase> saveBadCase(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("sessionId") String sessionId, @PathVariable("messageId") String messageId,
+            @org.springframework.web.bind.annotation.RequestBody BadCaseStore.FeedbackRequest request) {
+        if (!SESSION_ID.matcher(sessionId).matches() || !SESSION_ID.matcher(messageId).matches()) return Result.error(400, "会话或消息标识不合法");
+        try { return Result.success(badCases.upsert(userId, sessionId, messageId, request)); }
+        catch (IllegalArgumentException e) { return Result.error(400, e.getMessage()); }
+    }
+
+    @GetMapping("/{sessionId}/messages/{messageId}/bad-case")
+    public Result<BadCaseStore.BadCase> getBadCase(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("sessionId") String sessionId, @PathVariable("messageId") String messageId) {
+        if (!SESSION_ID.matcher(sessionId).matches() || !SESSION_ID.matcher(messageId).matches()) return Result.error(400, "会话或消息标识不合法");
+        return Result.success(badCases.get(userId, sessionId, messageId));
+    }
+
+    @GetMapping("/{sessionId}/bad-cases")
+    public Result<List<BadCaseStore.BadCase>> sessionBadCases(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("sessionId") String sessionId) {
+        if (!SESSION_ID.matcher(sessionId).matches()) return Result.error(400, "会话标识不合法");
+        return Result.success(badCases.listForSession(userId, sessionId));
+    }
+
+    @DeleteMapping("/{sessionId}/messages/{messageId}/bad-case")
+    public Result<Void> revokeBadCase(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("sessionId") String sessionId, @PathVariable("messageId") String messageId) {
+        if (!badCases.revoke(userId, sessionId, messageId)) return Result.error(404, "反馈不存在");
         return Result.success();
     }
 }

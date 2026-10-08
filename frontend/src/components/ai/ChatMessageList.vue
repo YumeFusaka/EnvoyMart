@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ToolProgressEvent } from '@/api/ai'
+import { fetchSessionBadCases, revokeBadCase, saveBadCase, type BadCaseReason, type ToolProgressEvent } from '@/api/ai'
 import CitationList from '@/components/ai/CitationList.vue'
 import ConflictList from '@/components/ai/ConflictList.vue'
 import MessageContent from '@/components/ai/MessageContent.vue'
@@ -20,10 +20,11 @@ import {
   traceSummary,
   usageSummary,
 } from '@/utils/tools'
-import { nextTick, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   messages: ChatMessage[]
+  sessionId?: string | null
   /** 正在生成的那条消息的下标；-1 表示没有在飞的流 */
   streamingIndex?: number
   /**
@@ -63,6 +64,49 @@ const emit = defineEmits<{
   dismiss: []
   regenerate: [messageId: string]
 }>()
+
+const feedbackMessage = ref<string | null>(null)
+const feedbackReasons = ref<BadCaseReason[]>([])
+const feedbackComment = ref('')
+const feedbackSelected = ref<string[]>([])
+const feedbackSaving = ref(false)
+const feedbackDone = ref<Record<string, boolean>>({})
+const feedbackOptions: Array<{ code: BadCaseReason; label: string }> = [
+  { code: 'FACT_ERROR', label: '事实错误' }, { code: 'NO_ANSWER', label: '没有回答问题' },
+  { code: 'IRRELEVANT_EVIDENCE', label: '依据不相关' }, { code: 'TOOL_ERROR', label: '工具执行错误' },
+  { code: 'HARD_TO_READ', label: '回答难懂或过长' }, { code: 'OTHER', label: '其他' },
+]
+
+function openFeedback(messageId: string) {
+  feedbackMessage.value = messageId
+  feedbackReasons.value = []
+  feedbackComment.value = ''
+  feedbackSelected.value = [messageId]
+}
+async function submitFeedback(messageId: string) {
+  if (!props.sessionId || !feedbackReasons.value.length) return
+  feedbackSaving.value = true
+  try {
+    await saveBadCase(props.sessionId, messageId, { reasonCodes: feedbackReasons.value, selectedMessageIds: feedbackSelected.value, comment: feedbackComment.value })
+    feedbackDone.value = { ...feedbackDone.value, [messageId]: true }
+    feedbackMessage.value = null
+  } finally { feedbackSaving.value = false }
+}
+
+async function restoreFeedback() {
+  if (!props.sessionId) return
+  const loaded = await fetchSessionBadCases(props.sessionId)
+  const next: Record<string, boolean> = {}
+  for (const value of loaded) if (value.status !== 'REVOKED') next[value.assistantMessageId] = true
+  feedbackDone.value = next
+}
+onMounted(() => void restoreFeedback())
+watch(() => [props.sessionId, props.messages.length], () => void restoreFeedback())
+async function undoFeedback(messageId: string) {
+  if (!props.sessionId) return
+  await revokeBadCase(props.sessionId, messageId)
+  feedbackDone.value = { ...feedbackDone.value, [messageId]: false }
+}
 
 /**
  * 「重新生成」只出现在最后一条回答上，且流不在飞时。
@@ -252,7 +296,30 @@ async function handleCopy(message: ChatMessage) {
         >
           重新生成
         </button>
+        <button
+          v-if="message.role === 'assistant' && props.sessionId"
+          type="button"
+          class="message-action"
+          :aria-label="feedbackDone[message.id] ? '已提交点踩，可撤销' : '反馈这条回答'"
+          @click="feedbackDone[message.id] ? undoFeedback(message.id) : openFeedback(message.id)"
+        >{{ feedbackDone[message.id] ? '已点踩（撤销）' : '点踩' }}</button>
       </div>
+
+      <form v-if="feedbackMessage === message.id" class="bad-case-panel" @submit.prevent="submitFeedback(message.id)">
+        <strong>这条回答哪里需要改进？</strong>
+        <div class="bad-case-reasons">
+          <label v-for="item in feedbackOptions" :key="item.code"><input v-model="feedbackReasons" type="checkbox" :value="item.code" />{{ item.label }}</label>
+        </div>
+        <fieldset class="bad-case-messages">
+          <legend>关联消息（可多选）</legend>
+          <label v-for="nearby in messages.slice(Math.max(0, position - 4), position + 1)" :key="nearby.id">
+            <input v-model="feedbackSelected" type="checkbox" :value="nearby.id" />
+            {{ nearby.role === 'assistant' ? 'AI' : '你' }}：{{ nearby.content.slice(0, 80) }}
+          </label>
+        </fieldset>
+        <textarea v-model="feedbackComment" maxlength="1000" rows="2" placeholder="补充说明（可选）" />
+        <div class="bad-case-actions"><button type="button" class="message-action" @click="feedbackMessage = null">取消</button><button type="submit" class="message-action" :disabled="feedbackSaving || !feedbackReasons.length">{{ feedbackSaving ? '提交中…' : '提交反馈' }}</button></div>
+      </form>
 
       <!--
         整篇无依据的声明<b>一直摊开</b>，且排在冲突与逐句说明之前：它改变的是
@@ -960,4 +1027,10 @@ async function handleCopy(message: ChatMessage) {
   font-size: var(--ys-font-xs);
   line-height: var(--ys-leading-base);
 }
+
+.bad-case-panel { display: grid; gap: var(--ys-space-2); margin-top: var(--ys-space-3); padding: var(--ys-space-3); border: 1px solid var(--color-border-strong); border-radius: var(--ys-radius-sm); background: var(--color-bg-surface-muted); }
+.bad-case-reasons { display: flex; flex-wrap: wrap; gap: var(--ys-space-2) var(--ys-space-3); font-size: var(--ys-font-xs); }
+.bad-case-reasons label { display: inline-flex; align-items: center; gap: var(--ys-space-1); min-height: 24px; }
+.bad-case-panel textarea { width: 100%; resize: vertical; border: 1px solid var(--color-border); border-radius: var(--ys-radius-sm); padding: var(--ys-space-2); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.bad-case-actions { display: flex; justify-content: flex-end; gap: var(--ys-space-2); }
 </style>

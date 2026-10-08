@@ -17,6 +17,7 @@ import {
   Shop,
   SwitchButton,
   User,
+  Warning,
 } from '@element-plus/icons-vue'
 import { useAdminStore, useUserStore } from '@/stores'
 
@@ -78,6 +79,8 @@ const navGroups: { title: string; items: NavItem[] }[] = [
     items: [
       { to: '/admin/reviews', label: '评价管理', icon: ChatLineSquare },
       { to: '/admin/knowledge', label: '知识库', icon: Collection },
+      { to: '/admin/knowledge/graph-failures', label: '图谱失败', icon: Warning },
+      { to: '/admin/bad-cases', label: 'Bad Case', icon: ChatLineSquare },
       { to: '/admin/users', label: '用户管理', icon: User },
       { to: '/admin/tickets', label: '客服工单', icon: Service, badge: 'pendingTicket' },
     ],

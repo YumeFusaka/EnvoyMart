@@ -94,7 +94,14 @@ public final class TripleValidator {
      * @param accepted 通过校验并已锚定原文位置的三元组
      * @param reasons  每种 {@link RejectReason} 各丢弃了多少条
      */
-    public record Result(List<GroundedTriple> accepted, Map<RejectReason, Integer> reasons) {
+    public record RejectedTriple(String head, String relation, String tail, RejectReason reason, String detail) {}
+
+    public record Result(List<GroundedTriple> accepted, Map<RejectReason, Integer> reasons,
+                         List<RejectedTriple> rejectedTriples) {
+
+        public Result(List<GroundedTriple> accepted, Map<RejectReason, Integer> reasons) {
+            this(accepted, reasons, List.of());
+        }
 
         public int rejected() {
             return reasons.values().stream().mapToInt(Integer::intValue).sum();
@@ -123,7 +130,7 @@ public final class TripleValidator {
     public static Result validate(List<Triple> candidates, String docId, String docContent,
                                   List<KnowledgeChunkEntity> chunks) {
         if (candidates == null || candidates.isEmpty()) {
-            return new Result(List.of(), Map.of());
+            return new Result(List.of(), Map.of(), List.of());
         }
         // 正文压缩一次，整批共用。原先每条引文都重建一遍压缩串与偏移表，
         // 一篇文档几十条就是几十次全量扫描——而那份结果每次都完全一样
@@ -131,12 +138,17 @@ public final class TripleValidator {
 
         List<GroundedTriple> accepted = new ArrayList<>();
         Map<RejectReason, Integer> reasons = new EnumMap<>(RejectReason.class);
+        List<RejectedTriple> rejectedTriples = new ArrayList<>();
         for (Triple t : candidates) {
             Verdict verdict = validateOne(t, docId, body, chunks);
             if (verdict.grounded() != null) {
                 accepted.add(verdict.grounded());
             } else {
                 reasons.merge(verdict.reason(), 1, Integer::sum);
+                rejectedTriples.add(new RejectedTriple(
+                        t == null ? "" : safe(t.headName()), t == null ? "" : safe(t.relation()),
+                        t == null ? "" : safe(t.tailName()), verdict.reason(),
+                        "候选三元组未通过图谱事实校验"));
                 // 逐条打出被丢弃的字段值。原先只打条数，于是「词表 10」既可能是模型返回了
                 // 中文标签、也可能是关系配错了类型，只能靠重启一次改一处日志来二分。
                 // 这条日志只在重建索引时产出，量很小，换来的是「看一眼就知道错在哪」
@@ -145,8 +157,10 @@ public final class TripleValidator {
                         t.tailKind(), t.tailName(), abbreviate(t.quote()));
             }
         }
-        return new Result(accepted, reasons);
+        return new Result(accepted, reasons, rejectedTriples);
     }
+
+    private static String safe(String value) { return value == null ? "" : value; }
 
     private record Verdict(GroundedTriple grounded, RejectReason reason) {
 

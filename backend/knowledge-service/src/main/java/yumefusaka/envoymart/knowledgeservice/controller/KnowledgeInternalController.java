@@ -14,6 +14,7 @@ import yumefusaka.envoymart.contract.GraphIngestResult;
 import yumefusaka.envoymart.contract.KnowledgeDocumentPayload;
 import yumefusaka.envoymart.contract.ProductCoverageRequest;
 import yumefusaka.envoymart.contract.ProductGraphCoverage;
+import yumefusaka.envoymart.contract.GraphBuildFailurePayload;
 import yumefusaka.envoymart.knowledgeservice.graph.GraphService;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocBindingService;
 import yumefusaka.envoymart.knowledgeservice.service.KnowledgeDocumentService;
@@ -97,6 +98,13 @@ public class KnowledgeInternalController {
     @PostMapping("/graph")
     public Result<GraphIngestResult> ingestGraph(@RequestBody GraphIngestPayload payload) {
         return Result.success(graphService.ingest(payload));
+    }
+
+    @PostMapping("/graph/failure")
+    public Result<Void> recordGraphFailure(@RequestBody GraphBuildFailurePayload payload) {
+        graphService.recordFailure(payload.getBatchId(), payload.getDocNo(), payload.getEntityKey(),
+                payload.getStage(), payload.getReasonCode(), payload.getDetail(), payload.isRetryable());
+        return Result.success();
     }
 
     /**

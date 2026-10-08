@@ -18,6 +18,8 @@ import yumefusaka.envoymart.contract.GraphIngestPayload;
 import yumefusaka.envoymart.contract.GraphIngestResult;
 import yumefusaka.envoymart.contract.GraphTriplePayload;
 import yumefusaka.envoymart.contract.ProductSummary;
+import yumefusaka.envoymart.contract.GraphBuildFailurePayload;
+import java.util.UUID;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -112,6 +114,7 @@ public class KnowledgeGraphBuilder {
      * 重复拉十几遍；而目录在一次重建期间不会变（它变了就该重跑重建）。
      */
     public BuildReport build(List<Document> documents) {
+        String batchId = "graph-" + UUID.randomUUID();
         int total = documents.size();
         List<ProductSummary> catalog = fetchCatalog();
         if (catalog == null) {
@@ -120,6 +123,8 @@ public class KnowledgeGraphBuilder {
             // 会被这次写入删掉，而报告上失败数是 0——看着一切正常，图上少了一整类边。
             // 不跑的话上一版图谱原样留着，代价只是这一批的更新没生效
             log.error("[Graph] 商品目录不可用，本批 {} 篇全部跳过：图谱保持上一版，不写入", total);
+            documents.forEach(doc -> recordFailure(batchId, doc.getId(), "CATALOG", "BATCH_SKIPPED",
+                    "商品目录不可用，文档未尝试构建", true));
             return new BuildReport(total, 0, 0, 0, 0, total, true);
         }
 
@@ -134,11 +139,14 @@ public class KnowledgeGraphBuilder {
             Document doc = documents.get(i);
             List<GraphTriplePayload> triples = extract(doc, catalog);
             if (triples == null) {
+                recordFailure(batchId, doc.getId(), "EXTRACT", "EXTRACT_FAILED", "模型抽取或解析失败", true);
                 // 抽取失败：**不发请求**。写入语义是整体替换，空列表会把这篇文档的旧边清掉。
                 // 单篇失败不拖垮整批，但连续失败说明模型侧整体不可用，这时再挨个试下去
                 // 只是把同一条错误重复十几行、并且每次都要等满一次模型超时
                 failed++;
                 if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                    documents.subList(i + 1, total).forEach(skippedDoc -> recordFailure(batchId,
+                            skippedDoc.getId(), "BATCH", "BATCH_SKIPPED", "连续失败达到熔断阈值", true));
                     skipped += total - i - 1;
                     log.warn("[Graph] 连续 {} 篇抽取失败，本批中止，其余 {} 篇跳过",
                             consecutiveFailures, total - i - 1);
@@ -146,12 +154,15 @@ public class KnowledgeGraphBuilder {
                 }
                 continue;
             }
-            GraphIngestResult result = ingest(doc, triples);
+            GraphIngestResult result = ingest(doc, triples, batchId);
             if (result == null) {
                 failed++;
+                recordFailure(batchId, doc.getId(), "WRITE", "WRITE_FAILED", "图谱写入未成功", true);
                 // 同一条熔断也覆盖写入侧：Neo4j 可 ping 但写入全失败时，每篇都要等满
                 // 驱动的重试窗口（默认 30 秒），十几篇挨个等下去就是十几分钟
                 if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                    documents.subList(i + 1, total).forEach(skippedDoc -> recordFailure(batchId,
+                            skippedDoc.getId(), "BATCH", "BATCH_SKIPPED", "连续失败达到熔断阈值", true));
                     skipped += total - i - 1;
                     log.warn("[Graph] 连续 {} 篇写入失败，本批中止，其余 {} 篇跳过",
                             consecutiveFailures, total - i - 1);
@@ -167,6 +178,8 @@ public class KnowledgeGraphBuilder {
                 // 图谱不可用时**立刻停整批**，而不是继续把剩下十几篇挨个试一遍——
                 // 那只是把同一条错误重复十几行，还得为每篇白白付一次模型调用
                 available = false;
+                documents.subList(i + 1, total).forEach(skippedDoc -> recordFailure(batchId,
+                        skippedDoc.getId(), "BATCH", "BATCH_SKIPPED", "图谱存储不可用，批次提前结束", true));
                 skipped += total - i - 1;
                 log.warn("[Graph] 图谱存储不可用，本批在第 {} 篇中止，其余 {} 篇跳过", i + 1, total - i - 1);
                 break;
@@ -205,13 +218,15 @@ public class KnowledgeGraphBuilder {
      * @return 图谱是否更新成功。false 时图谱保持上一版，调用方不应把它当成致命错误
      */
     public boolean rebuildOne(String docNo, Document doc) {
+        String batchId = "graph-one-" + UUID.randomUUID();
         List<ProductSummary> catalog = fetchCatalog();
         if (catalog == null) {
+            recordFailure(batchId, docNo, "CATALOG", "CATALOG_UNAVAILABLE", "商品目录不可用，保持旧图谱", true);
             log.error("[Graph] 商品目录不可用，文档 {} 的图谱不更新（保持上一版，不清空）", docNo);
             return false;
         }
         if (doc == null) {
-            boolean ok = ingestRaw(docNo, List.of());
+            boolean ok = ingestRaw(docNo, List.of(), batchId);
             if (ok) {
                 runQuietly("孤立实体清理", () -> knowledgeClient.dropGraphOrphans());
                 log.info("[Graph] 文档 {} 已不在语料中，其图谱边已清空", docNo);
@@ -220,10 +235,12 @@ public class KnowledgeGraphBuilder {
         }
         List<GraphTriplePayload> triples = extract(doc, catalog);
         if (triples == null) {
+            recordFailure(batchId, docNo, "EXTRACT", "EXTRACT_FAILED", "模型抽取或解析失败", true);
             log.warn("[Graph] 文档 {} 单篇抽取失败，图谱保持上一版", docNo);
             return false;
         }
-        if (!ingestRaw(docNo, triples)) {
+        if (!ingestRaw(docNo, triples, batchId)) {
+            recordFailure(batchId, docNo, "WRITE", "WRITE_FAILED", "图谱写入未成功", true);
             return false;
         }
         runQuietly("孤立实体清理", () -> knowledgeClient.dropGraphOrphans());
@@ -238,10 +255,11 @@ public class KnowledgeGraphBuilder {
      * 构建统计 accepted/stored/rejected，单篇更新只关心「这一篇的边换掉了没有」，
      * 多出来的计数没有使用场景。
      */
-    private boolean ingestRaw(String docNo, List<GraphTriplePayload> triples) {
+    private boolean ingestRaw(String docNo, List<GraphTriplePayload> triples, String batchId) {
         try {
             Result<GraphIngestResult> result = knowledgeClient.ingestGraph(GraphIngestPayload.builder()
                     .docNo(docNo)
+                    .batchId(batchId)
                     .triples(triples)
                     .build());
             if (result == null || result.getCode() == null || result.getCode() != 200) {
@@ -307,10 +325,11 @@ public class KnowledgeGraphBuilder {
         }
     }
 
-    private GraphIngestResult ingest(Document doc, List<GraphTriplePayload> triples) {
+    private GraphIngestResult ingest(Document doc, List<GraphTriplePayload> triples, String batchId) {
         try {
             Result<GraphIngestResult> result = knowledgeClient.ingestGraph(GraphIngestPayload.builder()
                     .docNo(doc.getId())
+                    .batchId(batchId)
                     .triples(triples)
                     .build());
             if (result == null || result.getCode() == null || result.getCode() != 200) {
@@ -322,6 +341,14 @@ public class KnowledgeGraphBuilder {
         } catch (RuntimeException e) {
             log.warn("[Graph] 文档 {} 写入异常：{}", doc.getId(), e.getMessage());
             return null;
+        }
+    }
+
+    private void recordFailure(String batchId, String docNo, String stage, String reason, String detail, boolean retryable) {
+        try {
+            knowledgeClient.recordGraphFailure(new GraphBuildFailurePayload(batchId, docNo, null, stage, reason, detail, retryable));
+        } catch (RuntimeException e) {
+            log.warn("[Graph] 失败记录写入失败 docNo={} stage={}: {}", docNo, stage, e.getMessage());
         }
     }
 

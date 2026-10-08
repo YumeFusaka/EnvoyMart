@@ -13,6 +13,7 @@ import yumefusaka.envoymart.contract.InteractionReport;
 import yumefusaka.envoymart.contract.KnowledgeDocumentPayload;
 import yumefusaka.envoymart.contract.ProductCoverageRequest;
 import yumefusaka.envoymart.contract.ProductGraphCoverage;
+import yumefusaka.envoymart.contract.GraphBuildFailurePayload;
 
 import java.util.List;
 
@@ -32,6 +33,9 @@ public interface KnowledgeClient {
      */
     @PostMapping("/knowledge/internal/graph")
     Result<GraphIngestResult> ingestGraph(@RequestBody GraphIngestPayload payload);
+
+    @PostMapping("/knowledge/internal/graph/failure")
+    Result<Void> recordGraphFailure(@RequestBody GraphBuildFailurePayload payload);
 
     /** 整批重建后清理孤立实体 */
     @PostMapping("/knowledge/internal/graph/orphans")

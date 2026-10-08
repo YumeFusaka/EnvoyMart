@@ -28,6 +28,13 @@ SET @ddl := IF(@t_migration_warning = 0,
   'DO 0');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @t_graph_build_failure := (SELECT COUNT(*) FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure');
+SET @ddl := IF(@t_graph_build_failure = 0,
+  'CREATE TABLE graph_build_failure (id bigint auto_increment primary key, batch_id varchar(64) not null, doc_no varchar(32), entity_key varchar(255), stage varchar(32) not null, reason_code varchar(64) not null, detail varchar(500), retryable tinyint not null default 0, occurred_at datetime not null, index idx_graph_failure_batch (batch_id), index idx_graph_failure_doc (doc_no), index idx_graph_failure_reason (stage, reason_code))',
+  'DO 0');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 -- disabled_by：文档停用原因（MANUAL 运营手动 / PRODUCT_OFF 商品下架级联）。
 SET @t_knowledge_document_disabled_by := (SELECT COUNT(*) FROM information_schema.TABLES
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'knowledge_document');

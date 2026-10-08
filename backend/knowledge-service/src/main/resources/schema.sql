@@ -39,6 +39,21 @@ create table if not exists knowledge_document (
     index idx_document_scope_status (scope, status)
 );
 
+create table if not exists graph_build_failure (
+    id bigint auto_increment primary key,
+    batch_id varchar(64) not null,
+    doc_no varchar(32),
+    entity_key varchar(255),
+    stage varchar(32) not null,
+    reason_code varchar(64) not null,
+    detail varchar(500),
+    retryable tinyint not null default 0,
+    occurred_at datetime not null,
+    index idx_graph_failure_batch (batch_id),
+    index idx_graph_failure_doc (doc_no),
+    index idx_graph_failure_reason (stage, reason_code)
+);
+
 create table if not exists knowledge_chunk (
     id bigint auto_increment primary key,
     doc_id bigint not null,
