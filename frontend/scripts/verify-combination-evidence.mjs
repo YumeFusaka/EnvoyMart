@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
 const OUT = resolve(dirname(fileURLToPath(import.meta.url)), '../.evidence/combination-interaction.json')
-const query = '钙,铁剂,维生素D'
+const query = '钙,铁剂,锌'
 const startedAt = new Date().toISOString()
 const response = await fetch(`${GW}/knowledge/graph/interactions?items=${encodeURIComponent(query)}`)
 if (!response.ok) throw new Error(`图谱接口 HTTP ${response.status}`)
@@ -21,7 +21,7 @@ if (!Array.isArray(report.items) || report.items.length !== 3) throw new Error('
 if (report.items.some((item) => !item.found)) throw new Error('生产图谱未覆盖专项用例中的全部实体')
 const risks = report.items.flatMap((item) => item.risks ?? [])
 const combinations = risks.filter((edge) => edge.relation === 'COMBINED_WITH')
-if (!combinations.length) throw new Error('生产图谱未返回组合禁忌关系；不能用普通两两相互作用替代专项证据')
+if (!combinations.length) throw new Error('生产图谱未返回组合禁忌关系；当前生产语料仅证明两两相互作用，不能冒充三成员组合证据')
 if (combinations.some((edge) => !edge.quote || !edge.docId || !edge.docTitle)) throw new Error('组合禁忌边缺少原文引文或来源文档')
 
 mkdirSync(resolve(OUT, '..'), { recursive: true })

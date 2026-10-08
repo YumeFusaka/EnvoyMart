@@ -31,8 +31,9 @@ public class BadCaseAdminController {
         try { return Result.success(store.adminView(store.review(id, status, reviewer))); } catch (IllegalArgumentException e) { return Result.error(400, e.getMessage()); }
     }
     @PostMapping("/{id}/test-case") public Result<BadCaseStore.BadCase> addTestCase(
-            @PathVariable String id, @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String reviewer) {
-        try { return Result.success(store.adminView(store.addTestCase(id, reviewer))); } catch (IllegalArgumentException e) { return Result.error(400, e.getMessage()); }
+            @PathVariable String id, @RequestBody BadCaseStore.FixtureAnnotation annotation,
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String reviewer) {
+        try { return Result.success(store.adminView(store.addTestCase(id, reviewer, annotation))); } catch (IllegalArgumentException e) { return Result.error(400, e.getMessage()); }
     }
     @DeleteMapping("/{id}/test-case") public Result<Void> removeTestCase(
             @PathVariable String id, @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String reviewer) {

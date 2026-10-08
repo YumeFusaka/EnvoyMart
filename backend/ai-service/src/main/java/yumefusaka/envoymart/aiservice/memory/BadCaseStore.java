@@ -34,9 +34,12 @@ public class BadCaseStore {
 
     public record FeedbackRequest(List<Reason> reasonCodes, List<String> selectedMessageIds, String comment) {}
     public record AuditEvent(String action, String badCaseId, String operator, Instant at, String testCaseId) {}
+    /** 追加集样本契约。它独立于基础评测集，不参与基础指标分母。 */
     public record Fixture(String caseId, String sourceBadCaseId, String question, String answer,
                           List<Reason> reasonCodes, List<String> selectedMessageIds,
-                          Map<String, Object> responseSnapshot, String addedBy, Instant addedAt) {}
+                          Map<String, Object> responseSnapshot, String addedBy, Instant addedAt,
+                          String evalKind, boolean expectRefuse, List<String> mustMention,
+                          List<String> expectedTools, String annotation) {}
     public record BadCase(String badCaseId, String userId, String sessionId, String assistantMessageId,
                           String userMessageId, List<String> selectedMessageIds, List<Reason> reasonCodes,
                           String comment, String question, String answer, Map<String, Object> responseSnapshot,
@@ -138,7 +141,7 @@ public class BadCaseStore {
         return value;
     }
 
-    public BadCase addTestCase(String id, String reviewer) {
+    public BadCase addTestCase(String id, String reviewer, FixtureAnnotation annotation) {
         BadCase old = findById(id);
         if (old.status() != Status.REVIEWED && old.status() != Status.IN_TEST_SET) throw new IllegalArgumentException("请先审核通过");
         String testCaseId = old.testCaseId() == null ? "bad-" + old.badCaseId() : old.testCaseId();
@@ -146,11 +149,18 @@ public class BadCaseStore {
                 old.selectedMessageIds(), old.reasonCodes(), old.comment(), old.question(), old.answer(), old.responseSnapshot(),
                 old.createdAt(), Instant.now(), Status.IN_TEST_SET, reviewer, Instant.now(), testCaseId);
         write(key(old.userId(), old.sessionId(), old.assistantMessageId()), value);
-        Fixture fixture = new Fixture(testCaseId, old.badCaseId(), old.question(), old.answer(), old.reasonCodes(), old.selectedMessageIds(), old.responseSnapshot(), reviewer, Instant.now());
+        if (annotation == null || annotation.evalKind() == null || annotation.evalKind().isBlank()) {
+            throw new IllegalArgumentException("追加测试集必须填写评测类型");
+        }
+        Fixture fixture = new Fixture(testCaseId, old.badCaseId(), old.question(), old.answer(), old.reasonCodes(), old.selectedMessageIds(), old.responseSnapshot(), reviewer, Instant.now(),
+                annotation.evalKind().trim(), annotation.expectRefuse(), safeList(annotation.mustMention()), safeList(annotation.expectedTools()), sanitize(annotation.annotation()));
         redis.opsForValue().set(FIXTURE_PREFIX + testCaseId, writeJson(fixture), TTL);
         audit("ADD_TEST_CASE", value, reviewer);
         return value;
     }
+
+    public record FixtureAnnotation(String evalKind, boolean expectRefuse, List<String> mustMention,
+                                    List<String> expectedTools, String annotation) {}
 
     public List<AuditEvent> audit(String badCaseId) {
         List<String> raw = redis.opsForList().range(AUDIT_PREFIX + badCaseId, 0, 99);
@@ -219,6 +229,10 @@ public class BadCaseStore {
         if (request.comment() != null && request.comment().length() > MAX_COMMENT) throw new IllegalArgumentException("说明不能超过1000字");
     }
     private String sanitize(String value) { return value == null ? null : value.replaceAll("[\\r\\n\\t]", " ").trim(); }
+    private List<String> safeList(List<String> values) {
+        if (values == null) return List.of();
+        return values.stream().filter(java.util.Objects::nonNull).map(String::trim).filter(v -> !v.isEmpty()).distinct().limit(20).toList();
+    }
     private Map<String, Object> sanitizeMap(Map<String, Object> input) {
         Map<String, Object> output = new LinkedHashMap<>();
         input.forEach((k, v) -> { if (!k.equalsIgnoreCase("authorization") && !k.equalsIgnoreCase("cookie") && !k.toLowerCase().contains("token")) output.put(k, v); });
