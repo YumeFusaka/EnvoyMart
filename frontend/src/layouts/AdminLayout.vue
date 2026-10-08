@@ -79,7 +79,6 @@ const navGroups: { title: string; items: NavItem[] }[] = [
     items: [
       { to: '/admin/reviews', label: '评价管理', icon: ChatLineSquare },
       { to: '/admin/knowledge', label: '知识库', icon: Collection },
-      { to: '/admin/knowledge/graph-failures', label: '图谱失败', icon: Warning },
       { to: '/admin/bad-cases', label: 'Bad Case', icon: ChatLineSquare },
       { to: '/admin/users', label: '用户管理', icon: User },
       { to: '/admin/tickets', label: '客服工单', icon: Service, badge: 'pendingTicket' },
@@ -102,7 +101,7 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '�
  * 但 `/admin` 是其它所有路径的前缀 —— 直接用 startsWith 会让概览在每一页都亮着。
  */
 function isActive(to: string) {
-  return to === '/admin' ? route.path === '/admin' : route.path.startsWith(to)
+  return to === '/admin' ? route.path === '/admin' : route.path === to || route.path.startsWith(`${to}/`)
 }
 
 function badgeOf(item: NavItem): number {

@@ -148,6 +148,8 @@ spring:
               - uri: ${PAYMENT_SERVICE_URL:http://127.0.0.1:9005}
             review-service:
               - uri: ${REVIEW_SERVICE_URL:http://127.0.0.1:9006}
+            knowledge-service:
+              - uri: ${KNOWLEDGE_SERVICE_URL:http://127.0.0.1:9008}
 
 # 每行日志前缀里带上请求标识（MDC 键 requestId，写入见 common 的 RequestIdFilter）。
 # 没有请求上下文的行（启动期、定时任务）该位置为空。

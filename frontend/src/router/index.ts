@@ -281,7 +281,6 @@ const router = createRouter({
           component: () => import('@/views/admin/AdminKnowledgeView.vue'),
           meta: { admin: true, title: '知识库' },
         },
-        { path: 'knowledge/graph-failures', name: 'admin-graph-failures', component: () => import('@/views/admin/AdminGraphFailuresView.vue'), meta: { admin: true, title: '图谱失败记录' } },
         { path: 'bad-cases', name: 'admin-bad-cases', component: () => import('@/views/admin/AdminBadCaseView.vue'), meta: { admin: true, title: 'Bad Case 审核' } },
       ],
     },

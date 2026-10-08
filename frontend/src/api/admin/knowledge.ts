@@ -185,3 +185,8 @@ export async function fetchGraphFailures(params?: { batchId?: string; docNo?: st
   const response = await request.get('/knowledge/admin/graph/failures', { params })
   return (response.data.data ?? []) as GraphFailureRecord[]
 }
+
+export async function fetchGraphFailureStats(batchId?: string) {
+  const response = await request.get('/knowledge/admin/graph/failures/stats', { params: batchId ? { batchId } : undefined })
+  return response.data.data as Record<string, unknown>
+}

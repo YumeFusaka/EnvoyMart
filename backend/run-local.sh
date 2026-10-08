@@ -88,6 +88,9 @@ set -a; source "$ENV_FILE"; set +a
 # 表现为 "UnsupportedClassVersionError: class file version 65.0, this version only
 # recognizes up to 64.0"——看起来像构建坏了，其实是运行时 JDK 比编译时低。
 JAVA_HOME="${ENVOYMART_JAVA_HOME:-$HOME/.jdks/corretto-21.0.12}"
+if [ ! -x "$JAVA_HOME/bin/java" ] && [ -x "/mnt/c/Users/j/.jdks/corretto-21.0.12/bin/java" ]; then
+  JAVA_HOME="/mnt/c/Users/j/.jdks/corretto-21.0.12"
+fi
 if [ ! -x "$JAVA_HOME/bin/java" ]; then
   echo "找不到 JDK 21：$JAVA_HOME（用 ENVOYMART_JAVA_HOME 指定其他路径）" >&2
   exit 1

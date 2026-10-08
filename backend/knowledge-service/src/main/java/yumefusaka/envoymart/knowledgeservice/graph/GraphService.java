@@ -3,6 +3,7 @@ package yumefusaka.envoymart.knowledgeservice.graph;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import yumefusaka.envoymart.agent.graph.EntityKind;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.contract.GraphEdge;
 import yumefusaka.envoymart.contract.GraphIngestPayload;
@@ -53,6 +54,7 @@ public class GraphService {
     private final KnowledgeGraphStore graphStore;
     private final GraphBuildFailureMapper failureMapper;
 
+    @Autowired
     public GraphService(KnowledgeDocumentMapper documentMapper,
                         KnowledgeChunkMapper chunkMapper,
                         KnowledgeGraphStore graphStore, GraphBuildFailureMapper failureMapper) {

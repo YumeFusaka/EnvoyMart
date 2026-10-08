@@ -29,6 +29,7 @@ import {
   getDocumentBindings,
   listDocumentsAdmin,
   listGraphBuildFailures,
+  fetchGraphFailureStats,
   reindexDocument,
   reindexKnowledge,
   upsertDocument,
@@ -52,6 +53,7 @@ const { query, records, loading, error, search, resetFilters, load } = useAdminL
 onMounted(() => {
   void load(0)
   void loadCoverage()
+  void loadGraphFailures()
 })
 
 /** 表格容器。列宽由它实测的宽度反推，所以宽度变化源是它而不是 window */
@@ -395,6 +397,8 @@ const coveragePercent = computed(() => {
 })
 
 const graphFailures = ref<Awaited<ReturnType<typeof listGraphBuildFailures>>>([])
+const graphFailurePage = ref(1)
+const graphFailurePageSize = 10
 const graphFailureLoading = ref(false)
 const graphFailureError = ref(false)
 const graphFailureFilters = ref({ batchId: '', docNo: '', stage: '', reasonCode: '' })
@@ -403,6 +407,7 @@ async function loadGraphFailures() {
   graphFailureError.value = false
   try {
     graphFailures.value = await listGraphBuildFailures({ ...graphFailureFilters.value, limit: 100 })
+    graphFailurePage.value = 1
   } catch {
     graphFailureError.value = true
   } finally {
@@ -638,11 +643,11 @@ onMounted(() => void loadGraphFailures())
       </template>
     </div>
 
-    <section class="admin-panel graph-failure-panel" aria-label="图谱构建失败记录">
+    <section class="admin-panel graph-failure-panel" aria-label="图谱构建诊断">
       <div class="coverage__head">
         <div>
-          <h2 class="coverage__title">图谱构建记录</h2>
-          <p class="coverage__list-hint">按批次、文档、阶段和原因码查看逐条失败/跳过记录。</p>
+          <h2 class="coverage__title">图谱构建诊断</h2>
+          <p class="coverage__list-hint">按批次、文档、阶段和原因码查看逐条失败或跳过记录。</p>
         </div>
         <el-button :icon="Refresh" :loading="graphFailureLoading" @click="loadGraphFailures">刷新</el-button>
       </div>
@@ -656,7 +661,7 @@ onMounted(() => void loadGraphFailures())
         <el-input v-model="graphFailureFilters.reasonCode" clearable placeholder="原因码" />
         <el-button type="primary" @click="loadGraphFailures">查询</el-button>
       </div>
-      <el-table v-loading="graphFailureLoading" :data="graphFailures" size="small" empty-text="暂无失败或跳过记录">
+      <el-table v-loading="graphFailureLoading" :data="graphFailures.slice((graphFailurePage - 1) * graphFailurePageSize, graphFailurePage * graphFailurePageSize)" size="small" empty-text="暂无失败或跳过记录">
         <el-table-column prop="occurredAt" label="时间" width="170" />
         <el-table-column prop="batchId" label="批次" min-width="180" />
         <el-table-column prop="docNo" label="文档" width="110" />
@@ -666,7 +671,8 @@ onMounted(() => void loadGraphFailures())
         <el-table-column label="可重试" width="80"><template #default="scope">{{ scope.row.retryable ? '是' : '否' }}</template></el-table-column>
         <el-table-column type="expand"><template #default="scope"><dl class="graph-failure-detail"><dt>批次号</dt><dd>{{ scope.row.batchId }}</dd><dt>文档号</dt><dd>{{ scope.row.docNo || '未关联文档' }}</dd><dt>实体键</dt><dd>{{ scope.row.entityKey || '未定位实体' }}</dd><dt>阶段 / 原因码</dt><dd>{{ scope.row.stage }} / {{ scope.row.reasonCode }}</dd><dt>发生时间</dt><dd>{{ scope.row.occurredAt }}</dd><dt>脱敏详情</dt><dd>{{ scope.row.detail || '无补充详情' }}</dd></dl></template></el-table-column>
       </el-table>
-      <el-alert v-if="graphFailureError" type="error" title="图谱构建记录读取失败" description="当前结果不是空列表。请检查知识服务后重试。" :closable="false" show-icon />
+      <el-pagination v-if="graphFailures.length > graphFailurePageSize" class="graph-failure-pagination" layout="prev, pager, next, total" :total="graphFailures.length" :page-size="graphFailurePageSize" :current-page="graphFailurePage" @current-change="(page: number) => graphFailurePage = page" />
+      <el-alert v-if="graphFailureError" type="error" title="图谱构建诊断暂时不可用" description="接口未返回诊断数据。请确认管理员会话有效，并检查知识服务状态后重试。" :closable="false" show-icon />
     </section>
 
     <el-drawer
