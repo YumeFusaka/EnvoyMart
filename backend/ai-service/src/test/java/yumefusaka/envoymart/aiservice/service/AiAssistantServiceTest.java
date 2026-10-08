@@ -50,7 +50,8 @@ class AiAssistantServiceTest {
         // 这几条用例钉的是「历史怎么记」，不是幂等；让占位一律成功，避免 mock 的默认
         // 返回值（false）把流程引到「相同请求正在处理中」那条分支上
         when(idempotency.tryAcquire(anyString(), any())).thenReturn(true);
-        return new AiAssistantServiceImpl(agent, mock(ModelPricing.class), history, idempotency);
+        return new AiAssistantServiceImpl(agent, mock(ModelPricing.class), history, idempotency,
+                mock(CommerceCardAssembler.class));
     }
 
     @Test
@@ -182,7 +183,8 @@ class AiAssistantServiceTest {
         when(idempotency.previous(anyString(), any(), eq(ChatResponse.class)))
                 .thenReturn(java.util.Optional.of(cached));
         AiAssistantServiceImpl service =
-                new AiAssistantServiceImpl(agent, mock(ModelPricing.class), history, idempotency);
+                new AiAssistantServiceImpl(agent, mock(ModelPricing.class), history, idempotency,
+                        mock(CommerceCardAssembler.class));
 
         // 幂等的判据是当前请求号；单测没有请求上下文，得显式摆一个
         org.slf4j.MDC.put(yumefusaka.envoymart.common.web.RequestId.MDC_KEY, "req-1");

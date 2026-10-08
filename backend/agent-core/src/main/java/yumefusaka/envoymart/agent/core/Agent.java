@@ -431,6 +431,8 @@ public class Agent {
                     .build();
         }
         // 两道后置关放在 try 之外：降级回答同样要过——它也是一段要发给用户的话
+        // 后置校验和独立冲突核对必须使用用户本轮原话；retrievalQuery 可能经过指代改写，
+        // 只能用于检索，不能改变“用户到底问了什么”的判定语义。
         groundResponse(response, knowledge, message);
 
         // 只在真的改写过时下发：检索用了什么句，是「回答为什么对/为什么没查到」的
@@ -573,6 +575,7 @@ public class Agent {
                 .noData(result.isNoData())
                 .latencyMs(result.getLatencyMs())
                 .rawData(result.getRawData())
+                .evidence(result.getEvidence())
                 .facts(result.getFacts())
                 .entities(result.getEntities())
                 .build();
@@ -683,6 +686,7 @@ public class Agent {
             return AgentResponse.builder()
                     .reply(reply)
                     .source("approval")
+                    .loops(graphResult.getLoops())
                     .knowledge(knowledgeOf(graphResult))
                     .retrieval(retrievalOf(graphResult))
                     .pendingActions(pending.stream().map(PendingAction::describe).toList())
@@ -716,7 +720,9 @@ public class Agent {
 
         return AgentResponse.builder()
                 .reply(graphResult.getAnswer())
-                .source(graphResult.getSteps().isEmpty() ? "react" : "plan")
+                .source(AgentGraph.GENERATION_FAILED_REPLY.equals(graphResult.getAnswer())
+                        ? "fallback" : graphResult.getSteps().isEmpty() ? "react" : "plan")
+                .loops(graphResult.getLoops())
                 .knowledge(knowledgeOf(graphResult))
                 .retrieval(retrievalOf(graphResult))
                 .toolExecutions(graphResult.getToolExecutions())
@@ -755,9 +761,7 @@ public class Agent {
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("tool", action.tool());
         Map<String, Object> arguments = new LinkedHashMap<>(action.arguments());
-        if ("cart_add".equals(action.tool())) {
-            enrichCartAdd(arguments, executions, steps);
-        } else if ("order_cancel".equals(action.tool())) {
+        if ("order_cancel".equals(action.tool())) {
             enrichOrderCancel(arguments, executions, steps);
         }
         detail.put("arguments", arguments);
@@ -785,44 +789,6 @@ public class Agent {
                 arguments.put("orderNo", order.group(2));
                 return;
             }
-        }
-    }
-
-    /** 确认卡只补展示字段，不修改签名载荷；执行仍严格使用原始 skuId/quantity。 */
-    private static void enrichCartAdd(Map<String, Object> arguments, List<ToolExecution> executions,
-                                      List<AgentGraph.GraphStep> steps) {
-        Object sku = arguments.get("skuId");
-        if (sku == null || executions == null) {
-            return;
-        }
-        String skuToken = "SKU" + String.valueOf(sku).replaceAll("^0+", "");
-        List<String> outputs = new ArrayList<>();
-        if (executions != null) {
-            executions.stream().filter(ToolExecution::isSuccess)
-                    .map(ToolExecution::getOutput).filter(java.util.Objects::nonNull).forEach(outputs::add);
-        }
-        if (steps != null) {
-            steps.stream().filter(AgentGraph.GraphStep::isSuccess)
-                    .filter(step -> "product_search".equals(step.getTool()))
-                    .map(AgentGraph.GraphStep::getOutput).filter(java.util.Objects::nonNull).forEach(outputs::add);
-        }
-        for (String output : outputs) {
-            if (!output.toUpperCase(java.util.Locale.ROOT)
-                    .contains(skuToken.toUpperCase(java.util.Locale.ROOT))) {
-                continue;
-            }
-            java.util.regex.Matcher product = java.util.regex.Pattern
-                    .compile("- 编号\\s+SPU\\d+：(.+?)(?:，价格|，类目|，品牌|\\n)").matcher(output);
-            if (product.find()) {
-                arguments.put("productName", product.group(1).trim());
-            }
-            java.util.regex.Matcher specification = java.util.regex.Pattern
-                    .compile("规格：[^\\n]*?" + java.util.regex.Pattern.quote(skuToken) + "[^\\n]*")
-                    .matcher(output);
-            if (specification.find()) {
-                arguments.put("specification", specification.group().trim());
-            }
-            return;
         }
     }
 
@@ -1330,6 +1296,10 @@ public class Agent {
         // ToolExecution.rawData 上（见 KnowledgeSearchTool），不需要从文本反解
         List<DocumentChunk> evidence = withToolChunks(knowledge, response.getToolExecutions());
         response.setKnowledge(evidence);
+        // 工具可能在初始检索之后补回更强的知识切片。证据门必须以最终交付给模型和前端的
+        // 证据重新计算，否则会出现“回答和引用都来自有效说明书，但响应仍记录为 WEAK”
+        // 的状态分叉，评测也会把正确回答误报成过拒。
+        refreshEvidenceLevel(response, evidence);
         int evidenceCount = evidence.size();
 
         // 《文档名》→[n] 必须先于冲突抽取：冲突段里的「哪几条对不上」只认编号与「条目 n」
@@ -1376,8 +1346,17 @@ public class Agent {
             }
         }
 
-        Set<String> semanticExemptions = semanticExemptions(report.reply(), userMessage, evidence,
+        SemanticGroundingVerifier.Verdict semanticVerdict = semanticReview(report.reply(), userMessage, evidence,
                 response.getToolExecutions(), evidenceCount, citableTitles, toolStrings);
+        String acceptedReply = CitationVerifier.removeRejected(report.reply(), semanticVerdict.unsupported());
+        String repairedReply = CitationVerifier.repairCitations(acceptedReply, semanticVerdict.citations(), evidence);
+        // 语义审核可能恢复/保留工具输出里的《文档名》引用；编号归一化必须在最终文本上再跑一次，
+        // 否则确定性校验会把它当成已声明出处而保留，前端却没有可点击的角标。
+        repairedReply = CitationVerifier.numberTitles(repairedReply, evidence);
+        report = new ConflictReporter.Report(repairedReply, report.conflicts());
+        Set<String> semanticExemptions = semanticExemptions(report.reply(), semanticVerdict,
+                evidenceCount, citableTitles, toolStrings);
+        response.setSemanticExemptions(List.copyOf(semanticExemptions));
         CitationVerifier.Verdict verdict =
                 // 带上用户本轮原话：无依据横幅只在「用户在问平台的事」时才该出现，
                 // 否则纯寒暄轮会被模型那段自我介绍的能力清单顶上横幅（U39）
@@ -1393,8 +1372,10 @@ public class Agent {
                 ToolFactVerifier.verify(verdict.reply(), response.getToolExecutions());
 
         response.setReply(facts.reply());
-        response.setUnsupportedClaims(verdict.unsupported().isEmpty() ? null : verdict.unsupported());
-        response.setUnsupportedStripped(verdict.stripped());
+        Set<String> rejectedClaims = new LinkedHashSet<>(semanticVerdict.unsupported());
+        rejectedClaims.addAll(verdict.unsupported());
+        response.setUnsupportedClaims(rejectedClaims.isEmpty() ? null : List.copyOf(rejectedClaims));
+        response.setUnsupportedStripped(verdict.stripped() || !semanticVerdict.unsupported().isEmpty());
         response.setUngrounded(verdict.ungrounded());
         response.setConflicts(report.conflicts().isEmpty() ? null : report.conflicts());
         response.setFactMismatches(facts.mismatches().isEmpty() ? null : facts.mismatches());
@@ -1412,14 +1393,34 @@ public class Agent {
         }
     }
 
-    private Set<String> semanticExemptions(String reply, String userMessage,
+    private void refreshEvidenceLevel(AgentResponse response, List<DocumentChunk> evidence) {
+        refreshEvidenceLevel(response, evidence, config.getRagGateThresholds());
+    }
+
+    static void refreshEvidenceLevel(AgentResponse response, List<DocumentChunk> evidence,
+                                     EvidenceGate.Thresholds thresholds) {
+        if (response == null || response.getRetrieval() == null) {
+            return;
+        }
+        RetrievalOutcome retrieval = response.getRetrieval();
+        EvidenceGate.Decision decision = EvidenceGate.evaluate(
+                evidence, thresholds, retrieval.graphChunkIds());
+        response.setEvidenceLevel(decision.level());
+    }
+
+    private SemanticGroundingVerifier.Verdict semanticReview(String reply, String userMessage,
                                             List<DocumentChunk> evidence,
                                             List<ToolExecution> executions,
                                             int evidenceCount, Set<String> citableTitles,
                                             Set<String> toolStrings) {
+        // 语义审核是昂贵的补充判定：证据不足两条时没有可比较对象，
+        // 主回答已经明确报出冲突时也不重复调用，避免把一次结论变成两次计费且互相覆盖。
+        if (evidence == null || evidence.size() < 2 || reply.contains("【冲突】")) {
+            return SemanticGroundingVerifier.Verdict.unavailable();
+        }
         List<String> candidates = CitationVerifier.candidates(reply, evidenceCount, citableTitles, toolStrings);
         if (candidates.isEmpty() || conflictChecker == null) {
-            return Set.of();
+            return SemanticGroundingVerifier.Verdict.unavailable();
         }
         String facts = executions == null ? "" : executions.stream()
                 .filter(ToolExecution::isSuccess)
@@ -1427,15 +1428,31 @@ public class Agent {
                 .filter(java.util.Objects::nonNull)
                 .collect(java.util.stream.Collectors.joining("\n"));
         SemanticGroundingVerifier.Verdict verdict = SemanticGroundingVerifier.verify(
-                conflictChecker, conflictCheckConfig(), userMessage, reply, candidates, evidence, facts);
+                conflictChecker, LLMConfig.builder().model(config.getLlmModel()).temperature(0.0)
+                        .maxTokens(Math.min(4096, Math.max(1024, candidates.size() * 80))).build(),
+                userMessage, reply, candidates, evidence, facts);
         if (!verdict.evaluated()) {
             log.warn("[Agent] 语义溯源审核不可用，保留规则审核结果");
+            return SemanticGroundingVerifier.Verdict.unavailable();
+        }
+        log.debug("[Agent] 语义溯源审核候选={} 无依据={} 保留={}",
+                candidates.size(), verdict.unsupported().size(), candidates.size() - verdict.unsupported().size());
+        return verdict;
+    }
+
+    private Set<String> semanticExemptions(String reply, SemanticGroundingVerifier.Verdict verdict,
+                                           int evidenceCount, Set<String> citableTitles,
+                                           Set<String> toolStrings) {
+        if (!verdict.evaluated()) {
             return Set.of();
         }
+        List<String> candidates = CitationVerifier.candidates(reply, evidenceCount, citableTitles, toolStrings);
         Set<String> exemptions = new LinkedHashSet<>(candidates);
         exemptions.removeAll(verdict.unsupported());
-        log.debug("[Agent] 语义溯源审核候选={} 无依据={} 保留={}",
-                candidates.size(), verdict.unsupported().size(), exemptions.size());
+        // 有效引用或书名号引用即使审核器认为支持，也必须继续进入确定性引用校验；
+        // 否则“修复后仍指错”的句子会被错误 exemption，分母被减掉但 wrong citation 仍保留。
+        exemptions.removeIf(sentence -> sentence.matches("(?s).*\\[\\d+].*")
+                || CitationVerifier.titlesIn(sentence).size() > 0);
         return exemptions;
     }
 
@@ -1460,11 +1477,25 @@ public class Agent {
         }
         List<DocumentChunk> all = null;
         for (ToolExecution execution : executions) {
-            if (!(execution.getRawData() instanceof List<?> raw)) {
-                continue;
-            }
+            List<?> raw = execution.getEvidence() != null ? execution.getEvidence()
+                    : execution.getRawData() instanceof List<?> list ? list : List.of();
             for (Object item : raw) {
-                if (!(item instanceof DocumentChunk chunk) || !seen.add(chunkKey(chunk))) {
+                if (!(item instanceof DocumentChunk chunk)) {
+                    continue;
+                }
+                if (!seen.add(chunkKey(chunk))) {
+                    List<DocumentChunk> existing = all == null ? knowledge : all;
+                    for (int index = 0; index < existing.size(); index++) {
+                        DocumentChunk current = existing.get(index);
+                        if (chunkKey(current).equals(chunkKey(chunk)) && chunk.getContent() != null
+                                && (current.getContent() == null || !current.getContent().contains(chunk.getContent()))) {
+                            if (all == null) all = new ArrayList<>(knowledge);
+                            all.set(index, current.toBuilder().content(
+                                    (current.getContent() == null ? "" : current.getContent())
+                                            + "\n" + chunk.getContent()).graphBacked(true).build());
+                            break;
+                        }
+                    }
                     continue;
                 }
                 if (all == null) {
@@ -1881,6 +1912,8 @@ public class Agent {
          * 只报告——见该类注释）。
          */
         private List<String> unsupportedClaims;
+        /** 语义审核器确认可保留、但没有独立角标的正常承接句，供真实评测使用同一口径。 */
+        private List<String> semanticExemptions;
         /**
          * {@link #unsupportedClaims} 是否已被移出 {@link #reply}。
          * <p>
@@ -1937,6 +1970,8 @@ public class Agent {
          * 非任务路径（确定性流程、直接对话）为 null——那里本来就没有任务状态可言。
          */
         private TaskState taskState;
+        /** 本轮工具/规划预算消耗与 guardrail 停止原因。 */
+        private String loops;
     }
 
     /**

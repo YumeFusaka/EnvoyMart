@@ -5,10 +5,12 @@ import org.springframework.stereotype.Service;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import yumefusaka.envoymart.agent.core.Agent;
+import yumefusaka.envoymart.agent.core.AgentGraph;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.GroundingEvaluator;
 import yumefusaka.envoymart.agent.rag.GroundingFixtures;
+import yumefusaka.envoymart.agent.rag.GraphMultiHopFixtures;
 
 import java.time.OffsetDateTime;
 import java.nio.charset.StandardCharsets;
@@ -23,12 +25,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>
  * 这里跑的是当前模型、当前知识库和当前图谱，完成后落盘为只读快照。
  * <p>
- * <b>为什么是异步 + 单飞。</b>24 条用例串行调模型，同步请求会超时，而并发跑多个评测
+ * <b>为什么是异步 + 单飞。</b>当前 36 条用例串行调模型，同步请求会超时，而并发跑多个评测
  * 除了互相抢配额没有别的作用。所以：一个时刻只允许一个任务，重复触发直接返回当前状态，
  * 前端轮询进度。
  * <p>
  * <b>每条用例一个全新的 userId + sessionId。</b>不是洁癖：长期记忆是按 userId 存的，
- * 同一个人连着问 24 个问题，后面几轮的 prompt 里会掺进前面几轮的画像与情节——
+ * 同一个人连着问 36 个问题，后面几轮的 prompt 里会掺进前面几轮的画像与情节——
  * 那样测出来的就不是"这批问题答得怎么样"，而是"一个越问越熟的会话答得怎么样"。
  */
 @Slf4j
@@ -36,6 +38,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class GroundingLiveEvalService {
 
     private static final Path SNAPSHOT_FILE = Path.of("data", "eval", "production-grounding.json");
+    private static final int LIVE_CASE_COUNT = GroundingFixtures.CASES.size() + GraphMultiHopFixtures.CASES.size();
+    private static final String PROMPT_VERSION = "grounding-prompt-v4";
+    private static final String PIPELINE_VERSION = "agent-live-v3-evidence-gate-boundary";
 
     /**
      * 一条用例的真跑结果。
@@ -48,7 +53,15 @@ public class GroundingLiveEvalService {
      *                 它会把这一条从分母里摘掉，不写出来就成了"少算了一条"
      */
     public record CaseResult(String question, GroundingEvaluator.CaseOutcome outcome, String answer,
-                             int evidenceCount, long latencyMs, String error) {
+                             int evidenceCount, long latencyMs, String error, List<DocumentChunk> evidence,
+                             String retrievalQuery,
+                             yumefusaka.envoymart.agent.rag.QueryExpansions expansion,
+                             List<yumefusaka.envoymart.agent.llm.ToolExecution> toolExecutions,
+                             yumefusaka.envoymart.agent.rag.RetrievalOutcome.RetrievalTrace retrievalTrace) {
+        public CaseResult(String question, GroundingEvaluator.CaseOutcome outcome, String answer,
+                          int evidenceCount, long latencyMs, String error) {
+            this(question, outcome, answer, evidenceCount, latencyMs, error, List.of(), null, null, List.of(), null);
+        }
     }
 
     /**
@@ -60,10 +73,12 @@ public class GroundingLiveEvalService {
      */
     public record LiveRun(String status, String startedAt, String finishedAt, int totalCases,
                           int completedCases, int failedCases, String currentQuestion, String userId,
-                          GroundingEvaluator.Metrics metrics, List<CaseResult> cases) {
+                          GroundingEvaluator.Metrics metrics, List<CaseResult> cases,
+                          String promptVersion, String pipelineVersion) {
 
         static LiveRun idle(int totalCases) {
-            return new LiveRun("IDLE", null, null, totalCases, 0, 0, null, null, null, List.of());
+            return new LiveRun("IDLE", null, null, totalCases, 0, 0, null, null, null, List.of(),
+                    PROMPT_VERSION, PIPELINE_VERSION);
         }
     }
 
@@ -90,13 +105,15 @@ public class GroundingLiveEvalService {
             try {
                 LiveRun snapshot = objectMapper.readValue(Files.readString(SNAPSHOT_FILE, StandardCharsets.UTF_8),
                         new TypeReference<>() { });
-                latest = snapshot;
-                return snapshot;
+                // 兼容旧快照，避免服务升级后页面把既有真实结果显示成未知版本。
+                LiveRun migrated = withVersion(snapshot);
+                latest = migrated;
+                return migrated;
             } catch (Exception e) {
                 log.warn("[AI] 回答质量真实快照读取失败：{}", e.getMessage());
             }
         }
-        return LiveRun.idle(GroundingFixtures.CASES.size());
+        return LiveRun.idle(LIVE_CASE_COUNT);
     }
 
     /**
@@ -108,7 +125,8 @@ public class GroundingLiveEvalService {
             return current();
         }
         LiveRun seed = new LiveRun("RUNNING", OffsetDateTime.now().toString(), null,
-                GroundingFixtures.CASES.size(), 0, 0, null, null, null, List.of());
+                LIVE_CASE_COUNT, 0, 0, null, null, null, List.of(),
+                PROMPT_VERSION, PIPELINE_VERSION);
         latest = seed;
         Thread worker = new Thread(this::execute, "grounding-live-eval");
         worker.setDaemon(true);
@@ -122,7 +140,14 @@ public class GroundingLiveEvalService {
         List<CaseResult> results = new ArrayList<>();
         int failed = 0;
         try {
-            for (GroundingFixtures.Case fixtureCase : GroundingFixtures.CASES) {
+            List<LiveCase> cases = new ArrayList<>();
+            GroundingFixtures.CASES.forEach(fixtureCase -> cases.add(new LiveCase(
+                    fixtureCase.id(), fixtureCase.question(), fixtureCase.kind(),
+                    fixtureCase.expectRefuse(), fixtureCase.mustMention())));
+            GraphMultiHopFixtures.CASES.forEach(fixtureCase -> cases.add(new LiveCase(
+                    fixtureCase.id(), fixtureCase.question(), GroundingFixtures.Kind.MULTI_HOP,
+                    fixtureCase.expectRefuse(), fixtureCase.mustMention())));
+            for (LiveCase fixtureCase : cases) {
                 publishRunning(userId, results, fixtureCase);
                 CaseResult result = runCase(userId, fixtureCase);
                 if (result.error() != null) {
@@ -138,9 +163,9 @@ public class GroundingLiveEvalService {
                     .sorted(GroundingEvaluator.byId())
                     .toList();
             GroundingEvaluator.Metrics metrics = GroundingEvaluator.aggregate(outcomes);
-            latest = new LiveRun("COMPLETED", latest.startedAt(), OffsetDateTime.now().toString(),
-                    GroundingFixtures.CASES.size(), results.size(), failed, null, userId, metrics,
-                    List.copyOf(results));
+            latest = new LiveRun(outcomes.isEmpty() ? "FAILED" : "COMPLETED", latest.startedAt(), OffsetDateTime.now().toString(),
+                    LIVE_CASE_COUNT, results.size(), failed, null, userId, outcomes.isEmpty() ? null : metrics,
+                    List.copyOf(results), PROMPT_VERSION, PIPELINE_VERSION);
             persist(latest);
             log.info("[AI] 回答质量真跑完成：cases={} 失败={} 幻觉率={} 引用准确率={} 拒答准确率={} 多跳命中率={}",
                     results.size(), failed, metrics.hallucinationRate(), metrics.citationAccuracy(),
@@ -148,9 +173,9 @@ public class GroundingLiveEvalService {
         } catch (RuntimeException e) {
             // 整轮崩掉（例如 Agent 初始化失败）也要留下一份可读的状态，而不是永远停在 RUNNING
             log.error("[AI] 回答质量真跑中断", e);
-            latest = new LiveRun("COMPLETED", latest.startedAt(), OffsetDateTime.now().toString(),
-                    GroundingFixtures.CASES.size(), results.size(), failed, null, userId, null,
-                    List.copyOf(results));
+            latest = new LiveRun("FAILED", latest.startedAt(), OffsetDateTime.now().toString(),
+                    LIVE_CASE_COUNT, results.size(), failed, null, userId, null,
+                    List.copyOf(results), PROMPT_VERSION, PIPELINE_VERSION);
         } finally {
             running.set(false);
         }
@@ -167,9 +192,56 @@ public class GroundingLiveEvalService {
         }
     }
 
-    private void publishRunning(String userId, List<CaseResult> done, GroundingFixtures.Case fixtureCase) {
-        latest = new LiveRun("RUNNING", latest.startedAt(), null, GroundingFixtures.CASES.size(),
-                done.size(), 0, fixtureCase.question(), userId, null, List.copyOf(done));
+    private void publishRunning(String userId, List<CaseResult> done, LiveCase fixtureCase) {
+        latest = new LiveRun("RUNNING", latest.startedAt(), null, LIVE_CASE_COUNT,
+                done.size(), 0, fixtureCase.question(), userId, null, List.copyOf(done),
+                PROMPT_VERSION, PIPELINE_VERSION);
+    }
+
+    private static LiveRun withVersion(LiveRun run) {
+        if (run.cases() != null && !run.cases().isEmpty() && run.cases().stream()
+                .allMatch(result -> AgentGraph.GENERATION_FAILED_REPLY.equals(result.answer()))) {
+            return new LiveRun("FAILED", run.startedAt(), run.finishedAt(), run.totalCases(),
+                    run.completedCases(), run.cases().size(), null, run.userId(), null,
+                    run.cases(), run.promptVersion(), run.pipelineVersion());
+        }
+        List<CaseResult> migratedCases = run.cases() == null ? List.of() : run.cases().stream()
+                .map(GroundingLiveEvalService::withRootCause)
+                .toList();
+        return new LiveRun(run.status(), run.startedAt(), run.finishedAt(), run.totalCases(),
+                run.completedCases(), run.failedCases(), run.currentQuestion(), run.userId(),
+                run.metrics(), migratedCases,
+                run.promptVersion() == null ? "历史快照未记录" : run.promptVersion(),
+                run.pipelineVersion() == null ? "历史快照未记录" : run.pipelineVersion());
+    }
+
+    private static CaseResult withRootCause(CaseResult result) {
+        GroundingEvaluator.CaseOutcome outcome = result.outcome();
+        if (outcome == null || outcome.rootCause() != null && !outcome.rootCause().isBlank()) {
+            return result;
+        }
+        String rootCause;
+        if (outcome.outOfRange() > 0 || outcome.wrongCitations() > 0) {
+            rootCause = "WRONG_CITATION";
+        } else if (outcome.kind() == GroundingFixtures.Kind.MULTI_HOP && outcome.unsupported() > 0) {
+            rootCause = "GRAPH_PATH_OR_GROUNDING";
+        } else if (outcome.unsupported() > 0) {
+            rootCause = "UNSUPPORTED_CLAIM";
+        } else if (outcome.answerable() && outcome.gateRefused()) {
+            rootCause = "OVER_REFUSAL";
+        } else if (!outcome.answerable() && !outcome.gateRefused()) {
+            rootCause = "MISSED_REFUSAL";
+        } else {
+            rootCause = "NONE";
+        }
+        GroundingEvaluator.CaseOutcome migrated = new GroundingEvaluator.CaseOutcome(
+                outcome.id(), outcome.kind(), outcome.mode(), outcome.answerable(), outcome.sentences(),
+                outcome.factSentences(), outcome.unsupported(), outcome.checks(), outcome.wrongCitations(),
+                outcome.outOfRange(), outcome.gateRefused(), outcome.refusalCorrect(), outcome.multiHopHit(),
+                outcome.citations(), rootCause);
+        return new CaseResult(result.question(), migrated, result.answer(), result.evidenceCount(),
+                result.latencyMs(), result.error(), result.evidence(), result.retrievalQuery(), result.expansion(),
+                result.toolExecutions(), result.retrievalTrace());
     }
 
     /**
@@ -178,13 +250,19 @@ public class GroundingLiveEvalService {
      * <b>异常在这里被兜住而不是往上抛</b>：模型超时、限流、知识库抖一下，都是单条的事，
      * 让它们把整轮评测带走，等于"网络抖一次就得重新点一遍按钮"。
      */
-    private CaseResult runCase(String userId, GroundingFixtures.Case fixtureCase) {
+    private CaseResult runCase(String userId, LiveCase fixtureCase) {
         // 每条用例一个会话：多轮上下文在这里是噪声，不是能力
         String sessionId = "grounding-eval-" + fixtureCase.id() + "-" + System.currentTimeMillis();
         long started = System.currentTimeMillis();
         try {
             // 无确认令牌：评测问的都是知识与检索类问题，不碰高危操作
             Agent.AgentResponse response = agent.chat(userId, sessionId, fixtureCase.question(), null);
+            if ("fallback".equals(response.getSource())) {
+                return new CaseResult(fixtureCase.question(), null, response.getReply(), 0,
+                        System.currentTimeMillis() - started, "模型生成失败，已返回降级回复；此条不参与质量指标",
+                        List.of(), response.getRetrievalQuery(), response.getExpansion(), response.getToolExecutions(),
+                        response.getRetrieval() == null ? null : response.getRetrieval().trace());
+            }
             long latency = System.currentTimeMillis() - started;
             List<DocumentChunk> evidence =
                     response.getKnowledge() == null ? List.of() : response.getKnowledge();
@@ -192,19 +270,43 @@ public class GroundingLiveEvalService {
                     && !response.getToolExecutions().isEmpty();
             EvidenceGate.Level level = response.getEvidenceLevel() == null
                     ? EvidenceGate.Level.NONE : response.getEvidenceLevel();
+            // 入口门可能先判 WEAK/NONE，但 Agent 随后通过 knowledge_search 或
+            // interaction_check 补回了真实依据。评测最终回答时应使用最终证据状态，
+            // 否则“成功补检索后答对”会被错误计为过拒。
+            boolean knowledgeToolEvidence = response.getToolExecutions() != null
+                    && response.getToolExecutions().stream()
+                    .anyMatch(execution -> execution.isSuccess() && !execution.isNoData()
+                            && ("knowledge_search".equals(execution.getTool())
+                            || "interaction_check".equals(execution.getTool())));
+            level = finalEvidenceLevel(level, knowledgeToolEvidence);
 
             GroundingEvaluator.Sample sample = new GroundingEvaluator.Sample(fixtureCase.id(),
                     fixtureCase.kind(), fixtureCase.expectRefuse(), fixtureCase.mustMention(),
-                    evidence, response.getReply(), level, toolEvidence);
+                    evidence, response.getReply(), level, toolEvidence,
+                    response.getSemanticExemptions(),
+                    response.getRetrieval() != null && response.getRetrieval().hasGraphEvidence());
             GroundingEvaluator.CaseOutcome outcome =
                     GroundingEvaluator.evaluate(List.of(sample)).cases().getFirst();
             return new CaseResult(fixtureCase.question(), outcome, response.getReply(),
-                    evidence.size(), latency, null);
+                    evidence.size(), latency, null, evidence.stream()
+                    .map(chunk -> chunk.toBuilder().embedding(null).indexText(null).build()).toList(),
+                    response.getRetrievalQuery(), response.getExpansion(), response.getToolExecutions(),
+                    response.getRetrieval() == null ? null : response.getRetrieval().trace());
         } catch (RuntimeException e) {
             log.warn("[AI] 回答质量真跑单条失败 id={} 问题={}", fixtureCase.id(), fixtureCase.question(), e);
             return new CaseResult(fixtureCase.question(), null, null, 0,
                     System.currentTimeMillis() - started,
-                    e.getClass().getSimpleName() + ": " + e.getMessage());
+                    e.getClass().getSimpleName() + ": " + e.getMessage(), List.of(), null, null, List.of(), null);
         }
+    }
+
+    private record LiveCase(String id, String question, GroundingFixtures.Kind kind,
+                            boolean expectRefuse, List<String> mustMention) {
+    }
+
+    static EvidenceGate.Level finalEvidenceLevel(EvidenceGate.Level initial,
+                                                 boolean knowledgeToolEvidence) {
+        return initial == EvidenceGate.Level.NONE && knowledgeToolEvidence
+                ? EvidenceGate.Level.SUFFICIENT : initial;
     }
 }

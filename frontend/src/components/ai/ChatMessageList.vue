@@ -320,7 +320,8 @@ async function handleCopy(message: ChatMessage) {
         v-if="message.pendingActions?.length"
         :actions="message.pendingActions"
         :details="message.pendingActionDetails"
-        :active="position === messages.length - 1"
+        :status="message.approvalStatus"
+        :active="position === messages.length - 1 && !!message.approvalToken && (streamingIndex ?? -1) < 0 && (!message.at || Date.now() - Date.parse(message.at) < 600000)"
         @approve="emit('approve')"
         @dismiss="emit('dismiss')"
       />
@@ -440,7 +441,10 @@ async function handleCopy(message: ChatMessage) {
 
 /* 用户自己的话才配气泡，且靠右——扫一眼就能分辨「谁在说」 */
 .message-card.user {
+  position: relative;
   justify-self: end;
+  align-self: start;
+  width: fit-content;
   max-width: min(86%, 640px);
   padding: var(--ys-space-3) var(--ys-space-4);
   border: 1px solid var(--color-primary-border);
@@ -622,6 +626,13 @@ async function handleCopy(message: ChatMessage) {
   margin-top: var(--ys-space-2);
   opacity: 0;
   transition: opacity var(--ys-duration-fast) var(--ys-ease-out);
+}
+
+.message-card.user .message-actions {
+  position: absolute;
+  inset-inline-end: calc(100% + var(--ys-space-2));
+  inset-block-end: var(--ys-space-3);
+  margin-top: 0;
 }
 
 .message-card:hover .message-actions,

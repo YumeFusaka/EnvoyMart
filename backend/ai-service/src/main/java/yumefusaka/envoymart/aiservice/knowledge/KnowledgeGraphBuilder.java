@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -289,6 +290,7 @@ public class KnowledgeGraphBuilder {
                 return null;
             }
             List<GraphTriplePayload> linked = linkProducts(parsed, catalog);
+            linked = restrictProductsToDeclaredSubjects(linked, doc);
             // **确定性地补出「商品→成分」这条边。**
             // 它原先是纯靠模型抽的，实测会漏抽（37 个商品里 13 个因此没有节点）。
             // 而这件事根本不需要模型判断：文档讲的是哪个商品在上传时已被人工声明，
@@ -369,6 +371,33 @@ public class KnowledgeGraphBuilder {
     }
 
     /**
+     * 说明书的人工主体声明是商品归属的硬边界。
+     * 模型可能在正文中提到其他商品或把「本品」误识别成相似商品；这些实体不能成为
+     * 当前说明书的商品主体，否则会把一篇孕期 DHA 说明书污染到鱼油商品上。
+     */
+    private List<GraphTriplePayload> restrictProductsToDeclaredSubjects(
+            List<GraphTriplePayload> triples, Document doc) {
+        if (doc.getSubjectSpuIds() == null || doc.getSubjectSpuIds().isEmpty()) {
+            return triples;
+        }
+        Set<String> allowed = doc.getSubjectSpuIds().stream()
+                .filter(java.util.Objects::nonNull)
+                .map(KnowledgeGraphBuilder::key)
+                .collect(java.util.stream.Collectors.toSet());
+        return triples.stream().filter(triple -> {
+            if (!EntityKind.PRODUCT.name().equals(triple.getHeadKind())) {
+                return true;
+            }
+            boolean keep = allowed.contains(triple.getHeadName());
+            if (!keep) {
+                log.warn("[Graph] 文档 {} 丢弃未声明的商品主体 {}，允许主体={}",
+                        doc.getId(), triple.getHeadName(), allowed);
+            }
+            return keep;
+        }).toList();
+    }
+
+    /**
      * 按**人工声明的归属**确定性补出 {@code SPUx -CONTAINS-> 成分} 边。
      * <p>
      * <b>为什么必须由代码补，而不是指望模型抽</b>：这条边是「商品有没有资料」的唯一判据
@@ -411,12 +440,19 @@ public class KnowledgeGraphBuilder {
         // 这样放宽不会放进幻觉：成分本身仍要过 knowledge-service 的端点与引文双锚定，
         // 这里只是把「文档里确实出现过的成分」这个集合取全。
         Map<String, String> ingredients = new LinkedHashMap<>();
+        Map<String, String> ingredientQuotes = new LinkedHashMap<>();
         for (GraphTriplePayload t : triples) {
             if (isCompositionPart(t.getHeadKind())) {
                 ingredients.putIfAbsent(t.getHeadName(), t.getHeadLabel());
+                if (t.getQuote() != null && !t.getQuote().isBlank()) {
+                    ingredientQuotes.putIfAbsent(t.getHeadName(), t.getQuote());
+                }
             }
             if (isCompositionPart(t.getTailKind())) {
                 ingredients.putIfAbsent(t.getTailName(), t.getTailLabel());
+                if (t.getQuote() != null && !t.getQuote().isBlank()) {
+                    ingredientQuotes.putIfAbsent(t.getTailName(), t.getQuote());
+                }
             }
         }
         if (ingredients.isEmpty()) {
@@ -452,6 +488,7 @@ public class KnowledgeGraphBuilder {
                         .tailKind(EntityKind.INGREDIENT.name())
                         .tailName(e.getKey())
                         .tailLabel(e.getValue())
+                        .quote(ingredientQuotes.get(e.getKey()))
                         // 依据是「文档声明了主体 + 正文里有这个成分」这个组合事实，不是某一句话，
                         // 所以不带 quote，改为置 declared 标志——knowledge-service 的校验据此免引文
                         // 校验（见 TripleValidator，豁免范围只到这一种边）。

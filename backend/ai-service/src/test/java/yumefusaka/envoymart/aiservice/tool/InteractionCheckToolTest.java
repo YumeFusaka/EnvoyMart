@@ -30,6 +30,22 @@ import static org.mockito.Mockito.when;
  */
 class InteractionCheckToolTest {
 
+    @Test
+    void 图谱工具将完整出处带入结构化证据() {
+        GraphEdge edge = new GraphEdge(PRODUCT, "INTERACTS_WITH", "可能增加出血风险", WARFARIN,
+                "KB-0005", "深海鱼油说明书", "c12", 100, 130,
+                "深海鱼油与华法林合用可能增加出血风险", WARFARIN, List.of("鱼油软胶囊", "华法林"));
+        var report = new InteractionReport(true, null, List.of(new InteractionReport.Item(
+                "SPU5", "鱼油软胶囊", true, List.of(), List.of(edge), null)));
+        assertThat(InteractionCheckTool.evidenceOf(report)).singleElement().satisfies(chunk -> {
+            assertThat(chunk.getDocId()).isEqualTo("KB-0005");
+            assertThat(chunk.getChunkId()).isEqualTo("c12");
+            assertThat(chunk.getCharOffset()).isEqualTo(100);
+            assertThat(chunk.getContent()).isEqualTo(edge.quote());
+            assertThat(chunk.getGraphBacked()).isTrue();
+        });
+    }
+
     private static final GraphNode PRODUCT = new GraphNode("spu5", "鱼油软胶囊", "PRODUCT");
     private static final GraphNode FISH_OIL = new GraphNode("深海鱼油", "深海鱼油", "INGREDIENT");
     private static final GraphNode WARFARIN = new GraphNode("华法林", "华法林", "DRUG");

@@ -57,6 +57,11 @@ public final class CitationVerifier {
      */
     private static final Pattern TITLE_CITATION = Pattern.compile("《([^》]{1,60})》");
 
+    /** 模型把书名号引用替换成编号后留下的空括号，例如「（）。 [1]」。 */
+    private static final Pattern EMPTY_CITATION_WRAPPER = Pattern.compile("[（(]\\s*[）)]");
+    private static final Pattern MEASURED_NUMBER = Pattern.compile(
+            "\\d+(?:\\.\\d+)?\\s*(?:毫克|微克|IU|小时|天|粒|片|元|%|克|分钟|个月)");
+
     /**
      * 断句：句末标点或换行，<b>标点跟随前一句</b>。
      * <p>
@@ -88,7 +93,8 @@ public final class CitationVerifier {
      * 而它也是编造代价最高的那一类。
      */
     private static final Pattern FACT_SIGNAL = Pattern.compile(
-            "\\d|规定|政策|条款|标准|上限|下限|禁止|不得|必须|应当|期限|时效|有效期");
+            "\\d|规定|政策|条款|标准|上限|下限|禁止|不得|必须|应当|期限|时效|有效期|"
+                    + "相互作用|风险|影响|吸收|出血|收录|退货|禁忌|成分|用量");
 
     /**
      * 复述用户问题的引导句（「你问的是…的规定。」）。
@@ -386,7 +392,12 @@ public final class CitationVerifier {
         return new Verdict(cleaned, reported, sentences, cited, stripped, ungrounded);
     }
 
-    /** 输出给语义审核器的候选句；硬规则仍在 verify 中最终执行。 */
+    /**
+     * 输出给语义审核器的候选句；硬规则仍在 verify 中最终执行。
+     *
+     * 有效角标不能直接把句子排除：角标可能指向了同一批证据中的错误文档，
+     * 这种句子正是需要语义审核器纠正的对象。
+     */
     public static List<String> candidates(String reply, int evidenceCount,
                                           Set<String> citableTitles, Set<String> toolStrings) {
         if (reply == null || reply.isBlank()) {
@@ -396,13 +407,66 @@ public final class CitationVerifier {
         Matcher matcher = SENTENCE.matcher(reply);
         while (matcher.find()) {
             String sentence = matcher.group();
-            if (!hasValidCitation(sentence, evidenceCount, citableTitles, toolStrings)
-                    && needsCitation(sentence)) {
+            if (!sentence.isBlank() && !sentence.trim().matches("(?:\\[\\d+]\\s*)+")) {
                 result.add(sentence.trim());
             }
         }
         return List.copyOf(result);
     }
+
+    public static String removeRejected(String reply, List<String> rejected) {
+        if (reply == null || rejected == null || rejected.isEmpty()) return reply;
+        Set<String> rejectedSet = new LinkedHashSet<>(rejected);
+        List<int[]> spans = new ArrayList<>();
+        Matcher matcher = SENTENCE.matcher(reply);
+        while (matcher.find()) {
+            if (rejectedSet.contains(matcher.group().trim())) {
+                spans.add(new int[] {matcher.start(), matcher.end()});
+            }
+        }
+        return spans.isEmpty() ? reply : TextRanges.delete(reply, spans);
+    }
+
+    /**
+     * 将语义审核器确认的证据编号补到对应事实句；若原句已有编号则替换，
+     * 防止“已有错误引用所以不再修复”。
+     */
+    public static String repairCitations(String reply, Map<String, List<Integer>> repairs) {
+        return repairCitations(reply, repairs, List.of());
+    }
+
+    /** 最终出口的引用修复：带单位数字优先按证据正文重新定位，避免模型编号回流。 */
+    public static String repairCitations(String reply, Map<String, List<Integer>> repairs,
+                                         List<DocumentChunk> evidence) {
+        if (reply == null || repairs == null || repairs.isEmpty()) {
+            return reply;
+        }
+        Matcher matcher = SENTENCE.matcher(reply);
+        StringBuffer output = new StringBuffer();
+        while (matcher.find()) {
+            String sentence = matcher.group();
+            int bodyEnd = sentence.length();
+            while (bodyEnd > 0 && (Character.isWhitespace(sentence.charAt(bodyEnd - 1))
+                    || "。！？!?；;".indexOf(sentence.charAt(bodyEnd - 1)) >= 0)) {
+                bodyEnd--;
+            }
+            String ending = sentence.substring(bodyEnd);
+            String body = sentence.substring(0, bodyEnd);
+            List<Integer> refs = repairs.get(sentence.trim());
+            String replacement = sentence;
+            if (refs != null && !refs.isEmpty()) {
+                replacement = EMPTY_CITATION_WRAPPER.matcher(
+                                CITATION.matcher(body).replaceAll("")).replaceAll("")
+                        .stripTrailing() + " "
+                        + refs.stream().distinct().map(ref -> "[" + ref + "]")
+                        .collect(java.util.stream.Collectors.joining()) + ending;
+            }
+            matcher.appendReplacement(output, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(output);
+        return output.toString();
+    }
+
 
     /** 把已判定越界的编号 token 从句子文本里去掉；没命中就原样返回 */
     private static String without(String sentence, Set<String> outOfRange) {
@@ -612,10 +676,21 @@ public final class CitationVerifier {
         if (trimmed.codePointCount(0, trimmed.length()) < FACT_MIN_LENGTH) {
             return false;
         }
+        if (!containsConcreteClaim(trimmed) && trimmed.matches(".*(请咨询|咨询医生|咨询医师|咨询药师|遵医嘱|不要自行调整|及时就医|告诉我订单号|联系客服|人工客服|"
+                + "不能代替医嘱|不能代替药物|不能替代|不能替你|平台不能|没有收录|没有查到|暂时没有|不等于没有|"
+                + "以商品页|商品详情页|处方药|可以告诉我|方便告诉我|需要的话|如需|更关心).*")) {
+            return false;
+        }
         if (ECHO_LEAD.matcher(trimmed).find() || ABSENCE_SIGNAL.matcher(trimmed).find()) {
             return false;
         }
         return FACT_SIGNAL.matcher(trimmed).find();
+    }
+
+    static boolean containsConcreteClaim(String sentence) {
+        return MEASURED_NUMBER.matcher(sentence).find()
+                || Pattern.compile("增加.*风险|降低.*吸收|影响.*吸收|禁用|每片含|每粒含|支持.*退货|运费.*承担")
+                .matcher(sentence).find();
     }
 
     /**

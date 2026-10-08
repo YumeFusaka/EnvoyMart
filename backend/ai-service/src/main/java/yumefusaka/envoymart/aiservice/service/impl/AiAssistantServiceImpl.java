@@ -21,6 +21,7 @@ import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.contract.ProductSummary;
 import yumefusaka.envoymart.aiservice.model.ToolCallResponse;
 import yumefusaka.envoymart.aiservice.service.AiAssistantService;
+import yumefusaka.envoymart.aiservice.service.CommerceCardAssembler;
 import yumefusaka.envoymart.common.web.RequestId;
 
 import java.util.List;
@@ -40,13 +41,15 @@ public class AiAssistantServiceImpl implements AiAssistantService {
     private final ModelPricing pricing;
     private final ChatHistoryStore history;
     private final ChatIdempotencyStore idempotency;
+    private final CommerceCardAssembler commerceCards;
 
     public AiAssistantServiceImpl(Agent agent, ModelPricing pricing, ChatHistoryStore history,
-                                 ChatIdempotencyStore idempotency) {
+                                 ChatIdempotencyStore idempotency, CommerceCardAssembler commerceCards) {
         this.agent = agent;
         this.pricing = pricing;
         this.history = history;
         this.idempotency = idempotency;
+        this.commerceCards = commerceCards;
     }
 
     /**
@@ -78,6 +81,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         }
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
+            claimApproval(userId, request);
             ChatResponse response = toChatResponse(request, agent.chat(
                     userId, request.getSessionId(), request.getMessage(), request.getApprovalToken()), ledger);
             recordTurn(userId, request, response);
@@ -108,6 +112,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         }
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
+            claimApproval(userId, request);
             // 旁录一份已交付文本。正常收尾时它与 response.getReply() 相同（甚至更短——
             // done 帧要过后置校验，剔除过的句子不出现在 reply 里）；被取消时它是唯一的
             // 「用户看到过什么」的记录。历史必须与屏幕一致：用户按停止后回看，
@@ -159,10 +164,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
      * 记的是<b>校验之后</b>的最终答复：带引用的句子被剔除过的那一版才是用户看到的，
      * 历史要和它对上。
      * <p>
-     * <b>确认令牌不落历史。</b>它是一张写明「执行哪几次调用」的签名凭证，靠会话归属和
-     * 十分钟有效期兜底；而历史在 Redis 里存得更久，且每次拉会话都会随 `response` 原样回给
-     * 客户端。界面本来就不恢复确认卡片（过期卡片点不动），把它留在历史里就是一份
-     * 白白多躺十天的凭证。卡片文案照旧保留：用户回看时该看到「当时问过他要不要确认」。
+     * 确认内容与绑定用户、会话、动作和有效期的签名一起保存，恢复会话后仍由服务端验签。
      */
     private void recordTurn(String userId, ChatRequest request, ChatResponse response) {
         // 重新生成：用户重问的是「刚才那条」，会话里不该出现第二条用户消息——
@@ -170,11 +172,18 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         // 重复的问答，点三次侧栏里就挂着一串一模一样的提问
         if (request.isRegenerate()) {
             history.recordAnswer(userId, request.getSessionId(),
-                    response.getReply(), response.toBuilder().approvalToken(null).build());
+                    response.getReply(), response);
             return;
         }
         history.recordTurn(userId, request.getSessionId(), request.getMessage(),
-                response.getReply(), response.toBuilder().approvalToken(null).build());
+                response.getReply(), response);
+    }
+
+    private void claimApproval(String userId, ChatRequest request) {
+        if (request.getApprovalToken() != null && !request.getApprovalToken().isBlank()
+                && !history.claimApproval(userId, request.getSessionId(), request.getApprovalToken())) {
+            throw new IllegalStateException("这次确认已提交、取消或被新消息替代，没有重复执行任何操作");
+        }
     }
 
     private ChatResponse toChatResponse(ChatRequest request, Agent.AgentResponse agentResp,
@@ -195,7 +204,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .recommendedProducts(extractProducts(executions, agentResp.getReply()))
                 .pendingPayments(extractPayments(executions))
                 .pendingActions(agentResp.getPendingActions())
-                .pendingActionDetails(agentResp.getPendingActionDetails())
+                .pendingActionDetails(commerceCards.approvalDetails(agentResp.getPendingActionDetails()))
                 .approvalToken(agentResp.getApprovalToken())
                 .evidenceLevel(agentResp.getEvidenceLevel())
                 // 阶段用 name() 而不是 toString()：枚举名是稳定契约，toString 可能被人
@@ -205,6 +214,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 // 契约字段名是这条链的稳定面，直接序列化 record 会让一次字段重命名
                 // 静默改掉前端读到的东西（Jackson 不会报错，只会换个 key）
                 .taskState(taskStateOf(agentResp.getTaskState()))
+                .loops(agentResp.getLoops())
                 .unsupportedClaims(agentResp.getUnsupportedClaims())
                 .unsupportedStripped(agentResp.isUnsupportedStripped())
                 .ungrounded(agentResp.isUngrounded())
@@ -355,7 +365,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                     .anyMatch(p -> p.orderNo().equals(order.getOrderNo()));
             if (!duplicated) {
                 payments.add(new PendingPayment(order.getId(), order.getOrderNo(), order.getPayAmount(),
-                        order.getExpireAt() == null ? null : order.getExpireAt().toString()));
+                        order.getExpireAt() == null ? null : order.getExpireAt().toString(), order.getItems()));
             }
         }
         return List.copyOf(payments);

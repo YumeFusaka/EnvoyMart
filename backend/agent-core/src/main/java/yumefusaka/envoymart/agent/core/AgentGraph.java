@@ -61,6 +61,7 @@ import java.util.function.Consumer;
  */
 @Slf4j
 public class AgentGraph {
+    public static final String GENERATION_FAILED_REPLY = "抱歉，智能助手暂时不可用，请稍后再试。";
 
     /**
      * 单个步骤的执行上限。
@@ -477,6 +478,27 @@ public class AgentGraph {
             // 如果先出卡片再解析，用户看到的是 "skuId=$0.skuId" 这种模板串——他就不知道
             // 自己到底在批准什么，而那正是确认卡片存在的全部意义
             List<PlanStep> resolved = resolveBatch(plan, ready, ctx);
+            // 模型偶尔漏填 dependsOn，导致 product_search 与 cart_add 同时进入 ready。
+            // 高危动作不能在引用仍是 $0.skuId 时生成确认卡：先执行本批非高危准备步骤，
+            // 下一轮重新解析引用，确认卡拿到的才是真实 SKU。
+            List<Integer> unresolvedRisky = ready.stream()
+                    .filter(index -> requiresConfirmation(resolved.get(index)))
+                    .filter(index -> hasUnresolvedReference(resolved.get(index).getArguments()))
+                    .toList();
+            if (!unresolvedRisky.isEmpty()) {
+                List<Integer> preparation = ready.stream()
+                        .filter(index -> !requiresConfirmation(resolved.get(index)))
+                        .toList();
+                if (preparation.isEmpty()) {
+                    log.warn("[Graph] 高危步骤引用无法解析，拒绝生成确认卡 tools={}",
+                            unresolvedRisky.stream().map(index -> resolved.get(index).getTool()).toList());
+                    return List.of();
+                }
+                invokeBatch(resolved, preparation, round, ctx, steps);
+                preparation.forEach(index -> done[index] = true);
+                finished += preparation.size();
+                continue;
+            }
             // <b>只拦本批。</b>曾经这里扫的是整份计划，于是「先 product_search 再 cart_add」
             // 这种两步计划在第一批就被整个拦下——第一步还没跑，加购卡片的参数自然是
             // 没解析的引用串，而且检索那一步永远没机会执行。用户看到的是一张参数是
@@ -543,6 +565,20 @@ public class AgentGraph {
         return resolved;
     }
 
+    /** 递归检查参数中是否仍残留未解析的步骤引用。 */
+    private static boolean hasUnresolvedReference(Object value) {
+        if (value instanceof String text) {
+            return STEP_REF.matcher(text).find();
+        }
+        if (value instanceof List<?> list) {
+            return list.stream().anyMatch(AgentGraph::hasUnresolvedReference);
+        }
+        if (value instanceof Map<?, ?> map) {
+            return map.values().stream().anyMatch(AgentGraph::hasUnresolvedReference);
+        }
+        return false;
+    }
+
     /**
      * 递归解析一个参数值里的引用。嵌套结构也要走：模型完全可能把列表或对象
      * 当作参数值（例如 {@code items:[{"skuId":"$0.skuId"}]}），只处理顶层字符串
@@ -571,7 +607,7 @@ public class AgentGraph {
 
     /** 引用语法：{@code $N.field}（N 是更早步骤的序号） */
     private static final java.util.regex.Pattern STEP_REF =
-            java.util.regex.Pattern.compile("\\$(\\d+)\\.([A-Za-z_][A-Za-z0-9_]*)");
+            java.util.regex.Pattern.compile("\\$(\\d+)(?:\\[(\\d+)])?\\.([A-Za-z_][A-Za-z0-9_]*)");
 
     /**
      * 把整串就是一个引用的值换成<b>它原本的类型</b>，而不是拼成字符串。
@@ -583,7 +619,7 @@ public class AgentGraph {
     private Object resolveString(String text, GraphContext ctx, int currentIndex) {
         java.util.regex.Matcher whole = STEP_REF.matcher(text);
         if (whole.matches()) {
-            return lookup(ctx, Integer.parseInt(whole.group(1)), whole.group(2), text, currentIndex);
+            return lookup(ctx, Integer.parseInt(whole.group(1)), indexOf(whole), whole.group(3), text, currentIndex);
         }
         // 混合文本（如 "订单 $0.orderNo 的物流"）：逐段替换，得到的仍是字符串
         StringBuilder sb = new StringBuilder();
@@ -593,7 +629,7 @@ public class AgentGraph {
         while (m.find()) {
             any = true;
             sb.append(text, last, m.start());
-            Object value = lookup(ctx, Integer.parseInt(m.group(1)), m.group(2), m.group(), currentIndex);
+            Object value = lookup(ctx, Integer.parseInt(m.group(1)), indexOf(m), m.group(3), m.group(), currentIndex);
             sb.append(value);
             last = m.end();
         }
@@ -608,7 +644,12 @@ public class AgentGraph {
      * 取值。取不到时<b>返回原串</b>（并记一条日志）而不是 null 或空串——
      * 让工具带着那串没解析出来的文本失败，比带着一个「参数存在但是空」的谜面失败好排查。
      */
-    private Object lookup(GraphContext ctx, int stepIndex, String field, String raw, int currentIndex) {
+    private static int indexOf(java.util.regex.Matcher matcher) {
+        return matcher.group(2) == null ? -1 : Integer.parseInt(matcher.group(2));
+    }
+
+    private Object lookup(GraphContext ctx, int stepIndex, int itemIndex,
+                          String field, String raw, int currentIndex) {
         if (stepIndex >= currentIndex) {
             log.warn("[Graph] 步骤 {} 引用了不早于自己的步骤 {}（{}），保持原样", currentIndex, stepIndex, raw);
             return raw;
@@ -618,7 +659,7 @@ public class AgentGraph {
             log.warn("[Graph] 步骤 {} 引用的 {} 无可取值（第 {} 步没有成功输出）", currentIndex, raw, stepIndex);
             return raw;
         }
-        Object value = readField(source, field);
+        Object value = readField(source, itemIndex, field);
         if (value == null) {
             log.warn("[Graph] 步骤 {} 引用的字段 {}.{} 不存在", currentIndex, stepIndex, field);
             return raw;
@@ -633,12 +674,11 @@ public class AgentGraph {
      * 要求每个业务 DTO 知道 agent-core 的存在会把依赖方向搞反。读的是 getter
      * （{@code getXxx}/{@code isXxx}）与 record 的访问器，两者覆盖了本项目全部 DTO 形态。
      */
-    private static Object readField(Object source, String field) {
-        // 列表：取第一个元素。检索类工具天然返回一串结果，而「把第一个加入购物车」
-        // 这种请求指向的就是第一条——模型写 $0.skuId 时心里想的也是「第一条的那个字段」。
-        // 不这么处理的话，列表上永远取不到标量字段，引用只能原样失败。
+    private static Object readField(Object source, int itemIndex, String field) {
+        // 未带下标时保持兼容，取第一个元素；带下标时精确指向检索结果中的某个商品。
         if (source instanceof List<?> list) {
-            return list.isEmpty() ? null : readField(list.get(0), field);
+            int index = itemIndex < 0 ? 0 : itemIndex;
+            return index < list.size() ? readField(list.get(index), -1, field) : null;
         }
         if (source instanceof Map<?, ?> map) {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
@@ -767,6 +807,7 @@ public class AgentGraph {
                 .noData(result.isNoData())
                 .latencyMs(result.getLatencyMs())
                 .rawData(result.getRawData())
+                .evidence(result.getEvidence())
                 .facts(result.getFacts())
                 .entities(result.getEntities())
                 .build());
@@ -1032,7 +1073,7 @@ public class AgentGraph {
             throw e;
         } catch (Exception e) {
             log.error("[Graph] answer generation failed", e);
-            return "抱歉，智能助手暂时不可用，请稍后再试。";
+            return GENERATION_FAILED_REPLY;
         }
     }
 

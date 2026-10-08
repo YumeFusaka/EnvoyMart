@@ -34,7 +34,15 @@ public class RetrievalEvaluator {
      * {@code hitRank} 为 0 表示未命中；{@code ndcg} 是该条自己的得分。
      */
     public record CaseOutcome(String query, List<String> relevantDocIds, List<String> retrievedDocIds,
-                              boolean hit, int hitRank, double ndcg) {
+                              boolean hit, int hitRank, double ndcg, boolean graphEvidenceHit,
+                              RetrievalOutcome.RetrievalTrace trace,
+                              QueryExpansions expansions,
+                              List<DocumentChunk> evidence) {
+        public CaseOutcome(String query, List<String> relevantDocIds, List<String> retrievedDocIds,
+                           boolean hit, int hitRank, double ndcg, boolean graphEvidenceHit) {
+            this(query, relevantDocIds, retrievedDocIds, hit, hitRank, ndcg, graphEvidenceHit,
+                    null, QueryExpansions.none(), List.of());
+        }
     }
 
     /**
@@ -49,13 +57,21 @@ public class RetrievalEvaluator {
             // 不去重会让 DCG 把同一篇相关文档数两遍（NDCG 可以 >1），也会把
             // 「命中排位」算歪——一篇文档命中 3 次并不等于它排得更靠前。
             // 保序去重（首次出现为准），因为排位问的是「第一次出现在第几名」。
-            List<String> retrieved = retriever.retrieve(evalCase.query(), topK).stream()
+            RetrievalOutcome retrieval = retriever.retrieveWithOutcome(evalCase.query(), topK);
+            List<DocumentChunk> chunks = retrieval.chunks();
+            List<String> retrieved = chunks.stream()
                     .map(DocumentChunk::getDocId)
                     .distinct()
                     .toList();
             int rank = hitRank(evalCase, retrieved);
             outcomes.add(new CaseOutcome(evalCase.query(), evalCase.relevantDocIds(), retrieved,
-                    rank > 0, rank, ndcg(evalCase, retrieved, topK)));
+                    rank > 0, rank, ndcg(evalCase, retrieved, topK),
+                    retrieval.chunks().stream()
+                            .filter(chunk -> Boolean.TRUE.equals(chunk.getGraphBacked()))
+                            .map(DocumentChunk::getDocId)
+                            .anyMatch(evalCase.relevantDocIds()::contains),
+                    retrieval.trace(), retrieval.expansions(),
+                    retrieval.chunks().stream().map(chunk -> chunk.toBuilder().embedding(null).indexText(null).build()).toList()));
         }
         return outcomes;
     }

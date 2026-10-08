@@ -31,6 +31,7 @@ public class ToolExecution implements java.io.Serializable {
     private long latencyMs;
     /** 结构化结果，便于上层做二次加工（如抽取推荐商品） */
     private Object rawData;
+    private java.util.List<yumefusaka.envoymart.agent.rag.DocumentChunk> evidence;
     /**
      * 这次调用<b>确立的业务事实</b>，形如 {@code 状态 → 已支付}、{@code 应付金额 → ¥128.00}。
      * <p>

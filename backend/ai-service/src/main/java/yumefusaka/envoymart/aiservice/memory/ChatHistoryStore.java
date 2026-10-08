@@ -285,6 +285,49 @@ public class ChatHistoryStore {
         return items;
     }
 
+    public boolean dismissApproval(String userId, String sessionId, String messageId) {
+        String key = histKey(userId, sessionId);
+        List<String> records = redis.opsForList().range(key, 0, MAX_MESSAGES - 1L);
+        if (records == null) return false;
+        for (String raw : records) {
+            StoredMessage message = objectMapper.readValue(raw, StoredMessage.class);
+            if (!message.id().equals(messageId) || message.response() == null
+                    || !"assistant".equals(message.role())) continue;
+            Map<String, Object> response = new java.util.LinkedHashMap<>(message.response());
+            if ("CONFIRMED".equals(response.get("approvalStatus"))) return false;
+            if (!(response.get("pendingActions") instanceof List<?> actions) || actions.isEmpty()) return false;
+            response.remove("approvalToken");
+            response.put("approvalStatus", "DISMISSED");
+            response.put("stage", "DONE");
+            response.put("reply", "已取消，本次没有执行任何操作。");
+            StoredMessage updated = new StoredMessage(message.id(), message.role(),
+                    "已取消，本次没有执行任何操作。", message.at(), response);
+            var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
+                    "if redis.call('LINDEX',KEYS[1],0)~=ARGV[1] then return 0 end; "
+                            + "redis.call('LSET',KEYS[1],0,ARGV[2]); return 1", Long.class);
+            return Long.valueOf(1).equals(redis.execute(script, List.of(key), raw, serialize(updated)));
+        }
+        return false;
+    }
+
+    public boolean claimApproval(String userId, String sessionId, String token) {
+        String key = histKey(userId, sessionId);
+        String raw = redis.opsForList().index(key, 0);
+        if (raw == null) return false;
+        StoredMessage message = objectMapper.readValue(raw, StoredMessage.class);
+        if (!"assistant".equals(message.role()) || message.response() == null
+                || !token.equals(message.response().get("approvalToken"))) return false;
+        Map<String, Object> response = new java.util.LinkedHashMap<>(message.response());
+        response.remove("approvalToken");
+        response.put("approvalStatus", "CONFIRMED");
+        response.put("stage", "DONE");
+        StoredMessage claimed = new StoredMessage(message.id(), message.role(), message.content(), message.at(), response);
+        var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
+                "if redis.call('LINDEX',KEYS[1],0)~=ARGV[1] then return 0 end; "
+                        + "redis.call('LSET',KEYS[1],0,ARGV[2]); return 1", Long.class);
+        return Long.valueOf(1).equals(redis.execute(script, List.of(key), raw, serialize(claimed)));
+    }
+
     /**
      * 删除会话（历史 + 元数据 + 索引项），并立一块短命的「墓碑」。
      * <p>

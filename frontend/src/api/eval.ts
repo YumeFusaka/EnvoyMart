@@ -1,4 +1,5 @@
 import request from '@/utils/axios'
+import type { KnowledgeSnippet } from '@/types/models'
 
 // 回答质量评测：只展示真实 Agent 链路生成的快照。
 
@@ -38,6 +39,7 @@ export interface GroundingCaseOutcome {
   refusalCorrect: boolean
   multiHopHit: boolean
   citations: CitationCheck[]
+  rootCause: string
 }
 
 /** 四项指标。每项都带分母 —— 比例单看时读不出「3 条全对」还是「300 条全对」 */
@@ -60,6 +62,7 @@ export interface GroundingMetrics {
 }
 
 export interface GroundingLiveCase {
+  evidence?: KnowledgeSnippet[]
   /** 问题原文 */
   question: string
   /** 单条失败时为 null（失败原因在 error 里） */
@@ -68,11 +71,25 @@ export interface GroundingLiveCase {
   evidenceCount: number
   latencyMs: number
   error: string | null
+  retrievalQuery?: string | null
+  expansion?: QueryExpansions | null
+  toolExecutions?: ToolExecution[]
+  retrievalTrace?: RetrievalTrace | null
+}
+
+export interface ToolExecution {
+  tool: string
+  input?: string
+  output?: string
+  success: boolean
+  noData: boolean
+  latencyMs: number
+  evidence?: KnowledgeSnippet[]
 }
 
 /** 线上真跑：拿同一批问题重新问一遍当前 Agent。异步 + 单飞，前端轮询进度 */
 export interface GroundingLiveRun {
-  status: 'IDLE' | 'RUNNING' | 'COMPLETED'
+  status: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED'
   startedAt: string | null
   finishedAt: string | null
   totalCases: number
@@ -85,6 +102,8 @@ export interface GroundingLiveRun {
   /** 只有全部跑完才有值：中途的指标是"越跑越像"的假数字 */
   metrics: GroundingMetrics | null
   cases: GroundingLiveCase[]
+  promptVersion?: string
+  pipelineVersion?: string
 }
 
 /** 回答质量报告只返回真实链路快照。 */
@@ -130,7 +149,34 @@ export interface ProductionRetrievalCase {
   retrievedDocIds: string[]
   hit: boolean
   hitRank: number
+  graphRequired: boolean
+  graphEvidenceHit: boolean
   retrievedTitles: Record<string, string>
+  trace?: RetrievalTrace | null
+  expansions?: QueryExpansions | null
+  evidence?: KnowledgeSnippet[]
+}
+
+export interface RetrievalTrace {
+  query: string
+  vectorCandidates: number
+  keywordCandidates: number
+  graphCandidates: number
+  fusedCandidates: number
+  rerankedCandidates: number
+  rerankQuery: string
+  rerankApplied: boolean
+}
+
+export interface QueryExpansions {
+  hypothetical?: string | null
+  angles: string[]
+}
+
+export interface GraphPathMetrics {
+  requiredCases: number
+  hitCases: number
+  hitRate: number
 }
 
 /**
@@ -149,6 +195,7 @@ export interface ProductionRetrievalReport {
   overall: ProductionRetrievalMetrics
   strata: ProductionRetrievalStratum[]
   cases: ProductionRetrievalCase[]
+  graphPath: GraphPathMetrics
   error: string | null
 }
 

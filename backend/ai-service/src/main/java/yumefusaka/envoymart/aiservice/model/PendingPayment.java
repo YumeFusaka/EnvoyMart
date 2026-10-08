@@ -1,9 +1,13 @@
 package yumefusaka.envoymart.aiservice.model;
 
+import yumefusaka.envoymart.contract.OrderItemResponse;
+
+import java.util.List;
+
 /**
- * 待支付订单 —— 支付卡片的最小数据面。
+ * 待支付订单与下单时的商品快照。
  * <p>
- * 每个字段都有明确读者，多一个都不加：
+ * 卡片同时支持核对订单与商品明细：
  * <ul>
  *   <li>{@code orderId} —— <b>跳转参数</b>。收银台（{@code /payment?orderId=…}）
  *       认的是订单主键，不是订单号；两者都下发是因为它们服务不同的人：</li>
@@ -20,6 +24,11 @@ package yumefusaka.envoymart.aiservice.model;
  * @param payAmount 应付金额（分）。用分而不是元：中间任何一步换成浮点都可能丢掉一分钱
  * @param expireAt  支付截止时间（ISO-8601 字符串）。订单服务没给时为 null ——
  *                  卡片就不显示倒计时，不编一个
+ * @param items 下单时的商品名称、规格、数量与价格快照，不使用当前目录覆盖
  */
-public record PendingPayment(Long orderId, String orderNo, Long payAmount, String expireAt) {
+public record PendingPayment(Long orderId, String orderNo, Long payAmount, String expireAt,
+                             List<OrderItemResponse> items) {
+    public PendingPayment {
+        items = items == null ? List.of() : List.copyOf(items);
+    }
 }

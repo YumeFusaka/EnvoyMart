@@ -162,7 +162,7 @@ public class ProductionRetrievalEvalService {
         return new Report("RUNNING", TRIGGER_MANUAL, null, 0,
                 new Corpus(documents, total, TOP_K), PIPELINE,
                 toMetrics(RetrievalEvaluator.summarize(soFar, TOP_K)),
-                strata(soFar, stratumOf), cases(soFar, stratumOf, titlesById), null);
+                strata(soFar, stratumOf), cases(soFar, stratumOf, titlesById), graphMetrics(soFar), null);
     }
 
     private Report finish(List<RetrievalEvaluator.CaseOutcome> outcomes,
@@ -171,7 +171,18 @@ public class ProductionRetrievalEvalService {
         return new Report("COMPLETED", TRIGGER_MANUAL, OffsetDateTime.now().toString(), durationMs,
                 new Corpus(corpus.documents().size(), total, TOP_K), PIPELINE,
                 toMetrics(RetrievalEvaluator.summarize(outcomes, TOP_K)),
-                strata(outcomes, stratumOf), cases(outcomes, stratumOf, titlesById), null);
+                strata(outcomes, stratumOf), cases(outcomes, stratumOf, titlesById), graphMetrics(outcomes), null);
+    }
+
+    private static GraphPathMetrics graphMetrics(List<RetrievalEvaluator.CaseOutcome> outcomes) {
+        List<ProductionRetrievalFixtures.Case> graphCases = ProductionRetrievalFixtures.allCases().stream()
+                .filter(ProductionRetrievalFixtures.Case::graphRequired).toList();
+        Map<String, Boolean> hitByQuery = outcomes.stream().collect(java.util.stream.Collectors.toMap(
+                RetrievalEvaluator.CaseOutcome::query, RetrievalEvaluator.CaseOutcome::graphEvidenceHit,
+                (first, ignored) -> first));
+        int completed = (int) graphCases.stream().filter(c -> hitByQuery.containsKey(c.query())).count();
+        int hits = (int) graphCases.stream().filter(c -> Boolean.TRUE.equals(hitByQuery.get(c.query()))).count();
+        return new GraphPathMetrics(completed, hits, completed == 0 ? 0 : (double) hits / completed);
     }
 
     private List<StratumReport> strata(List<RetrievalEvaluator.CaseOutcome> outcomes,
@@ -192,9 +203,12 @@ public class ProductionRetrievalEvalService {
                                    Map<String, Map<String, String>> titlesById) {
         List<CaseReport> reports = new ArrayList<>(outcomes.size());
         for (RetrievalEvaluator.CaseOutcome o : outcomes) {
+            ProductionRetrievalFixtures.Case fixture = ProductionRetrievalFixtures.allCases().stream()
+                    .filter(candidate -> candidate.query().equals(o.query())).findFirst().orElseThrow();
             reports.add(new CaseReport(o.query(), stratumOf.get(o.query()).key(),
                     o.relevantDocIds(), o.retrievedDocIds(), o.hit(), o.hitRank(),
-                    titlesById.getOrDefault(o.query(), Map.of())));
+                    fixture.graphRequired(), o.graphEvidenceHit(),
+                    titlesById.getOrDefault(o.query(), Map.of()), o.trace(), o.expansions(), o.evidence()));
         }
         return reports;
     }
@@ -240,7 +254,14 @@ public class ProductionRetrievalEvalService {
 
     public record CaseReport(String query, String stratum, List<String> relevantDocIds,
                              List<String> retrievedDocIds, boolean hit, int hitRank,
-                             Map<String, String> retrievedTitles) {
+                             boolean graphRequired, boolean graphEvidenceHit,
+                             Map<String, String> retrievedTitles,
+                             yumefusaka.envoymart.agent.rag.RetrievalOutcome.RetrievalTrace trace,
+                             yumefusaka.envoymart.agent.rag.QueryExpansions expansions,
+                             List<yumefusaka.envoymart.agent.rag.DocumentChunk> evidence) {
+    }
+
+    public record GraphPathMetrics(int requiredCases, int hitCases, double hitRate) {
     }
 
     /**
@@ -253,7 +274,8 @@ public class ProductionRetrievalEvalService {
      */
     public record Report(String status, String trigger, String generatedAt, long durationMs,
                          Corpus corpus, String pipeline, Metrics overall,
-                         List<StratumReport> strata, List<CaseReport> cases, String error) {
+                         List<StratumReport> strata, List<CaseReport> cases,
+                         GraphPathMetrics graphPath, String error) {
 
         public boolean available() {
             return "COMPLETED".equals(status);
@@ -262,19 +284,19 @@ public class ProductionRetrievalEvalService {
         static Report never() {
             return new Report("NEVER", null, null, 0,
                     new Corpus(0, ProductionRetrievalFixtures.allCases().size(), TOP_K), PIPELINE,
-                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), null);
+                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), null);
         }
 
         static Report running(int totalCases, int documents) {
             return new Report("RUNNING", TRIGGER_MANUAL, null, 0,
                     new Corpus(documents, totalCases, TOP_K), PIPELINE,
-                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), null);
+                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), null);
         }
 
         static Report failed(String error, int totalCases, int documents) {
             return new Report("FAILED", TRIGGER_MANUAL, OffsetDateTime.now().toString(), 0,
                     new Corpus(documents, totalCases, TOP_K), PIPELINE,
-                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), error);
+                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), error);
         }
     }
 }

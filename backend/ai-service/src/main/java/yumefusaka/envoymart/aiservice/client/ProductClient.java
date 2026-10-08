@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import yumefusaka.envoymart.contract.ProductDetail;
 import yumefusaka.envoymart.contract.ProductSummary;
+import yumefusaka.envoymart.contract.SkuSnapshot;
 import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 
@@ -13,6 +14,9 @@ import java.util.List;
 
 @FeignClient(name = "product-service", url = "${services.product-service-url:http://127.0.0.1:9002}")
 public interface ProductClient {
+
+    @GetMapping("/products/skus")
+    Result<List<SkuSnapshot>> skus(@RequestParam("ids") List<Long> ids);
 
     /**
      * 商品详情 —— SPU 摘要 + <b>全部 SKU（含规格编号）</b>。

@@ -111,11 +111,13 @@ echo "使用 JDK: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1)"
 # NoClassDefFoundError（已加载的不受影响）——症状是「服务重启后好好的，过一会儿某个
 # 接口突然 500」。所以：只要重新 install 了库模块，就要把依赖它的服务一并重启，
 # 不要留着旧进程继续跑。
-echo "同步库模块到本地仓库（改了 contract / common / agent-core 后必须走这一步）..."
-mvn -q -B install -DskipTests -pl contract,common,agent-core || {
-  echo "库模块安装失败，终止启动" >&2
-  exit 1
-}
+if [ "${1:-all}" != "stop" ]; then
+  echo "同步库模块到本地仓库（改了 contract / common / agent-core 后必须走这一步）..."
+  mvn -q -B install -DskipTests -pl contract,common,agent-core || {
+    echo "库模块安装失败，终止启动" >&2
+    exit 1
+  }
+fi
 
 export DB_DRIVER="${DB_DRIVER:-com.mysql.cj.jdbc.Driver}"
 # 驱动是 MySQL 时额外执行 schema-mysql.sql 做幂等加列：
@@ -248,6 +250,18 @@ start_one() {
       return 1
     }
   fi
+  local runtime_dir="$HOME/.envoymart/runtime/$svc/$(date +%Y%m%d-%H%M%S)-$$" module jar classpath="" native_jar
+  mkdir -p "$runtime_dir"
+  for module in common contract agent-core; do
+    jar="$module/target/$module-0.1.0-SNAPSHOT.jar"
+    [ -f "$jar" ] || { echo "缺少共享库产物：$jar" >&2; return 1; }
+    cp "$jar" "$runtime_dir/"
+    native_jar=$(cygpath -w "$runtime_dir/$module-0.1.0-SNAPSHOT.jar" 2>/dev/null || echo "$runtime_dir/$module-0.1.0-SNAPSHOT.jar")
+    classpath="${classpath:+$classpath,}$native_jar"
+  done
+  agent_args+=(-Dspring-boot.excludeGroupIds=yumefusaka.envoymart
+    "-Dspring-boot.run.additional-classpath-elements=$classpath")
+  echo "共享库已隔离到进程快照：$runtime_dir"
   env "${extra[@]}" nohup mvn -q -pl "$svc" spring-boot:run "${agent_args[@]}" > "$LOG_DIR/$svc.log" 2>&1 &
   # disown 不是可选项：只写 nohup ... & 时，MSYS/Git Bash 会在脚本退出时
   # 回收整个作业组，服务随之被杀——而日志里只留下 Spring 正常关闭的样子，

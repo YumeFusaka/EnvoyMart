@@ -67,7 +67,26 @@ public final class GroundingEvaluator {
      */
     public record Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
                          List<String> mustMention, List<DocumentChunk> evidence, String answer,
-                         EvidenceGate.Level evidenceLevel, boolean toolEvidence) {
+                         EvidenceGate.Level evidenceLevel, boolean toolEvidence,
+                         List<String> semanticExemptions, boolean graphEvidence) {
+        public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
+                      List<String> mustMention, List<DocumentChunk> evidence, String answer,
+                      EvidenceGate.Level evidenceLevel, boolean toolEvidence) {
+            this(id, kind, expectRefuse, mustMention, evidence, answer, evidenceLevel,
+                    toolEvidence, List.of(), false);
+        }
+
+        public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
+                      List<String> mustMention, List<DocumentChunk> evidence, String answer,
+                      EvidenceGate.Level evidenceLevel, boolean toolEvidence,
+                      List<String> semanticExemptions) {
+            this(id, kind, expectRefuse, mustMention, evidence, answer, evidenceLevel,
+                    toolEvidence, semanticExemptions, false);
+        }
+
+        public Sample {
+            semanticExemptions = semanticExemptions == null ? List.of() : List.copyOf(semanticExemptions);
+        }
     }
 
     /**
@@ -126,7 +145,7 @@ public final class GroundingEvaluator {
                               int sentences, int factSentences, int unsupported, int checks,
                               int wrongCitations, int outOfRange, boolean gateRefused,
                               boolean refusalCorrect, boolean multiHopHit,
-                              List<CitationCheck> citations) {
+                              List<CitationCheck> citations, String rootCause) {
     }
 
     /**
@@ -197,29 +216,30 @@ public final class GroundingEvaluator {
         int outOfRange = countOutOfRange(answer, evidenceCount);
         boolean multiHopHit = sample.kind() == GroundingFixtures.Kind.MULTI_HOP
                 && anchorsMissingFromAnswer(sample).isEmpty()
-                && distinctCitedDocs(sample, evidenceCount, citableTitles) >= 2;
+                && (sample.graphEvidence()
+                || distinctCitedDocs(sample, evidenceCount, citableTitles) >= 2);
 
         // 不该答的用例只看一件事：门判得对不对。它答了什么不进另外三项的账——
         // 那些账的分母是"该答的题"，把拒答的产出混进来会两头失真
         if (!answerable) {
             return new CaseOutcome(sample.id(), sample.kind(), Mode.NOT_APPLICABLE, false,
                     verdict.sentences(), 0, 0, 0, 0, outOfRange, gateRefused, refusalCorrect,
-                    false, List.of());
+                    false, List.of(), rootCause(sample, gateRefused, 0, outOfRange));
         }
 
-        List<Integer> answerRefs = validRefs(answer, evidenceCount);
+        List<Integer> answerRefs = validRefs(answer, evidenceCount, sample, citableTitles);
         if (answerRefs.isEmpty()) {
             // 没有引用：区分「工具轮次」与「整篇无依据」——判据取自 CitationVerifier，
             // 两边对同一份回答给出同一个定性
             if (!verdict.ungrounded()) {
                 return new CaseOutcome(sample.id(), sample.kind(), Mode.NOT_APPLICABLE, true,
                         verdict.sentences(), 0, 0, 0, 0, outOfRange, gateRefused, refusalCorrect,
-                        multiHopHit, List.of());
+                        multiHopHit, List.of(), rootCause(sample, gateRefused, 0, outOfRange));
             }
             int facts = longSentenceCount(answer);
             return new CaseOutcome(sample.id(), sample.kind(), Mode.WHOLE_UNGROUNDED, true,
                     verdict.sentences(), facts, facts, 0, 0, outOfRange, gateRefused, refusalCorrect,
-                    multiHopHit, List.of());
+                    multiHopHit, List.of(), rootCause(sample, gateRefused, facts, outOfRange));
         }
 
         // 逐句判定
@@ -234,11 +254,14 @@ public final class GroundingEvaluator {
             List<String> sentences = sentencesOf(block);
             Set<Integer> blockRefs = new LinkedHashSet<>();
             for (String sentence : sentences) {
-                blockRefs.addAll(validRefs(sentence, evidenceCount));
+                blockRefs.addAll(validRefs(sentence, evidenceCount, sample, citableTitles));
             }
             for (String sentence : sentences) {
+                if (presentationOnly(sentence) || boundaryOnly(sentence)) {
+                    continue;
+                }
                 List<String> anchors = anchorsIn(sentence, sample.mustMention());
-                List<Integer> ownRefs = validRefs(sentence, evidenceCount);
+                List<Integer> ownRefs = validRefs(sentence, evidenceCount, sample, citableTitles);
                 if (!anchors.isEmpty() && !ownRefs.isEmpty()) {
                     boolean covered = covered(sample, ownRefs, anchors);
                     checks.add(new CitationCheck(sentence.trim(), anchors, ownRefs,
@@ -253,6 +276,10 @@ public final class GroundingEvaluator {
                     continue;
                 }
                 factSentences++;
+                if (sample.semanticExemptions().contains(sentence.trim())) {
+                    factSentences--;
+                    continue;
+                }
                 if (ownRefs.isEmpty()) {
                     // 自身没角标：看同块（列表/整段常共用一个角标）
                     if (blockRefs.isEmpty()) {
@@ -272,7 +299,36 @@ public final class GroundingEvaluator {
         return new CaseOutcome(sample.id(), sample.kind(), Mode.PER_SENTENCE, true,
                 verdict.sentences(), factSentences, unsupported, accuracyChecks,
                 accuracyWrong, outOfRange, gateRefused, refusalCorrect, multiHopHit,
-                List.copyOf(checks));
+                List.copyOf(checks), rootCause(sample, gateRefused, unsupported, outOfRange));
+    }
+
+    /** 小节标题、粗体标签和冒号引导句是排版结构，不是需要独立溯源的事实句。 */
+    private static boolean presentationOnly(String sentence) {
+        String text = sentence == null ? "" : sentence.trim();
+        return text.isEmpty()
+                || (text.startsWith("#") && !text.contains("。") && !text.contains("："))
+                || (text.startsWith("**") && text.endsWith("**"))
+                || text.endsWith("：") || text.endsWith(":");
+    }
+
+    private static boolean boundaryOnly(String sentence) {
+        String text = sentence == null ? "" : sentence.trim();
+        return !CitationVerifier.containsConcreteClaim(text) && text.matches(".*(请咨询|咨询医生|咨询医师|咨询药师|遵医嘱|不要自行调整|及时就医|"
+                + "不能代替医嘱|不能代替药物|不能替代|不能替你|平台不能|没有收录|没有查到|暂时没有|"
+                + "不等于没有|没有单列|没有直接收录|图谱里没有|知识库中没有|不能直接等同|仅供参考|"
+                + "以商品页|商品详情页|处方药|可以告诉我|方便告诉我|需要的话|如需|更关心).*" );
+    }
+
+    /** 评测失败的第一根因，供 bad case 汇总，不替代逐句判定。 */
+    private static String rootCause(Sample sample, boolean gateRefused, int unsupported, int outOfRange) {
+        if (outOfRange > 0) return "WRONG_CITATION";
+        if (sample.kind() == GroundingFixtures.Kind.MULTI_HOP && !gateRefused && unsupported > 0) {
+            return "GRAPH_PATH_OR_GROUNDING";
+        }
+        if (unsupported > 0) return "UNSUPPORTED_CLAIM";
+        if (gateRefused && !sample.expectRefuse()) return "OVER_REFUSAL";
+        if (!gateRefused && sample.expectRefuse()) return "MISSED_REFUSAL";
+        return "NONE";
     }
 
     /**
@@ -388,13 +444,22 @@ public final class GroundingEvaluator {
     }
 
     /** 文本中落在证据条数之内的引用编号，去重保序 */
-    private static List<Integer> validRefs(String text, int evidenceCount) {
+    private static List<Integer> validRefs(String text, int evidenceCount,
+                                           Sample sample, Set<String> citableTitles) {
         Set<Integer> refs = new LinkedHashSet<>();
         Matcher matcher = CITATION.matcher(text);
         while (matcher.find()) {
             int no = Integer.parseInt(matcher.group(1));
             if (no >= 1 && no <= evidenceCount) {
                 refs.add(no);
+            }
+        }
+        for (String title : titlesCitedIn(text, citableTitles)) {
+            for (int i = 0; i < sample.evidence().size(); i++) {
+                DocumentChunk chunk = sample.evidence().get(i);
+                if (chunk != null && title.equals(CitationVerifier.normalizeTitle(chunk.getTitle()))) {
+                    refs.add(i + 1);
+                }
             }
         }
         return List.copyOf(refs);

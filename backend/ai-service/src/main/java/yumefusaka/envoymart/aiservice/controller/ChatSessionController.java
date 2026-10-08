@@ -7,8 +7,10 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PostMapping;
 import yumefusaka.envoymart.agent.memory.ShortTermMemoryStore;
 import yumefusaka.envoymart.aiservice.memory.ChatHistoryStore;
+import yumefusaka.envoymart.aiservice.service.CommerceCardAssembler;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 
@@ -45,10 +47,13 @@ public class ChatSessionController {
 
     private final ChatHistoryStore history;
     private final ShortTermMemoryStore shortTermMemory;
+    private final CommerceCardAssembler commerceCards;
 
-    public ChatSessionController(ChatHistoryStore history, ShortTermMemoryStore shortTermMemory) {
+    public ChatSessionController(ChatHistoryStore history, ShortTermMemoryStore shortTermMemory,
+                                 CommerceCardAssembler commerceCards) {
         this.history = history;
         this.shortTermMemory = shortTermMemory;
+        this.commerceCards = commerceCards;
     }
 
     @GetMapping
@@ -64,7 +69,19 @@ public class ChatSessionController {
         if (!SESSION_ID.matcher(sessionId).matches()) {
             return Result.error(400, "会话标识不合法");
         }
-        return Result.success(history.loadMessages(userId, sessionId, MESSAGE_LIST_LIMIT));
+        return Result.success(commerceCards.history(userId,
+                history.loadMessages(userId, sessionId, MESSAGE_LIST_LIMIT)));
+    }
+
+    @PostMapping("/{sessionId}/messages/{messageId}/dismiss-approval")
+    public Result<Void> dismissApproval(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("sessionId") String sessionId, @PathVariable("messageId") String messageId) {
+        if (!SESSION_ID.matcher(sessionId).matches() || !SESSION_ID.matcher(messageId).matches()) {
+            return Result.error(400, "会话或消息标识不合法");
+        }
+        return history.dismissApproval(userId, sessionId, messageId)
+                ? Result.success() : Result.error(409, "待确认记录不存在或已经变化，请刷新会话");
     }
 
     /**

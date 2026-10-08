@@ -2,6 +2,7 @@
 import {
   chatStream,
   deleteSession,
+  dismissApproval,
   fetchSessionMessages,
   fetchSessions,
   type ChatSessionSummary,
@@ -108,11 +109,7 @@ async function refreshSessions() {
 /**
  * 把服务端历史摊回界面消息。当轮响应里的引用、工具轨迹、用量一并还原。
  * <p>
- * **唯独不还原待确认卡片**：确认卡表达的是一件事「此刻有一次高危操作在等你点头」。
- * 令牌虽然绑死了动作、且有效期十分钟，但把三天前那张卡照样恢复出来，用户点下去只会
- * 得到一句「这次确认已失效」——卡片还在、点不动，比没有这张卡更糟。所以确认卡只属于
- * 产生它的那一轮现场；重新发起会重新拦截、重新出卡。令牌的时效由服务端把关，
- * 这里只是不做那件注定失败的事。
+ * 确认内容也是历史的一部分；是否能执行仍由服务端校验签名、归属与有效期。
  */
 function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[number]): ChatMessage {
   const response = stored.response
@@ -127,6 +124,11 @@ function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[
       ? response.recommendedProducts
       : undefined,
     pendingPayments: response?.pendingPayments?.length ? response.pendingPayments : undefined,
+    pendingActions: response?.pendingActions ?? undefined,
+    pendingActionDetails: response?.pendingActionDetails ?? undefined,
+    approvalToken: response?.approvalToken ?? undefined,
+    approvalStatus: response?.approvalStatus ?? (response?.approvalToken ? 'PENDING' : 'HISTORY'),
+    stage: response?.stage,
     evidenceLevel: response?.evidenceLevel ?? undefined,
     retrievalQuery: response?.retrievalQuery ?? undefined,
     expansion: response?.expansion?.applied ? response.expansion : undefined,
@@ -159,6 +161,12 @@ async function selectSession(sessionId: string) {
     const stored = await fetchSessionMessages(sessionId)
     if (token !== loadToken) return
     messages.value = stored.map(toChatMessage)
+    for (let index = 0; index < messages.value.length; index++) {
+      const current = messages.value[index]
+      if (!current?.pendingActions?.length) continue
+      const following = messages.value.slice(index + 1).find((item) => item.role === 'user')
+      if (current.approvalStatus !== 'DISMISSED' && following && CONFIRM_PATTERN.test(following.content.trim())) current.approvalStatus = 'CONFIRMED'
+    }
     await scrollToBottom()
   } catch {
     if (token !== loadToken) return
@@ -553,8 +561,8 @@ function handleApprove() {
   const latest = messages.value[messages.value.length - 1]
   if (!latest?.approvalToken) return
   const token = latest.approvalToken
-  latest.pendingActions = undefined
   latest.approvalToken = undefined
+  latest.approvalStatus = 'CONFIRMED'
   void sendMessage('确认执行', token)
 }
 
@@ -565,11 +573,15 @@ function handleApprove() {
  * 但要把这条回复的正文改掉：它还写着「确认无误请点击确认执行」，
  * 而按钮已经没了。留着那句话，用户会以为是自己看漏了一个按钮。
  */
-function handleDismiss() {
+async function handleDismiss() {
   const latest = messages.value[messages.value.length - 1]
-  if (latest) {
-    latest.pendingActions = undefined
+  if (latest && activeSessionId.value) {
+    const records = await fetchSessionMessages(activeSessionId.value)
+    const record = records.at(-1)
+    if (!record?.response?.pendingActions?.length) return
+    await dismissApproval(activeSessionId.value, record.id)
     latest.approvalToken = undefined
+    latest.approvalStatus = 'DISMISSED'
     latest.content = '已取消，本次没有执行任何操作。'
   }
 }

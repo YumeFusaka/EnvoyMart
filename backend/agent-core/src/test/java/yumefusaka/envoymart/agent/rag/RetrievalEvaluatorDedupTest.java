@@ -55,4 +55,41 @@ class RetrievalEvaluatorDedupTest {
         assertThat(outcome.hit()).isTrue();
         assertThat(outcome.ndcg()).as("单文档、单命中，NDCG 应为 1").isEqualTo(1.0);
     }
+
+    @Test
+    void 图谱命中必须是最终结果中的相关图谱切片() {
+        Retriever textOnlyRelevant = new Retriever() {
+            @Override
+            public List<DocumentChunk> retrieve(String query, int topK) {
+                return List.of(chunk("A", "text-1"));
+            }
+
+            @Override
+            public RetrievalOutcome retrieveWithOutcome(String query, int topK) {
+                return new RetrievalOutcome(List.of(chunk("A", "text-1")),
+                        java.util.Set.of("graph-1"), true, QueryExpansions.none());
+            }
+        };
+        Retriever relevantGraph = new Retriever() {
+            @Override
+            public List<DocumentChunk> retrieve(String query, int topK) {
+                return List.of(chunk("A", "graph-1").toBuilder().graphBacked(true).build());
+            }
+
+            @Override
+            public RetrievalOutcome retrieveWithOutcome(String query, int topK) {
+                return new RetrievalOutcome(retrieve(query, topK), java.util.Set.of("graph-1"),
+                        true, QueryExpansions.none());
+            }
+        };
+        RetrievalEvaluator evaluator = new RetrievalEvaluator();
+        RetrievalEvaluator.EvalCase sample = new RetrievalEvaluator.EvalCase("q", List.of("A"));
+
+        assertThat(evaluator.evaluateEach(textOnlyRelevant, List.of(sample), 3).getFirst().graphEvidenceHit())
+                .as("图谱候选曾经进池，但最终命中由纯文本切片贡献，不算图谱命中")
+                .isFalse();
+        assertThat(evaluator.evaluateEach(relevantGraph, List.of(sample), 3).getFirst().graphEvidenceHit())
+                .as("最终相关切片明确来自图谱路才算图谱贡献")
+                .isTrue();
+    }
 }

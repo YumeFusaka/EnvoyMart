@@ -92,4 +92,22 @@ class ChatHistoryDeletionTest {
         // 墓碑照立：删除请求即使没删到东西，也不该让在飞的那一轮再写回来
         verify(valueOps).set(TOMBSTONE, "1", Duration.ofDays(7));
     }
+
+    @Test
+    void 已确认的记录不能取消() {
+        var message = new ChatHistoryStore.StoredMessage("a-test", "assistant", "请确认", java.time.Instant.now(),
+                java.util.Map.of("pendingActions", List.of("cart_add"), "approvalStatus", "CONFIRMED"));
+        when(redis.opsForList().range("chat:hist:" + USER + ":" + SESSION, 0, 199L))
+                .thenReturn(List.of(new ObjectMapper().writeValueAsString(message)));
+        assertThat(store.dismissApproval(USER, SESSION, "a-test")).isFalse();
+    }
+
+    @Test
+    void 已取消记录不再提供确认授权() {
+        var message = new ChatHistoryStore.StoredMessage("a-test", "assistant", "已取消", java.time.Instant.now(),
+                java.util.Map.of("pendingActions", List.of("cart_add"), "approvalStatus", "DISMISSED"));
+        when(redis.opsForList().index("chat:hist:" + USER + ":" + SESSION, 0))
+                .thenReturn(new ObjectMapper().writeValueAsString(message));
+        assertThat(store.claimApproval(USER, SESSION, "old-token")).isFalse();
+    }
 }

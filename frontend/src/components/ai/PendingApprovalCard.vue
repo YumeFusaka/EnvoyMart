@@ -1,36 +1,99 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { formatPrice } from '@/api/product'
 import { actionLabel, argEntries, toolLabel } from '@/utils/tools'
 import type { PendingActionDetail } from '@/types/models'
 
-defineProps<{
-  /** 服务端给的可读描述，形如 `order_cancel(orderId=12)`。结构化渲染失败时的兜底，永远保留 */
+const props = defineProps<{
   actions: string[]
-  /**
-   * 是否可操作。<b>只有最新一条消息上的卡片是真的</b>。
-   * <p>
-   * 确认动作会把「确认执行」当作一条新消息重发，服务端据此**重新规划**——
-   * 也就是说，确认的实际内容取决于当前对话上下文，而不是这张卡片当初列出的东西。
-   * 用户回滚到三条之前点一下「确认」，批准的可能完全是另一件事。
-   * 过期卡片因此只留记录、不留按钮。
-   */
   active: boolean
-  /**
-   * 结构化参数（`{ tool, arguments }`）。有它就把工具名与入参渲染成可读的键值行；
-   * 缺它、或遇到不认识的工具时，逐条退回 `actions` 的字符串原文——字符串版永远是兜底，
-   * 卡片不会因为渲染不出可读文案就少显示一个参数。
-   */
+  status?: string
   details?: PendingActionDetail[]
 }>()
 
-/**
- * 一条操作的可读渲染：`{ tool, arguments }` → 工具中文名 + 参数键值行。
- * <p>
- * **取值一律原样展示**：用户核对的是「要动的是哪一个对象」，翻译或截断取值等于替他改授权对象。
- * 这里只把键名换中文、把 `order_cancel(orderId=12)` 摆成「订单取消 · 订单号 12」。
- */
-function detailRows(detail: PendingActionDetail): [string, string][] {
-  return argEntries(detail.arguments)
+const actionable = computed(() => props.active && (!props.status || props.status === 'PENDING'))
+
+function text(value: unknown): string {
+  const result = typeof value === 'string' ? value.trim() : ''
+  return result === '[object Object]' ? '' : result
 }
+
+function integer(value: unknown): number | undefined {
+  const number = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : NaN
+  return Number.isSafeInteger(number) && number >= 0 ? number : undefined
+}
+
+function legacyCartDetail(action: string): PendingActionDetail | undefined {
+  if (!/^cart_add\s*(?:\(|$)/.test(action.trim())) {
+    return undefined
+  }
+  const input = /^cart_add\s*\(([\s\S]*)\)$/.exec(action.trim())?.[1] ?? ''
+  let arguments_: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(input)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      arguments_ = parsed as Record<string, unknown>
+    }
+  } catch {
+    for (const match of input.matchAll(/["']?(skuId|quantity)["']?\s*[:=]\s*(\d+)/g)) {
+      arguments_[match[1]!] = Number(match[2])
+    }
+  }
+  return { tool: 'cart_add', arguments: arguments_ }
+}
+
+function cartSummary(detail: PendingActionDetail) {
+  const args = detail.arguments ?? {}
+  const productName = text(args.productName)
+  const specification = typeof args.specification === 'string'
+    ? args.specification.trim() ? text(args.specification).replace(/^规格[:：]\s*/, '') : '单一规格'
+    : args.specification === null ? '单一规格' : ''
+  const quantity = integer(args.quantity)
+  const skuId = integer(args.skuId)
+  const unitPrice = integer(args.unitPrice)
+  const subtotal = integer(args.subtotal)
+  const missing = [
+    !productName ? '商品名称' : '',
+    !specification ? '规格' : '',
+    !quantity ? '数量' : '',
+    !skuId ? '商品规格标识' : '',
+    unitPrice === undefined ? '单价' : '',
+    subtotal === undefined ? '小计' : '',
+  ].filter(Boolean)
+  const rows: [string, string][] = [
+    ['规格', specification || '规格信息未提供'],
+    ['数量', quantity ? String(quantity) : '未提供'],
+    ['单价', unitPrice === undefined ? '未提供' : formatPrice(unitPrice)],
+    ['小计', subtotal === undefined ? '未提供' : formatPrice(subtotal)],
+  ]
+  return {
+    productName: productName || '商品名称未提供',
+    rows,
+    skuId,
+    missingNotice: missing.length ? `信息不完整：缺少${missing.join('、')}，无法完整核对加购内容。` : '',
+  }
+}
+
+const displayActions = computed(() => Array.from(
+  { length: Math.max(props.actions?.length ?? 0, props.details?.length ?? 0) },
+  (_, index) => {
+    const action = props.actions?.[index] ?? ''
+    const detail = props.details?.[index] ?? legacyCartDetail(action)
+    const cart = detail?.tool === 'cart_add' ? cartSummary(detail) : undefined
+    return {
+      label: detail ? toolLabel(detail.tool) : actionLabel(action),
+      raw: actionLabel(action || detail?.tool || ''),
+      cart,
+      blocked: !!cart && (detail?.confirmable === false || !!cart.missingNotice),
+      rows: detail && detail.tool !== 'cart_add' ? argEntries(detail.arguments) : [],
+      notice: text(detail?.displayNotice),
+    }
+  },
+))
+
+const approvalBlocked = computed(() => displayActions.value.some((action) => action.blocked))
 
 const emit = defineEmits<{
   approve: []
@@ -39,35 +102,47 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <section class="approval" :class="{ 'approval--stale': !active }" aria-label="高危操作确认">
-    <p class="approval__title">需要你确认的高危操作</p>
+  <section class="approval" :class="{ 'approval--stale': !actionable }" aria-label="交易操作确认">
+    <p class="approval__title">{{ actionable ? '请确认操作内容' : status === 'CONFIRMED' ? '已提交确认的操作' : status === 'DISMISSED' ? '已取消的操作' : '操作确认记录' }}</p>
 
-    <!--
-      有结构化参数时渲染可读卡片；缺它、或该工具不在清单里时退回字符串原文。
-      两条路都保留原始取值——**卡片只做可读化，不做省略**。
-    -->
-    <ul v-if="details && details.length" class="approval__list">
-      <li v-for="(detail, index) in details" :key="index">
-        <p class="approval__op">{{ toolLabel(detail.tool) }}</p>
-        <dl v-if="detailRows(detail).length" class="approval__args">
-          <template v-for="[label, value] in detailRows(detail)" :key="label">
+    <ul v-if="displayActions.length" class="approval__list">
+      <li v-for="(action, index) in displayActions" :key="index">
+        <p class="approval__op">{{ action.label }}</p>
+        <template v-if="action.cart">
+          <p class="approval__product">{{ action.cart.productName }}</p>
+          <dl class="approval__args">
+            <template v-for="[label, value] in action.cart.rows" :key="label">
+              <dt>{{ label }}</dt>
+              <dd :class="{ 'approval__subtotal': label === '小计' }">{{ value }}</dd>
+            </template>
+          </dl>
+          <p v-if="action.cart.missingNotice" class="approval__notice">
+            {{ action.cart.missingNotice }}
+            <span v-if="action.cart.skuId">规格编号：{{ action.cart.skuId }}。</span>
+          </p>
+        </template>
+        <dl v-else-if="action.rows.length" class="approval__args">
+          <template v-for="[label, value] in action.rows" :key="label">
             <dt>{{ label }}</dt>
             <dd>{{ value }}</dd>
           </template>
         </dl>
-        <p v-else class="approval__raw">{{ actionLabel(actions[index] ?? detail.tool) }}</p>
+        <p v-else class="approval__raw">{{ action.raw }}</p>
+        <p v-if="action.notice" class="approval__notice">{{ action.notice }}</p>
       </li>
     </ul>
-    <ul v-else class="approval__list">
-      <li v-for="action in actions" :key="action">{{ actionLabel(action) }}</li>
-    </ul>
+    <p v-else class="approval__notice">暂无可核对的操作信息。</p>
 
-    <p v-if="!active" class="approval__stale-note">
-      这条确认已过期：对话已经往下走了，确认的对象可能已经不是它。请对最新一条回复。
+    <p v-if="actionable && approvalBlocked" class="approval__notice" role="status">
+      加购信息不完整或商品暂不可购买，请重新查询商品后再确认。
     </p>
 
-    <div v-else class="approval__buttons">
-      <el-button type="danger" size="small" @click="emit('approve')">确认执行</el-button>
+    <p v-if="!actionable" class="approval__stale-note">
+      操作确认记录。执行结果请查看后续回复与工具轨迹；此记录不能重复执行。
+    </p>
+
+    <div v-else-if="displayActions.length" class="approval__buttons">
+      <el-button type="danger" size="small" :disabled="approvalBlocked" @click="emit('approve')">确认执行</el-button>
       <el-button size="small" @click="emit('dismiss')">取消</el-button>
     </div>
   </section>
@@ -113,10 +188,10 @@ const emit = defineEmits<{
   border: 1px solid color-mix(in srgb, var(--color-danger) 20%, transparent);
   border-radius: var(--ys-radius-sm);
   background: var(--color-bg-surface);
-  font-family: var(--ys-font-mono);
+  font-family: var(--ys-font-sans);
   font-size: var(--ys-font-xs);
   color: var(--color-text-primary);
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .approval--stale .approval__list li {
@@ -124,19 +199,23 @@ const emit = defineEmits<{
   color: var(--color-text-secondary);
 }
 
-/* 结构化卡片：工具名是标题、参数是可读的键值对，正文用正文字体而非等宽——
-   等宽是为「原始代码」准备的，可读文案再用等宽只会更难读 */
 .approval__op {
   margin: 0;
-  font-family: var(--ys-font-mono);
   font-size: var(--ys-font-xs);
   font-weight: 600;
   color: var(--color-text-primary);
 }
 
+.approval__product {
+  margin: var(--ys-space-2) 0 0;
+  font-size: var(--ys-font-sm);
+  font-weight: 600;
+  line-height: var(--ys-leading-base);
+}
+
 .approval__args {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: var(--ys-space-1) var(--ys-space-3);
   margin: var(--ys-space-2) 0 0;
   font-size: var(--ys-font-xs);
@@ -150,7 +229,19 @@ const emit = defineEmits<{
 .approval__args dd {
   margin: 0;
   color: var(--color-text-primary);
-  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.approval__subtotal {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.approval__notice {
+  margin: var(--ys-space-2) 0 0;
+  font-size: var(--ys-font-xs);
+  line-height: var(--ys-leading-base);
+  color: var(--color-text-secondary);
 }
 
 .approval__raw {
@@ -170,13 +261,14 @@ const emit = defineEmits<{
 
 .approval__buttons {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--ys-space-2);
   margin-top: var(--ys-space-4);
 }
 
 @media (prefers-reduced-motion: no-preference) {
   .approval {
-    animation: approval-in 240ms ease-out;
+    animation: approval-in var(--ys-duration-base) var(--ys-ease-out);
   }
 
   @keyframes approval-in {

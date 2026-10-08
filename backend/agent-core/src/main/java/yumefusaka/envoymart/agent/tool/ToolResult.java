@@ -17,6 +17,7 @@ public class ToolResult {
     private boolean success;
     private String output;          // 文本结果
     private Object rawData;         // 结构化数据（可选）
+    private java.util.List<yumefusaka.envoymart.agent.rag.DocumentChunk> evidence;
     private String errorMessage;
     /** 因缺少用户确认而未执行（区别于执行失败） */
     @Builder.Default

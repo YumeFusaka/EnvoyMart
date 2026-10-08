@@ -23,7 +23,16 @@ import java.util.List;
 public record RetrievalOutcome(List<DocumentChunk> chunks,
                                java.util.Set<String> graphChunkIds,
                                boolean graphCandidateInPool,
-                               QueryExpansions expansions) {
+                               QueryExpansions expansions,
+                               RetrievalTrace trace) {
+
+    /** 兼容旧调用方：未提供执行链路时 trace 为空。 */
+    public RetrievalOutcome(List<DocumentChunk> chunks,
+                            java.util.Set<String> graphChunkIds,
+                            boolean graphCandidateInPool,
+                            QueryExpansions expansions) {
+        this(chunks, graphChunkIds, graphCandidateInPool, expansions, null);
+    }
 
     public RetrievalOutcome {
         chunks = chunks == null ? List.of() : List.copyOf(chunks);
@@ -39,5 +48,11 @@ public record RetrievalOutcome(List<DocumentChunk> chunks,
     /** 本轮是否有图谱依据在场 */
     public boolean hasGraphEvidence() {
         return !graphChunkIds.isEmpty();
+    }
+
+    /** 本轮检索的可序列化摘要，供评测快照与诊断页面展示。 */
+    public record RetrievalTrace(String query, int vectorCandidates, int keywordCandidates,
+                                 int graphCandidates, int fusedCandidates, int rerankedCandidates,
+                                 String rerankQuery, boolean rerankApplied) {
     }
 }

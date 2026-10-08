@@ -14,6 +14,7 @@ import yumefusaka.envoymart.agent.memory.ShortTermMemory;
 import yumefusaka.envoymart.agent.memory.UserProfileStore;
 import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
+import yumefusaka.envoymart.agent.rag.ConflictReporter;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
 import yumefusaka.envoymart.agent.tool.ToolProgressListener;
@@ -62,6 +63,11 @@ class AgentConflictIsolationTest {
 
         @Override
         public List<DocumentChunk> retrieve(String query, int topK) {
+            if (query != null && query.contains("维生素D")) {
+                return List.of(
+                        chunk("d1", "维生素D3说明书", "维生素D每日推荐摄入量为 10 微克。"),
+                        chunk("d2", "维生素D参考指南", "维生素D每日推荐摄入量为 400IU。"));
+            }
             return List.of(
                     chunk("c1", "铁叶酸片产品说明书", "成年女性每日铁推荐摄入量为 20 毫克。"),
                     chunk("c2", "中国居民膳食营养素参考摄入量速查", "铁推荐摄入量成年女性 18 毫克每日。"));
@@ -116,6 +122,12 @@ class AgentConflictIsolationTest {
                 yumefusaka.envoymart.agent.core.task.TaskStateStore.NOOP, checker);
     }
 
+    private static List<List<ChatMessage>> isolatedConflictCalls(RecordingChecker checker) {
+        return checker.calls.stream()
+                .filter(messages -> messages.getFirst().getContent().equals(ConflictReporter.CHECK_PROMPT))
+                .toList();
+    }
+
     @Test
     void 主回答漏报时独立核对补出冲突() {
         RecordingChecker checker = new RecordingChecker(
@@ -146,17 +158,17 @@ class AgentConflictIsolationTest {
         agent.chat("u1", "s1", "维生素D每天推荐摄入多少？", null);
         agent.chat("u1", "s1", "成年女性每天应该摄入多少铁？", null);
 
-        assertThat(checker.calls).isNotEmpty();
-        for (List<ChatMessage> messages : checker.calls) {
+        List<List<ChatMessage>> calls = isolatedConflictCalls(checker);
+        assertThat(calls).hasSize(2);
+        for (List<ChatMessage> messages : calls) {
             assertThat(messages).as("隔离调用的消息只有 system + 本次 user 两条").hasSize(2);
             assertThat(messages.get(0).getContent()).contains("资料一致性核对员");
             String user = messages.get(1).getContent();
             // 只允许出现「这一次问的那句话」，不允许出现任何更早的轮次。
             // 上面两轮分别是维D与铁，所以核对输入里可以出现当前这一轮的疑问句，
             // 但不该出现另一轮的那句——历史进到输入里，漏报就照旧发生
-            int currentTurn = checker.calls.indexOf(messages);
-            String expected = currentTurn == 0 ? "维生素D每天推荐摄入多少" : "成年女性每天应该摄入多少铁";
-            String forbidden = currentTurn == 0 ? "成年女性每天应该摄入多少铁" : "维生素D每天推荐摄入多少";
+            String expected = user.contains("维生素D") ? "维生素D每天推荐摄入多少" : "成年女性每天应该摄入多少铁";
+            String forbidden = user.contains("维生素D") ? "成年女性每天应该摄入多少铁" : "维生素D每天推荐摄入多少";
             assertThat(user)
                     .as("核对输入只该有当前这一轮的问题，不该有其它轮次的问题")
                     .contains(expected)
@@ -174,7 +186,7 @@ class AgentConflictIsolationTest {
         Agent.AgentResponse response = agent.chat("u1", "s1", "成年女性每天应该摄入多少铁？", null);
 
         assertThat(response.getConflicts()).hasSize(1);
-        assertThat(checker.calls).as("主回答已给出结论，不必再开一次调用").isEmpty();
+        assertThat(isolatedConflictCalls(checker)).as("主回答已给出结论，不必再开一次独立核对").isEmpty();
     }
 
     /**

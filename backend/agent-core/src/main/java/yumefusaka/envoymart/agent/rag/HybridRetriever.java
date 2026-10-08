@@ -225,7 +225,9 @@ public class HybridRetriever implements Retriever {
         }
         // ③ 图谱路：只认原句。它靠实体编号与实体名定位（SPU5 与华法林），
         //    而变体恰恰是把原句的说法换掉——改写过的句子在这条路上只会削弱它
-        List<DocumentChunk> graphChunks = graphRetrieve(query, topK);
+        // 图谱路的 limit 不能等于最终展示 topK：图谱会先返回通用风险边，
+        // 用户真正点名的关系可能排在后面。候选池扩大后再由 RRF + rerank 截到 topK。
+        List<DocumentChunk> graphChunks = graphRetrieve(query, Math.max(topK * 3, 10));
         ranked.add(graphChunks);
 
         // 全部候选汇入同一个 RRF，多留一些给重排腾挪
@@ -248,7 +250,13 @@ public class HybridRetriever implements Retriever {
         // 而这正是回答为什么对/为什么没查到时最先要问的一件事。
         // 不带出去的话，扩写是否生效在链路上完全不可观测——
         // 调召回率就成了盲调
-        return new RetrievalOutcome(kept, graphKeys, !graphChunks.isEmpty(), expansions);
+        RetrievalOutcome.RetrievalTrace trace = new RetrievalOutcome.RetrievalTrace(
+                query,
+                ranked.stream().limit(2).mapToInt(List::size).sum(),
+                ranked.stream().skip(2).limit(1 + ex.angles().size()).mapToInt(List::size).sum(),
+                graphChunks.size(), fused.size(), kept.size(), query,
+                reranker != Reranker.NOOP);
+        return new RetrievalOutcome(kept, graphKeys, !graphChunks.isEmpty(), expansions, trace);
     }
 
     @Override

@@ -83,10 +83,10 @@ select * from (
     union all select 2, 'SPU002', '复合维生素矿物质片', '每日一片，覆盖 12 种维生素与 8 种矿物质', 2, 2,
            '/img/photos/spu2-600.svg', '/img/photos/spu2a-800.svg', '综合补充',
            '<h2>产品说明</h2><p>针对成人日常营养缺口设计的复合配方。</p>', 1, now(), now()
-    union all select 3, 'SPU003', '乳清蛋白粉', '每份 24g 蛋白质，低脂低糖', 3, 3,
+    union all select 3, 'SPU003', '乳清蛋白粉', '每份 24g 蛋白质，低脂低糖', 8, 3,
            '/img/photos/spu3-600.svg', '/img/photos/spu3a-800.svg', '运动,增肌',
            '<h2>产品说明</h2><p>分离乳清蛋白，乳糖含量低。</p>', 1, now(), now()
-    union all select 4, 'SPU004', '植物蛋白粉', '豌豆与糙米双蛋白，适合素食人群', 3, 3,
+    union all select 4, 'SPU004', '植物蛋白粉', '豌豆与糙米双蛋白，适合素食人群', 8, 3,
            '/img/photos/spu4-600.svg', '/img/photos/spu4a-800.svg', '素食',
            '<h2>产品说明</h2><p>植物来源，不含乳制品。</p>', 1, now(), now()
     union all select 5, 'SPU005', '益生菌粉', '每袋 100 亿活菌，独立包装', 4, 1,
@@ -194,9 +194,35 @@ select * from (
     union all select 39, 'SPU039', '氨糖维 D 钙片（中老年）', '氨糖 500mg、钙 300mg 与维生素 D3', 14, 4,
            '/img/photos/spu39-600.svg', '/img/photos/spu39a-800.svg', '关节,骨骼健康,老年人',
            '<h2>产品说明</h2><p>面向中老年人的关节与骨骼营养组合。</p><h2>注意事项</h2><p>对甲壳类过敏者慎用。</p>', 1, now(), now()
+    union all select 40, 'SPU040', '运动电解质固体饮料', '补充钠钾与碳水，适合运动中饮用', 9, 3,
+           null, null, '运动,能量补充',
+           '<h2>产品说明</h2><p>用于运动过程中的水分、电解质与碳水补充。</p><h2>注意事项</h2><p>糖尿病、肾功能异常或需要限制钠摄入者使用前请咨询医师。</p>', 1, now(), now()
+    union all select 41, 'SPU041', '磷虾油软胶囊', '每粒含磷脂型 Omega-3，来源于南极磷虾', 15, 5,
+           null, null, '心脑血管,Omega3',
+           '<h2>产品说明</h2><p>磷虾油含 EPA 与 DHA，可作为日常 Omega-3 膳食补充。</p><h2>注意事项</h2><p>甲壳类过敏者、正在服用抗凝或抗血小板药物者使用前请咨询医师。</p>', 1, now(), now()
+    union all select 42, 'SPU042', '运动碳水能量胶', '每袋含碳水 25g，便携即食', 9, 3,
+           null, null, '运动,能量补充,便携',
+           '<h2>产品说明</h2><p>适合长时间运动中快速补充碳水化合物。</p><h2>注意事项</h2><p>请根据运动强度和个人耐受情况使用，不替代日常均衡饮食。</p>', 1, now(), now()
+    union all select 43, 'SPU043', '儿童益生菌咀嚼片', '每片含益生菌 50 亿，适合 6 岁以上儿童', 4, 1,
+           null, null, '儿童,肠道健康',
+           '<h2>产品说明</h2><p>含乳酸菌与双歧杆菌，适合儿童日常膳食补充。</p><h2>注意事项</h2><p>免疫功能异常儿童使用前请咨询医师。</p>', 1, now(), now()
+    union all select 44, 'SPU044', '孕期铁叶酸复合片', '每片含铁 18mg 与叶酸 400μg', 11, 6,
+           null, null, '孕期,补铁,叶酸',
+           '<h2>产品说明</h2><p>用于孕期膳食中的铁与叶酸补充。</p><h2>注意事项</h2><p>请按产检医师或营养师建议使用，避免与钙剂同时服用。</p>', 1, now(), now()
 ) as seed
 -- product_spu 的唯一键是 spu_code：运营改过商品编号之后，id 守卫会放行、spu_code 撞车
 where not exists (select 1 from product_spu where spu_code = seed.spu_code);
+
+-- 存量演示库纠偏：种子守卫只负责补缺，不会覆盖已经存在的商品主数据；
+-- 这些更新保证历史本地库与当前类目、商品唯一性语义一致。
+update product_spu
+set category_id = 8
+where spu_code in ('SPU003', 'SPU004');
+
+update product_spu
+set name = '维生素 C 咀嚼片（免疫配方）'
+where spu_code = 'SPU020'
+  and name = '维生素 C 咀嚼片';
 
 -- ==================== 销量台账 ====================
 -- 演示用的历史销量。它不是「给商品写一个好看的数字」，而是一批**已经发生过、
@@ -344,6 +370,11 @@ select * from (
     union all select 48, 37, 'SKU048', 4900, 6900, 460, '/img/photos/sku48-400.svg', 1
     union all select 49, 38, 'SKU049', 5900, 7900, 380, '/img/photos/sku49-400.svg', 1
     union all select 50, 39, 'SKU050', 17800, 21800, 210, '/img/photos/sku50-400.svg', 1
+    union all select 51, 40, 'SKU051', 9900, 12900, 260, null, 1
+    union all select 52, 41, 'SKU052', 16800, 21800, 220, null, 1
+    union all select 53, 42, 'SKU053', 6900, 8900, 300, null, 1
+    union all select 54, 43, 'SKU054', 8900, 10900, 240, null, 1
+    union all select 55, 44, 'SKU055', 11900, 14900, 260, null, 1
 ) as seed
 -- product_sku 的唯一键是 sku_code。**这一条是最容易踩的**：规格组合重算会删掉旧 SKU、
 -- 按新 id 建回来（这正是 `verify-sku-regen.mjs` 盯着的那条路径），

@@ -16,6 +16,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CitationVerifierTest {
 
     @Test
+    void 语义拒绝不会因已有角标而放行() {
+        String falseClaim = "成人每天服用 9000 毫克 [1]。";
+        assertThat(CitationVerifier.removeRejected(falseClaim + "\n请咨询医师。", List.of(falseClaim)))
+                .doesNotContain("9000").contains("请咨询医师");
+        assertThat(CitationVerifier.candidates("可以叠加，但有限制。", 1,
+                java.util.Set.of(), java.util.Set.of())).containsExactly("可以叠加，但有限制。");
+    }
+
+    @Test
+    void 医嘱提示不能豁免具体剂量审核() {
+        assertThat(CitationVerifier.candidates("成人每天服用 9000 毫克，请遵医嘱。", 1,
+                java.util.Set.of(), java.util.Set.of())).containsExactly("成人每天服用 9000 毫克，请遵医嘱。");
+    }
+
+    @Test
+    void 补引用保留换行且编号属于当前事实句() {
+        String first = "- 旧版每片含铁 15 毫克。";
+        String second = "- 新版每片含铁 10 毫克。";
+        String repaired = CitationVerifier.repairCitations(first + "\n" + second + "\n",
+                java.util.Map.of(first, List.of(1), second, List.of(2)));
+        assertThat(repaired).isEqualTo("- 旧版每片含铁 15 毫克 [1]。\n- 新版每片含铁 10 毫克 [2]。\n");
+    }
+
+    @Test
     void 讲事实却没有出处的句子被剔除() {
         var verdict = CitationVerifier.verify(
                 "每日推荐摄入量为 400IU [1]。可耐受最高摄入量为 2000IU [2]。孕妇每日摄入不得超过 4000IU。",

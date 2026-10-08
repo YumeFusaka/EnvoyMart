@@ -50,8 +50,8 @@ class GroundingEvaluatorTitleCitationTest {
                 .cases().get(0);
 
         assertThat(outcome.mode())
-                .as("按工具轮次处理：没有 [n] 可数，就不进引用准确率的分母")
-                .isEqualTo(GroundingEvaluator.Mode.NOT_APPLICABLE);
+                .as("书名号已经映射到证据，应该进入逐句判定而不是被当成未评测")
+                .isEqualTo(GroundingEvaluator.Mode.PER_SENTENCE);
         assertThat(outcome.unsupported())
                 .as("线上判它有出处，评测就不能把同一句记成幻觉")
                 .isZero();
@@ -90,5 +90,43 @@ class GroundingEvaluatorTitleCitationTest {
                 .cases().get(0);
 
         assertThat(outcome.multiHopHit()).as("《维生素D3说明书》与 [1] 是同一篇").isFalse();
+    }
+
+    @Test
+    void 知识库覆盖边界说明不作为普通事实句判错() {
+        List<DocumentChunk> evidence = List.of(
+                DocumentChunk.builder().chunkId("policy").docId("policy")
+                        .title("平台物流配送与签收规则")
+                        .content("发现包装破损，可当场拒收并联系客服。")
+                        .build(),
+                DocumentChunk.builder().chunkId("after-sale").docId("after-sale")
+                        .title("特殊医学用途配方食品经营与售后规范")
+                        .content("包装破损导致内容物泄漏属于质量问题。")
+                        .build());
+        CaseOutcome outcome = GroundingEvaluator
+                .evaluate(List.of(new Sample("boundary", Kind.ANSWERABLE, false, List.of("质量问题"),
+                        evidence, "图谱里没有直接收录这两个实体的组合关系，仅供参考。 [1]",
+                        EvidenceGate.Level.SUFFICIENT, false)))
+                .cases().get(0);
+
+        assertThat(outcome.unsupported()).isZero();
+        assertThat(outcome.wrongCitations()).isZero();
+    }
+
+    @Test
+    void 引用位置匹配了语义锚点才通过逐字覆盖检查() {
+        List<DocumentChunk> evidence = List.of(
+                DocumentChunk.builder().chunkId("policy").docId("policy")
+                        .title("物流规则").content("包装破损可当场拒收。").build(),
+                DocumentChunk.builder().chunkId("after-sale").docId("after-sale")
+                        .title("售后规则").content("包装破损导致内容物泄漏属于质量问题。").build());
+        Sample sample = new Sample("citation-target", Kind.ANSWERABLE, false,
+                List.of("包装破损导致内容物泄漏"), evidence,
+                "包装破损导致内容物泄漏属于质量问题 [2]。", EvidenceGate.Level.SUFFICIENT, false);
+
+        CaseOutcome outcome = GroundingEvaluator.evaluate(List.of(sample)).cases().get(0);
+
+        assertThat(outcome.unsupported()).isZero();
+        assertThat(outcome.wrongCitations()).isZero();
     }
 }

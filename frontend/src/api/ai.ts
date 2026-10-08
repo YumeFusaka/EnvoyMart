@@ -67,6 +67,10 @@ export async function deleteSession(sessionId: string) {
   await request.delete(`/ai/sessions/${encodeURIComponent(sessionId)}`)
 }
 
+export async function dismissApproval(sessionId: string, messageId: string) {
+  await request.post(`/ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/dismiss-approval`)
+}
+
 /**
  * 工具执行进度事件（SSE `tool`）。
  *

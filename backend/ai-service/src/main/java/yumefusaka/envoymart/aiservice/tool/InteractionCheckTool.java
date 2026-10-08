@@ -98,6 +98,7 @@ public class InteractionCheckTool implements Tool {
             return ToolResult.builder().success(true)
                     .output(render(report, items))
                     .rawData(report)
+                    .evidence(evidenceOf(report))
                     .build();
         } catch (Exception e) {
             log.error("[InteractionCheck] 检查失败 items={}", items, e);
@@ -109,6 +110,24 @@ public class InteractionCheckTool implements Tool {
     }
 
     // ==================== 入参 ====================
+
+    static List<yumefusaka.envoymart.agent.rag.DocumentChunk> evidenceOf(InteractionReport report) {
+        if (!report.available() || report.items() == null) return List.of();
+        Map<String, yumefusaka.envoymart.agent.rag.DocumentChunk> chunks = new java.util.LinkedHashMap<>();
+        for (InteractionReport.Item item : report.items()) {
+            if (item.risks() == null) continue;
+            for (GraphEdge edge : item.risks()) {
+                if (edge.docId() == null || edge.quote() == null || edge.quote().isBlank()) continue;
+                String key = edge.docId() + "#" + edge.chunkId() + "#" + edge.quoteStart();
+                chunks.putIfAbsent(key, yumefusaka.envoymart.agent.rag.DocumentChunk.builder()
+                        .docId(edge.docId()).chunkId(edge.chunkId()).title(edge.docTitle())
+                        .source(yumefusaka.envoymart.agent.rag.DocumentChunk.SOURCE_GRAPH)
+                        .position("《" + edge.docTitle() + "》").charOffset(edge.quoteStart())
+                        .graphBacked(true).content(edge.quote()).build());
+            }
+        }
+        return List.copyOf(chunks.values());
+    }
 
     /**
      * 解析 items。模型可能给字符串也可能给数组，两种都收。

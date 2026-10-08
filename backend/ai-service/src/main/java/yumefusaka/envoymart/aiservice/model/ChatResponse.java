@@ -144,6 +144,8 @@ public class ChatResponse {
      * 不随 Java 侧驼峰偏好改。非任务路径（确定性流程、直接对话）为 null。
      */
     private java.util.Map<String, Object> taskState;
+    /** Agent guardrail 摘要，供工具轨迹与评测排障使用。 */
+    private String loops;
 
     /**
      * 讲了一条事实却没交代出处、已从 {@link #reply} 中剔除的句子。

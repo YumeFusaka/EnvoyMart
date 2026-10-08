@@ -544,6 +544,11 @@ export interface ToolCall {
   facts?: Record<string, string> | null
 }
 
+export interface PendingPaymentItem extends Pick<OrderItem, 'skuId' | 'spuName' | 'unitPrice' | 'quantity' | 'subtotal'> {
+  id?: number
+  skuSpecText?: string | null
+}
+
 /**
  * 待支付订单 —— 支付卡片的数据面。
  *
@@ -560,6 +565,7 @@ export interface PendingPayment {
   payAmount: number
   /** 支付截止时间（ISO 字符串）。服务端没给时为 null，此时不显示倒计时，不编一个 */
   expireAt: string | null
+  items?: PendingPaymentItem[] | null
 }
 
 /**
@@ -574,6 +580,8 @@ export interface PendingActionDetail {
   tool: string
   /** 工具入参，键为工具声明的参数名 */
   arguments: Record<string, unknown>
+  displayNotice?: string | null
+  confirmable?: boolean
 }
 
 export interface ChatResponse {
@@ -607,6 +615,7 @@ export interface ChatResponse {
    * 那一项是给机器执行的**：卡片文案改得再漂亮也不影响真正执行什么，反过来也一样。
    */
   approvalToken: string | null
+  approvalStatus?: 'PENDING' | 'CONFIRMED' | 'DISMISSED' | 'HISTORY'
   /**
    * 本轮任务阶段，由后端的 TaskStage 以枚举名下发的字符串。
    *
@@ -618,6 +627,8 @@ export interface ChatResponse {
    * 未知值忽略，而不是让类型断言在运行时失效。
    */
   stage?: string | null
+  /** Agent guardrail 摘要：工具预算、规划轮次、重复/震荡拦截结果 */
+  loops?: string | null
   /**
    * 本轮证据门的判定，决定 `knowledge` 该被说成什么。
    *
@@ -734,6 +745,7 @@ export interface ChatMessage {
   pendingActionDetails?: PendingActionDetail[]
   /** 确认这张卡片要带回服务端的令牌，与 `pendingActions` 同生共死 */
   approvalToken?: string
+  approvalStatus?: 'PENDING' | 'CONFIRMED' | 'DISMISSED' | 'HISTORY'
   /** 本轮任务阶段，见 `ChatResponse.stage` 的说明。仅用于展示与状态判定 */
   stage?: string | null
   /** 证据门判定，随 `knowledge` 一起透传给引用区，决定标题措辞 */

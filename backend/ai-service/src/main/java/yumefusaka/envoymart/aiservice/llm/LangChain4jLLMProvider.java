@@ -376,6 +376,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
                     .noData(result.isNoData())
                     .latencyMs(result.getLatencyMs())
                     .rawData(result.getRawData())
+                    .evidence(result.getEvidence())
                     .facts(result.getFacts())
                     // 实体名必须一起带出去：引用校验靠它认商品行有没有出处，
                     // 少带这一个字段，ReAct 路径的商品表又会被整行删掉（P0-A）
@@ -537,7 +538,9 @@ public class LangChain4jLLMProvider implements LLMProvider {
                                 这样它们会被并发执行。例如先查订单再取消，取消那步就要依赖查询步。
                                 **当某一步的参数要用到前面步骤查出来的值时，写成
                                 "$步骤序号.字段名"**（字段名照抄前一步输出里的字段，例如
-                                "$0.skuId"、"$1.id"），执行器会在那一步查完之后把真实值填进去。
+                                "$0.skuId"、"$0[1].skuId"、"$1.id"），执行器会在那一步查完之后把真实值填进去。
+                                同一个 product_search 返回多个商品时，第一个商品用 "$0[0].skuId"，第二个商品用 "$0[1].skuId"；
+                                用户要分别操作多个商品时，不能重复使用 "$0.skuId"。
                                 订单查询返回的 id 是取消、物流等工具需要的数字内部 ID；orderNo 是用户可见的 YS 开头订单号，不能用于 order_cancel 的 orderId。
                                 绝不要写「上一步的 XX」「来自第 0 步搜索结果的 XX」这类描述性文字——
                                 它们不会被替换，会被原样当成参数传给工具，然后失败。
