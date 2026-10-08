@@ -117,6 +117,11 @@ export async function getGroundingReport() {
   return response.data.data as GroundingReport
 }
 
+export async function runGroundingEval() {
+  const response = await request.post('/ai/admin/eval/grounding/run')
+  return response.data.data as GroundingLiveRun
+}
+
 // 生产链路检索评测（真实向量 + 图谱 + RRF + 重排 + 扩写，跑生产语料）。
 
 export interface ProductionRetrievalMetrics {
@@ -202,5 +207,10 @@ export interface ProductionRetrievalReport {
 /** 生产链路检索报告。公开只读。 */
 export async function getProductionRetrievalReport() {
   const response = await request.get('/ai/eval/retrieval/report')
+  return response.data.data as ProductionRetrievalReport
+}
+
+export async function runProductionRetrievalEval() {
+  const response = await request.post('/ai/admin/eval/retrieval/run')
   return response.data.data as ProductionRetrievalReport
 }

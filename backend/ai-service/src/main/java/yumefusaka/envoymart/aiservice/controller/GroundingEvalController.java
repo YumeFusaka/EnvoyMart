@@ -44,7 +44,7 @@ public class GroundingEvalController {
         return Result.success(productionRetrievalEval.current());
     }
 
-    /** 管理员触发一次真实生产语料检索评测；前端评测页只读取落盘快照，不暴露重跑按钮。 */
+    /** 管理员手动触发一次真实生产语料检索评测；页面不会自动调用。 */
     @RequireAdmin
     @PostMapping("/admin/eval/retrieval/run")
     public Result<ProductionRetrievalEvalService.Report> runRetrieval() {
@@ -57,7 +57,7 @@ public class GroundingEvalController {
     }
 
     /**
-     * 仅供运维生成新的真实快照。前端不暴露重跑按钮，页面始终只读已落盘结果。
+     * 仅供管理员明确点击后生成新的真实快照，页面刷新不会触发。
      */
     @RequireAdmin
     @PostMapping("/admin/eval/grounding/run")

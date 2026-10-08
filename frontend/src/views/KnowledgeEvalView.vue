@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { getProductionRetrievalReport } from '@/api/eval'
+import { getProductionRetrievalReport, runProductionRetrievalEval } from '@/api/eval'
+import { useUserStore } from '@/stores'
+import { ElMessage } from 'element-plus'
 import type { ProductionRetrievalCase, ProductionRetrievalReport } from '@/api/eval'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import { formatDateTime } from '@/utils/format'
@@ -9,6 +11,9 @@ const production = ref<ProductionRetrievalReport | null>(null)
 const loading = ref(true)
 const failed = ref(false)
 const caseFilter = ref('')
+const userStore = useUserStore()
+const triggering = ref(false)
+const isAdmin = computed(() => userStore.profile?.roleName === 'ADMIN')
 
 async function load() {
   loading.value = true
@@ -16,6 +21,15 @@ async function load() {
   try { production.value = await getProductionRetrievalReport() } catch { failed.value = true } finally { loading.value = false }
 }
 onMounted(load)
+async function triggerEval() {
+  if (triggering.value || !isAdmin.value) return
+  triggering.value = true
+  try {
+    production.value = await runProductionRetrievalEval()
+    ElMessage.success('检索评测已启动，页面将轮询进度')
+    await load()
+  } finally { triggering.value = false }
+}
 
 const pct = (value: number) => (value * 100).toFixed(1)
 const fixed3 = (value: number) => value.toFixed(3)
@@ -39,6 +53,7 @@ const missCount = computed(() => production.value?.cases.filter((item) => !item.
       <p class="eyebrow">Production Retrieval</p>
       <h1>检索质量评测</h1>
       <p class="subcopy">这份报告展示用户实际使用的检索链路：query 改写（口语改写、扩写、HyDE）→ 真实向量库、BM25、线上 Neo4j 图谱并行 → RRF → 百炼重排。数据来自当前知识库和知识图谱，页面只读取已生成的实测快照。</p>
+      <button v-if="isAdmin" class="run-button" type="button" :disabled="triggering || production?.status === 'RUNNING'" @click="triggerEval">{{ production?.status === 'RUNNING' ? '评测运行中' : triggering ? '正在启动' : '手动触发检索评测' }}</button>
     </header>
     <ErrorState v-if="failed" message="真实链路评测快照加载失败，请重试" :on-retry="load" />
     <el-skeleton v-else-if="loading" :rows="8" animated />
@@ -72,6 +87,8 @@ const missCount = computed(() => production.value?.cases.filter((item) => !item.
 
 <style scoped>
 .eval-page { max-width: var(--layout-content-max); margin: 0 auto; padding: var(--ys-space-8); display: grid; gap: var(--ys-space-5); }
+.run-button { justify-self: start; min-height: 40px; padding: 0 var(--ys-space-4); border: 0; border-radius: var(--ys-radius-sm); color: var(--color-text-inverse); background: var(--color-primary); font-weight: 700; cursor: pointer; }
+.run-button:disabled { cursor: wait; opacity: .6; }
 .eval-header h1 { margin: 4px 0; font-size: var(--ys-font-2xl); }
 .eyebrow { margin: 0; color: var(--color-primary-strong); font-size: var(--ys-font-xs); font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .subcopy { max-width: 900px; margin: 0; color: var(--color-text-secondary); line-height: 1.8; }
