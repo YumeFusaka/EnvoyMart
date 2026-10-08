@@ -21,6 +21,7 @@ import java.util.Comparator;
 @Component
 public class BadCaseStore {
     private static final String PREFIX = "chat:badcase:";
+    private static final String ID_INDEX_PREFIX = "chat:badcase:id:";
     private static final String INDEX = "chat:badcases";
     private static final String SESSION_INDEX_PREFIX = "chat:badcases:session:";
     private static final String FIXTURE_PREFIX = "eval:badcase-fixture:";
@@ -80,6 +81,7 @@ public class BadCaseStore {
                 old == null ? now : old.createdAt(), now, old == null ? Status.ACTIVE : old.status(),
                 old == null ? null : old.reviewedBy(), old == null ? null : old.reviewedAt(), old == null ? null : old.testCaseId());
         write(key, value);
+        redis.opsForValue().set(ID_INDEX_PREFIX + value.badCaseId(), key, TTL);
         redis.opsForZSet().add(INDEX, key, now.toEpochMilli());
         redis.opsForZSet().add(SESSION_INDEX_PREFIX + userId + ":" + sessionId, key, now.toEpochMilli());
         redis.expire(INDEX, TTL);
@@ -163,12 +165,25 @@ public class BadCaseStore {
         try { return raw == null ? null : mapper.readValue(raw, Fixture.class); } catch (Exception e) { return null; }
     }
 
+    public List<Fixture> fixtures(int limit) {
+        int safe = Math.max(1, Math.min(limit, 1000));
+        Set<String> keys = redis.keys(FIXTURE_PREFIX + "*");
+        if (keys == null) return List.of();
+        return keys.stream().sorted(Comparator.reverseOrder()).limit(safe).map(this::readFixture).filter(java.util.Objects::nonNull).toList();
+    }
+
+    private Fixture readFixture(String key) {
+        try { return mapper.readValue(redis.opsForValue().get(key), Fixture.class); } catch (Exception e) { return null; }
+    }
+
     public BadCase adminView(BadCase item) {
         if (item == null) return null;
         return new BadCase(item.badCaseId(), maskUser(item.userId()), item.sessionId(), item.assistantMessageId(), item.userMessageId(),
                 item.selectedMessageIds(), item.reasonCodes(), item.comment(), item.question(), item.answer(), item.responseSnapshot(),
                 item.createdAt(), item.updatedAt(), item.status(), item.reviewedBy(), item.reviewedAt(), item.testCaseId());
     }
+
+    public BadCase findForAdmin(String id) { return findById(id); }
 
     public boolean removeTestCase(String id, String operator) {
         BadCase old = findById(id);
@@ -183,8 +198,11 @@ public class BadCaseStore {
     }
 
     private BadCase findById(String id) {
-        Set<String> keys = redis.opsForZSet().reverseRange(INDEX, 0, -1);
-        if (keys != null) for (String key : keys) { BadCase value = read(key); if (value != null && value.badCaseId().equals(id)) return value; }
+        String key = redis.opsForValue().get(ID_INDEX_PREFIX + id);
+        if (key != null) {
+            BadCase value = read(key);
+            if (value != null && value.badCaseId().equals(id)) return value;
+        }
         throw new IllegalArgumentException("反馈不存在");
     }
 

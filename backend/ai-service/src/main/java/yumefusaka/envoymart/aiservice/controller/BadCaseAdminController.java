@@ -19,8 +19,11 @@ public class BadCaseAdminController {
         return Result.success(store.listPage(page, size).stream().map(store::adminView).toList());
     }
     @GetMapping("/{id}") public Result<BadCaseStore.BadCase> detail(@PathVariable String id) {
-        try { return Result.success(store.adminView(store.listPage(0, 1000).stream().filter(x -> x.badCaseId().equals(id)).findFirst().orElseThrow())); }
+        try { return Result.success(store.adminView(store.findForAdmin(id))); }
         catch (Exception e) { return Result.error(404, "反馈不存在"); }
+    }
+    @GetMapping("/fixtures") public Result<List<BadCaseStore.Fixture>> fixtures(@RequestParam(defaultValue = "100") int limit) {
+        return Result.success(store.fixtures(limit));
     }
     @PostMapping("/{id}/review") public Result<BadCaseStore.BadCase> review(
             @PathVariable String id, @RequestParam BadCaseStore.Status status,
