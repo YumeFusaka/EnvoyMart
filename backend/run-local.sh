@@ -18,6 +18,7 @@
 #   ./run-local.sh stop              停止全部（含前端；中间件容器保持运行）
 #   ./run-local.sh stop ai-service   只停止指定的一个或多个
 #   ./run-local.sh auth-service      只启动指定的一个或多个
+#   Ctrl-C（一键启动期间）            停掉本次启动的九个服务与前端（见 signal_cleanup）
 #
 # dev 与 master 共用同一套启动流程，只有前端那一段不同：
 #   dev    → pnpm dev（5173，HMR，改前端源码即时生效；改后端仍需重启对应服务）
@@ -40,6 +41,9 @@ unalias node 2>/dev/null || true
 #   双击 .sh → bash 是交互式（bash --login -i run-local.sh demo），脚本一结束窗口就关；
 #   终端里跑 → 非交互，脚本结束把命令行交还给终端。
 # 交互场景下把「窗口」做成演示环境的总开关（见 hold_window / stop_all_fast）：关窗即停服务。
+# 非交互的终端场景没有这个总开关——脚本跑完就退出，之后 Ctrl-C 不再经过它。
+# 所以「Ctrl-C 要能停服务」这件事只在脚本活着时成立：一键启动期间由 signal_cleanup
+# 接手，跑完之后则是 ./run-local.sh stop（hold_window 会把这句话印在屏幕上）。
 INTERACTIVE=""
 case $- in *i*) INTERACTIVE=1 ;; esac
 
@@ -324,10 +328,22 @@ stop_all_fast() {
   return 0
 }
 
-# 双击场景的窗口绑定：关窗（SIGHUP）或 Ctrl-C（SIGINT）时把服务与前端一并停掉——
-# 服务是 nohup 起的（脱离本 bash、免疫 SIGHUP），不显式停就会留一堆孤儿进程。
-# 非交互场景不注册：终端里 Ctrl-C 应该只是打断命令，不该顺手杀掉在跑的服务。
-[ -n "$INTERACTIVE" ] && trap 'echo; echo "收到退出信号——停止全部服务与前端..."; stop_all_fast; echo "已停止（中间件容器保持运行）"; exit 0' INT TERM HUP
+# 中断清理：Ctrl-C / 关窗 / 被 kill 时把服务与前端一并停掉。
+#
+# 为什么必须由脚本自己做：服务是 `nohup ... &` 起的，**终端的 Ctrl-C 打不到它们**——
+# 非交互 shell 没有作业控制，异步命令按 POSIX 规定把 SIGINT 设成 SIG_IGN；nohup 又
+# 免疫了 SIGHUP。所以「按了 Ctrl-C」与「服务还在后台跑」可以同时成立。
+signal_cleanup() {
+  echo
+  echo "收到退出信号——停止全部服务与前端..."
+  stop_all_fast
+  echo "已停止（中间件容器保持运行）"
+  exit 0
+}
+
+# 双击场景（交互式 bash，$- 含 i）的窗口就是演示环境总开关：关窗即停服务。
+# 这条同时覆盖交互式下跑的 all / 单服务——那种场景脚本一结束窗口就关，留下服务反而是孤儿。
+[ -n "$INTERACTIVE" ] && trap signal_cleanup INT TERM HUP
 
 # 停服务。不传名字就停全部，传了就只停传的那些。
 # <p>
@@ -690,12 +706,12 @@ $hint
 EOF
 }
 
-# 双击场景的收尾（非交互直接返回，命令行交还给终端）：
+# 双击场景的收尾（非交互模式下只打印停止方式，然后把命令行交还给终端）：
 # 启动完成后脚本**驻留不退出**，窗口 = 演示环境总开关——关窗 / Ctrl-C 由上面的
 # trap 停掉全部服务与前端。失败时同样驻留，让报错留在屏幕上看得到。
 hold_window() {
-  [ -n "$INTERACTIVE" ] || return 0
-  cat <<'EOF'
+  if [ -n "$INTERACTIVE" ]; then
+    cat <<'EOF'
 
 ==================== 服务运行中 ====================
 本窗口只管前后端（9 个服务 + 前端页面），中间件容器归 Docker Desktop 管。
@@ -703,7 +719,18 @@ hold_window() {
 若窗口被强制结束、有残留，兜底： ./run-local.sh stop
 ==================================================
 EOF
-  while sleep 60; do :; done
+    while sleep 60; do :; done
+  else
+    # 终端里跑：脚本随命令结束而退出（验收脚本 spawnSync 调它，要求必须返回），
+    # 退出之后 Ctrl-C 与这些服务再无关系——把「怎么停」直接印在屏幕上。
+    # 措辞对「成功」与「没起来」都成立：不问结果，说的都是「Ctrl-C 管不到服务」这一件事。
+    cat <<'EOF'
+
+==================== 本命令已退出 ====================
+服务是 nohup 起的，Ctrl-C 打不到它们。停止： ./run-local.sh stop
+=====================================================
+EOF
+  fi
 }
 
 # 起全部服务：错峰启动 → 等就绪 → 未就绪的自动补启（最多两轮）。
@@ -838,6 +865,14 @@ run_all() { # mode
 # 一键启动两个模式走同一段收尾：全程输出各落一份日志（双击场景窗口会关，事后靠它复盘）。
 one_shot() { # 子命令名 前端模式 中文名
   local cmd="$1" mode="$2" label="$3"
+  # 终端里跑（非交互）也接管信号：一键启动是「脚本拥有整套环境」的入口，
+  # Ctrl-C 打断启动流程时，已经起来的服务要一起停——否则留下的是一套**半启动**的
+  # 环境：脚本没了、日志停在半路，还占着端口，下一次启动会以为它们「已在跑」而跳过。
+  #
+  # 只绑给 dev/master/demo，不绑给 all / 单服务：那两条路径的契约是「起完就返回」，
+  # 验收脚本 spawnSync 调的就是它们（要求必须返回），Ctrl-C 顺手停掉整个环境是越权——
+  # 尤其单服务路径，杀 5173 和另外八个服务都不是它起的。
+  trap signal_cleanup INT TERM HUP
   mkdir -p "$LOG_DIR"
   rotate_log "$cmd"
   if run_all "$mode" 2>&1 | tee "$LOG_DIR/$cmd.log"; then
