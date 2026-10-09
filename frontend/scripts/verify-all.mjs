@@ -25,13 +25,23 @@
  */
 import { spawnSync } from 'node:child_process'
 import { readdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** 会动运行环境（停服务换桩再拉回），默认不跑、跑也最后跑 */
 const SLOW = ['verify-downstream-retry.mjs']
+
+/** T1 确定性契约：不触发模型，默认纳入总入口，失败时应先于慢脚本暴露。 */
+const T1_CONTRACT = [
+  'verify-platform-matrix.mjs',
+  'verify-complex-agent-dialogues.mjs',
+  'verify-agent-side-effects.mjs',
+  'verify-failure-recovery.mjs',
+  'verify-persistence-restart.mjs',
+  'verify-permission-matrix.mjs',
+]
 
 /** 不是验收脚本的：夹具采集与截图工具，混进来只会让人以为它挂了；还有它自己 */
 const NOT_VERIFY = ['capture-grounding-fixtures.mjs', 'verify-all.mjs']
@@ -53,12 +63,22 @@ const TIMEOUT_MS = 15 * 60 * 1000
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
 
 function plan() {
-  const all = readdirSync(HERE)
+  const discovered = readdirSync(HERE)
     .filter((f) => f.startsWith('verify-') && f.endsWith('.mjs'))
     .filter((f) => !NOT_VERIFY.includes(f))
     .filter((f) => !only || only.some((k) => f.includes(k)))
     .sort()
-  const fast = all.filter((f) => !SLOW.includes(f))
+  const all = only ? discovered : [...new Set([...T1_CONTRACT, ...discovered])]
+  const fast = all
+    .filter((f) => !SLOW.includes(f))
+    .sort((a, b) => {
+      const ai = T1_CONTRACT.indexOf(a)
+      const bi = T1_CONTRACT.indexOf(b)
+      if (ai >= 0 && bi < 0) return -1
+      if (ai < 0 && bi >= 0) return 1
+      if (ai >= 0 && bi >= 0) return ai - bi
+      return a.localeCompare(b)
+    })
   const slow = all.filter((f) => SLOW.includes(f))
   return withSlow ? [...fast, ...slow] : fast
 }

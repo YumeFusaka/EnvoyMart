@@ -28,6 +28,31 @@ SET @ddl := IF(@t_migration_warning = 0,
   'DO 0');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- T1 图谱诊断证据字段：旧库逐列补齐，避免重建 graph_build_failure 丢失历史记录。
+SET @t_gbf := (SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure');
+SET @c_gbf_raw := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'raw_candidate');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_raw > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN raw_candidate text'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_nhk := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'normalized_head_kind');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_nhk > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN normalized_head_kind varchar(32)'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_nh := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'normalized_head');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_nh > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN normalized_head varchar(255)'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_ntk := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'normalized_tail_kind');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_ntk > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN normalized_tail_kind varchar(32)'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_nt := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'normalized_tail');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_nt > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN normalized_tail varchar(255)'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_rel := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'relation');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_rel > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN relation varchar(64)'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_quote := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'quote');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_quote > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN quote text'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_qs := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'quote_offset_start');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_qs > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN quote_offset_start int'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_qe := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'quote_offset_end');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_qe > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN quote_offset_end int'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_alias := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'alias_hit');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_alias > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN alias_hit tinyint'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @c_gbf_chunk := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure' AND COLUMN_NAME = 'chunk_id');
+SET @ddl := IF(@t_gbf = 0 OR @c_gbf_chunk > 0, 'DO 0', 'ALTER TABLE graph_build_failure ADD COLUMN chunk_id varchar(64)'); PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @t_graph_build_failure := (SELECT COUNT(*) FROM information_schema.TABLES
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'graph_build_failure');
 SET @ddl := IF(@t_graph_build_failure = 0,

@@ -178,6 +178,17 @@ export interface GraphFailureRecord {
   reasonCode: string
   detail: string
   retryable: boolean
+  rawCandidate?: string | null
+  normalizedHeadKind?: string | null
+  normalizedHead?: string | null
+  normalizedTailKind?: string | null
+  normalizedTail?: string | null
+  relation?: string | null
+  quote?: string | null
+  quoteOffsetStart?: number | null
+  quoteOffsetEnd?: number | null
+  aliasHit?: boolean | null
+  chunkId?: string | null
   occurredAt: string
 }
 

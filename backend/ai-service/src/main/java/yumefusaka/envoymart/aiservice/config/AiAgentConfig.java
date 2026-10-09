@@ -40,6 +40,8 @@ import yumefusaka.envoymart.agent.rag.*;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.aiservice.client.KnowledgeClient;
 import yumefusaka.envoymart.aiservice.client.OrderClient;
+import yumefusaka.envoymart.aiservice.client.PromotionClient;
+import yumefusaka.envoymart.aiservice.client.TicketClient;
 import yumefusaka.envoymart.aiservice.client.ProductClient;
 import yumefusaka.envoymart.aiservice.memory.LlmMemoryConsolidator;
 import yumefusaka.envoymart.aiservice.flow.AfterSaleFlow;
@@ -55,6 +57,10 @@ import yumefusaka.envoymart.aiservice.tool.AddressTool;
 import yumefusaka.envoymart.aiservice.tool.AfterSaleTool;
 import yumefusaka.envoymart.aiservice.tool.CancelOrderTool;
 import yumefusaka.envoymart.aiservice.tool.CartQueryTool;
+import yumefusaka.envoymart.aiservice.tool.CartUpdateTool;
+import yumefusaka.envoymart.aiservice.tool.CartRemoveTool;
+import yumefusaka.envoymart.aiservice.tool.CouponReceiveTool;
+import yumefusaka.envoymart.aiservice.tool.TicketCreateTool;
 import yumefusaka.envoymart.aiservice.tool.CheckoutTool;
 import yumefusaka.envoymart.aiservice.tool.InteractionCheckTool;
 import yumefusaka.envoymart.aiservice.tool.KnowledgeSearchTool;
@@ -209,6 +215,7 @@ public class AiAgentConfig {
      */
     @Bean
     public ToolRegistry toolRegistry(OrderClient orderClient, ProductClient productClient, AuthClient authClient,
+                                     PromotionClient promotionClient, TicketClient ticketClient,
                                      KnowledgeClient knowledgeClient,
                                      SimpleRAGEngine ragEngine,
                                      MeterRegistry meterRegistry) {
@@ -224,13 +231,18 @@ public class AiAgentConfig {
                 new AddToCartTool(orderClient),
                 // 只读的购物车查询：能加购却查不了购物车，是能力划分里的缺口
                 new CartQueryTool(orderClient),
+                new CartUpdateTool(orderClient),
+                new CartRemoveTool(orderClient),
                 new CheckoutTool(orderClient),
                 new AfterSaleTool(orderClient),
+                new CouponReceiveTool(promotionClient),
+                new TicketCreateTool(ticketClient),
                 new InteractionCheckTool(knowledgeClient),
                 // 再检索把开头那一次的单次机会变成 ReAct 途中的按需机会，
                 // 检索句质量由 QueryRewriter 的指代消解兜底（两者是同一条链路的两个时刻）
                 new KnowledgeSearchTool(ragEngine)
         ));
+        registry.validateContracts();
         return registry;
     }
 

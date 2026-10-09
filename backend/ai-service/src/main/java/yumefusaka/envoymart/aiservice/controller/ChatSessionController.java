@@ -72,6 +72,9 @@ public class ChatSessionController {
         if (!SESSION_ID.matcher(sessionId).matches()) {
             return Result.error(400, "会话标识不合法");
         }
+        if (!history.hasSession(userId, sessionId)) {
+            return Result.error(404, "会话不存在或无权访问");
+        }
         return Result.success(commerceCards.history(userId,
                 history.loadMessages(userId, sessionId, MESSAGE_LIST_LIMIT)));
     }
@@ -82,6 +85,9 @@ public class ChatSessionController {
             @PathVariable("sessionId") String sessionId, @PathVariable("messageId") String messageId) {
         if (!SESSION_ID.matcher(sessionId).matches() || !SESSION_ID.matcher(messageId).matches()) {
             return Result.error(400, "会话或消息标识不合法");
+        }
+        if (!history.hasSession(userId, sessionId)) {
+            return Result.error(404, "会话不存在或无权访问");
         }
         return history.dismissApproval(userId, sessionId, messageId)
                 ? Result.success() : Result.error(409, "待确认记录不存在或已经变化，请刷新会话");
@@ -124,6 +130,7 @@ public class ChatSessionController {
             @PathVariable("sessionId") String sessionId, @PathVariable("messageId") String messageId,
             @org.springframework.web.bind.annotation.RequestBody BadCaseStore.FeedbackRequest request) {
         if (!SESSION_ID.matcher(sessionId).matches() || !SESSION_ID.matcher(messageId).matches()) return Result.error(400, "会话或消息标识不合法");
+        if (!history.hasSession(userId, sessionId)) return Result.error(404, "会话不存在或无权访问");
         try { return Result.success(badCases.upsert(userId, sessionId, messageId, request)); }
         catch (IllegalArgumentException e) { return Result.error(400, e.getMessage()); }
     }
@@ -133,7 +140,9 @@ public class ChatSessionController {
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @PathVariable("sessionId") String sessionId, @PathVariable("messageId") String messageId) {
         if (!SESSION_ID.matcher(sessionId).matches() || !SESSION_ID.matcher(messageId).matches()) return Result.error(400, "会话或消息标识不合法");
-        return Result.success(badCases.get(userId, sessionId, messageId));
+        if (!history.hasSession(userId, sessionId)) return Result.error(404, "会话不存在或无权访问");
+        BadCaseStore.BadCase value = badCases.get(userId, sessionId, messageId);
+        return value == null ? Result.error(404, "反馈不存在或无权访问") : Result.success(value);
     }
 
     @GetMapping("/{sessionId}/bad-cases")
@@ -141,6 +150,7 @@ public class ChatSessionController {
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @PathVariable("sessionId") String sessionId) {
         if (!SESSION_ID.matcher(sessionId).matches()) return Result.error(400, "会话标识不合法");
+        if (!history.hasSession(userId, sessionId)) return Result.error(404, "会话不存在或无权访问");
         return Result.success(badCases.listForSession(userId, sessionId));
     }
 
@@ -148,7 +158,15 @@ public class ChatSessionController {
     public Result<Void> revokeBadCase(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
             @PathVariable("sessionId") String sessionId, @PathVariable("messageId") String messageId) {
-        if (!badCases.revoke(userId, sessionId, messageId)) return Result.error(404, "反馈不存在");
-        return Result.success();
+        if (!SESSION_ID.matcher(sessionId).matches() || !SESSION_ID.matcher(messageId).matches()) {
+            return Result.error(400, "会话或消息标识不合法");
+        }
+        if (!history.hasSession(userId, sessionId)) return Result.error(404, "会话不存在或无权访问");
+        try {
+            if (!badCases.revoke(userId, sessionId, messageId)) return Result.error(404, "反馈不存在");
+            return Result.success();
+        } catch (IllegalStateException e) {
+            return Result.error(409, e.getMessage());
+        }
     }
 }

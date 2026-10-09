@@ -148,8 +148,10 @@ public class ProductTool implements Tool {
                 sb.append("（筛选条件：").append(condition).append("）\n");
             }
             sb.append("找到 ").append(products.size()).append(" 个商品：\n");
-            for (ProductSummary p : products) {
-                sb.append("- 编号 ").append(p.getId() == null ? "未知" : key(p.getId()))
+            for (int productIndex = 0; productIndex < products.size(); productIndex++) {
+                ProductSummary p = products.get(productIndex);
+                sb.append("- 候选[").append(productIndex).append("] 编号 ")
+                        .append(p.getId() == null ? "未知" : key(p.getId()))
                         .append("：").append(p.getName());
                 if (p.getSubtitle() != null && !p.getSubtitle().isBlank()) {
                     sb.append("（").append(p.getSubtitle()).append("）");
@@ -228,7 +230,27 @@ public class ProductTool implements Tool {
      * 失败信息里看得见是哪一步没成——不假装「这个商品没有规格」。
      */
     private List<ProductSearchResult> withDefaultSku(List<ProductSummary> products) {
-        return ProductSearchResult.of(products, ProductSearchResult.skuIndex(products, this::defaultSkuId));
+        List<ProductSearchResult> results = new java.util.ArrayList<>();
+        for (ProductSummary product : products) {
+            ProductDetail detail = skuDetail(product.getId());
+            List<ProductSearchResult.SkuOption> options = detail == null || detail.getSkus() == null
+                    ? List.of()
+                    : detail.getSkus().stream().limit(SKU_LIMIT)
+                    .map(sku -> new ProductSearchResult.SkuOption(
+                            sku.getId(), sku.getSpecText(), sku.getPrice(), sku.getStock(),
+                            sku.getStock() != null && sku.getStock() > 0))
+                    .toList();
+            SkuView defaultSku = detail != null && detail.getSkus() != null && detail.getSkus().size() == 1
+                    ? detail.getSkus().get(0) : null;
+            results.add(new ProductSearchResult(product,
+                    defaultSku == null ? null : defaultSku.getId(),
+                    defaultSku == null ? null : defaultSku.getSpecText(),
+                    defaultSku == null ? null : defaultSku.getPrice(),
+                    defaultSku == null ? null : defaultSku.getStock(),
+                    defaultSku == null ? null : defaultSku.getStock() != null && defaultSku.getStock() > 0,
+                    options));
+        }
+        return List.copyOf(results);
     }
 
     /**

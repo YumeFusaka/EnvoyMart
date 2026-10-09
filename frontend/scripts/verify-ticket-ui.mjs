@@ -86,11 +86,11 @@ const adminHeaders = {
 
 /** 接口调用：**不抛异常**，连业务码一起回，让断言自己去判 */
 async function api(path, { method = 'GET', body, asAdmin = false } = {}) {
-  const res = await fetch(`${GW}${path}`, {
-    method,
-    headers: asAdmin ? adminHeaders : authHeaders,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  const init = { method, headers: asAdmin ? adminHeaders : authHeaders }
+  if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
+    init.body = JSON.stringify(body)
+  }
+  const res = await fetch(`${GW}${path}`, init)
   return res.json()
 }
 

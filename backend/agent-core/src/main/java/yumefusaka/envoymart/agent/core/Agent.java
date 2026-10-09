@@ -562,13 +562,15 @@ public class Agent {
         // 否则这段执行是黑盒——而它恰恰是不可撤销操作，最需要过程可见
         progress.onStart(action.tool());
         ToolResult result = toolRegistry.execute(new ToolCall(
-                UUID.randomUUID().toString(), action.tool(), action.arguments(), true, userId));
+                UUID.randomUUID().toString(), action.tool(), action.arguments(), true, userId,
+                action.operationId()));
         progress.onFinish(action.tool(), result.isSuccess(), result.isNoData(), result.getLatencyMs());
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
                 : "执行失败：" + result.getErrorMessage();
         return ToolExecution.builder()
                 .tool(action.tool())
+                .operationId(action.operationId())
                 .input(String.valueOf(action.arguments()))
                 .output(output)
                 .success(result.isSuccess())
@@ -649,9 +651,9 @@ public class Agent {
         // 执行图：计划为空时它会转为直接对话（ReAct 所在的位置）
         // 循环护栏一次请求一份，同时约束图里的环与框架驱动的工具循环
         LoopGuard guard = new LoopGuard(config.getLoopBudget());
-        AgentGraph.GraphResult graphResult = agentGraph.run(
+        AgentGraph.GraphResult graphResult = AgentGraph.withSession(sessionId, () -> agentGraph.run(
                 userId, message, systemPrompt,
-                recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk, progress, retriever);
+                recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk, progress, retriever));
         log.info("[Agent] loops {}", guard.summary());
         // 跑偏观测：这轮最终执行了什么 vs 首轮冻结的意图。
         // 读的是收尾后的完整步骤列表——执行中途读到的是还在长的一份

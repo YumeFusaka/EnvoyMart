@@ -64,15 +64,15 @@ const rules: FormRules = {
   // 变更的区划表，那是另一个模块的事，前端随手编一份反而会挡住合法地址
   province: [
     { required: true, message: '请输入省份', trigger: 'blur' },
-    { pattern: /^[\u4e00-\u9fa5·\-]{2,20}$/, message: '请用中文填写省份，如「上海市」', trigger: 'blur' },
+    { pattern: /^[\u4e00-\u9fa5·-]{2,20}$/, message: '请用中文填写省份，如「上海市」', trigger: 'blur' },
   ],
   city: [
     { required: true, message: '请输入城市', trigger: 'blur' },
-    { pattern: /^[\u4e00-\u9fa5·\-]{2,20}$/, message: '请用中文填写城市，如「上海市」', trigger: 'blur' },
+    { pattern: /^[\u4e00-\u9fa5·-]{2,20}$/, message: '请用中文填写城市，如「上海市」', trigger: 'blur' },
   ],
   district: [
     { required: true, message: '请输入区县', trigger: 'blur' },
-    { pattern: /^[\u4e00-\u9fa5·\-]{2,20}$/, message: '请用中文填写区县，如「浦东新区」', trigger: 'blur' },
+    { pattern: /^[\u4e00-\u9fa5·-]{2,20}$/, message: '请用中文填写区县，如「浦东新区」', trigger: 'blur' },
   ],
   detail: [{ required: true, message: '请输入详细地址', trigger: 'blur' }],
 }

@@ -25,6 +25,11 @@ async function load() {
   try { run.value = (await getGroundingReport()).live } catch { failed.value = true } finally { loading.value = false }
 }
 onMounted(load)
+const snapshotError = computed(() => {
+  const value = run.value
+  if (!value || (value.status !== 'SNAPSHOT_CORRUPTED' && value.status !== 'VERSION_INCOMPATIBLE')) return ''
+  return value.snapshotError || '快照读取失败，不能用当前运行数据替代历史评测结果。'
+})
 const pct = (value: number) => (value * 100).toFixed(1)
 const metrics = computed<GroundingMetrics | null>(() => run.value?.metrics ?? null)
 const issue = (item: GroundingLiveCase) => !item.outcome || item.outcome.unsupported > 0 || item.outcome.wrongCitations > 0 || item.outcome.outOfRange > 0 || !item.outcome.refusalCorrect || (item.outcome.kind === 'MULTI_HOP' && !item.outcome.multiHopHit)
@@ -91,8 +96,13 @@ function jumpToEvidence(item: GroundingLiveCase, refs: number[]) {
     <header class="quality-header"><p class="eyebrow">Production Answer Quality</p><h1>回答质量评测</h1><p class="subcopy">这份报告展示真实 Agent 在当前知识库、向量库和线上知识图谱上的生成效果。所有指标和逐条回答都来自管理员手动触发后生成的实测快照。</p></header>
     <ErrorState v-if="failed" message="真实链路回答评测快照加载失败，请重试" :on-retry="load" />
     <el-skeleton v-else-if="loading" :rows="8" animated />
+    <section v-else-if="run?.status === 'SNAPSHOT_CORRUPTED' || run?.status === 'VERSION_INCOMPATIBLE'" class="empty-state empty-state--error">
+      <h2>{{ run.status === 'SNAPSHOT_CORRUPTED' ? '回答质量快照已损坏' : '回答质量快照版本不兼容' }}</h2>
+      <p>{{ snapshotError }}</p>
+      <small v-if="run.snapshotPath">文件：{{ run.snapshotPath }}<span v-if="run.runId"> · runId：{{ run.runId }}</span></small>
+    </section>
     <template v-else-if="run?.status === 'COMPLETED' && metrics">
-      <section class="snapshot-meta"><span>完成于 <b>{{ formatDateTime(run.finishedAt) }}</b></span><span>完成 {{ run.completedCases }} / {{ run.totalCases }} 条</span><span v-if="run.failedCases">调用失败 {{ run.failedCases }} 条</span><span>Prompt {{ run.promptVersion ?? '—' }}</span><span>Pipeline {{ run.pipelineVersion ?? '—' }}</span><span class="readonly">只读快照</span></section>
+      <section class="snapshot-meta"><span>完成于 <b>{{ formatDateTime(run.finishedAt) }}</b></span><span>完成 {{ run.completedCases }} / {{ run.totalCases }} 条</span><span v-if="run.failedCases">调用失败 {{ run.failedCases }} 条</span><span>Prompt {{ run.promptVersion ?? '—' }}</span><span>Pipeline {{ run.pipelineVersion ?? '—' }}</span><span v-if="run.runId">runId {{ run.runId }}</span><span class="readonly">只读快照</span></section>
       <section class="metric-grid">
         <article class="metric-card metric-card--hero"><p>幻觉率</p><strong>{{ pct(metrics.hallucinationRate) }}%</strong><small>{{ metrics.unsupportedSentences }} / {{ metrics.factSentences }} 句未被证据支撑</small></article>
         <article class="metric-card"><p>引用准确率</p><strong>{{ pct(metrics.citationAccuracy) }}%</strong><small>{{ metrics.wrongCitations }} 条错误引用</small></article>
@@ -152,8 +162,10 @@ function jumpToEvidence(item: GroundingLiveCase, refs: number[]) {
         </ol>
       </section>
     </template>
+    <section v-else-if="run?.status === 'RUNNING'" class="empty-state"><h2>真实评测正在运行</h2><p>已完成 {{ run.completedCases }} / {{ run.totalCases }} 条；页面只读取进度，不会重复触发模型。</p></section>
     <section v-else-if="run?.status === 'FAILED'" class="empty-state"><h2>真实评测未获得有效回答</h2><p>{{ run.failedCases }} 条模型调用失败或返回降级回复，本次没有可展示的质量指标。需要恢复模型服务后采集真实快照。</p></section>
-    <section v-else class="empty-state"><h2>暂无真实链路快照</h2><p>当前服务还没有生成可展示的实测结果。页面不会用离线重放数据填充。</p></section>
+    <section v-else-if="run?.status === 'NEVER_RUN' || !run" class="empty-state"><h2>暂无真实链路快照</h2><p>当前服务还没有生成可展示的实测结果。页面不会用离线重放数据填充。</p></section>
+    <section v-else class="empty-state"><h2>评测尚未完成</h2><p>当前状态：{{ run?.status }}，页面不会把未完成数据当作最终成绩。</p></section>
   </div>
 </template>
 

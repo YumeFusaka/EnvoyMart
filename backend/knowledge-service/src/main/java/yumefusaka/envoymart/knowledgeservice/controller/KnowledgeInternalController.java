@@ -102,8 +102,7 @@ public class KnowledgeInternalController {
 
     @PostMapping("/graph/failure")
     public Result<Void> recordGraphFailure(@RequestBody GraphBuildFailurePayload payload) {
-        graphService.recordFailure(payload.getBatchId(), payload.getDocNo(), payload.getEntityKey(),
-                payload.getStage(), payload.getReasonCode(), payload.getDetail(), payload.isRetryable());
+        graphService.recordFailure(payload);
         return Result.success();
     }
 

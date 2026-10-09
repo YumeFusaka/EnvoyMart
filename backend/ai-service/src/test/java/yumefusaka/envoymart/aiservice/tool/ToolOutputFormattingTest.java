@@ -89,6 +89,25 @@ class ToolOutputFormattingTest {
     }
 
     @Test
+    void 商品列表输出带候选下标且结构化结果保留SKU信息() {
+        ProductClient client = mock(ProductClient.class);
+        when(client.search(anyString(), any(), any(), any(), any(), anyInt())).thenReturn(hits(
+                ProductSummary.builder().id(7L).name("商品甲").minPrice(100L).maxPrice(100L).build(),
+                ProductSummary.builder().id(8L).name("商品乙").minPrice(200L).maxPrice(200L).build()));
+        when(client.getProduct(7L)).thenReturn(Result.success(ProductDetail.builder().id(7L).name("商品甲")
+                .skus(List.of(SkuView.builder().id(71L).specText("小包装").price(100L).stock(3).build())).build()));
+        when(client.getProduct(8L)).thenReturn(Result.success(ProductDetail.builder().id(8L).name("商品乙")
+                .skus(List.of(SkuView.builder().id(81L).specText("大包装").price(200L).stock(4).build())).build()));
+
+        ToolResult result = new ProductTool(client).execute(call("product_search", Map.of("query", "商品")));
+
+        assertThat(result.getOutput()).contains("候选[0]").contains("候选[1]");
+        assertThat(result.getRawData()).asList().hasSize(2);
+        assertThat(result.getRawData()).asList().element(0)
+                .extracting("skuId").isEqualTo(71L);
+    }
+
+    @Test
     void 商品工具认得出图谱用的编号写法() {
         ProductClient client = mock(ProductClient.class);
         when(client.getProduct(7L)).thenReturn(Result.success(

@@ -111,7 +111,13 @@ public class ApprovalTokens {
         String requestId = UUID.randomUUID().toString();
         List<Map<String, Object>> encoded = new ArrayList<>(actions.size());
         for (PendingAction action : actions) {
-            encoded.add(Map.of("t", action.tool(), "p", withRequestId(action, requestId)));
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("t", action.tool());
+            item.put("p", withRequestId(action, requestId));
+            if (action.operationId() != null && !action.operationId().isBlank()) {
+                item.put("o", action.operationId());
+            }
+            encoded.add(item);
         }
         Map<String, Object> payload = Map.of(
                 "u", userId == null ? "" : userId,
@@ -251,7 +257,9 @@ public class ApprovalTokens {
             if (!(tool instanceof String name) || name.isBlank()) {
                 return List.of();
             }
-            actions.add(PendingAction.of(name, asArguments(map.get("p"))));
+            Object operationId = map.get("o");
+            actions.add(PendingAction.of(name, asArguments(map.get("p")),
+                    operationId == null ? null : String.valueOf(operationId)));
         }
         return actions;
     }

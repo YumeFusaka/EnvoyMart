@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+
 /**
  * 验收脚本的公共工具。
  *
@@ -57,4 +60,28 @@ export async function uniqueRow(list, describe, probe) {
     }
   }
   throw new Error('没有全库唯一的候选行可用来定位')
+}
+
+export async function readFixture(name) {
+  const path = fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url))
+  return JSON.parse(await readFile(path, 'utf8'))
+}
+
+export function checkCaseContract(item) {
+  return Boolean(item?.caseId) && Array.isArray(item?.turns) && Array.isArray(item?.tools)
+}
+
+export function printContractSummary(label, pass, fail, extra = '') {
+  console.log(`\n${label}: ${pass} 通过 / ${fail} 失败${extra ? `\n${extra}` : ''}`)
+  if (fail > 0) process.exitCode = 1
+}
+
+export async function callJson(base, path, { method = 'GET', token, body } = {}) {
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  return { status: response.status, payload }
 }

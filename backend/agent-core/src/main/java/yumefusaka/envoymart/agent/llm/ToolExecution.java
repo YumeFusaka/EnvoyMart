@@ -12,6 +12,8 @@ public class ToolExecution implements java.io.Serializable {
 
     /** 工具名 */
     private String tool;
+    /** 副作用去重与审计使用的稳定操作标识。 */
+    private String operationId;
     /** 调用入参（JSON 字符串） */
     private String input;
     /** 工具返回的文本结果 */

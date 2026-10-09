@@ -3,7 +3,6 @@ package yumefusaka.envoymart.aiservice.eval;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
-import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import yumefusaka.envoymart.agent.core.Agent;
 import yumefusaka.envoymart.agent.core.AgentGraph;
@@ -15,12 +14,11 @@ import yumefusaka.envoymart.agent.rag.GraphMultiHopFixtures;
 import yumefusaka.envoymart.common.web.RequestId;
 
 import java.time.OffsetDateTime;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /**
  * 回答质量的<b>线上真跑</b>评测 —— 拿夹具里的问题重新问一遍真实 Agent。
@@ -39,7 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Service
 public class GroundingLiveEvalService {
 
-    private static final Path SNAPSHOT_FILE = Path.of("data", "eval", "production-grounding.json");
+    private static final String SNAPSHOT_FILE = "production-grounding.json";
     private static final int LIVE_CASE_COUNT = GroundingFixtures.CASES.size() + GraphMultiHopFixtures.CASES.size();
     private static final String PROMPT_VERSION = "grounding-prompt-v4";
     private static final String PIPELINE_VERSION = "agent-live-v3-evidence-gate-boundary";
@@ -77,16 +75,25 @@ public class GroundingLiveEvalService {
     public record LiveRun(String status, String startedAt, String finishedAt, int totalCases,
                           int completedCases, int failedCases, String currentQuestion, String userId,
                           GroundingEvaluator.Metrics metrics, List<CaseResult> cases,
-                          String promptVersion, String pipelineVersion) {
+                          String promptVersion, String pipelineVersion, String runId,
+                          String snapshotPath, String snapshotError) {
 
         static LiveRun idle(int totalCases) {
-            return new LiveRun("IDLE", null, null, totalCases, 0, 0, null, null, null, List.of(),
-                    PROMPT_VERSION, PIPELINE_VERSION);
+            return new LiveRun(EvalSnapshotDto.Status.NEVER_RUN.name(), null, null, totalCases, 0, 0,
+                    null, null, null, List.of(), PROMPT_VERSION, PIPELINE_VERSION, null, null, null);
+        }
+
+        static LiveRun error(EvalSnapshotDto.Status status, java.nio.file.Path path,
+                             String runId, String error) {
+            return new LiveRun(status.name(), null, null, LIVE_CASE_COUNT, 0, 0, null, null, null,
+                    List.of(), PROMPT_VERSION, PIPELINE_VERSION, runId,
+                    path == null ? null : path.toString(), error);
         }
     }
 
     private final Agent agent;
     private final ObjectMapper objectMapper;
+    private final EvalSnapshotStore snapshotStore;
 
     /** 单飞闸：评测要花 token，并发触发只会有多个任务抢同一份配额 */
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -94,9 +101,15 @@ public class GroundingLiveEvalService {
     /** 最近一次结果。volatile 只赋值不原地改，与检索评测的快照同一套发布方式 */
     private volatile LiveRun latest;
 
-    public GroundingLiveEvalService(Agent agent, ObjectMapper objectMapper) {
+    @Autowired
+    public GroundingLiveEvalService(Agent agent, ObjectMapper objectMapper, EvalSnapshotStore snapshotStore) {
         this.agent = agent;
         this.objectMapper = objectMapper;
+        this.snapshotStore = snapshotStore;
+    }
+
+    public GroundingLiveEvalService(Agent agent, ObjectMapper objectMapper) {
+        this(agent, objectMapper, new EvalSnapshotStore(objectMapper, java.nio.file.Path.of("data", "eval")));
     }
 
     public LiveRun current() {
@@ -104,17 +117,18 @@ public class GroundingLiveEvalService {
         if (current != null) {
             return current;
         }
-        if (Files.exists(SNAPSHOT_FILE)) {
-            try {
-                LiveRun snapshot = objectMapper.readValue(Files.readString(SNAPSHOT_FILE, StandardCharsets.UTF_8),
-                        new TypeReference<>() { });
-                // 兼容旧快照，避免服务升级后页面把既有真实结果显示成未知版本。
-                LiveRun migrated = withVersion(snapshot);
-                latest = migrated;
-                return migrated;
-            } catch (Exception e) {
-                log.warn("[AI] 回答质量真实快照读取失败：{}", e.getMessage());
-            }
+        EvalSnapshotStore.ReadResult<EvalSnapshotDto.GroundingSnapshot> stored =
+                snapshotStore.read(SNAPSHOT_FILE, EvalSnapshotDto.GROUNDING_TYPE,
+                        EvalSnapshotDto.GroundingSnapshot.class);
+        if (stored.value() != null) {
+            LiveRun migrated = withVersion(stored.value().toDomain());
+            latest = migrated;
+            return migrated;
+        }
+        if (stored.status() == EvalSnapshotDto.Status.SNAPSHOT_CORRUPTED
+                || stored.status() == EvalSnapshotDto.Status.VERSION_INCOMPATIBLE) {
+            log.warn("[AI] 回答质量真实快照读取失败 status={} path={} reason={}", stored.status(), stored.path(), stored.error());
+            return LiveRun.error(stored.status(), stored.path(), stored.runId(), stored.error());
         }
         return LiveRun.idle(LIVE_CASE_COUNT);
     }
@@ -127,9 +141,9 @@ public class GroundingLiveEvalService {
         if (!running.compareAndSet(false, true)) {
             return current();
         }
-        LiveRun seed = new LiveRun("RUNNING", OffsetDateTime.now().toString(), null,
+        LiveRun seed = new LiveRun(EvalSnapshotDto.Status.RUNNING.name(), OffsetDateTime.now().toString(), null,
                 LIVE_CASE_COUNT, 0, 0, null, null, null, List.of(),
-                PROMPT_VERSION, PIPELINE_VERSION);
+                PROMPT_VERSION, PIPELINE_VERSION, UUID.randomUUID().toString(), null, null);
         latest = seed;
         Thread worker = new Thread(this::execute, "grounding-live-eval");
         worker.setDaemon(true);
@@ -166,9 +180,9 @@ public class GroundingLiveEvalService {
                     .sorted(GroundingEvaluator.byId())
                     .toList();
             GroundingEvaluator.Metrics metrics = GroundingEvaluator.aggregate(outcomes);
-            latest = new LiveRun(outcomes.isEmpty() ? "FAILED" : "COMPLETED", latest.startedAt(), OffsetDateTime.now().toString(),
+            latest = new LiveRun(outcomes.isEmpty() ? EvalSnapshotDto.Status.FAILED.name() : EvalSnapshotDto.Status.COMPLETED.name(), latest.startedAt(), OffsetDateTime.now().toString(),
                     LIVE_CASE_COUNT, results.size(), failed, null, userId, outcomes.isEmpty() ? null : metrics,
-                    List.copyOf(results), PROMPT_VERSION, PIPELINE_VERSION);
+                    List.copyOf(results), PROMPT_VERSION, PIPELINE_VERSION, latest.runId(), null, null);
             persist(latest);
             log.info("[AI] 回答质量真跑完成：cases={} 失败={} 幻觉率={} 引用准确率={} 拒答准确率={} 多跳命中率={}",
                     results.size(), failed, metrics.hallucinationRate(), metrics.citationAccuracy(),
@@ -176,9 +190,9 @@ public class GroundingLiveEvalService {
         } catch (RuntimeException e) {
             // 整轮崩掉（例如 Agent 初始化失败）也要留下一份可读的状态，而不是永远停在 RUNNING
             log.error("[AI] 回答质量真跑中断", e);
-            latest = new LiveRun("FAILED", latest.startedAt(), OffsetDateTime.now().toString(),
+            latest = new LiveRun(EvalSnapshotDto.Status.FAILED.name(), latest.startedAt(), OffsetDateTime.now().toString(),
                     LIVE_CASE_COUNT, results.size(), failed, null, userId, null,
-                    List.copyOf(results), PROMPT_VERSION, PIPELINE_VERSION);
+                    List.copyOf(results), PROMPT_VERSION, PIPELINE_VERSION, latest.runId(), null, null);
         } finally {
             running.set(false);
         }
@@ -186,27 +200,25 @@ public class GroundingLiveEvalService {
 
     private void persist(LiveRun report) {
         try {
-            Files.createDirectories(SNAPSHOT_FILE.getParent());
-            Files.writeString(SNAPSHOT_FILE,
-                    objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(report),
-                    StandardCharsets.UTF_8);
+            snapshotStore.write(SNAPSHOT_FILE, EvalSnapshotDto.GROUNDING_TYPE, report.runId(),
+                    EvalSnapshotDto.GroundingSnapshot.from(report));
         } catch (Exception e) {
             log.error("[AI] 回答质量真实快照落盘失败：{}", e.getMessage());
         }
     }
 
     private void publishRunning(String userId, List<CaseResult> done, LiveCase fixtureCase) {
-        latest = new LiveRun("RUNNING", latest.startedAt(), null, LIVE_CASE_COUNT,
+        latest = new LiveRun(EvalSnapshotDto.Status.RUNNING.name(), latest.startedAt(), null, LIVE_CASE_COUNT,
                 done.size(), 0, fixtureCase.question(), userId, null, List.copyOf(done),
-                PROMPT_VERSION, PIPELINE_VERSION);
+                PROMPT_VERSION, PIPELINE_VERSION, latest.runId(), null, null);
     }
 
     private static LiveRun withVersion(LiveRun run) {
         if (run.cases() != null && !run.cases().isEmpty() && run.cases().stream()
                 .allMatch(result -> AgentGraph.GENERATION_FAILED_REPLY.equals(result.answer()))) {
-            return new LiveRun("FAILED", run.startedAt(), run.finishedAt(), run.totalCases(),
+            return new LiveRun(EvalSnapshotDto.Status.FAILED.name(), run.startedAt(), run.finishedAt(), run.totalCases(),
                     run.completedCases(), run.cases().size(), null, run.userId(), null,
-                    run.cases(), run.promptVersion(), run.pipelineVersion());
+                    run.cases(), run.promptVersion(), run.pipelineVersion(), run.runId(), run.snapshotPath(), run.snapshotError());
         }
         List<CaseResult> migratedCases = run.cases() == null ? List.of() : run.cases().stream()
                 .map(GroundingLiveEvalService::withRootCause)
@@ -215,7 +227,8 @@ public class GroundingLiveEvalService {
                 run.completedCases(), run.failedCases(), run.currentQuestion(), run.userId(),
                 run.metrics(), migratedCases,
                 run.promptVersion() == null ? "历史快照未记录" : run.promptVersion(),
-                run.pipelineVersion() == null ? "历史快照未记录" : run.pipelineVersion());
+                run.pipelineVersion() == null ? "历史快照未记录" : run.pipelineVersion(), run.runId(),
+                run.snapshotPath(), run.snapshotError());
     }
 
     private static CaseResult withRootCause(CaseResult result) {

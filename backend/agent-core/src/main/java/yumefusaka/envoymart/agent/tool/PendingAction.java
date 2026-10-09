@@ -21,7 +21,7 @@ import java.util.Map;
  * <p>
  * 可读描述仍然要有，但它退成渲染的产物（{@link #describe()}）——展示归展示，执行归执行。
  */
-public record PendingAction(String tool, Map<String, Object> arguments) implements Serializable {
+public record PendingAction(String tool, Map<String, Object> arguments, String operationId) implements Serializable {
 
     /** LangGraph4j 的检查点会把图状态整个序列化一遍；不可序列化的值会在运行期炸在图里 */
     @Serial
@@ -35,8 +35,16 @@ public record PendingAction(String tool, Map<String, Object> arguments) implemen
                 : Collections.unmodifiableMap(new LinkedHashMap<>(arguments));
     }
 
+    public PendingAction(String tool, Map<String, Object> arguments) {
+        this(tool, arguments, null);
+    }
+
     public static PendingAction of(String tool, Map<String, Object> arguments) {
-        return new PendingAction(tool, arguments);
+        return new PendingAction(tool, arguments, null);
+    }
+
+    public static PendingAction of(String tool, Map<String, Object> arguments, String operationId) {
+        return new PendingAction(tool, arguments, operationId);
     }
 
     /** 展示用描述，形如 {@code order_cancel(orderId=12)}。格式契约见 {@link ToolCallDescription} */

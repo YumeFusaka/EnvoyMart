@@ -13,6 +13,7 @@ import yumefusaka.envoymart.contract.AfterSalePreview;
 import yumefusaka.envoymart.contract.LogisticsResponse;
 import yumefusaka.envoymart.contract.OrderResponse;
 import yumefusaka.envoymart.aiservice.model.AgentAddCartRequest;
+import yumefusaka.envoymart.aiservice.model.AgentUpdateCartRequest;
 import yumefusaka.envoymart.aiservice.model.AgentAfterSaleRequest;
 import yumefusaka.envoymart.aiservice.model.AgentCheckoutRequest;
 import yumefusaka.envoymart.aiservice.model.AgentCartItem;
@@ -54,6 +55,15 @@ public interface OrderClient {
     @PostMapping("/cart/items")
     Result<AgentCartItem> addCartItem(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                               @RequestBody AgentAddCartRequest request);
+
+    @PutMapping("/cart/items/{id}")
+    Result<AgentCartItem> updateCartItem(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+                                         @PathVariable("id") Long id,
+                                         @RequestBody AgentUpdateCartRequest request);
+
+    @DeleteMapping("/cart/items/{id}")
+    Result<Void> removeCartItem(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+                                @PathVariable("id") Long id);
 
     /**
      * 结算预览 —— 与 checkout 共用同一段装配代码，只算不改。

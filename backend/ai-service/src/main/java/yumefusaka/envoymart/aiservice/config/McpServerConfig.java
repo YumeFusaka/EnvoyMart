@@ -28,6 +28,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.math.BigDecimal;
+import java.util.Objects;
 import java.util.function.BiFunction;
 
 /**
@@ -250,19 +252,35 @@ public class McpServerConfig {
             // 同一条信任链——区别只在令牌从哪来，而不在服务端对它的信任程度。
             // 会话维度传 null：MCP 协议没有平台会话概念，而这枚令牌恰恰要能在 MCP 这条路上用。
             // 绑定维度因此落在「用户 + 动作 + 入参 + 有效期 + 签名」上，与「外部入口」能提供的信息一致。
-            if (definition.isRequiresConfirmation() && !approvals.verify(approvalToken, userId, null).isPresent()) {
-                guard.recordUnverifiedConfirmation(userId, definition.getName());
-                log.warn("[MCP] 高危工具 {} 的调用被拒：缺少服务端签发的确认令牌或令牌无效 principal={}",
-                        definition.getName(), userId == null ? "anonymous" : userId);
-                return McpSchema.CallToolResult.builder()
-                        .addTextContent("该操作需要用户确认：请先经由对话链路取得本次操作的确认，" + APPROVAL_TOKEN_ARG
-                                + " 携带服务端随确认卡片下发的令牌；不接受调用方自填的 " + CONFIRMED_ARG)
-                        .isError(true)
-                        .build();
+            String operationId = null;
+            if (definition.isRequiresConfirmation()) {
+                var verified = approvals.verify(approvalToken, userId, null);
+                var matched = verified.orElseGet(List::of).stream()
+                        .filter(action -> matchesApprovedAction(definition.getName(), arguments, confirmed, action))
+                        .findFirst();
+                // 令牌存在不等于它授权了这次调用：工具名、业务参数和稳定 operationId 必须来自同一
+                // 个签名动作。否则拿到「取消 12 号单」的令牌就能改参数去取消 13 号单。
+                if (!confirmed || matched.isEmpty()) {
+                    guard.recordUnverifiedConfirmation(userId, definition.getName());
+                    log.warn("[MCP] 高危工具 {} 的调用被拒：令牌动作与本次参数不匹配 principal={}",
+                            definition.getName(), userId == null ? "anonymous" : userId);
+                    return McpSchema.CallToolResult.builder()
+                            .addTextContent("确认令牌与本次工具参数不匹配，拒绝执行；请重新由对话链路发起并确认该操作")
+                            .isError(true)
+                            .build();
+                }
+                operationId = matched.get().operationId();
+                Object signedRequestId = matched.get().arguments().get("requestId");
+                if (signedRequestId != null) {
+                    arguments.put("requestId", signedRequestId);
+                }
             }
 
             ToolResult result = registry.execute(new ToolCall(
-                    UUID.randomUUID().toString(), definition.getName(), arguments, confirmed, userId));
+                    UUID.randomUUID().toString(), definition.getName(), arguments, confirmed, userId,
+                    operationId == null
+                            ? (arguments.get("requestId") == null ? null : String.valueOf(arguments.get("requestId")))
+                            : operationId));
 
             String output = result.isSuccess()
                     ? String.valueOf(result.getOutput())
@@ -335,6 +353,53 @@ public class McpServerConfig {
     /** 取字符串参数；非字符串一律当作缺失——令牌是字符串，其它类型没有合法解释 */
     private static String stringArg(Object raw) {
         return raw instanceof String text ? text : null;
+    }
+
+    /** MCP/Jackson 可能把同一个 JSON 数字解成不同 Number 子类，比较业务参数时按数值归一。 */
+    private static boolean sameArguments(Object left, Object right) {
+        if (left instanceof Number a && right instanceof Number b) {
+            try {
+                return new BigDecimal(a.toString()).compareTo(new BigDecimal(b.toString())) == 0;
+            } catch (NumberFormatException ignored) {
+                return Objects.equals(left, right);
+            }
+        }
+        if (left instanceof Map<?, ?> a && right instanceof Map<?, ?> b) {
+            if (a.size() != b.size()) return false;
+            for (Map.Entry<?, ?> entry : a.entrySet()) {
+                if (!b.containsKey(entry.getKey()) || !sameArguments(entry.getValue(), b.get(entry.getKey()))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (left instanceof List<?> a && right instanceof List<?> b) {
+            if (a.size() != b.size()) return false;
+            for (int i = 0; i < a.size(); i++) {
+                if (!sameArguments(a.get(i), b.get(i))) return false;
+            }
+            return true;
+        }
+        return Objects.equals(left, right);
+    }
+
+    static boolean matchesApprovedAction(String toolName, Map<String, Object> arguments,
+                                         boolean confirmed, yumefusaka.envoymart.agent.tool.PendingAction action) {
+        return confirmed
+                && action != null
+                && Objects.equals(toolName, action.tool())
+                && sameArguments(withoutRequestId(action.arguments()), withoutRequestId(arguments))
+                && action.operationId() != null
+                && !action.operationId().isBlank();
+    }
+
+    private static Map<String, Object> withoutRequestId(Map<String, Object> arguments) {
+        if (arguments == null || !arguments.containsKey("requestId")) {
+            return arguments == null ? Map.of() : arguments;
+        }
+        Map<String, Object> copy = new LinkedHashMap<>(arguments);
+        copy.remove("requestId");
+        return copy;
     }
 
 }

@@ -1,0 +1,15 @@
+{
+  "version": "t1-2026-10-10",
+  "scenarios": [
+    {"caseId":"FR-001","failure":"EMPTY_RESULT","expected":"澄清或换策略，不声称下游故障"},
+    {"caseId":"FR-002","failure":"BUSINESS_REJECTED","expected":"保留业务码和拒绝原因，不重试写操作"},
+    {"caseId":"FR-003","failure":"CONNECTION_FAILED","expected":"区分下游不可用，可按operationId查询结果"},
+    {"caseId":"FR-004","failure":"TIMEOUT_UNKNOWN_RESULT","expected":"先查询权威状态，再决定是否重试"},
+    {"caseId":"FR-005","failure":"DUPLICATE_CONFIRMATION","expected":"一次性令牌拒绝重放，副作用只产生一次"},
+    {"caseId":"FR-006","failure":"CONFIRM_CANCELLED","expected":"不调用写工具，返回取消状态"},
+    {"caseId":"FR-007","failure":"PLAN_UNRESOLVED_REFERENCE","expected":"阻断确认卡并要求重规划"},
+    {"caseId":"FR-008","failure":"SERVICE_RESTART","expected":"重启后从持久化状态继续读取"},
+    {"caseId":"FR-009","failure":"PERMISSION_DENIED","expected":"用户、会话和消息归属校验失败即拒绝"},
+    {"caseId":"FR-010","failure":"SNAPSHOT_CORRUPTED","expected":"显示损坏状态，不伪装成从未运行"}
+  ]
+}

@@ -22,6 +22,20 @@ public class ToolDefinition {
     @Builder.Default
     private boolean requiresConfirmation = false;
 
+    /** 写操作的副作用策略。默认幂等，兼容既有高危工具并要求新工具显式选择。 */
+    @Builder.Default
+    private IdempotencyPolicy idempotencyPolicy = IdempotencyPolicy.IDEMPOTENT;
+
+    /** 工具是否接受执行器注入的 operationId；仅用于 schema/契约说明。 */
+    @Builder.Default
+    private boolean acceptsOperationId = false;
+
+    public enum IdempotencyPolicy {
+        IDEMPOTENT,
+        NON_IDEMPOTENT,
+        NONE
+    }
+
     @Data
     @Builder
     public static class ParameterSpec {

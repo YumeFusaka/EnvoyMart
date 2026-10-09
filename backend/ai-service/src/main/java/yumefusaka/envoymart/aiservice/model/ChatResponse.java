@@ -12,6 +12,10 @@ import java.util.List;
 public class ChatResponse {
 
     private String sessionId;
+    /** 服务端权威的一轮身份，贯穿流式完成事件、历史与反馈。 */
+    private String turnId;
+    private String userMessageId;
+    private String assistantMessageId;
     private String reply;
 
     /**

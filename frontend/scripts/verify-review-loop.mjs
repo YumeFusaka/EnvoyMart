@@ -643,7 +643,7 @@ const junkRows = sql(
   .map((line) => line.trim().split(/\s+/))
   .filter(([id]) => id)
 const junkIds = junkRows.map(([id]) => id)
-for (const [id, status] of junkRows.filter(([, s]) => s === 'PUBLISHED')) {
+for (const [id] of junkRows.filter(([, s]) => s === 'PUBLISHED')) {
   const r = await call(`/reviews/admin/reviews/${id}/status`, {
     method: 'PUT',
     token: A,

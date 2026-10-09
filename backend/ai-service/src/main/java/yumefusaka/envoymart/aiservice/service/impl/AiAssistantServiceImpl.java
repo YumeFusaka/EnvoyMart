@@ -82,9 +82,10 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             claimApproval(userId, request);
+            ChatHistoryStore.TurnIdentity identity = identityFor(userId, request);
             ChatResponse response = toChatResponse(request, agent.chat(
-                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken()), ledger);
-            recordTurn(userId, request, response);
+                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken()), ledger, identity);
+            recordTurn(userId, request, response, identity);
             idempotency.complete(userId, requestId, response);
             return response;
         }
@@ -113,6 +114,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             claimApproval(userId, request);
+            ChatHistoryStore.TurnIdentity identity = identityFor(userId, request);
             // 旁录一份已交付文本。正常收尾时它与 response.getReply() 相同（甚至更短——
             // done 帧要过后置校验，剔除过的句子不出现在 reply 里）；被取消时它是唯一的
             // 「用户看到过什么」的记录。历史必须与屏幕一致：用户按停止后回看，
@@ -132,8 +134,8 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                             }
                             onChunk.accept(chunk);
                         },
-                        effective), ledger);
-                recordTurn(userId, request, response);
+                        effective), ledger, identity);
+                recordTurn(userId, request, response, identity);
                 // 正常收尾后把占位换成结果。**必须替换**，不能留在 "PENDING"：
                 // 占位在窗口内会让同一个请求号一律被拒，而「这一轮已经成功交付完了」之后
                 // 再来的重复请求（前端收完 done 帧又因网络抖动重发一次）应当被认成已完成、
@@ -147,8 +149,11 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                         .usage(usageOf(ledger))
                         .requestId(RequestId.current())
                         .sessionId(request.getSessionId())
+                        .turnId(identity.turnId())
+                        .userMessageId(identity.userMessageId())
+                        .assistantMessageId(identity.assistantMessageId())
                         .reply(delivered.toString())
-                        .build());
+                        .build(), identity);
                 throw e;
             }
         }
@@ -166,17 +171,29 @@ public class AiAssistantServiceImpl implements AiAssistantService {
      * <p>
      * 确认内容与绑定用户、会话、动作和有效期的签名一起保存，恢复会话后仍由服务端验签。
      */
-    private void recordTurn(String userId, ChatRequest request, ChatResponse response) {
+    private void recordTurn(String userId, ChatRequest request, ChatResponse response,
+                            ChatHistoryStore.TurnIdentity identity) {
         // 重新生成：用户重问的是「刚才那条」，会话里不该出现第二条用户消息——
         // 就地改写最后一条助手答复。没有这个分支，点一次重新生成历史就多一对
         // 重复的问答，点三次侧栏里就挂着一串一模一样的提问
         if (request.isRegenerate()) {
-            history.recordAnswer(userId, request.getSessionId(),
-                    response.getReply(), response);
+            history.recordAnswer(userId, request.getSessionId(), response.getReply(), response);
             return;
         }
         history.recordTurn(userId, request.getSessionId(), request.getMessage(),
                 response.getReply(), response);
+    }
+
+    private ChatHistoryStore.TurnIdentity identityFor(String userId, ChatRequest request) {
+        if (request.isRegenerate()) {
+            ChatHistoryStore.TurnIdentity existing = history.latestTurnIdentity(userId, request.getSessionId());
+            if (existing != null) {
+                return existing;
+            }
+            log.warn("[AiService] 重新生成找不到历史身份，创建兼容身份 userId={} sessionId={}",
+                    userId, request.getSessionId());
+        }
+        return ChatHistoryStore.newTurnIdentity();
     }
 
     private void claimApproval(String userId, ChatRequest request) {
@@ -187,7 +204,8 @@ public class AiAssistantServiceImpl implements AiAssistantService {
     }
 
     private ChatResponse toChatResponse(ChatRequest request, Agent.AgentResponse agentResp,
-                                        TokenLedger.Scope ledger) {
+                                        TokenLedger.Scope ledger,
+                                        ChatHistoryStore.TurnIdentity identity) {
         List<ToolExecution> executions = agentResp.getToolExecutions() == null
                 ? List.of() : agentResp.getToolExecutions();
 
@@ -195,6 +213,9 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .usage(usageOf(ledger))
                 .requestId(RequestId.current())
                 .sessionId(request.getSessionId())
+                .turnId(identity.turnId())
+                .userMessageId(identity.userMessageId())
+                .assistantMessageId(identity.assistantMessageId())
                 .reply(agentResp.getReply())
                 .retrievalQuery(agentResp.getRetrievalQuery())
                 .expansion(expandView(agentResp.getExpansion()))

@@ -57,6 +57,9 @@ public class BadCaseStore {
     public BadCase upsert(String userId, String sessionId, String assistantMessageId, FeedbackRequest request) {
         validate(request);
         List<ChatHistoryStore.StoredMessage> messages = ChatHistoryStoreMessages.load(redis, mapper, userId, sessionId);
+        if (messages.isEmpty()) {
+            throw new IllegalArgumentException("会话不存在或无权访问");
+        }
         int index = indexOf(messages, assistantMessageId);
         if (index < 0 || !"assistant".equals(messages.get(index).role())) {
             throw new IllegalArgumentException("助手消息不存在");
@@ -66,13 +69,17 @@ public class BadCaseStore {
         if (question == null || !"user".equals(question.role())) {
             throw new IllegalArgumentException("对应用户问题不存在");
         }
-        Set<String> allowed = messages.stream().map(ChatHistoryStore.StoredMessage::id).collect(java.util.stream.Collectors.toSet());
+        Set<String> allowed = messages.stream().map(ChatHistoryStore.StoredMessage::id)
+                .collect(java.util.stream.Collectors.toSet());
         List<String> selected = request.selectedMessageIds() == null ? List.of() : request.selectedMessageIds();
-        int windowStart = Math.max(0, index - 4);
-        Set<String> nearby = messages.subList(windowStart, Math.min(messages.size(), index + 1)).stream()
-                .map(ChatHistoryStore.StoredMessage::id).collect(java.util.stream.Collectors.toSet());
-        if (selected.stream().anyMatch(id -> !nearby.contains(id))) {
+        if (selected.size() > messages.size()) {
+            throw new IllegalArgumentException("关联消息数量超过当前会话消息数");
+        }
+        if (selected.stream().anyMatch(id -> id == null || id.isBlank() || !allowed.contains(id))) {
             throw new IllegalArgumentException("关联消息不属于当前会话");
+        }
+        if (selected.stream().distinct().count() != selected.size()) {
+            throw new IllegalArgumentException("关联消息不能重复选择");
         }
         String key = key(userId, sessionId, assistantMessageId);
         BadCase old = read(key);
@@ -81,8 +88,11 @@ public class BadCaseStore {
                 assistantMessageId, question.id(), List.copyOf(selected), List.copyOf(request.reasonCodes()),
                 sanitize(request.comment()), question.content(), assistant.content(),
                 assistant.response() == null ? Map.of() : sanitizeMap(assistant.response()),
-                old == null ? now : old.createdAt(), now, old == null ? Status.ACTIVE : old.status(),
-                old == null ? null : old.reviewedBy(), old == null ? null : old.reviewedAt(), old == null ? null : old.testCaseId());
+                old == null ? now : old.createdAt(), now,
+                old == null || old.status() == Status.REVOKED ? Status.ACTIVE : old.status(),
+                old == null || old.status() == Status.REVOKED ? null : old.reviewedBy(),
+                old == null || old.status() == Status.REVOKED ? null : old.reviewedAt(),
+                old == null || old.status() == Status.REVOKED ? null : old.testCaseId());
         write(key, value);
         redis.opsForValue().set(ID_INDEX_PREFIX + value.badCaseId(), key, TTL);
         redis.opsForZSet().add(INDEX, key, now.toEpochMilli());
@@ -99,7 +109,11 @@ public class BadCaseStore {
     public boolean revoke(String userId, String sessionId, String assistantMessageId) {
         String key = key(userId, sessionId, assistantMessageId);
         BadCase old = read(key);
-        if (old == null || old.status() == Status.REVIEWED || old.status() == Status.IN_TEST_SET) return false;
+        if (old == null) return false;
+        if (old.status() == Status.REVIEWED || old.status() == Status.IN_TEST_SET) {
+            throw new IllegalStateException("已审核反馈不能撤销");
+        }
+        if (old.status() == Status.REVOKED) return true;
         BadCase value = new BadCase(old.badCaseId(), old.userId(), old.sessionId(), old.assistantMessageId(), old.userMessageId(),
                 old.selectedMessageIds(), old.reasonCodes(), old.comment(), old.question(), old.answer(), old.responseSnapshot(),
                 old.createdAt(), Instant.now(), Status.REVOKED, old.reviewedBy(), old.reviewedAt(), old.testCaseId());
@@ -226,6 +240,10 @@ public class BadCaseStore {
 
     private void validate(FeedbackRequest request) {
         if (request == null || request.reasonCodes() == null || request.reasonCodes().isEmpty() || request.reasonCodes().size() > 6) throw new IllegalArgumentException("请选择反馈原因");
+        if (request.reasonCodes().stream().anyMatch(java.util.Objects::isNull)
+                || request.reasonCodes().stream().distinct().count() != request.reasonCodes().size()) {
+            throw new IllegalArgumentException("反馈原因不能重复或为空");
+        }
         if (request.comment() != null && request.comment().length() > MAX_COMMENT) throw new IllegalArgumentException("说明不能超过1000字");
     }
     private String sanitize(String value) { return value == null ? null : value.replaceAll("[\\r\\n\\t]", " ").trim(); }

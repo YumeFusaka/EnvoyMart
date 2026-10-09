@@ -10,6 +10,7 @@ import yumefusaka.envoymart.contract.GraphIngestPayload;
 import yumefusaka.envoymart.contract.GraphIngestResult;
 import yumefusaka.envoymart.contract.GraphNode;
 import yumefusaka.envoymart.contract.GraphTriplePayload;
+import yumefusaka.envoymart.contract.GraphBuildFailurePayload;
 import yumefusaka.envoymart.contract.InteractionReport;
 import yumefusaka.envoymart.contract.ProductGraphCoverage;
 import yumefusaka.envoymart.contract.Substance;
@@ -106,7 +107,8 @@ public class GraphService {
         String batchId = payload.getBatchId() == null || payload.getBatchId().isBlank()
                 ? "legacy-" + System.currentTimeMillis() : payload.getBatchId();
         result.rejectedTriples().forEach(rejected -> recordFailure(batchId, doc.getDocNo(),
-                rejected.head(), "VALIDATION", rejected.reason().name(), rejected.detail(), false));
+                rejected, "VALIDATION", rejected.reason().name(), rejected.detail(), false,
+                doc.getContent(), chunks));
 
         boolean available = graphStore.isAvailable();
         if (available) {
@@ -129,7 +131,56 @@ public class GraphService {
 
     public void recordFailure(String batchId, String docNo, String entityKey, String stage,
                               String reasonCode, String detail, boolean retryable) {
+        recordFailure(batchId, docNo, new GraphBuildFailureEntity(), stage, reasonCode,
+                detail, retryable, entityKey);
+    }
+
+    public void recordFailure(GraphBuildFailurePayload payload) {
         GraphBuildFailureEntity entity = new GraphBuildFailureEntity();
+        entity.setRawCandidate(normalize(payload.getRawCandidate()));
+        entity.setNormalizedHeadKind(normalize(payload.getNormalizedHeadKind()));
+        entity.setNormalizedHead(normalize(payload.getNormalizedHead()));
+        entity.setNormalizedTailKind(normalize(payload.getNormalizedTailKind()));
+        entity.setNormalizedTail(normalize(payload.getNormalizedTail()));
+        entity.setRelation(normalize(payload.getRelation()));
+        entity.setQuote(trim(payload.getQuote(), 1000));
+        entity.setQuoteOffsetStart(payload.getQuoteOffsetStart());
+        entity.setQuoteOffsetEnd(payload.getQuoteOffsetEnd());
+        entity.setAliasHit(payload.getAliasHit());
+        entity.setChunkId(normalize(payload.getChunkId()));
+        recordFailure(payload.getBatchId(), payload.getDocNo(), entity, payload.getStage(),
+                payload.getReasonCode(), payload.getDetail(), payload.isRetryable(), payload.getEntityKey());
+    }
+
+    private void recordFailure(String batchId, String docNo, TripleValidator.RejectedTriple rejected,
+                               String stage, String reasonCode, String detail, boolean retryable,
+                               String sourceContent, List<KnowledgeChunkEntity> chunks) {
+        String entityKey = rejected == null ? null : rejected.head();
+        GraphBuildFailureEntity entity = new GraphBuildFailureEntity();
+        entity.setRawCandidate(rejected == null ? null : candidateText(rejected));
+        entity.setNormalizedHeadKind(rejected == null ? null : normalize(rejected.headKind()));
+        entity.setNormalizedHead(rejected == null ? null : canonical(rejected.head()));
+        entity.setNormalizedTailKind(rejected == null ? null : normalize(rejected.tailKind()));
+        entity.setNormalizedTail(rejected == null ? null : canonical(rejected.tail()));
+        entity.setRelation(rejected == null ? null : normalize(rejected.relation()));
+        entity.setQuote(rejected == null ? null : trim(rejected.quote(), 1000));
+        if (rejected != null && rejected.quote() != null && !rejected.quote().isBlank()) {
+            int start = sourceContent == null ? -1 : sourceContent.indexOf(rejected.quote());
+            if (start >= 0) {
+                entity.setQuoteOffsetStart(start);
+                entity.setQuoteOffsetEnd(start + rejected.quote().length());
+                entity.setChunkId(chunkIdAt(chunks, start));
+            }
+            String head = normalize(rejected.head());
+            String tail = normalize(rejected.tail());
+            entity.setAliasHit(!canonical(head).equals(head) || !canonical(tail).equals(tail));
+        }
+        recordFailure(batchId, docNo, entity, stage, reasonCode, detail, retryable, entityKey);
+    }
+
+    private void recordFailure(String batchId, String docNo, GraphBuildFailureEntity entity,
+                               String stage, String reasonCode, String detail, boolean retryable,
+                               String entityKey) {
         entity.setBatchId(batchId == null || batchId.isBlank() ? "unknown" : batchId);
         entity.setDocNo(docNo);
         entity.setEntityKey(entityKey);
@@ -142,6 +193,25 @@ public class GraphService {
         if (failureMapper != null) {
             failureMapper.insert(entity);
         }
+    }
+
+    private static String normalize(String value) {
+        return value == null || value.isBlank() ? null : value.strip();
+    }
+
+    private static String canonical(String value) {
+        String normalized = TripleValidator.normalizeName(value);
+        return normalized == null || normalized.isBlank() ? normalized : TripleValidator.canonicalName(normalized);
+    }
+
+    private static String trim(String value, int max) {
+        String normalized = value == null ? null : value.strip();
+        return normalized == null ? null : normalized.substring(0, Math.min(max, normalized.length()));
+    }
+
+    private static String candidateText(TripleValidator.RejectedTriple rejected) {
+        return rejected.headKind() + " " + rejected.head() + " -" + rejected.relation()
+                + "-> " + rejected.tailKind() + " " + rejected.tail();
     }
 
     private String normalizeStage(String stage) {
@@ -161,7 +231,7 @@ public class GraphService {
                                                    String reasonCode, int limit) {
         var query = Wrappers.<GraphBuildFailureEntity>lambdaQuery()
                 .orderByDesc(GraphBuildFailureEntity::getOccurredAt)
-                .last("limit " + Math.clamp(limit, 1, 200));
+                .last("limit " + Math.clamp(limit, 1, 5000));
         if (batchId != null && !batchId.isBlank()) query.eq(GraphBuildFailureEntity::getBatchId, batchId);
         if (docNo != null && !docNo.isBlank()) query.eq(GraphBuildFailureEntity::getDocNo, docNo);
         if (stage != null && !stage.isBlank()) query.eq(GraphBuildFailureEntity::getStage, stage);
@@ -192,13 +262,39 @@ public class GraphService {
     }
 
     public Map<String, Object> failureStats(String batchId) {
-        List<GraphBuildFailureEntity> rows = failures(batchId, null, null, null, 200);
+        List<GraphBuildFailureEntity> rows = allFailures(batchId);
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("failed", rows.size());
         stats.put("retryable", rows.stream().filter(GraphBuildFailureEntity::getRetryable).count());
         stats.put("batches", rows.stream().map(GraphBuildFailureEntity::getBatchId).distinct().count());
+        Map<String, Long> byStage = rows.stream().collect(java.util.stream.Collectors.groupingBy(
+                row -> row.getStage() == null ? "UNKNOWN" : row.getStage(), LinkedHashMap::new,
+                java.util.stream.Collectors.counting()));
+        Map<String, Long> byReason = rows.stream().collect(java.util.stream.Collectors.groupingBy(
+                row -> row.getReasonCode() == null ? "UNKNOWN" : row.getReasonCode(), LinkedHashMap::new,
+                java.util.stream.Collectors.counting()));
+        stats.put("byStage", byStage);
+        stats.put("byReason", byReason);
         stats.put("status", rows.isEmpty() ? "NO_FAILURES_RECORDED" : "FAILED");
         return stats;
+    }
+
+    private List<GraphBuildFailureEntity> allFailures(String batchId) {
+        if (failureMapper == null) return List.of();
+        var query = Wrappers.<GraphBuildFailureEntity>lambdaQuery()
+                .orderByDesc(GraphBuildFailureEntity::getOccurredAt);
+        if (batchId != null && !batchId.isBlank()) query.eq(GraphBuildFailureEntity::getBatchId, batchId);
+        return failureMapper.selectList(query);
+    }
+
+    private static String chunkIdAt(List<KnowledgeChunkEntity> chunks, int offset) {
+        if (chunks == null || chunks.isEmpty()) return null;
+        KnowledgeChunkEntity best = null;
+        for (KnowledgeChunkEntity chunk : chunks) {
+            if (chunk.getCharOffset() == null || chunk.getCharOffset() > offset) continue;
+            if (best == null || chunk.getCharOffset() > best.getCharOffset()) best = chunk;
+        }
+        return best == null ? null : best.getChunkId();
     }
 
     private static Triple toCandidate(GraphTriplePayload t) {

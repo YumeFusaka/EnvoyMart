@@ -54,6 +54,10 @@ services:
   knowledge-service-url: ${KNOWLEDGE_SERVICE_URL:http://127.0.0.1:9008}
   auth-service-url: ${AUTH_SERVICE_URL:http://127.0.0.1:9001}
 
+# 评测运行数据不属于构建产物；生产环境通过 EVAL_SNAPSHOT_DIR 指向稳定持久卷。
+eval:
+  snapshot-dir: ${EVAL_SNAPSHOT_DIR:data/eval}
+
 jwt:
   token-name: token
   ttl: ${JWT_TTL:604800000}

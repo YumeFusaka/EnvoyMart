@@ -14,6 +14,8 @@ import java.util.Map;
 public class PlanStep implements java.io.Serializable {
     private String tool;
     private Map<String, Object> arguments;
+    /** 计划编译后绑定的稳定操作标识。模型不得自行伪造，空值由执行器补齐。 */
+    private String operationId;
     /** 这一步要达成什么，评估阶段据此判断是否达标 */
     private String reason;
     /** 失败是否可跳过 */
@@ -29,4 +31,8 @@ public class PlanStep implements java.io.Serializable {
      */
     @Builder.Default
     private List<Integer> dependsOn = List.of();
+
+    /** 计划编译阶段得到的「字段引用 -> 前置步骤」绑定。仅作观测/校验，不由模型填写。 */
+    @Builder.Default
+    private Map<String, Integer> stepOutputBindings = Map.of();
 }

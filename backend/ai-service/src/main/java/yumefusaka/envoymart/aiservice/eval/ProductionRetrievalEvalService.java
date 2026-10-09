@@ -3,23 +3,20 @@ package yumefusaka.envoymart.aiservice.eval;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
-import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import yumefusaka.envoymart.agent.rag.ProductionRetrievalFixtures;
 import yumefusaka.envoymart.agent.rag.RetrievalEvaluator;
 import yumefusaka.envoymart.agent.rag.Retriever;
 import yumefusaka.envoymart.aiservice.knowledge.KnowledgeCorpus;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /**
  * 生产链路检索评测 —— 报告页「当前系统检索效果」那一栏的数据来源。
@@ -45,10 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Service
 public class ProductionRetrievalEvalService {
 
-    /** 快照落盘目录（相对 ai-service 工作目录）。运行期产物，不进版本库。 */
-    private static final Path SNAPSHOT_DIR = Path.of("data", "eval");
-
-    private static final Path SNAPSHOT_FILE = SNAPSHOT_DIR.resolve("production-retrieval.json");
+    private static final String SNAPSHOT_FILE = "production-retrieval.json";
 
     private static final int TOP_K = 3;
 
@@ -61,6 +55,7 @@ public class ProductionRetrievalEvalService {
     private final Retriever retriever;
     private final KnowledgeCorpus corpus;
     private final ObjectMapper objectMapper;
+    private final EvalSnapshotStore snapshotStore;
 
     /** 单飞闸 */
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -68,12 +63,21 @@ public class ProductionRetrievalEvalService {
     /** 最近一次真跑的进度/结果（内存态）。落盘快照是它的完成态副本 */
     private volatile Report latest;
 
+    @Autowired
     public ProductionRetrievalEvalService(@Qualifier("retriever") Retriever retriever,
                                           KnowledgeCorpus corpus,
-                                          ObjectMapper objectMapper) {
+                                          ObjectMapper objectMapper,
+                                          EvalSnapshotStore snapshotStore) {
         this.retriever = retriever;
         this.corpus = corpus;
         this.objectMapper = objectMapper;
+        this.snapshotStore = snapshotStore;
+    }
+
+    public ProductionRetrievalEvalService(@Qualifier("retriever") Retriever retriever,
+                                          KnowledgeCorpus corpus,
+                                          ObjectMapper objectMapper) {
+        this(retriever, corpus, objectMapper, new EvalSnapshotStore(objectMapper, java.nio.file.Path.of("data", "eval")));
     }
 
     /**
@@ -86,14 +90,17 @@ public class ProductionRetrievalEvalService {
         if (inMemory != null) {
             return inMemory;
         }
-        if (Files.exists(SNAPSHOT_FILE)) {
-            try {
-                return objectMapper.readValue(
-                        Files.readString(SNAPSHOT_FILE, StandardCharsets.UTF_8), new TypeReference<>() {
-                        });
-            } catch (RuntimeException | IOException e) {
-                log.warn("[Eval] 生产检索快照读取失败，按「尚未运行」处理：{}", e.getMessage());
-            }
+        EvalSnapshotStore.ReadResult<EvalSnapshotDto.RetrievalSnapshot> stored =
+                snapshotStore.read(SNAPSHOT_FILE, EvalSnapshotDto.RETRIEVAL_TYPE,
+                        EvalSnapshotDto.RetrievalSnapshot.class);
+        if (stored.value() != null) {
+            return stored.value().toDomain();
+        }
+        if (stored.status() == EvalSnapshotDto.Status.SNAPSHOT_CORRUPTED
+                || stored.status() == EvalSnapshotDto.Status.VERSION_INCOMPATIBLE) {
+            log.warn("[Eval] 生产检索快照读取失败 status={} path={} reason={}", stored.status(), stored.path(), stored.error());
+            return Report.error(stored.status(), stored.path(), stored.runId(), stored.error(),
+                    ProductionRetrievalFixtures.allCases().size(), corpus.documents().size());
         }
         return Report.never();
     }
@@ -106,7 +113,7 @@ public class ProductionRetrievalEvalService {
         if (!running.compareAndSet(false, true)) {
             return current();
         }
-        Report seed = Report.running(ProductionRetrievalFixtures.allCases().size(), corpus.documents().size());
+        Report seed = Report.running(ProductionRetrievalFixtures.allCases().size(), corpus.documents().size(), UUID.randomUUID().toString());
         latest = seed;
         Thread worker = new Thread(this::execute, "production-retrieval-eval");
         worker.setDaemon(true);
@@ -139,7 +146,7 @@ public class ProductionRetrievalEvalService {
             }
 
             Report report = finish(outcomes, stratumOf, titlesById, cases.size(),
-                    System.currentTimeMillis() - startedAt);
+                    System.currentTimeMillis() - startedAt, latest == null ? null : latest.runId());
             persist(report);
             latest = report;
             log.info("[Eval] 生产链路检索评测完成：cases={} hitRate@{}={} 耗时={}ms",
@@ -149,7 +156,7 @@ public class ProductionRetrievalEvalService {
             // 中断也要留下一份可读状态，而不是永远停在 RUNNING
             latest = Report.failed(e.getClass().getSimpleName() + ": " + e.getMessage(),
                     latest == null ? ProductionRetrievalFixtures.allCases().size() : latest.corpus().cases(),
-                    corpus.documents().size());
+                    corpus.documents().size(), latest == null ? null : latest.runId());
         } finally {
             running.set(false);
         }
@@ -159,19 +166,21 @@ public class ProductionRetrievalEvalService {
                             List<RetrievalEvaluator.CaseOutcome> soFar,
                             Map<String, Map<String, String>> titlesById,
                             int total, int documents) {
-        return new Report("RUNNING", TRIGGER_MANUAL, null, 0,
+        return new Report(EvalSnapshotDto.Status.RUNNING.name(), TRIGGER_MANUAL, null, 0,
                 new Corpus(documents, total, TOP_K), PIPELINE,
                 toMetrics(RetrievalEvaluator.summarize(soFar, TOP_K)),
-                strata(soFar, stratumOf), cases(soFar, stratumOf, titlesById), graphMetrics(soFar), null);
+                strata(soFar, stratumOf), cases(soFar, stratumOf, titlesById), graphMetrics(soFar), null,
+                latest == null ? null : latest.runId(), null, null);
     }
 
     private Report finish(List<RetrievalEvaluator.CaseOutcome> outcomes,
                           Map<String, ProductionRetrievalFixtures.Stratum> stratumOf,
-                          Map<String, Map<String, String>> titlesById, int total, long durationMs) {
-        return new Report("COMPLETED", TRIGGER_MANUAL, OffsetDateTime.now().toString(), durationMs,
+                          Map<String, Map<String, String>> titlesById, int total, long durationMs, String runId) {
+        return new Report(EvalSnapshotDto.Status.COMPLETED.name(), TRIGGER_MANUAL, OffsetDateTime.now().toString(), durationMs,
                 new Corpus(corpus.documents().size(), total, TOP_K), PIPELINE,
                 toMetrics(RetrievalEvaluator.summarize(outcomes, TOP_K)),
-                strata(outcomes, stratumOf), cases(outcomes, stratumOf, titlesById), graphMetrics(outcomes), null);
+                strata(outcomes, stratumOf), cases(outcomes, stratumOf, titlesById), graphMetrics(outcomes), null,
+                runId, null, null);
     }
 
     private static GraphPathMetrics graphMetrics(List<RetrievalEvaluator.CaseOutcome> outcomes) {
@@ -227,11 +236,9 @@ public class ProductionRetrievalEvalService {
 
     private void persist(Report report) {
         try {
-            Files.createDirectories(SNAPSHOT_DIR);
-            Files.writeString(SNAPSHOT_FILE,
-                    objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(report),
-                    StandardCharsets.UTF_8);
-        } catch (RuntimeException | IOException e) {
+            snapshotStore.write(SNAPSHOT_FILE, EvalSnapshotDto.RETRIEVAL_TYPE, report.runId(),
+                    EvalSnapshotDto.RetrievalSnapshot.from(report));
+        } catch (Exception e) {
             // 落盘失败不影响本次返回——用户已经等了几分钟拿到数字，不该因为写文件失败而白等。
             // 但下次访问会读不到，所以留痕
             log.error("[Eval] 生产检索快照落盘失败，本次结果只在内存中返回：{}", e.getMessage());
@@ -275,28 +282,40 @@ public class ProductionRetrievalEvalService {
     public record Report(String status, String trigger, String generatedAt, long durationMs,
                          Corpus corpus, String pipeline, Metrics overall,
                          List<StratumReport> strata, List<CaseReport> cases,
-                         GraphPathMetrics graphPath, String error) {
+                         GraphPathMetrics graphPath, String error, String runId,
+                         String snapshotPath, String snapshotError) {
 
         public boolean available() {
             return "COMPLETED".equals(status);
         }
 
         static Report never() {
-            return new Report("NEVER", null, null, 0,
+            return new Report(EvalSnapshotDto.Status.NEVER_RUN.name(), null, null, 0,
                     new Corpus(0, ProductionRetrievalFixtures.allCases().size(), TOP_K), PIPELINE,
-                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), null);
+                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), null,
+                    null, null, null);
         }
 
-        static Report running(int totalCases, int documents) {
-            return new Report("RUNNING", TRIGGER_MANUAL, null, 0,
+        static Report running(int totalCases, int documents, String runId) {
+            return new Report(EvalSnapshotDto.Status.RUNNING.name(), TRIGGER_MANUAL, null, 0,
                     new Corpus(documents, totalCases, TOP_K), PIPELINE,
-                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), null);
+                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), null,
+                    runId, null, null);
         }
 
-        static Report failed(String error, int totalCases, int documents) {
-            return new Report("FAILED", TRIGGER_MANUAL, OffsetDateTime.now().toString(), 0,
+        static Report failed(String error, int totalCases, int documents, String runId) {
+            return new Report(EvalSnapshotDto.Status.FAILED.name(), TRIGGER_MANUAL, OffsetDateTime.now().toString(), 0,
                     new Corpus(documents, totalCases, TOP_K), PIPELINE,
-                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), error);
+                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0), error,
+                    runId, null, null);
+        }
+
+        static Report error(EvalSnapshotDto.Status status, java.nio.file.Path path, String runId,
+                            String error, int totalCases, int documents) {
+            return new Report(status.name(), null, null, 0,
+                    new Corpus(documents, totalCases, TOP_K), PIPELINE,
+                    new Metrics(TOP_K, 0, 0, 0, 0), List.of(), List.of(), new GraphPathMetrics(0, 0, 0),
+                    error, runId, path == null ? null : path.toString(), error);
         }
     }
 }

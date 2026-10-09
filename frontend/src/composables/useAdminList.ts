@@ -174,7 +174,7 @@ export function useResponsiveColumns(
     // 其他列让出来的份额，总和仍然超容器（实测 744 > 728，白收缩一场）。
     // 所以收缩要迭代：锁定触底的列，把剩余的可用宽度在其余列之间再分一次，
     // 直到总和装得下或所有列都触底
-    let locked = columns.map(() => false)
+    const locked = columns.map(() => false)
     let remaining = available.value
     let flexibleSum = declaredSum
     for (let round = 0; round < columns.length; round++) {

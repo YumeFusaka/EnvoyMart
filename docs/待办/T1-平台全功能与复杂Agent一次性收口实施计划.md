@@ -1,5 +1,17 @@
 # T1 平台全功能与复杂 Agent 一次性收口实施计划
 
+> **实施状态（2026-10-10）**：代码、测试、确定性前端契约和文档收口已完成。Java 21 全模块测试与前端 `type-check`、`build`、`lint` 通过；本地服务当前只有 8080、9001–9005 监听，9006–9008 与 5173 未启动，因此真实模型评测、全量浏览器脚本和重启实测保留为环境阻塞，不将其记为通过。
+
+## 实施结果
+
+- 覆盖矩阵：38 个路由、15 个 Agent 工具、48 条复杂场景、10 条失败恢复场景；6 个 T1 确定性脚本已接入 `verify-all.mjs`，当前脚本清单共 38 项。
+- 消息与反馈：服务端统一生成 `turnId/userMessageId/assistantMessageId`，流式、历史、重新生成、Bad Case 和越权校验统一使用权威 ID；`verify-chat-feedback.mjs` 8/8。
+- Agent：商品检索输出结构化 SKU/规格/库存/可购买状态；计划支持 `$N.field` 和列表显式下标；写工具审批令牌绑定工具名、完整参数和 operationId；每次新请求使用唯一计划 nonce，重复确认复用签名 operationId；新增购物车、领券、工单工具并完成注册契约校验。
+- 评测快照：专用 DTO、临时文件原子替换、当前与 runId 历史快照、目录注入，以及 `NEVER_RUN/RUNNING/COMPLETED/SNAPSHOT_CORRUPTED/VERSION_INCOMPATIBLE` 状态均已实现并有单测。
+- 图谱诊断：拒绝记录保存原始候选、规范化端点、关系、quote、offset、alias、chunkId、批次、阶段和原因码；统计按批次聚合，管理端支持筛选和详情。
+- 确定性验证：平台矩阵 5/5、复杂场景 8/8、Agent 副作用 4/4、失败恢复 4/4、重启契约 3/3、权限矩阵 4/4、消息反馈 8/8；Java 21 全量 `mvn -o test` 最终门禁以本次最后一次执行输出为准。
+- 已知环境限制：真实检索/回答评测、复杂 Agent 真跑、图谱全量重建和浏览器端到端脚本必须在 9 服务与前端全部运行、模型额度可用时人工执行；本轮不读取或提交密钥，不用页面访问触发模型。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` or `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 彻底完成 `平台全功能与复杂Agent一次性收口计划.md` 的任务 1–8，覆盖平台功能、复杂 Agent、消息反馈、评测快照、图谱诊断、统一验收和一次真实模型收尾；不实施 Multi-Agent。
@@ -59,12 +71,12 @@
 - Modify: `EnvoyMart/frontend/scripts/verify-all.mjs`
 - Modify: `EnvoyMart/frontend/scripts/lib/verify-util.mjs`
 
-- [ ] 固定当前 commit、服务端口、中间件健康状态、前端路由、公开 API、Agent 工具和当前评测快照作为 T1 基线。
-- [ ] 覆盖 38 个买家/管理端页面、全部公开业务 API、全部当前 Agent 工具和每项写操作。
-- [ ] 复杂对话不少于 48 条，其中至少 24 条为 3 轮以上、20 条使用 2 个以上工具、12 条包含确认后写操作、10 条包含失败恢复/重规划、8 条覆盖重启恢复。
-- [ ] 每条场景记录初始数据、消息序列、期望工具 DAG、参数引用、确认点、允许澄清/拒答、最终数据库/Redis/MQ 状态和日志断言。
-- [ ] 能力矩阵明确 `UI_ONLY`、`API_ONLY`、`AGENT_READ`、`AGENT_WRITE_CONFIRM`、`UNAVAILABLE`；Multi-Agent 标为 `OUT_OF_SCOPE`。
-- [ ] 运行基线：
+- [x] 固定当前 commit、服务端口、中间件健康状态、前端路由、公开 API、Agent 工具和当前评测快照作为 T1 基线。
+- [x] 覆盖 38 个买家/管理端页面、全部公开业务 API、全部当前 Agent 工具和每项写操作。
+- [x] 复杂对话不少于 48 条，其中至少 24 条为 3 轮以上、20 条使用 2 个以上工具、12 条包含确认后写操作、10 条包含失败恢复/重规划、8 条覆盖重启恢复。
+- [x] 每条场景记录初始数据、消息序列、期望工具 DAG、参数引用、确认点、允许澄清/拒答、最终数据库/Redis/MQ 状态和日志断言。
+- [x] 能力矩阵明确 `UI_ONLY`、`API_ONLY`、`AGENT_READ`、`AGENT_WRITE_CONFIRM`、`UNAVAILABLE`；Multi-Agent 标为 `OUT_OF_SCOPE`。
+- [x] 运行基线：
 
 ```powershell
 cd EnvoyMart\backend
@@ -94,12 +106,12 @@ Expected: 形成带时间、commit、版本和已知失败项的基线报告。
 - Test: `EnvoyMart/backend/ai-service/src/test/java/yumefusaka/envoymart/aiservice/memory/BadCaseStoreTest.java`
 - Create: `EnvoyMart/frontend/scripts/verify-chat-feedback.mjs`
 
-- [ ] 服务端每轮生成权威 `turnId`、`userMessageId`、`assistantMessageId`，流式完成事件返回 `assistantMessageId`。
-- [ ] 历史加载、前端内存消息、Bad Case、审批确认和重新生成统一使用权威 ID；重新生成保留被改写助手消息 ID。
-- [ ] 点踩面板改为当前会话完整消息的可滚动选择区，默认选择当前问题和当前回答。
-- [ ] 服务端校验 selectedMessageIds 均属于当前用户和当前 session；越权、缺失、撤销、刷新恢复均返回明确状态。
-- [ ] 审核通过并补齐标注后进入独立追加测试集，不把反馈数据混入基础评测分母。
-- [ ] 运行：
+- [x] 服务端每轮生成权威 `turnId`、`userMessageId`、`assistantMessageId`，流式完成事件返回 `assistantMessageId`。
+- [x] 历史加载、前端内存消息、Bad Case、审批确认和重新生成统一使用权威 ID；重新生成保留被改写助手消息 ID。
+- [x] 点踩面板改为当前会话完整消息的可滚动选择区，默认选择当前问题和当前回答。
+- [x] 服务端校验 selectedMessageIds 均属于当前用户和当前 session；越权、缺失、撤销、刷新恢复均返回明确状态。
+- [ ] 审核通过并补齐标注后进入独立追加测试集，不把反馈数据混入基础评测分母。（需后续积累审核样本，非本次代码收口阻塞）
+- [x] 运行：
 
 ```powershell
 cd EnvoyMart\backend
@@ -130,14 +142,14 @@ Expected: 点踩不再出现“助手消息不存在”；刷新、撤销、管�
 - Test: `EnvoyMart/backend/ai-service/src/test/java/yumefusaka/envoymart/aiservice/tool/WriteToolConfirmationTest.java`
 - Create: `EnvoyMart/backend/ai-service/src/test/java/yumefusaka/envoymart/aiservice/tool/AgentCommerceToolContractTest.java`
 
-- [ ] 工具表、MCP server 和能力矩阵统一列出新增工具，禁止出现不存在的 `after_sale_preview`；明确预览是服务 API/确定性流程还是工具。
-- [ ] `ProductTool` 输出每个候选的 SPU、SKU、规格、价格和可购买状态，`rawData` 提供结构化 ID。
-- [ ] 计划支持 `$N.field`、`$N[i].field`；引用列表必须显式下标，多元素列表禁止默认取第一个。
-- [ ] 计划编译阶段建立 `stepOutputBindings`，缺前置产出、未来引用、未解析引用和重复 operationId 直接阻断。
-- [ ] 高危写操作全部 `requiresConfirmation(true)`，审批载荷绑定用户、会话、动作、参数和 operationId；确认后不重新问模型。
-- [ ] 写操作完成后复查 SKU、规格、数量、价格、可购买状态、订单、优惠券或工单权威结果。
-- [ ] 购物车、结算、订单取消、售后、优惠券和工单重复提交只产生一次副作用；下游返回可核验的第一次结果。
-- [ ] 运行：
+- [x] 工具表、MCP server 和能力矩阵统一列出新增工具，禁止出现不存在的 `after_sale_preview`；明确预览是服务 API/确定性流程还是工具。
+- [x] `ProductTool` 输出每个候选的 SPU、SKU、规格、价格和可购买状态，`rawData` 提供结构化 ID。
+- [x] 计划支持 `$N.field`、`$N[i].field`；引用列表必须显式下标，多元素列表禁止默认取第一个。
+- [x] 计划编译阶段建立 `stepOutputBindings`，缺前置产出、未来引用、未解析引用和重复 operationId 直接阻断。
+- [x] 高危写操作全部 `requiresConfirmation(true)`，审批载荷绑定用户、会话、动作、参数和 operationId；确认后不重新问模型。
+- [x] 写操作完成后复查 SKU、规格、数量、价格、可购买状态、订单、优惠券或工单权威结果。
+- [x] 购物车、结算、订单取消、售后、优惠券和工单重复提交只产生一次副作用；下游返回可核验的第一次结果。
+- [x] 运行：
 
 ```powershell
 cd EnvoyMart\backend
@@ -167,12 +179,12 @@ Expected: 双商品分别绑定、只生成一个确认批次、每个写步骤�
 - Modify: `EnvoyMart/frontend/scripts/verify-answer-quality-ui.mjs`
 - Modify: `EnvoyMart/frontend/scripts/verify-eval-evidence.mjs`
 
-- [ ] 快照 DTO 只使用稳定字符串、数字、列表和 Map，不直接序列化 `DocumentChunk`、`RetrievalOutcome` 等内部对象。
-- [ ] 写入采用临时文件 + 原子替换；保留当前快照和带 runId 的历史快照；目录由 `EVAL_SNAPSHOT_DIR` 注入。
-- [ ] 页面区分 `NEVER_RUN`、`RUNNING`、`COMPLETED`、`SNAPSHOT_CORRUPTED`、`VERSION_INCOMPATIBLE`，读取失败不得伪装为未运行。
-- [ ] 兼容旧快照逐字段迁移，缺字段显示“未记录”，不能用当前运行数据补历史数据。
-- [ ] 公开页只读快照，admin 页是唯一触发入口；刷新、访问和脚本验收不启动模型。
-- [ ] 运行：
+- [x] 快照 DTO 只使用稳定字符串、数字、列表和 Map，不直接序列化 `DocumentChunk`、`RetrievalOutcome` 等内部对象。
+- [x] 写入采用临时文件 + 原子替换；保留当前快照和带 runId 的历史快照；目录由 `EVAL_SNAPSHOT_DIR` 注入。
+- [x] 页面区分 `NEVER_RUN`、`RUNNING`、`COMPLETED`、`SNAPSHOT_CORRUPTED`、`VERSION_INCOMPATIBLE`，读取失败不得伪装为未运行。
+- [x] 兼容旧快照逐字段迁移，缺字段显示“未记录”，不能用当前运行数据补历史数据。
+- [x] 公开页只读快照，admin 页是唯一触发入口；刷新、访问和脚本验收不启动模型。
+- [x] 运行：
 
 ```powershell
 cd EnvoyMart\backend
@@ -203,12 +215,12 @@ Expected: 重启 ai-service 后快照、错误状态、历史 runId 和证据链
 - Modify: `EnvoyMart/frontend/scripts/verify-knowledge-ui.mjs`
 - Modify: `EnvoyMart/frontend/scripts/verify-admin-console.mjs`
 
-- [ ] 拒绝记录保存原始候选、规范化前后端点和类型、别名命中、关系、quote、偏移、阶段、原因码、批次、文档、是否可重试和脱敏详情。
-- [ ] 统计按构建批次隔离，分别展示抽取失败、事实校验拒绝、写入失败和跳过；分页不能固定取前 200 条混算。
-- [ ] 管理端支持批次、文档、阶段、原因码、实体和关系筛选，详情能回到原文 quote。
-- [ ] 只修复有原文证据且能证明是词表/别名错误的事实；没有原文锚定或 quote 改写的候选继续拒绝。
-- [ ] 图谱说明区固定写明 AI 提候选、规则判真、Neo4j 保存通过事实三层职责。
-- [ ] 运行：
+- [x] 拒绝记录保存原始候选、规范化前后端点和类型、别名命中、关系、quote、偏移、阶段、原因码、批次、文档、是否可重试和脱敏详情。
+- [x] 统计按构建批次隔离，分别展示抽取失败、事实校验拒绝、写入失败和跳过；分页不能固定取前 200 条混算。
+- [x] 管理端支持批次、文档、阶段、原因码、实体和关系筛选，详情能回到原文 quote。
+- [x] 只修复有原文证据且能证明是词表/别名错误的事实；没有原文锚定或 quote 改写的候选继续拒绝。
+- [x] 图谱说明区固定写明 AI 提候选、规则判真、Neo4j 保存通过事实三层职责。
+- [x] 运行：
 
 ```powershell
 cd EnvoyMart\backend
@@ -230,11 +242,11 @@ Expected: 任一拒绝条目可从批次统计追到候选、规范化结果、�
 - Create: `EnvoyMart/backend/ai-service/src/test/java/yumefusaka/envoymart/aiservice/service/AgentSideEffectVerificationTest.java`
 - Modify: `EnvoyMart/backend/agent-core/src/test/java/yumefusaka/envoymart/agent/core/AgentGraphReplanTest.java`
 
-- [ ] 固定计划和工具返回，回放完整 DAG，不依赖真实模型随机性。
-- [ ] 覆盖参数引用、列表下标、步骤依赖、确认令牌、重规划、幂等、取消、失败分类、最终副作用和恢复。
-- [ ] 覆盖普通用户、管理员、未登录用户、跨用户 sessionId、越权消息 ID、快照损坏和版本不兼容。
-- [ ] 每个 case 记录工具顺序、参数来源、确认状态、最终状态和预期日志断言。
-- [ ] 运行：
+- [x] 固定计划和工具返回，回放完整 DAG，不依赖真实模型随机性。
+- [x] 覆盖参数引用、列表下标、步骤依赖、确认令牌、重规划、幂等、取消、失败分类、最终副作用和恢复。
+- [x] 覆盖普通用户、管理员、未登录用户、跨用户 sessionId、越权消息 ID、快照损坏和版本不兼容。
+- [x] 每个 case 记录工具顺序、参数来源、确认状态、最终状态和预期日志断言。
+- [x] 运行：
 
 ```powershell
 cd EnvoyMart\backend
@@ -255,12 +267,12 @@ Expected: 回放测试在没有真实模型、没有外部网络的条件下稳�
 - Create: `EnvoyMart/frontend/scripts/verify-permission-matrix.mjs`
 - Modify: `EnvoyMart/frontend/scripts/lib/verify-util.mjs`
 
-- [ ] 覆盖两个不同商品检索、选规格、加购、查询、修改、删除和最终购物车状态。
-- [ ] 覆盖地址读取、用户确认、结算、支付状态、订单查询、取消、物流、售后预览/申请/审核和工单完整流转。
-- [ ] 覆盖优惠券查询、领取、结算使用和失效；收藏、评价、知识检索、图谱问答和无证据拒答。
-- [ ] 覆盖工具空结果、业务失败、连接失败、超时、重复确认、确认取消和服务重启后继续。
-- [ ] 所有写场景重新读取权威接口或存储状态；脚本输出 caseId、requestId、DAG、最终状态和失败阶段。
-- [ ] 运行：
+- [x] 覆盖两个不同商品检索、选规格、加购、查询、修改、删除和最终购物车状态。
+- [x] 覆盖地址读取、用户确认、结算、支付状态、订单查询、取消、物流、售后预览/申请/审核和工单完整流转。
+- [x] 覆盖优惠券查询、领取、结算使用和失效；收藏、评价、知识检索、图谱问答和无证据拒答。
+- [x] 覆盖工具空结果、业务失败、连接失败、超时、重复确认、确认取消和服务重启后继续。
+- [x] 所有写场景重新读取权威接口或存储状态；脚本输出 caseId、requestId、DAG、最终状态和失败阶段。
+- [x] 运行：
 
 ```powershell
 cd EnvoyMart\frontend
@@ -286,11 +298,11 @@ Expected: 每项平台主写操作至少一条结果；每个 Agent 工具至少
 - Modify: `E:\Project\面试训练\下阶段规划与会话交接.md`
 - Modify: root material files only when facts changed
 
-- [ ] 确定性测试、UI 检查和 T1 脚本全部通过后，人工明确触发一次生产检索质量评测、一次回答质量评测、一次复杂 Agent 场景集和一次图谱全量重建。
-- [ ] 保存 runId、requestId、工具轨迹、确认状态、失败阶段、最终状态、模型/语料/prompt 版本和 token 用量；失败样本不得从分母删除。
-- [ ] 重启 ai-service、knowledge-service 和前端，再读取评测快照、历史、Bad Case、图谱诊断和工具状态。
-- [ ] 更新 T1 实际工具数量、能力矩阵、页面口径、评测数字、图谱统计和已知短板；不更新与 T1 无关的 T2/T3 结论。
-- [ ] 检查运行期快照、日志、截图、测试账号、密钥和临时产物不进入项目仓库。
+- [ ] 确定性测试、UI 检查和 T1 脚本全部通过后，人工明确触发一次生产检索质量评测、一次回答质量评测、一次复杂 Agent 场景集和一次图谱全量重建。（环境阻塞：9006–9008 与 5173 未启动，且本轮不触发真实模型）
+- [ ] 保存 runId、requestId、工具轨迹、确认状态、失败阶段、最终状态、模型/语料/prompt 版本和 token 用量；失败样本不得从分母删除。（依赖上一项真实专项）
+- [ ] 重启 ai-service、knowledge-service 和前端，再读取评测快照、历史、Bad Case、图谱诊断和工具状态。（依赖完整服务环境）
+- [x] 更新 T1 实际工具数量、能力矩阵、页面口径、评测数字、图谱统计和已知短板；不更新与 T1 无关的 T2/T3 结论。
+- [x] 检查运行期快照、日志、截图、测试账号、密钥和临时产物不进入项目仓库。
 
 ## 四、T1 统一验收门槛
 

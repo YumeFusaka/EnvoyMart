@@ -12,6 +12,32 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ToolRegistryApprovalTest {
 
+    @Test
+    void 同一operationId重复提交只产生一次真实副作用() {
+        AtomicInteger calls = new AtomicInteger();
+        Tool tool = new Tool() {
+            @Override
+            public ToolDefinition getDefinition() {
+                return ToolDefinition.builder().name("write").description("write")
+                        .parameters(Map.of()).requiresConfirmation(true).build();
+            }
+
+            @Override
+            public ToolResult execute(ToolCall call) {
+                calls.incrementAndGet();
+                return ToolResult.builder().success(true).output("done").build();
+            }
+        };
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(tool);
+        ToolCall first = new ToolCall("1", "write", Map.of(), true, "u1", "s1:p0:step-0");
+        ToolCall retry = new ToolCall("2", "write", Map.of(), true, "u1", "s1:p0:step-0");
+
+        assertThat(registry.execute(first).isSuccess()).isTrue();
+        assertThat(registry.execute(retry).isSuccess()).isTrue();
+        assertThat(calls).hasValue(1);
+    }
+
     private final AtomicInteger executions = new AtomicInteger();
 
     private ToolRegistry registry() {

@@ -14,6 +14,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ToolRegistry {
 
     private final Map<String, Tool> tools = new ConcurrentHashMap<>();
+    /** operationId 到一次真实结果的进程内缓存；跨服务仍由下游唯一键裁决。 */
+    private final Map<String, ToolResult> operationResults = new ConcurrentHashMap<>();
+    private final Map<String, Object> operationLocks = new ConcurrentHashMap<>();
     private final ToolCallListener listener;
 
     public ToolRegistry() {
@@ -25,6 +28,11 @@ public class ToolRegistry {
     }
 
     public void register(Tool tool) {
+        if (tool == null || tool.getDefinition() == null
+                || tool.getDefinition().getName() == null
+                || tool.getDefinition().getName().isBlank()) {
+            throw new IllegalArgumentException("工具定义必须包含非空 name");
+        }
         tools.put(tool.getDefinition().getName(), tool);
     }
 
@@ -42,43 +50,81 @@ public class ToolRegistry {
                 .toList();
     }
 
+    /**
+     * 启动装配后的契约校验。生产装配应显式调用；保留 register 的宽容性便于工具单测构造
+     * 最小夹具。高危工具不能关闭幂等策略，否则确认重放无法证明不会重复副作用。
+     */
+    public void validateContracts() {
+        tools.values().forEach(tool -> {
+            ToolDefinition definition = tool.getDefinition();
+            if (definition.isRequiresConfirmation()
+                    && definition.getIdempotencyPolicy() == ToolDefinition.IdempotencyPolicy.NONE) {
+                throw new IllegalStateException("高危工具未声明幂等策略：" + definition.getName());
+            }
+        });
+    }
+
     public ToolResult execute(ToolCall call) {
+        if (call == null || call.getToolName() == null || call.getToolName().isBlank()) {
+            return ToolResult.builder().success(false).errorMessage("工具名不能为空").build();
+        }
+        Tool tool = tools.get(call.getToolName());
+        if (tool == null) {
+            ToolResult raw = ToolResult.builder().success(false)
+                    .errorMessage("Tool not found: " + call.getToolName()).build();
+            long latencyMs = 0;
+            try {
+                listener.onToolCall(call.getToolName(), ToolCallListener.Outcome.ERROR, latencyMs);
+            } catch (RuntimeException e) {
+                log.warn("[Tool] 调用监听器自身异常，不影响本次结果 tool={}", call.getToolName(), e);
+            }
+            return raw;
+        }
+        ToolDefinition definition = tool.getDefinition();
+        String operationId = call.getOperationId();
+        if (operationId != null && !operationId.isBlank()
+                && definition.getIdempotencyPolicy() != ToolDefinition.IdempotencyPolicy.NONE) {
+            String idempotencyKey = idempotencyKey(call);
+            Object lock = operationLocks.computeIfAbsent(idempotencyKey, ignored -> new Object());
+            synchronized (lock) {
+                ToolResult previous = operationResults.get(idempotencyKey);
+                if (previous != null) {
+                    log.info("[Tool] operationId={} 重复提交，返回首次结果 tool={}", operationId, call.getToolName());
+                    if (definition.getIdempotencyPolicy() == ToolDefinition.IdempotencyPolicy.NON_IDEMPOTENT) {
+                        return previous.toBuilder().errorMessage("该操作已执行过，返回首次结果").build();
+                    }
+                    return previous;
+                }
+                ToolResult result = executeOnce(call, tool);
+                // 未确认只是授权闸口的拒绝，确认后必须允许同一 operationId 继续执行；
+                // 其余结果才作为第一次真实执行的权威回执缓存。
+                // 瞬时故障不是权威业务结果：连接失败/超时后允许用同一 operationId
+                // 查询或重试；只有已完成的成功或确定性业务结果才进入进程内幂等缓存。
+                if (!result.isPendingApproval() && !result.isTransientFailure()) {
+                    operationResults.put(idempotencyKey, result);
+                }
+                return result;
+            }
+        }
+        return executeOnce(call, tool);
+    }
+
+    private ToolResult executeOnce(ToolCall call, Tool tool) {
         long startedAt = System.nanoTime();
-        ToolResult raw = get(call.getToolName())
-                .map(tool -> {
-                    ToolResult missing = missingRequired(tool.getDefinition(), call);
-                    if (missing != null) {
-                        return missing;
-                    }
-                    // 高危操作的第二道防线：即便模型自主决定调用，没有用户确认也拒绝执行
-                    if (tool.getDefinition().isRequiresConfirmation() && !call.isConfirmed()) {
-                        return ToolResult.builder()
-                                .success(false)
-                                .pendingApproval(true)
-                                .errorMessage("该操作需要用户确认后才能执行：" + call.getToolName())
-                                .build();
-                    }
-                    // 工具体抛异常 = 一次「失败的工具调用」，不是一次「系统故障」。
-                    // 让它冒泡的代价实测过：异常冲出计划路径的 Future.get 后，进度回调的
-                    // onFinish 永远不会发——界面上那枚「正在执行」的芯片卡到流结束才被清掉，
-                    // 而且整个批次的结果一起丢。工具的契约是「用 ToolResult 说话」，
-                    // 违约的调用在这里翻译成一次失败，护栏与降级逻辑照常打理后续
-                    try {
-                        return tool.execute(call);
-                    } catch (Exception e) {
-                        log.error("[Tool] {} 执行抛出异常", call.getToolName(), e);
-                        // 不标 transient：异常从工具里直接穿出来时，「下游抖了」和「工具自己有 bug」
-                        // 在这里分不出来，而猜错的代价见 ToolResult#transientFailure
-                        return ToolResult.builder()
-                                .success(false)
-                                .errorMessage("工具执行异常：" + e.getMessage())
-                                .build();
-                    }
-                })
-                .orElseGet(() -> ToolResult.builder()
-                        .success(false)
-                        .errorMessage("Tool not found: " + call.getToolName())
-                        .build());
+        ToolResult raw = missingRequired(tool.getDefinition(), call);
+        if (raw == null && tool.getDefinition().isRequiresConfirmation() && !call.isConfirmed()) {
+            raw = ToolResult.builder().success(false).pendingApproval(true)
+                    .errorMessage("该操作需要用户确认后才能执行：" + call.getToolName()).build();
+        }
+        if (raw == null) {
+            try {
+                raw = tool.execute(call);
+            } catch (Exception e) {
+                log.error("[Tool] {} 执行抛出异常", call.getToolName(), e);
+                raw = ToolResult.builder().success(false)
+                        .errorMessage("工具执行异常：" + e.getMessage()).build();
+            }
+        }
 
         // 三条来路（计划节点 / ReAct 循环 / MCP）都汇到这里，观测点放这儿才能全覆盖。
         // 观测不能影响被观测的行为：listener 一抛，工具本体已经执行完的结果就被丢掉，
@@ -104,6 +150,11 @@ public class ToolRegistry {
             log.warn("[Tool] 调用监听器自身异常，不影响本次结果 tool={} : {}", call.getToolName(), e.toString());
         }
         return cap(raw.toBuilder().latencyMs(latencyMs).build());
+    }
+
+    private static String idempotencyKey(ToolCall call) {
+        return String.valueOf(call.getUserId()) + "|" + call.getToolName() + "|"
+                + call.getOperationId() + "|" + String.valueOf(call.getArguments());
     }
 
     /**

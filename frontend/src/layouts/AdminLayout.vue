@@ -17,7 +17,6 @@ import {
   Shop,
   SwitchButton,
   User,
-  Warning,
 } from '@element-plus/icons-vue'
 import { useAdminStore, useUserStore } from '@/stores'
 

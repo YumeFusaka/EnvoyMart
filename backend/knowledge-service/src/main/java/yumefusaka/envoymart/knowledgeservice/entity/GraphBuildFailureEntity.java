@@ -19,5 +19,16 @@ public class GraphBuildFailureEntity {
     private String reasonCode;
     private String detail;
     private Boolean retryable;
+    private String rawCandidate;
+    private String normalizedHeadKind;
+    private String normalizedHead;
+    private String normalizedTailKind;
+    private String normalizedTail;
+    private String relation;
+    private String quote;
+    private Integer quoteOffsetStart;
+    private Integer quoteOffsetEnd;
+    private Boolean aliasHit;
+    private String chunkId;
     private LocalDateTime occurredAt;
 }

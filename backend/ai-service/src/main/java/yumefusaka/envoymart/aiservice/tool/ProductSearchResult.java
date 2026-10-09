@@ -29,7 +29,18 @@ import yumefusaka.envoymart.contract.ProductSummary;
  * 然后把占位串原样传给工具）。所以字段叫 defaultSku、对外的读法仍是 skuId：
  * 两个名字都是契约的一部分，各自有明确的读者。
  */
-public record ProductSearchResult(ProductSummary summary, Long skuId) {
+public record ProductSearchResult(ProductSummary summary, Long skuId,
+                                  String specText, Long price, Integer stock,
+                                  Boolean purchasable, List<SkuOption> skus) {
+
+    public ProductSearchResult(ProductSummary summary, Long skuId) {
+        this(summary, skuId, null, null, null, null, List.of());
+    }
+
+    /** 一个候选商品下实际展示过的 SKU 结构化信息。 */
+    public record SkuOption(Long skuId, String specText, Long price,
+                            Integer stock, Boolean purchasable) {
+    }
 
     /** 卡片可用的 SPU 摘要。工具结果的原始形态，直接透传 */
     public ProductSummary summary() {

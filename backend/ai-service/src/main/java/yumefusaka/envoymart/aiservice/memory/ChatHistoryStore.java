@@ -72,6 +72,20 @@ public class ChatHistoryStore {
     public record StoredMessage(String id, String role, String content, Instant at, Map<String, Object> response) {
     }
 
+    /**
+     * 一轮对话的稳定身份。ID 在服务端生成，实时响应、Redis 历史与反馈记录共用这组值。
+     * 重新生成只改写答复正文，三项身份保持不变。
+     */
+    public record TurnIdentity(String turnId, String userMessageId, String assistantMessageId) {
+        public TurnIdentity {
+            if (turnId == null || turnId.isBlank()
+                    || userMessageId == null || userMessageId.isBlank()
+                    || assistantMessageId == null || assistantMessageId.isBlank()) {
+                throw new IllegalArgumentException("对话身份不能为空");
+            }
+        }
+    }
+
     /** 侧栏一行 */
     public record SessionSummary(String sessionId, String title, Instant createdAt, Instant updatedAt, long messageCount) {
     }
@@ -84,6 +98,39 @@ public class ChatHistoryStore {
         this.objectMapper = objectMapper;
     }
 
+    /** 每一轮的身份只能由服务端产生，客户端生成的临时 key 不可用于反馈或授权。 */
+    public static TurnIdentity newTurnIdentity() {
+        String token = UUID.randomUUID().toString();
+        return new TurnIdentity("turn-" + token, "u-" + token, "a-" + token);
+    }
+
+    /**
+     * 找到当前会话最后一轮的稳定身份，供重新生成复用。
+     * 旧历史没有身份字段时以已有消息 ID 兜底，保证升级前的数据仍可重新生成。
+     */
+    public TurnIdentity latestTurnIdentity(String userId, String sessionId) {
+        List<StoredMessage> messages = loadMessages(userId, sessionId, MAX_MESSAGES);
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            StoredMessage assistant = messages.get(i);
+            if (!"assistant".equals(assistant.role())) {
+                continue;
+            }
+            StoredMessage user = i > 0 ? messages.get(i - 1) : null;
+            if (user == null || !"user".equals(user.role())) {
+                continue;
+            }
+            Map<String, Object> response = assistant.response();
+            String turnId = value(response, "turnId");
+            String userMessageId = value(response, "userMessageId");
+            String assistantMessageId = value(response, "assistantMessageId");
+            return new TurnIdentity(
+                    blankTo("turn-" + assistant.id(), turnId),
+                    blankTo(user.id(), userMessageId),
+                    blankTo(assistant.id(), assistantMessageId));
+        }
+        return null;
+    }
+
     /**
      * 记一轮对话：用户消息 + 助手消息。
      * <p>
@@ -92,10 +139,18 @@ public class ChatHistoryStore {
      */
     public void recordTurn(String userId, String sessionId, String userMessage,
                            String assistantReply, Object assistantPayload) {
+        Map<String, Object> payload = toMap(assistantPayload);
+        TurnIdentity identity = identityFrom(payload);
+        recordTurn(userId, sessionId, identity == null ? newTurnIdentity() : identity,
+                userMessage, assistantReply, assistantPayload);
+    }
+
+    public void recordTurn(String userId, String sessionId, TurnIdentity identity,
+                           String userMessage, String assistantReply, Object assistantPayload) {
         Instant now = Instant.now();
         List<StoredMessage> messages = List.of(
-                new StoredMessage("u-" + UUID.randomUUID(), "user", userMessage, now, null),
-                new StoredMessage("a-" + UUID.randomUUID(), "assistant",
+                new StoredMessage(identity.userMessageId(), "user", userMessage, now, null),
+                new StoredMessage(identity.assistantMessageId(), "assistant",
                         assistantReply == null ? "" : assistantReply, now, toMap(assistantPayload)));
         write(userId, sessionId, messages);
     }
@@ -111,7 +166,17 @@ public class ChatHistoryStore {
      * 才反转为时间正序。
      */
     public void recordAnswer(String userId, String sessionId, String assistantReply, Object assistantPayload) {
-        StoredMessage answer = new StoredMessage("a-" + UUID.randomUUID(), "assistant",
+        TurnIdentity identity = identityFrom(toMap(assistantPayload));
+        if (identity == null) {
+            identity = latestTurnIdentity(userId, sessionId);
+        }
+        recordAnswer(userId, sessionId, identity == null ? newTurnIdentity() : identity,
+                assistantReply, assistantPayload);
+    }
+
+    public void recordAnswer(String userId, String sessionId, TurnIdentity identity,
+                             String assistantReply, Object assistantPayload) {
+        StoredMessage answer = new StoredMessage(identity.assistantMessageId(), "assistant",
                 assistantReply == null ? "" : assistantReply, Instant.now(), toMap(assistantPayload));
         if (!rewriteLatestAssistant(userId, sessionId, answer)) {
             // 退回普通追加的路径：共用 write 的墓碑拦截、裁剪、续期与索引更新
@@ -266,6 +331,16 @@ public class ChatHistoryStore {
         return result;
     }
 
+    /** 用户只能看到自己命名空间下真实存在的会话；空历史不再伪装成越权会话。 */
+    public boolean hasSession(String userId, String sessionId) {
+        if (isDeleted(userId, sessionId)) {
+            return false;
+        }
+        return Boolean.TRUE.equals(redis.hasKey(histKey(userId, sessionId)))
+                || Boolean.TRUE.equals(redis.hasKey(metaKey(userId, sessionId)))
+                || redis.opsForZSet().score(indexKey(userId), sessionId) != null;
+    }
+
     /** 单会话消息，按时间正序。读取失败上抛；单条解析失败跳过（一条坏记录不该让整段历史打不开） */
     public List<StoredMessage> loadMessages(String userId, String sessionId, int limit) {
         List<String> raw = redis.opsForList().range(histKey(userId, sessionId), 0, limit - 1L);
@@ -407,5 +482,31 @@ public class ChatHistoryStore {
 
     private String indexKey(String userId) {
         return INDEX_PREFIX + userId;
+    }
+
+    private static String value(Map<String, Object> response, String name) {
+        if (response == null) {
+            return null;
+        }
+        Object value = response.get(name);
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private static TurnIdentity identityFrom(Map<String, Object> response) {
+        String turnId = value(response, "turnId");
+        String userMessageId = value(response, "userMessageId");
+        String assistantMessageId = value(response, "assistantMessageId");
+        if (turnId == null || userMessageId == null || assistantMessageId == null) {
+            return null;
+        }
+        try {
+            return new TurnIdentity(turnId, userMessageId, assistantMessageId);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    private static String blankTo(String fallback, String value) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 }

@@ -35,4 +35,18 @@ class ChatHistoryStoreTest {
         assertThat(ChatHistoryStore.titleOf(null)).isEqualTo("新对话");
         assertThat(ChatHistoryStore.titleOf("   \n\t ")).isEqualTo("新对话");
     }
+
+    @Test
+    void 每轮身份由服务端生成且三项互相对应() {
+        ChatHistoryStore.TurnIdentity first = ChatHistoryStore.newTurnIdentity();
+        ChatHistoryStore.TurnIdentity second = ChatHistoryStore.newTurnIdentity();
+
+        assertThat(first.turnId()).startsWith("turn-");
+        assertThat(first.userMessageId()).startsWith("u-");
+        assertThat(first.assistantMessageId()).startsWith("a-");
+        assertThat(first.turnId()).isNotEqualTo(second.turnId());
+        assertThat(first.turnId().substring("turn-".length()))
+                .isEqualTo(first.userMessageId().substring("u-".length()))
+                .isEqualTo(first.assistantMessageId().substring("a-".length()));
+    }
 }

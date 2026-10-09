@@ -69,11 +69,11 @@ const session = await loginAs('bob')
 const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${session.token}` }
 
 async function api(path, method = 'GET', body) {
-  const res = await fetch(`${GW}${path}`, {
-    method,
-    headers: authHeaders,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  const init = { method, headers: authHeaders }
+  if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
+    init.body = JSON.stringify(body)
+  }
+  const res = await fetch(`${GW}${path}`, init)
   return res.json()
 }
 /** 只要 data，非 200 直接抛 —— 这些是准备数据的调用，失败就该中断 */

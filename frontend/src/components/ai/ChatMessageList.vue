@@ -71,6 +71,7 @@ const feedbackComment = ref('')
 const feedbackSelected = ref<string[]>([])
 const feedbackSaving = ref(false)
 const feedbackDone = ref<Record<string, boolean>>({})
+let feedbackRestoreSeq = 0
 const feedbackOptions: Array<{ code: BadCaseReason; label: string }> = [
   { code: 'FACT_ERROR', label: '事实错误' }, { code: 'NO_ANSWER', label: '没有回答问题' },
   { code: 'IRRELEVANT_EVIDENCE', label: '依据不相关' }, { code: 'TOOL_ERROR', label: '工具执行错误' },
@@ -81,7 +82,11 @@ function openFeedback(messageId: string) {
   feedbackMessage.value = messageId
   feedbackReasons.value = []
   feedbackComment.value = ''
-  feedbackSelected.value = [messageId]
+  const index = props.messages.findIndex((item) => item.id === messageId)
+  const question = index > 0
+    ? props.messages.slice(0, index).reverse().find((item) => item.role === 'user')
+    : undefined
+  feedbackSelected.value = question ? [question.id, messageId] : [messageId]
 }
 async function submitFeedback(messageId: string) {
   if (!props.sessionId || !feedbackReasons.value.length) return
@@ -94,8 +99,14 @@ async function submitFeedback(messageId: string) {
 }
 
 async function restoreFeedback() {
-  if (!props.sessionId) return
-  const loaded = await fetchSessionBadCases(props.sessionId)
+  const sessionId = props.sessionId
+  const seq = ++feedbackRestoreSeq
+  if (!sessionId) {
+    feedbackDone.value = {}
+    return
+  }
+  const loaded = await fetchSessionBadCases(sessionId)
+  if (seq !== feedbackRestoreSeq || props.sessionId !== sessionId) return
   const next: Record<string, boolean> = {}
   for (const value of loaded) if (value.status !== 'REVOKED') next[value.assistantMessageId] = true
   feedbackDone.value = next
@@ -310,11 +321,11 @@ async function handleCopy(message: ChatMessage) {
         <div class="bad-case-reasons">
           <label v-for="item in feedbackOptions" :key="item.code"><input v-model="feedbackReasons" type="checkbox" :value="item.code" />{{ item.label }}</label>
         </div>
-        <fieldset class="bad-case-messages">
-          <legend>关联消息（可多选）</legend>
-          <label v-for="nearby in messages.slice(Math.max(0, position - 4), position + 1)" :key="nearby.id">
-            <input v-model="feedbackSelected" type="checkbox" :value="nearby.id" />
-            {{ nearby.role === 'assistant' ? 'AI' : '你' }}：{{ nearby.content.slice(0, 80) }}
+        <fieldset class="bad-case-messages" aria-label="当前会话关联消息">
+          <legend>当前会话消息（可多选）</legend>
+          <label v-for="candidate in messages" :key="candidate.id">
+            <input v-model="feedbackSelected" type="checkbox" :value="candidate.id" />
+            {{ candidate.role === 'assistant' ? 'AI' : '你' }}：{{ candidate.content.slice(0, 80) || '（生成中）' }}
           </label>
         </fieldset>
         <textarea v-model="feedbackComment" maxlength="1000" rows="2" placeholder="补充说明（可选）" />
@@ -1031,6 +1042,8 @@ async function handleCopy(message: ChatMessage) {
 .bad-case-panel { display: grid; gap: var(--ys-space-2); margin-top: var(--ys-space-3); padding: var(--ys-space-3); border: 1px solid var(--color-border-strong); border-radius: var(--ys-radius-sm); background: var(--color-bg-surface-muted); }
 .bad-case-reasons { display: flex; flex-wrap: wrap; gap: var(--ys-space-2) var(--ys-space-3); font-size: var(--ys-font-xs); }
 .bad-case-reasons label { display: inline-flex; align-items: center; gap: var(--ys-space-1); min-height: 24px; }
+.bad-case-messages { display: grid; gap: var(--ys-space-1); max-height: 240px; overflow-y: auto; margin: 0; padding: var(--ys-space-2); border: 1px solid var(--color-border); border-radius: var(--ys-radius-sm); background: var(--color-bg-surface); }
+.bad-case-messages label { display: flex; gap: var(--ys-space-1); align-items: flex-start; min-height: 24px; font-size: var(--ys-font-xs); }
 .bad-case-panel textarea { width: 100%; resize: vertical; border: 1px solid var(--color-border); border-radius: var(--ys-radius-sm); padding: var(--ys-space-2); background: var(--color-bg-surface); color: var(--color-text-primary); }
 .bad-case-actions { display: flex; justify-content: flex-end; gap: var(--ys-space-2); }
 </style>

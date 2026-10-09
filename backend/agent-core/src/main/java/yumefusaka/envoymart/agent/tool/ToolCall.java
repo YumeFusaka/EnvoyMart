@@ -1,6 +1,5 @@
 package yumefusaka.envoymart.agent.tool;
 
-import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 
@@ -11,7 +10,6 @@ import java.util.Map;
  */
 @Data
 @Builder
-@AllArgsConstructor
 public class ToolCall {
     private String id;
     private String toolName;
@@ -32,12 +30,30 @@ public class ToolCall {
      */
     private String userId;
 
+    /** 跨确认、重试与重规划复用的稳定副作用标识。读操作可为空。 */
+    private String operationId;
+
     public ToolCall(String id, String toolName, Map<String, Object> arguments) {
-        this(id, toolName, arguments, false, null);
+        this(id, toolName, arguments, false, null, null);
     }
 
     public ToolCall(String id, String toolName, Map<String, Object> arguments, boolean confirmed) {
-        this(id, toolName, arguments, confirmed, null);
+        this(id, toolName, arguments, confirmed, null, null);
+    }
+
+    public ToolCall(String id, String toolName, Map<String, Object> arguments,
+                    boolean confirmed, String userId) {
+        this(id, toolName, arguments, confirmed, userId, null);
+    }
+
+    public ToolCall(String id, String toolName, Map<String, Object> arguments,
+                    boolean confirmed, String userId, String operationId) {
+        this.id = id;
+        this.toolName = toolName;
+        this.arguments = arguments;
+        this.confirmed = confirmed;
+        this.userId = userId;
+        this.operationId = operationId;
     }
 
     /**

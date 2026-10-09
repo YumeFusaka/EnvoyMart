@@ -91,7 +91,7 @@ export interface ToolExecution {
 
 /** 线上真跑：拿同一批问题重新问一遍当前 Agent。异步 + 单飞，前端轮询进度 */
 export interface GroundingLiveRun {
-  status: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  status: 'NEVER_RUN' | 'RUNNING' | 'COMPLETED' | 'SNAPSHOT_CORRUPTED' | 'VERSION_INCOMPATIBLE' | 'FAILED'
   startedAt: string | null
   finishedAt: string | null
   totalCases: number
@@ -106,6 +106,9 @@ export interface GroundingLiveRun {
   cases: GroundingLiveCase[]
   promptVersion?: string
   pipelineVersion?: string
+  runId?: string | null
+  snapshotPath?: string | null
+  snapshotError?: string | null
 }
 
 /** 回答质量报告只返回真实链路快照。 */
@@ -192,7 +195,7 @@ export interface GraphPathMetrics {
  * status：NEVER（暂无快照）/ COMPLETED（有结果）/ FAILED（快照生成失败）。
  */
 export interface ProductionRetrievalReport {
-  status: 'NEVER' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  status: 'NEVER_RUN' | 'RUNNING' | 'COMPLETED' | 'SNAPSHOT_CORRUPTED' | 'VERSION_INCOMPATIBLE' | 'FAILED'
   trigger: string | null
   generatedAt: string | null
   durationMs: number
@@ -204,6 +207,9 @@ export interface ProductionRetrievalReport {
   cases: ProductionRetrievalCase[]
   graphPath: GraphPathMetrics
   error: string | null
+  runId?: string | null
+  snapshotPath?: string | null
+  snapshotError?: string | null
 }
 
 /** 生产链路检索报告。公开只读。 */

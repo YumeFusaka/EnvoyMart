@@ -23,7 +23,7 @@ import {
   relationLabel,
   ringLayout,
 } from '@/utils/graph'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
@@ -308,15 +308,6 @@ async function resolveDefaultRoot(): Promise<string> {
 
 function focusOn(name: string) {
   router.push({ query: { ...route.query, root: name } })
-}
-
-/**
- * 画布上点一个节点。**主行为是「以它为中心」**，这是这张图最主要的用法。
- * 顺带把它加进「一起吃安全吗」的名单 —— 用户刚点过它，多半正在关心它。
- * 加名单只是副作用，所以只在它属于可查品类时才做，也不改变跳转结果。
- */
-function onCanvasNode(name: string) {
-  focusOn(name)
 }
 
 /**

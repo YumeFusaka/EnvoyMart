@@ -346,8 +346,10 @@ public class LangChain4jLLMProvider implements LLMProvider {
             //     转一圈它只会换个说法再要一次，每一圈都是一次真实计费的调用。
             // 载荷写进 sink 交给调用方：ReAct 路径的高危确认出口靠它签发确认令牌
             if (requiresConfirmation(request.name())) {
-                ctx.pendingActions.add(PendingAction.of(request.name(), arguments));
-                log.info("[LLM] 高危操作待用户确认，ReAct 循环中断 tool={}", request.name());
+                String operationId = "react:" + (request.id() == null ? UUID.randomUUID() : request.id());
+                ctx.pendingActions.add(PendingAction.of(request.name(), arguments, operationId));
+                log.info("[LLM] 高危操作待用户确认，ReAct 循环中断 tool={} operationId={}",
+                        request.name(), operationId);
                 return true;
             }
 
@@ -370,6 +372,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
 
             sink.add(ToolExecution.builder()
                     .tool(request.name())
+                    .operationId(request.id() == null ? null : "react:" + request.id())
                     .input(request.arguments())
                     .output(output)
                     .success(result.isSuccess())

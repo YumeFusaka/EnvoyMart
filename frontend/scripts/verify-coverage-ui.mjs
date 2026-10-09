@@ -158,7 +158,6 @@ if (expectedLinks > 0) {
 console.log('\n三、从覆盖率点进商品编辑页')
 
 if (listHrefs.length > 0) {
-  const firstHref = listHrefs[0]
   await section.locator('.coverage__item-name').first().click()
   await page.waitForURL(/#\/admin\/products\/\d+\/edit/, { timeout: 15000 })
   ck('点击未覆盖商品名跳到了它的编辑页', /#\/admin\/products\/\d+\/edit/.test(page.url()), page.url())

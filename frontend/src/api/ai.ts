@@ -50,6 +50,7 @@ export interface StoredChatMessage {
   role: 'user' | 'assistant'
   content: string
   at: string
+  turnId?: string | null
   response: ChatResponse | null
 }
 

@@ -109,7 +109,6 @@ async function placeOrder({ needShip = true } = {}) {
   return { id, orderNo }
 }
 
-const logisticsOf = async (id) => (await call(`/orders/${id}/logistics`, { token: T })).data
 const addTrace = (id, body) =>
   call(`/orders/admin/orders/${id}/traces`, { method: 'POST', token: A, body })
 
@@ -134,7 +133,7 @@ ck('补录后轨迹有 2 条（发货自动写的那条 + 补录的）', r1.data
 
 // 两次补录之间跨一秒：happen_at 是秒级精度，同秒内的顺序在 SQL 里是不确定的
 await sleep(1200)
-const r2 = await addTrace(O1.id, { status: 'IN_TRANSIT', location: '杭州转运中心' })
+await addTrace(O1.id, { status: 'IN_TRANSIT', location: '杭州转运中心' })
 await sleep(1200)
 const r3 = await addTrace(O1.id, { status: 'DELIVERING', location: '上海市徐汇区' })
 

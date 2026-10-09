@@ -284,7 +284,6 @@ ck(
   catChip.some((t) => t.includes(catName.trim())),
   catChip.join(' | '),
 )
-const brandName = await page.locator('.brand-list__item').first().textContent()
 await page.locator('.brand-list__item').first().click()
 await page.waitForTimeout(900)
 ck('点品牌后 URL 带 brandId', page.url().includes('brandId='), page.url())

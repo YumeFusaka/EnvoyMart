@@ -586,6 +586,10 @@ export interface PendingActionDetail {
 
 export interface ChatResponse {
   sessionId: string
+  /** 服务端生成并贯穿本轮历史、流式完成事件和反馈的稳定身份 */
+  turnId: string
+  userMessageId: string
+  assistantMessageId: string
   reply: string
   knowledge: KnowledgeSnippet[]
   toolCalls: ToolCall[]
@@ -731,6 +735,8 @@ export interface KnowledgeConflict {
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
+  /** 当前消息对应的服务端轮次；实时占位消息在 done 事件到达后补齐 */
+  turnId?: string
   content: string
   /** 消息时间（ISO）。实时消息由前端打点、历史消息由服务端带回，只用于展示 */
   at?: string

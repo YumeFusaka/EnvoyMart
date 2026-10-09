@@ -408,7 +408,7 @@ class ReactToolLoopTest {
         assertThat(pending)
                 .as("拦下的操作要以结构化载荷交给调用方：确认令牌要签的就是它，"
                         + "只交一句描述的话签出来的令牌没有内容可绑")
-                .containsExactly(PendingAction.of("order_cancel", Map.of("orderId", 12)));
+                .containsExactly(PendingAction.of("order_cancel", Map.of("orderId", 12), "react:c1"));
         assertThat(pending.get(0).describe())
                 .as("展示用的描述仍然要有，前端确认卡片靠它")
                 .isEqualTo("order_cancel(orderId=12)");

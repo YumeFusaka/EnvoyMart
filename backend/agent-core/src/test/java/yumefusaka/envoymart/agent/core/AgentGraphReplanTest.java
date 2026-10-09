@@ -204,6 +204,60 @@ class AgentGraphReplanTest {
                 .isEqualTo(29);
     }
 
+    @Test
+    void 多元素列表未带下标时阻断后续写步骤() {
+        AtomicInteger writes = new AtomicInteger();
+        Tool search = new Tool() {
+            @Override
+            public ToolDefinition getDefinition() {
+                return ToolDefinition.builder().name("lookup").description("查").parameters(Map.of()).build();
+            }
+
+            @Override
+            public ToolResult execute(ToolCall call) {
+                return ToolResult.builder().success(true).output("两个商品")
+                        .rawData(List.of(new Sku(29L), new Sku(30L))).build();
+            }
+        };
+        Tool write = new Tool() {
+            @Override
+            public ToolDefinition getDefinition() {
+                return ToolDefinition.builder().name("add").description("写").parameters(Map.of()).build();
+            }
+
+            @Override
+            public ToolResult execute(ToolCall call) {
+                writes.incrementAndGet();
+                return ToolResult.builder().success(true).output("写入").build();
+            }
+        };
+        LLMProvider provider = new LLMProvider() {
+            @Override public LLMResponse chat(List<ChatMessage> messages, LLMConfig config) {
+                return LLMResponse.builder().content("已阻断").build();
+            }
+            @Override public LLMResponse chatWithTools(List<ChatMessage> messages, LLMConfig config,
+                                                        Map<String, Object> context) {
+                return LLMResponse.builder().content("已阻断").build();
+            }
+            @Override public List<PlanStep> plan(String message, List<ToolDefinition> tools, String context) {
+                return List.of(
+                        PlanStep.builder().tool("lookup").arguments(Map.of()).build(),
+                        PlanStep.builder().tool("add").arguments(Map.of("skuId", "$0.skuId"))
+                                .dependsOn(List.of(0)).build());
+            }
+        };
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(search);
+        registry.register(write);
+        AgentGraph graph = new AgentGraph(provider, CONFIG, registry, executor);
+
+        AgentGraph.GraphResult result = graph.run("u1", "双商品都处理", "", List.of(),
+                new LoopGuard(new LoopBudget(8, 2, 2)), null, null);
+
+        assertThat(writes).hasValue(0);
+        assertThat(result.getAnswer()).contains("阻止");
+    }
+
     /**
      * 高危拦截必须<b>只拦当前这一批</b>，不能把整份计划一次拦下。
      * <p>

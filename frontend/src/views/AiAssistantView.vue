@@ -116,6 +116,7 @@ function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[
   return {
     id: stored.id,
     role: stored.role,
+    turnId: stored.turnId ?? response?.turnId ?? undefined,
     content: stored.content,
     at: stored.at,
     knowledge: response?.knowledge?.length ? response.knowledge : undefined,
@@ -387,14 +388,21 @@ async function regenerate(assistantId: string) {
   const sessionId = activeSessionId.value
   if (!prompt || !sessionId) return
 
-  messages.value.splice(index, 1)
-  const assistantMessage = reactive<ChatMessage>({
-    id: `assistant-${Date.now()}`,
-    role: 'assistant',
+  const assistantMessage = target
+  Object.assign(assistantMessage, {
     content: '',
     at: new Date().toISOString(),
+    knowledge: undefined,
+    toolCalls: undefined,
+    recommendedProducts: undefined,
+    pendingPayments: undefined,
+    pendingActions: undefined,
+    pendingActionDetails: undefined,
+    approvalToken: undefined,
+    approvalStatus: undefined,
+    error: undefined,
+    stopped: undefined,
   })
-  messages.value.push(assistantMessage)
 
   loading.value = true
   const seq = ++streamSeq
@@ -449,6 +457,22 @@ async function runStream(
           followIfPinned()
         },
         onDone: (response) => {
+          // done 事件里的身份是服务端唯一真相：替换本地占位 ID，后续点踩、撤销和刷新都用同一值。
+          const assistantIndex = messages.value.findIndex((item) => item === assistantMessage)
+          if (response.assistantMessageId) {
+            assistantMessage.id = response.assistantMessageId
+          }
+          assistantMessage.turnId = response.turnId ?? undefined
+          if (response.userMessageId && assistantIndex >= 0) {
+            const userMessage = messages.value
+              .slice(0, assistantIndex)
+              .reverse()
+              .find((item) => item.role === 'user')
+            if (userMessage) {
+              userMessage.id = response.userMessageId
+              userMessage.turnId = response.turnId ?? undefined
+            }
+          }
           assistantMessage.content = response.reply || assistantMessage.content
           assistantMessage.knowledge = response.knowledge
           assistantMessage.toolCalls = response.toolCalls
