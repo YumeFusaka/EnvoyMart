@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getGroundingReport, getProductionRetrievalReport, runGroundingEval, runProductionRetrievalEval, type GroundingLiveRun, type ProductionRetrievalReport } from '@/api/eval'
 
@@ -7,13 +7,18 @@ const retrieval = ref<ProductionRetrievalReport | null>(null)
 const grounding = ref<GroundingLiveRun | null>(null)
 const loading = ref(true)
 const running = ref<'retrieval' | 'grounding' | null>(null)
-async function load(){ loading.value=true; try { retrieval.value=await getProductionRetrievalReport(); grounding.value=(await getGroundingReport()).live } finally { loading.value=false } }
-onMounted(load)
+let pollTimer: ReturnType<typeof setInterval> | undefined
+let pollInFlight = false
+async function load(silent = false){ if (pollInFlight) return; pollInFlight=true; if (!silent) loading.value=true; try { retrieval.value=await getProductionRetrievalReport(); grounding.value=(await getGroundingReport()).live } finally { pollInFlight=false; if (!silent) loading.value=false } }
+function stopPolling(){ if (pollTimer) { clearInterval(pollTimer); pollTimer=undefined } }
+function syncPolling(){ const active = retrievalStatus.value === 'RUNNING' || groundingStatus.value === 'RUNNING'; if (active && !pollTimer) pollTimer=setInterval(async()=>{ await load(true); syncPolling() }, 2500); if (!active) stopPolling() }
+onMounted(async()=>{ await load(); syncPolling() })
+onBeforeUnmount(stopPolling)
 async function trigger(kind:'retrieval'|'grounding'){
   if(running.value) return
   await ElMessageBox.confirm(kind==='retrieval'?'将调用真实 embedding、图谱检索和重排，可能消耗模型额度。确认开始？':'将逐条调用真实 Agent 并执行回答质量判定，可能消耗较多模型额度。确认开始？','确认触发评测',{type:'warning',confirmButtonText:'开始评测',cancelButtonText:'取消'})
   running.value=kind
-  try { if(kind==='retrieval') retrieval.value=await runProductionRetrievalEval(); else grounding.value=await runGroundingEval(); ElMessage.success('评测已启动，状态会自动刷新'); await load() } finally { running.value=null }
+  try { if(kind==='retrieval') retrieval.value=await runProductionRetrievalEval(); else grounding.value=await runGroundingEval(); ElMessage.success('评测已启动，状态会自动刷新'); await load(); syncPolling() } finally { running.value=null }
 }
 const retrievalStatus=computed(()=>retrieval.value?.status??'NEVER'); const groundingStatus=computed(()=>grounding.value?.status??'IDLE')
 </script>

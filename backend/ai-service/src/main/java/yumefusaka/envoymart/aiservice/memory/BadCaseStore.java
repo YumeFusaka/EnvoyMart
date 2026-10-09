@@ -144,14 +144,14 @@ public class BadCaseStore {
     public BadCase addTestCase(String id, String reviewer, FixtureAnnotation annotation) {
         BadCase old = findById(id);
         if (old.status() != Status.REVIEWED && old.status() != Status.IN_TEST_SET) throw new IllegalArgumentException("请先审核通过");
+        if (annotation == null || annotation.evalKind() == null || annotation.evalKind().isBlank()) {
+            throw new IllegalArgumentException("追加测试集必须填写评测类型");
+        }
         String testCaseId = old.testCaseId() == null ? "bad-" + old.badCaseId() : old.testCaseId();
         BadCase value = new BadCase(old.badCaseId(), old.userId(), old.sessionId(), old.assistantMessageId(), old.userMessageId(),
                 old.selectedMessageIds(), old.reasonCodes(), old.comment(), old.question(), old.answer(), old.responseSnapshot(),
                 old.createdAt(), Instant.now(), Status.IN_TEST_SET, reviewer, Instant.now(), testCaseId);
         write(key(old.userId(), old.sessionId(), old.assistantMessageId()), value);
-        if (annotation == null || annotation.evalKind() == null || annotation.evalKind().isBlank()) {
-            throw new IllegalArgumentException("追加测试集必须填写评测类型");
-        }
         Fixture fixture = new Fixture(testCaseId, old.badCaseId(), old.question(), old.answer(), old.reasonCodes(), old.selectedMessageIds(), old.responseSnapshot(), reviewer, Instant.now(),
                 annotation.evalKind().trim(), annotation.expectRefuse(), safeList(annotation.mustMention()), safeList(annotation.expectedTools()), sanitize(annotation.annotation()));
         redis.opsForValue().set(FIXTURE_PREFIX + testCaseId, writeJson(fixture), TTL);
