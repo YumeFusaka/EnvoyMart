@@ -247,7 +247,7 @@
 实施完成后同步更新：
 
 - `EnvoyMart/docs/待办/待办总表.md`
-- `EnvoyMart/docs/待办/当前会话交接-评测链路与BadCase.md`
+- `EnvoyMart/docs/待办/待办总表.md`
 - `EnvoyMart/docs/项目总览.md`
 - 根目录 `AGENTS.md` 中的当前验证数字和已知限制
 
