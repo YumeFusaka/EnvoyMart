@@ -772,9 +772,15 @@ start_all_services() {
 
   # 终判也分三态：仍在初始化的服务**不算失败**，它的启动任务还在跑，
   # 该做的只是把这件事说清楚，而不是回一个「环境没起来」。
+  #
+  # 判据必须是带复验的 svc_ready_confirm，与补启轮同源。2026-10-09 冷启动实测：
+  # knowledge-service 在补启轮判就绪、终判前 5 秒还在正常应答，却被终判的单发探测
+  # （1 秒 curl 超时）判死——进程从未重启、随后一直在跑图谱重建。
+  # 假红灯的代价不只是误报：run_all 就此在服务阶段返回，resync 与前端全都没跑。
+  # 复验对已就绪的服务零成本（首次即成功就不复探），只有真可疑的才多花 2 秒。
   failed=(); starting=()
   for svc in "${SERVICES[@]}"; do
-    svc_ready "$svc"; rc=$?
+    svc_ready_confirm "$svc"; rc=$?
     case "$rc" in
       0) ;;
       2) starting+=("$svc") ;;
