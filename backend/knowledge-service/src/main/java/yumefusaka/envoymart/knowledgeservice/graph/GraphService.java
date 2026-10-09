@@ -166,7 +166,25 @@ public class GraphService {
         if (docNo != null && !docNo.isBlank()) query.eq(GraphBuildFailureEntity::getDocNo, docNo);
         if (stage != null && !stage.isBlank()) query.eq(GraphBuildFailureEntity::getStage, stage);
         if (reasonCode != null && !reasonCode.isBlank()) query.eq(GraphBuildFailureEntity::getReasonCode, reasonCode);
-        return failureMapper == null ? List.of() : failureMapper.selectList(query);
+        if (failureMapper == null) return List.of();
+        List<GraphBuildFailureEntity> rows = failureMapper.selectList(query);
+        rows.forEach(row -> {
+            if ("候选三元组未通过图谱事实校验".equals(row.getDetail())) {
+                row.setDetail("历史记录未保存候选字段；拒绝原因：" + failureReason(row.getReasonCode()));
+            }
+        });
+        return rows;
+    }
+
+    private String failureReason(String reasonCode) {
+        return switch (reasonCode == null ? "" : reasonCode) {
+            case "VOCABULARY" -> "关系或端点类型不符合封闭词表";
+            case "UNANCHORED" -> "端点、组合成员或引文没有被正文逐字锚定";
+            case "UNGROUNDED" -> "quote 没有在正文中逐字命中";
+            case "MALFORMED" -> "候选结构或实体形状不合法";
+            case "SELF_LOOP" -> "两端归一后是同一实体";
+            default -> "候选未通过事实校验";
+        };
     }
 
     public GraphBuildFailureEntity failure(long id) {

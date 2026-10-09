@@ -28,8 +28,6 @@ import {
   getDocumentAdmin,
   getDocumentBindings,
   listDocumentsAdmin,
-  listGraphBuildFailures,
-  fetchGraphFailureStats,
   reindexDocument,
   reindexKnowledge,
   upsertDocument,
@@ -49,11 +47,13 @@ const { query, records, loading, error, search, resetFilters, load } = useAdminL
   { scope: undefined, keyword: '', status: undefined, page: 0, size: 50 },
   { immediate: false },
 )
+const documentPage = ref(1)
+const documentPageSize = 12
+const visibleDocuments = computed(() => records.value.slice((documentPage.value - 1) * documentPageSize, documentPage.value * documentPageSize))
 
 onMounted(() => {
   void load(0)
   void loadCoverage()
-  void loadGraphFailures()
 })
 
 /** 表格容器。列宽由它实测的宽度反推，所以宽度变化源是它而不是 window */
@@ -396,25 +396,6 @@ const coveragePercent = computed(() => {
   return Math.round((data.coveredSpu / data.totalSpu) * 100)
 })
 
-const graphFailures = ref<Awaited<ReturnType<typeof listGraphBuildFailures>>>([])
-const graphFailurePage = ref(1)
-const graphFailurePageSize = 10
-const graphFailureLoading = ref(false)
-const graphFailureError = ref(false)
-const graphFailureFilters = ref({ batchId: '', docNo: '', stage: '', reasonCode: '' })
-async function loadGraphFailures() {
-  graphFailureLoading.value = true
-  graphFailureError.value = false
-  try {
-    graphFailures.value = await listGraphBuildFailures({ ...graphFailureFilters.value, limit: 100 })
-    graphFailurePage.value = 1
-  } catch {
-    graphFailureError.value = true
-  } finally {
-    graphFailureLoading.value = false
-  }
-}
-onMounted(() => void loadGraphFailures())
 </script>
 
 <template>
@@ -571,7 +552,7 @@ onMounted(() => void loadGraphFailures())
           <!-- 列宽由 useResponsiveColumns 按容器实测宽度算：声明值之和装不下时收缩，
                否则 Element Plus 会把最宽的列砍到极限（标题一列一个字），
                而带 fixed 列的表格还会让最右列被盖住且滚不到。 -->
-          <el-table v-loading="loading" :data="records" style="width: 100%">
+          <el-table v-loading="loading" :data="visibleDocuments" style="width: 100%">
             <el-table-column label="文档" :width="colW[0]">
               <template #default="{ row }">
                 <div class="admin-stack">
@@ -639,41 +620,10 @@ onMounted(() => void loadGraphFailures())
             <p class="admin-empty">还没有知识文档，点右上角「上传文档」添加一篇</p>
           </template>
         </el-table>
+        <el-pagination v-if="records.length > documentPageSize" class="document-pagination" layout="total, prev, pager, next" :total="records.length" :page-size="documentPageSize" v-model:current-page="documentPage" />
       </div>
       </template>
     </div>
-
-    <section class="admin-panel graph-failure-panel" aria-label="图谱构建诊断">
-      <div class="coverage__head">
-        <div>
-          <h2 class="coverage__title">图谱构建诊断</h2>
-          <p class="coverage__list-hint">按批次、文档、阶段和原因码查看逐条失败或跳过记录。</p>
-        </div>
-        <el-button :icon="Refresh" :loading="graphFailureLoading" @click="loadGraphFailures">刷新</el-button>
-      </div>
-      <div class="graph-failure-filters">
-        <el-input v-model="graphFailureFilters.batchId" clearable placeholder="批次号" />
-        <el-input v-model="graphFailureFilters.docNo" clearable placeholder="文档号" />
-        <el-select v-model="graphFailureFilters.stage" clearable placeholder="阶段">
-          <el-option label="抽取" value="EXTRACT" /><el-option label="校验" value="VALIDATION" />
-          <el-option label="写入" value="WRITE" /><el-option label="批次" value="BATCH" />
-        </el-select>
-        <el-input v-model="graphFailureFilters.reasonCode" clearable placeholder="原因码" />
-        <el-button type="primary" @click="loadGraphFailures">查询</el-button>
-      </div>
-      <el-table v-loading="graphFailureLoading" :data="graphFailures.slice((graphFailurePage - 1) * graphFailurePageSize, graphFailurePage * graphFailurePageSize)" size="small" empty-text="暂无失败或跳过记录">
-        <el-table-column prop="occurredAt" label="时间" width="170" />
-        <el-table-column prop="batchId" label="批次" min-width="180" />
-        <el-table-column prop="docNo" label="文档" width="110" />
-        <el-table-column prop="stage" label="阶段" width="90" />
-        <el-table-column prop="reasonCode" label="原因码" width="150" />
-        <el-table-column prop="detail" label="详情" min-width="260" show-overflow-tooltip />
-        <el-table-column label="可重试" width="80"><template #default="scope">{{ scope.row.retryable ? '是' : '否' }}</template></el-table-column>
-        <el-table-column type="expand"><template #default="scope"><dl class="graph-failure-detail"><dt>批次号</dt><dd>{{ scope.row.batchId }}</dd><dt>文档号</dt><dd>{{ scope.row.docNo || '未关联文档' }}</dd><dt>实体键</dt><dd>{{ scope.row.entityKey || '未定位实体' }}</dd><dt>阶段 / 原因码</dt><dd>{{ scope.row.stage }} / {{ scope.row.reasonCode }}</dd><dt>发生时间</dt><dd>{{ scope.row.occurredAt }}</dd><dt>脱敏详情</dt><dd>{{ scope.row.detail || '无补充详情' }}</dd></dl></template></el-table-column>
-      </el-table>
-      <el-pagination v-if="graphFailures.length > graphFailurePageSize" class="graph-failure-pagination" layout="prev, pager, next, total" :total="graphFailures.length" :page-size="graphFailurePageSize" :current-page="graphFailurePage" @current-change="(page: number) => graphFailurePage = page" />
-      <el-alert v-if="graphFailureError" type="error" title="图谱构建诊断暂时不可用" description="接口未返回诊断数据。请确认管理员会话有效，并检查知识服务状态后重试。" :closable="false" show-icon />
-    </section>
 
     <el-drawer
       v-model="editing"
@@ -935,7 +885,4 @@ onMounted(() => void loadGraphFailures())
   font-variant-numeric: tabular-nums;
 }
 
-.graph-failure-detail { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: var(--ys-space-2) var(--ys-space-4); margin: 0; padding: var(--ys-space-3); background: var(--color-bg-surface-muted); overflow-wrap: anywhere; }
-.graph-failure-detail dt { color: var(--color-text-muted); }
-.graph-failure-detail dd { margin: 0; color: var(--color-text-primary); }
 </style>

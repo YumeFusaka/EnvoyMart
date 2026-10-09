@@ -1,6 +1,7 @@
 package yumefusaka.envoymart.aiservice.eval;
 
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
@@ -11,6 +12,7 @@ import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.GroundingEvaluator;
 import yumefusaka.envoymart.agent.rag.GroundingFixtures;
 import yumefusaka.envoymart.agent.rag.GraphMultiHopFixtures;
+import yumefusaka.envoymart.common.web.RequestId;
 
 import java.time.OffsetDateTime;
 import java.nio.charset.StandardCharsets;
@@ -57,10 +59,11 @@ public class GroundingLiveEvalService {
                              String retrievalQuery,
                              yumefusaka.envoymart.agent.rag.QueryExpansions expansion,
                              List<yumefusaka.envoymart.agent.llm.ToolExecution> toolExecutions,
-                             yumefusaka.envoymart.agent.rag.RetrievalOutcome.RetrievalTrace retrievalTrace) {
+                             yumefusaka.envoymart.agent.rag.RetrievalOutcome.RetrievalTrace retrievalTrace,
+                             String requestId) {
         public CaseResult(String question, GroundingEvaluator.CaseOutcome outcome, String answer,
                           int evidenceCount, long latencyMs, String error) {
-            this(question, outcome, answer, evidenceCount, latencyMs, error, List.of(), null, null, List.of(), null);
+            this(question, outcome, answer, evidenceCount, latencyMs, error, List.of(), null, null, List.of(), null, null);
         }
     }
 
@@ -241,7 +244,7 @@ public class GroundingLiveEvalService {
                 outcome.citations(), rootCause);
         return new CaseResult(result.question(), migrated, result.answer(), result.evidenceCount(),
                 result.latencyMs(), result.error(), result.evidence(), result.retrievalQuery(), result.expansion(),
-                result.toolExecutions(), result.retrievalTrace());
+                result.toolExecutions(), result.retrievalTrace(), result.requestId());
     }
 
     /**
@@ -254,14 +257,17 @@ public class GroundingLiveEvalService {
         // 每条用例一个会话：多轮上下文在这里是噪声，不是能力
         String sessionId = "grounding-eval-" + fixtureCase.id() + "-" + System.currentTimeMillis();
         long started = System.currentTimeMillis();
+        String requestId = RequestId.generate();
+        String previousRequestId = MDC.get(RequestId.MDC_KEY);
+        MDC.put(RequestId.MDC_KEY, requestId);
         try {
             // 无确认令牌：评测问的都是知识与检索类问题，不碰高危操作
             Agent.AgentResponse response = agent.chat(userId, sessionId, fixtureCase.question(), null);
             if ("fallback".equals(response.getSource())) {
                 return new CaseResult(fixtureCase.question(), null, response.getReply(), 0,
                         System.currentTimeMillis() - started, "模型生成失败，已返回降级回复；此条不参与质量指标",
-                        List.of(), response.getRetrievalQuery(), response.getExpansion(), response.getToolExecutions(),
-                        response.getRetrieval() == null ? null : response.getRetrieval().trace());
+                        List.of(), effectiveRetrievalQuery(response.getRetrievalQuery(), response.getRetrieval()), response.getExpansion(), response.getToolExecutions(),
+                        response.getRetrieval() == null ? null : response.getRetrieval().trace(), requestId);
             }
             long latency = System.currentTimeMillis() - started;
             List<DocumentChunk> evidence =
@@ -290,14 +296,32 @@ public class GroundingLiveEvalService {
             return new CaseResult(fixtureCase.question(), outcome, response.getReply(),
                     evidence.size(), latency, null, evidence.stream()
                     .map(chunk -> chunk.toBuilder().embedding(null).indexText(null).build()).toList(),
-                    response.getRetrievalQuery(), response.getExpansion(), response.getToolExecutions(),
-                    response.getRetrieval() == null ? null : response.getRetrieval().trace());
+                    effectiveRetrievalQuery(response.getRetrievalQuery(), response.getRetrieval()), response.getExpansion(), response.getToolExecutions(),
+                    response.getRetrieval() == null ? null : response.getRetrieval().trace(), requestId);
         } catch (RuntimeException e) {
             log.warn("[AI] 回答质量真跑单条失败 id={} 问题={}", fixtureCase.id(), fixtureCase.question(), e);
             return new CaseResult(fixtureCase.question(), null, null, 0,
                     System.currentTimeMillis() - started,
-                    e.getClass().getSimpleName() + ": " + e.getMessage(), List.of(), null, null, List.of(), null);
+                    e.getClass().getSimpleName() + ": " + e.getMessage(), List.of(), null, null, List.of(), null, requestId);
+        } finally {
+            if (previousRequestId == null) {
+                MDC.remove(RequestId.MDC_KEY);
+            } else {
+                MDC.put(RequestId.MDC_KEY, previousRequestId);
+            }
         }
+    }
+
+    private static String effectiveRetrievalQuery(String rewrittenQuery,
+                                                  yumefusaka.envoymart.agent.rag.RetrievalOutcome retrieval) {
+        if (retrieval != null && retrieval.trace() != null
+                && retrieval.trace().query() != null && !retrieval.trace().query().isBlank()) {
+            return retrieval.trace().query();
+        }
+        if (rewrittenQuery != null && !rewrittenQuery.isBlank()) {
+            return rewrittenQuery;
+        }
+        return null;
     }
 
     private record LiveCase(String id, String question, GroundingFixtures.Kind kind,

@@ -94,7 +94,15 @@ public final class TripleValidator {
      * @param accepted 通过校验并已锚定原文位置的三元组
      * @param reasons  每种 {@link RejectReason} 各丢弃了多少条
      */
-    public record RejectedTriple(String head, String relation, String tail, RejectReason reason, String detail) {}
+    public record RejectedTriple(String headKind, String head, String relation,
+                                 String tailKind, String tail, String quote,
+                                 RejectReason reason, String detail) {
+        /** 兼容只关心三元组名字的旧调用方。 */
+        public RejectedTriple(String head, String relation, String tail,
+                              RejectReason reason, String detail) {
+            this("", head, relation, "", tail, "", reason, detail);
+        }
+    }
 
     public record Result(List<GroundedTriple> accepted, Map<RejectReason, Integer> reasons,
                          List<RejectedTriple> rejectedTriples) {
@@ -146,15 +154,18 @@ public final class TripleValidator {
             } else {
                 reasons.merge(verdict.reason(), 1, Integer::sum);
                 rejectedTriples.add(new RejectedTriple(
-                        t == null ? "" : safe(t.headName()), t == null ? "" : safe(t.relation()),
-                        t == null ? "" : safe(t.tailName()), verdict.reason(),
-                        "候选三元组未通过图谱事实校验"));
+                        t == null ? "" : safe(t.headKind()), t == null ? "" : safe(t.headName()),
+                        t == null ? "" : safe(t.relation()), t == null ? "" : safe(t.tailKind()),
+                        t == null ? "" : safe(t.tailName()), t == null ? "" : safe(t.quote()),
+                        verdict.reason(), verdict.detail()));
                 // 逐条打出被丢弃的字段值。原先只打条数，于是「词表 10」既可能是模型返回了
                 // 中文标签、也可能是关系配错了类型，只能靠重启一次改一处日志来二分。
                 // 这条日志只在重建索引时产出，量很小，换来的是「看一眼就知道错在哪」
-                log.info("[Graph] 丢弃（{}）：{}={} -{}-> {}={} | quote={}",
-                        verdict.reason().label(), t.headKind(), t.headName(), t.relation(),
-                        t.tailKind(), t.tailName(), abbreviate(t.quote()));
+                log.info("[Graph] 丢弃（{}）：{}={} -{}-> {}={} | quote={} | detail={}",
+                        verdict.reason().label(), t == null ? "" : t.headKind(),
+                        t == null ? "" : t.headName(), t == null ? "" : t.relation(),
+                        t == null ? "" : t.tailKind(), t == null ? "" : t.tailName(),
+                        abbreviate(t == null ? null : t.quote()), verdict.detail());
             }
         }
         return new Result(accepted, reasons, rejectedTriples);
@@ -162,15 +173,21 @@ public final class TripleValidator {
 
     private static String safe(String value) { return value == null ? "" : value; }
 
-    private record Verdict(GroundedTriple grounded, RejectReason reason) {
+    private record Verdict(GroundedTriple grounded, RejectReason reason, String detail) {
 
         static Verdict accept(GroundedTriple t) {
-            return new Verdict(t, null);
+            return new Verdict(t, null, null);
         }
 
-        static Verdict reject(RejectReason reason) {
-            return new Verdict(null, reason);
+        static Verdict reject(RejectReason reason, String detail) {
+            return new Verdict(null, reason, detail);
         }
+    }
+
+    private static String candidate(Triple t) {
+        if (t == null) return "候选为空";
+        return safe(t.headKind()) + " " + safe(t.headName()) + " -" + safe(t.relation())
+                + "-> " + safe(t.tailKind()) + " " + safe(t.tailName());
     }
 
     /**
@@ -182,13 +199,13 @@ public final class TripleValidator {
     private static Verdict validateOne(Triple t, String docId, Compact body,
                                        List<KnowledgeChunkEntity> chunks) {
         if (t == null) {
-            return Verdict.reject(RejectReason.VOCABULARY);
+            return Verdict.reject(RejectReason.VOCABULARY, "候选为空，无法解析实体类型、关系和引文");
         }
         EntityKind headKind = EntityKind.parse(t.headKind());
         EntityKind tailKind = EntityKind.parse(t.tailKind());
         GraphRelation relation = GraphRelation.parse(t.relation());
         if (headKind == null || tailKind == null || relation == null) {
-            return Verdict.reject(RejectReason.VOCABULARY);
+            return Verdict.reject(RejectReason.VOCABULARY, "实体类型或关系不在封闭词表中：" + candidate(t));
         }
         // 组合禁忌走另一条分支：头是「组合」节点（不是实体），形状与锚定规则都不一样。
         // 分出去而不是在这里加一串 if，是因为两者的判据几乎不重叠——
@@ -213,15 +230,16 @@ public final class TripleValidator {
         // 类型不符只是归并的副产物；报词表会把人送去改提示词与枚举，而那里没坏
         if (head.name().isEmpty() || tail.name().isEmpty() || head.name().equals(tail.name())) {
             // 判据用<b>规范名</b>：别名表可能把原本不同的两端并成同一个
-            return Verdict.reject(RejectReason.SELF_LOOP);
+            return Verdict.reject(RejectReason.SELF_LOOP, "两端归一后是同一实体：" + head.name());
         }
 
         if (!relation.acceptsHead(head.kind()) || !relation.acceptsTail(tail.kind())) {
-            return Verdict.reject(RejectReason.VOCABULARY);
+            return Verdict.reject(RejectReason.VOCABULARY, "关系不接受当前端点类型：" + candidate(t)
+                    + "，规范类型=" + head.kind() + "->" + tail.kind());
         }
         if (head.name().length() > MAX_NAME_CHARS || tail.name().length() > MAX_NAME_CHARS
                 || !wellShaped(head.kind(), head.name()) || !wellShaped(tail.kind(), tail.name())) {
-            return Verdict.reject(RejectReason.MALFORMED);
+            return Verdict.reject(RejectReason.MALFORMED, "实体长度、商品键或实体形状不合法：" + candidate(t));
         }
 
         // 端点锚定在前、引文锚定在后：端点根本不在文档里，说明这一条是凭空造的，
@@ -240,7 +258,7 @@ public final class TripleValidator {
                 : body.anchors(headKind, headWritten, t.headLabel())
                         && body.anchors(tailKind, tailWritten, t.tailLabel());
         if (!anchored) {
-            return Verdict.reject(RejectReason.UNANCHORED);
+            return Verdict.reject(RejectReason.UNANCHORED, "至少一个端点未在正文中出现：" + candidate(t));
         }
 
         // **声明补出的商品→成分边免引文校验。**
@@ -255,7 +273,7 @@ public final class TripleValidator {
         int[] span = body.locate(quote);
         if (span == null) {
             if (!t.declared()) {
-                return Verdict.reject(RejectReason.UNGROUNDED);
+                return Verdict.reject(RejectReason.UNGROUNDED, "quote 未在正文中逐字命中：" + candidate(t));
             }
         }
 
@@ -294,11 +312,11 @@ public final class TripleValidator {
                                                EntityKind tailKind) {
         List<String> members = combinationMembers(t.headName());
         if (members.size() < 2) {
-            return Verdict.reject(RejectReason.MALFORMED);
+            return Verdict.reject(RejectReason.MALFORMED, "组合成员少于两个：" + candidate(t));
         }
         String comboKey = combinationKey(members);
         if (comboKey.length() > MAX_NAME_CHARS) {
-            return Verdict.reject(RejectReason.MALFORMED);
+            return Verdict.reject(RejectReason.MALFORMED, "组合键超过长度上限：" + comboKey);
         }
 
         // 成员的展示名：优先用模型给的原写法（「维生素 D3」比「维生素d3」好读），
@@ -308,37 +326,45 @@ public final class TripleValidator {
         String tailWritten = normalizeName(t.tailName());
         Canonical tail = canonical(tailWritten, tailKind);
         if (tail.name().isEmpty()) {
-            return Verdict.reject(RejectReason.SELF_LOOP);
+            return Verdict.reject(RejectReason.SELF_LOOP, "组合尾端为空：" + candidate(t));
         }
         if (!GraphRelation.COMBINED_WITH.acceptsTail(tail.kind())) {
-            return Verdict.reject(RejectReason.VOCABULARY);
+            return Verdict.reject(RejectReason.VOCABULARY, "组合关系不接受尾端类型：" + candidate(t)
+                    + "，规范尾端类型=" + tail.kind());
         }
         if (tail.name().length() > MAX_NAME_CHARS || !wellShaped(tail.kind(), tail.name())) {
-            return Verdict.reject(RejectReason.MALFORMED);
+            return Verdict.reject(RejectReason.MALFORMED, "组合尾端长度或实体形状不合法：" + candidate(t));
         }
 
         // 引文要同时提到全部成员 —— 见方法注释第三条
         String quote = t.quote() == null ? "" : t.quote().strip();
         int[] span = quote.isEmpty() ? null : body.locate(quote);
         if (span == null) {
-            return Verdict.reject(RejectReason.UNGROUNDED);
+            return Verdict.reject(RejectReason.UNGROUNDED, "组合 quote 未在正文中逐字命中：" + candidate(t));
         }
         String compactQuote = EntityNames.normalize(quote);
         for (String member : members) {
-            if (!compactQuote.contains(member)) {
+            if (!containsMember(compactQuote, member)) {
                 // 成员不在引文里 = 这句话支撑不了这个组合，报 UNANCHORED 而不是 UNGROUNDED：
                 // 引文本身是逐字命中的，缺的是「它说的不是这件事」
-                return Verdict.reject(RejectReason.UNANCHORED);
+                return Verdict.reject(RejectReason.UNANCHORED, "组合引文未覆盖成员「" + member + "」：" + candidate(t));
             }
         }
         if (!body.anchors(tail.kind(), tailWritten, t.tailLabel())) {
-            return Verdict.reject(RejectReason.UNANCHORED);
+            return Verdict.reject(RejectReason.UNANCHORED, "组合尾端未在正文中出现：" + candidate(t));
         }
 
         return Verdict.accept(new GroundedTriple(EntityKind.COMBINATION, comboKey, display,
                 GraphRelation.COMBINED_WITH, tail.kind(), tail.name(),
                 displayLabel(tail, tailWritten, t.tailLabel(), t.tailName()),
                 truncate(t.effect()), docId, chunkIdAt(chunks, span[0]), span[0], span[1], quote));
+    }
+
+    /** 规范成员可能以别名出现在原文中，组合引文核对也必须沿用同一张别名表。 */
+    private static boolean containsMember(String normalizedQuote, String canonicalName) {
+        return EntityAliases.variantsOf(canonicalName).stream()
+                .map(EntityNames::normalize)
+                .anyMatch(normalizedQuote::contains);
     }
 
     /**

@@ -278,8 +278,13 @@ const router = createRouter({
           // 与「谁来写依据」是两件事 —— 读的门开着，写必须换一扇门
           path: 'knowledge',
           name: 'admin-knowledge',
-          component: () => import('@/views/admin/AdminKnowledgeView.vue'),
+          component: () => import('@/views/admin/AdminKnowledgeLayout.vue'),
           meta: { admin: true, title: '知识库' },
+          children: [
+            { path: '', name: 'admin-knowledge-documents', component: () => import('@/views/admin/AdminKnowledgeView.vue'), meta: { admin: true, title: '知识库 · 文档管理' } },
+            { path: 'graph-diagnostics', name: 'admin-knowledge-graph-diagnostics', component: () => import('@/views/admin/AdminGraphFailuresView.vue'), meta: { admin: true, title: '知识库 · 图谱构建诊断' } },
+            { path: 'evaluations', name: 'admin-knowledge-evaluations', component: () => import('@/views/admin/AdminEvaluationView.vue'), meta: { admin: true, title: '知识库 · 评测运行' } },
+          ],
         },
         { path: 'bad-cases', name: 'admin-bad-cases', component: () => import('@/views/admin/AdminBadCaseView.vue'), meta: { admin: true, title: 'Bad Case 审核' } },
       ],

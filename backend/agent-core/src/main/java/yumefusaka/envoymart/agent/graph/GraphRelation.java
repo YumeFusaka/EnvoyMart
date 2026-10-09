@@ -49,7 +49,7 @@ public enum GraphRelation {
      * 拆节点恰好把「谁和谁一起才有事」这个最关键的信息丢掉。
      */
     INTERACTS_WITH("相互作用", EnumSet.of(EntityKind.NUTRIENT, EntityKind.INGREDIENT),
-            EnumSet.of(EntityKind.DRUG, EntityKind.DRUG_CLASS)),
+            EnumSet.of(EntityKind.DRUG, EntityKind.DRUG_CLASS, EntityKind.NUTRIENT, EntityKind.INGREDIENT)),
 
     /** 营养素/成分 → 人群。需要先咨询医师的人群 */
     CAUTION_FOR("人群禁忌", EnumSet.of(EntityKind.NUTRIENT, EntityKind.INGREDIENT),

@@ -75,6 +75,16 @@ class TripleValidatorTest {
     }
 
     @Test
+    void 营养素之间明确写出相互影响时允许入图() {
+        String body = "钙剂与铁剂同服会影响铁的吸收，建议错开服用。";
+        TripleValidator.Result result = TripleValidator.validate(List.of(
+                triple("NUTRIENT", "钙剂", "INTERACTS_WITH", "NUTRIENT", "铁剂", body)),
+                "KB-COMPAT", body, List.of());
+        assertThat(result.accepted()).hasSize(1);
+        assertThat(result.count(TripleValidator.RejectReason.VOCABULARY)).isZero();
+    }
+
+    @Test
     void 商品端不要求出现在正文里() {
         // 文档里写的是「本品」，而商品节点键是 SPU 编号——正文里当然找不到。
         // 它和目录的对齐在 ai-service 做，这里只认键的形状
@@ -240,6 +250,22 @@ class TripleValidatorTest {
 
         assertThat(result.count(TripleValidator.RejectReason.VOCABULARY)).isEqualTo(1);
         assertThat(result.count(TripleValidator.RejectReason.UNANCHORED)).isZero();
+        assertThat(result.rejectedTriples().getFirst().detail()).contains("关系不接受当前端点类型");
+        assertThat(result.rejectedTriples().getFirst().headKind()).isEqualTo("PRODUCT");
+        assertThat(result.rejectedTriples().getFirst().tailKind()).isEqualTo("NUTRIENT");
+    }
+
+    @Test
+    void 空候选被拒时不访问字段且保留可读原因() {
+        TripleValidator.Result result = TripleValidator.validate(java.util.Arrays.asList((Triple) null),
+                "KB-NULL", BODY, List.of());
+
+        assertThat(result.accepted()).isEmpty();
+        assertThat(result.rejectedTriples()).singleElement().satisfies(rejected -> {
+            assertThat(rejected.reason()).isEqualTo(TripleValidator.RejectReason.VOCABULARY);
+            assertThat(rejected.detail()).contains("候选为空");
+            assertThat(rejected.quote()).isEmpty();
+        });
     }
 
     @Test
@@ -315,6 +341,18 @@ class TripleValidatorTest {
 
         assertThat(result.accepted()).isEmpty();
         assertThat(result.count(TripleValidator.RejectReason.UNANCHORED)).isEqualTo(1);
+    }
+
+    @Test
+    void 组合成员使用别名时按规范成员核对引文() {
+        String body = "本品含富马酸亚铁、钙剂与维生素D，三者同服可能增加结石风险，肾结石患者禁用。";
+        TripleValidator.Result result = TripleValidator.validate(List.of(
+                combo("富马酸亚铁+钙剂+维生素D", "POPULATION", "肾结石患者",
+                        "本品含富马酸亚铁、钙剂与维生素D，三者同服可能增加结石风险")),
+                "KB-ALIAS-COMBO", body, List.of());
+
+        assertThat(result.accepted()).hasSize(1);
+        assertThat(result.rejectedTriples()).isEmpty();
     }
 
     @Test

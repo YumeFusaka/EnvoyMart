@@ -72,6 +72,8 @@ export interface GroundingLiveCase {
   latencyMs: number
   error: string | null
   retrievalQuery?: string | null
+  /** 本条评测关联的请求标识；旧快照可能没有该字段。 */
+  requestId?: string | null
   expansion?: QueryExpansions | null
   toolExecutions?: ToolExecution[]
   retrievalTrace?: RetrievalTrace | null

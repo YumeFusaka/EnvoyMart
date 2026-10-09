@@ -437,7 +437,7 @@ public class Agent {
 
         // 只在真的改写过时下发：检索用了什么句，是「回答为什么对/为什么没查到」的
         // 第一手证据（日志里也有一份），不为没改写的情况塞一个与 message 相同的值
-        response.setRetrievalQuery(retrievalQuery.equals(message) ? null : retrievalQuery);
+        response.setRetrievalQuery(retrievalQuery);
         // 扩写随响应下发。只在真有扩写时给值：没有扩写时下发一个空对象，
         // 前端会以为「扩写跑了但没产出」，与「压根没跑」是两回事
         RetrievalOutcome finalRetrieval = response.getRetrieval();
