@@ -148,15 +148,42 @@ export PAYMENT_MOCK_ENABLED="${PAYMENT_MOCK_ENABLED:-true}"
 # 而健康检查是绿的——那比起不来更危险）。ai-service 侧有重试，所以这个顺序是优化
 # 而不是硬约束；但让它先起能少等一轮重试。
 # 服务就绪等待窗口（秒）。它是「从发出启动命令到最慢的服务自报就绪」的上限。
-# 实测九服务冷启动各自在 40 秒内就绪（ai-service 的索引重建已改到后台，不再占启动期），
-# 留 180 秒是给机器满载、首次建索引、Docker 刚起来这类情况的余量。
+# 2026-10-11 实测九服务冷启动的最慢一个：发起于 03:20:56、自报 Started 于 03:23:43，
+# 墙钟 167 秒（JVM + SkyWalking + Maven fork 的固定开销约 50 秒 + Spring 内部 114.8 秒），
+# 原先 180 秒的窗口只剩十几秒余量——机器再忙一点就会越过窗口，把一个正常的慢启动
+# 送进补启轮。放宽到 300 秒：真正的死进程有死亡标志、wait_healthy 会立刻退出等待
+# （见那里的 grep），拉长窗口只影响"活着但在慢慢起"的服务——而那正是应该等的。
 # 调小只影响脚本判定，不影响服务自身。
-WAIT_HEALTHY_SECONDS=${WAIT_HEALTHY_SECONDS:-180}
+WAIT_HEALTHY_SECONDS=${WAIT_HEALTHY_SECONDS:-300}
 SERVICES=(gateway-service auth-service product-service order-service knowledge-service ai-service payment-service review-service promotion-service)
 # 与 SERVICES 逐位对齐，改 SERVICES 的顺序必须同步改这里——
 # 错位的后果是某个服务连上别人的库，而且它能正常启动、直到第一次查表才报「表不存在」
 # （库里已经有表时连这个都不会报，直接读到空数据）
 DB_OF=("" envoymart_auth envoymart_product envoymart_order envoymart_knowledge "" envoymart_payment envoymart_review envoymart_promotion)
+
+# Nacos 客户端 gRPC 建连重试预算——「注册竞态杀掉进程」这个历史故障的最后一块拼图。
+#
+# 故障链（2026-10-11 反编译逐环核实 + 日志实锤）：NamingGrpcClientProxy 的构造函数
+# 同步执行 RpcClient.start() 建连；start() 只尝试 retryTimes+1 次，**默认只有 4 次**；
+# 4 次全败则状态停在 STARTING，随后 NacosServiceRegistry 的单次注册请求在 ~300ms 内
+# 抛 -401，叠加 failFast=true（SAA 默认值）→ 进程退出。
+# 实测：2026-10-10 19:18 那轮，客户端 4 次尝试（间隔 12s/3s/3s）全败被杀死，
+# 40 秒后的补启 JVM 2.5 秒就连上——Nacos 和 CPU 都没坏，只是这一瞬间调度不进来。
+# 冷启动风暴里单次建连实测 2.5~17.8 秒、失败间隔 3~17 秒，4 次的预算根本不够跨过去。
+#
+# 30 次 → 31 次尝试（这是全服务通用的等待预算：连上即用，超了才按失败走）。
+# 预算换算是「次数 × 单次耗时」，两种失败形态完全不同：
+#   - 建连超时型（Nacos 活着但 SYN 挤不进去）：单次耗 2.5~17.8 秒 → 31 次 ≈ 90 秒以上，够跨风暴；
+#   - Connection refused 型（Nacos 真没在跑）：每次 <100ms 当场即败 → 31 次约 2.5 秒就烧完
+#     （2026-10-11 停机实测）。这类「根本连不上」由 middleware_up 的真实握手预检在
+#     服务启动前拦截，轮不到这个预算兜——预检拦不住的真故障则走 failFast 退出 +
+#     补启轮，不是靠把这 30 调更大来假装能等。
+#
+# 为什么必须走 JVM 参数而不是 envoymart-nacos.yml：nacos-client 的属性源是
+# 「显式 Properties > -D JVM 参数 > 环境变量」，而 spring.cloud.nacos.discovery.*
+# 只按自己的字段名映射进客户端属性——yml 里写不进这个键（envoymart-nacos.yml
+# 顶部有完整的边界说明）。
+NACOS_GRPC_RETRY_ARGS="${NACOS_GRPC_RETRY_ARGS:--Dnacos.remote.client.grpc.retry.times=30}"
 
 index_of() {
   local target=$1 i
@@ -215,8 +242,11 @@ start_one() {
   # 这正是选它而不是给六个服务逐个加 OTel 依赖的原因。
   # agent 不存在时静默跳过——没装追踪不该妨碍把服务跑起来。
   local agent_args=()
+  # Nacos 建连重试预算与 SkyWalking agent 走同一条 jvmArguments 通道。放在这个变量里
+  # 而不是两个分支各拼一份：agent 存在与否都要带上它（见 NACOS_GRPC_RETRY_ARGS 注释）。
+  local jvm_args="$NACOS_GRPC_RETRY_ARGS"
   if [ -n "$AGENT_JAR" ]; then
-    local sw_args="-javaagent:$AGENT_JAR -Dskywalking.agent.service_name=$svc -Dskywalking.collector.backend_service=$SW_OAP"
+    jvm_args="-javaagent:$AGENT_JAR -Dskywalking.agent.service_name=$svc -Dskywalking.collector.backend_service=$SW_OAP $jvm_args"
     # 关掉 SkyWalking 的 Neo4j 插件（插件名取自它自己的 skywalking-plugin.def）。
     #
     # 它是给 neo4j-java-driver 4.x 写的，本项目用 5.26.0。插桩之后，凡是真的写进去关系的事务
@@ -235,9 +265,10 @@ start_one() {
     if [ "$svc" = "knowledge-service" ]; then
       extra+=(SW_EXCLUDE_PLUGINS=neo4j-4.x)
     fi
-    agent_args+=(-Dspring-boot.run.jvmArguments="$sw_args")
+    agent_args+=(-Dspring-boot.run.jvmArguments="$jvm_args")
   else
     echo "  （未找到 SkyWalking agent，$svc 将不带链路追踪启动）" >&2
+    agent_args+=(-Dspring-boot.run.jvmArguments="$jvm_args")
   fi
 
   mkdir -p "$LOG_DIR"
@@ -375,11 +406,17 @@ stop_services() {
 # 2026-10-06 踩到的坑：把 503 和「没起来」揉成同一种失败，补启轮就会反复 kill 掉
 # 一个正在正常建索引的 ai-service，索引从头再建一遍，永远追不上等待窗口——
 # 表现是「ai-service 补启两轮仍未就绪」，而它其实每次都跑得好好的。
+#
+# 超时从 1 秒放宽到 5 秒（2026-10-11）：冷启动的 CPU 饥饿期里 /actuator/health 的
+# **首次应答实测 0.44~4.38 秒**（热态只要 30~80ms），而 1 秒的超时把它截成 000 →
+# 被判"未响应"。终判那一轮 product / order 就是这样被误报的——日志里能看见
+# 健康检查的处理器明明在应答（SentinelHealthIndicator 的记录），只是慢于超时。
+# 这个值必须大于"最慢的正常应答"，否则探针自己就是误报源。
 svc_ready() { # 服务名 → 0 就绪 / 2 启动中 / 1 未响应
   local port code
   port=$(port_of "$1")
   port_listening "$port" || return 1
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:$port/actuator/health" 2>/dev/null)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/actuator/health" 2>/dev/null)
   case "$code" in
     200|404) return 0 ;;
     503) return 2 ;;
@@ -392,13 +429,31 @@ svc_ready() { # 服务名 → 0 就绪 / 2 启动中 / 1 未响应
 # 冷启动实测里 auth-service 就这样被误杀过一次（被杀前日志毫无异常）。
 # 两次都失败才判失败。
 #
-# 返回 0 就绪、2 启动中（活着，**不能杀**）、1 失败（可以补启）。
+# 返回 0 就绪、2 启动中（活着，**不能杀**）、1 失败/可疑。rc=1 不再等于「可以补启」：
+# 是否真死由 svc_dead 守卫再证一次——探针超时只是「可疑」，不是死亡结论。
 svc_ready_confirm() { # 服务名 → 0 就绪 / 2 启动中 / 1 失败
   local rc
   svc_ready "$1"; rc=$?
   [ "$rc" -eq 0 ] && return 0
   sleep 2
   svc_ready "$1"
+}
+
+# 「死亡证据」判据：只有它成立，svc_ready 的 rc=1 才允许触发补启（kill + 重启）。
+# 与 wait_healthy 的死亡判定同源，两个证据：
+#   - 端口无人监听（failFast 退出的进程不留监听；SIGKILL 掉的也一样）；
+#   - 日志出现进程死亡标志（Spring "Application run failed" / Maven "BUILD FAILURE"、
+#     "Process terminated with exit code"）。
+# 两个都不成立（端口在监听、日志干净）→ 按"仍在启动"处理，不许 kill。
+# 为什么必须这么严：探针超时 ≠ 服务死了。2026-10-11 终判实测，product / order
+# 的健康端点在应答（日志可见）、只是慢于探针超时，旧判据把 rc=1 直接当失败——
+# 补启轮会因此 kill 一个正在启动的服务（启动进度清零，2026-10-06 的 ai-service
+# 就是这样被反复杀、索引永远建不完的），终判会因此把健康服务报成"未就绪"、
+# 让整个 run_all 返回 1、前端都不起来。这一族误报在 10-03 / 10-06 / 10-09 / 10-11
+# 各出现一次，共同的根就是"拿证据不足的结论去做破坏性动作"。
+svc_dead() { # 服务名 → 0 有死亡证据（允许补启）/ 1 无（按"仍在启动"处理）
+  port_listening "$(port_of "$1")" || return 0
+  grep -qE "Application run failed|BUILD FAILURE|Process terminated with exit code" "$LOG_DIR/$1.log" 2>/dev/null
 }
 
 # 等服务就绪：并发轮询全部目标，谁好了标记谁，不互相拖累。
@@ -778,18 +833,21 @@ start_all_services() {
       svc_ready_confirm "$svc"; rc=$?
       case "$rc" in
         0) ;;
-        # 仍在初始化（readiness 说 OUT_OF_SERVICE）：**绝不能补启**。
-        # 它的进程是好的，杀它等于把已经跑了半程的启动任务清零重来——
-        # ai-service 建全量索引要几分钟，被这样反复杀掉就永远到不了就绪。
+        # rc=2（readiness 说 OUT_OF_SERVICE）与 rc=1 但**没有死亡证据**的，都是
+        # 「活着但还没就绪」：**绝不能补启**。杀它等于把已经跑了半程的启动任务
+        # 清零重来——ai-service 建全量索引要几分钟，被这样反复杀掉就永远到不了
+        # 就绪；2026-10-11 的 product / order 则是健康端点在应答、只是慢于探针
+        # 超时。只有 svc_dead 成立（端口丢了，或日志里有死亡标志）才进补启名单。
         2) starting+=("$svc") ;;
-        *) failed+=("$svc") ;;
+        *) if svc_dead "$svc"; then failed+=("$svc"); else starting+=("$svc"); fi ;;
       esac
     done
     [ ${#failed[@]} -eq 0 ] && break
     echo "第 $round 轮补启：${failed[*]}"
     for svc in "${failed[@]}"; do
-      # 先清端口再起。failFast 退出的进程没留下监听，但「活着只是没就绪」的也有
-      # （等满 180 秒仍不响应）——那类不清掉，新进程绑不上端口。
+      # 补启名单里每个服务都带死亡证据，kill_port 是防御性调用：典型情况（failFast
+      # 退出）进程已死、端口已释放，这里杀不到东西；真正要清的是「日志报了死亡、
+      # 但进程没退干净还占着端口」的残留——不清掉，新进程绑不上端口。
       kill_port "$svc" "$(port_of "$svc")"
       start_one "$svc"
       sleep 2
@@ -798,29 +856,33 @@ start_all_services() {
   done
 
   # 终判也分三态：仍在初始化的服务**不算失败**，它的启动任务还在跑，
-  # 该做的只是把这件事说清楚，而不是回一个「环境没起来」。
+  # 该做的只是把这件事说清楚，而不是回一个「环境没起来」。run_all 拿到 rc=2
+  # 会继续把派生数据与前端拉起来，最终给一个诚实的 ✓（见 one_shot）。
   #
   # 判据必须是带复验的 svc_ready_confirm，与补启轮同源。2026-10-09 冷启动实测：
   # knowledge-service 在补启轮判就绪、终判前 5 秒还在正常应答，却被终判的单发探测
   # （1 秒 curl 超时）判死——进程从未重启、随后一直在跑图谱重建。
   # 假红灯的代价不只是误报：run_all 就此在服务阶段返回，resync 与前端全都没跑。
   # 复验对已就绪的服务零成本（首次即成功就不复探），只有真可疑的才多花 2 秒。
+  # rc=1 与补启轮走同一个 svc_dead 守卫：没有死亡证据就归入「仍在初始化」，
+  # 终判绝不把「探针超时」直接翻译成「服务失败」。
   failed=(); starting=()
   for svc in "${SERVICES[@]}"; do
     svc_ready_confirm "$svc"; rc=$?
     case "$rc" in
       0) ;;
       2) starting+=("$svc") ;;
-      *) failed+=("$svc") ;;
+      *) if svc_dead "$svc"; then failed+=("$svc"); else starting+=("$svc"); fi ;;
     esac
   done
   if [ ${#starting[@]} -gt 0 ]; then
-    echo "仍在初始化（端口已通，暂不能接流量）：${starting[*]}——启动任务在后台继续跑，不必重启"
+    echo "仍在初始化（进程活着、端口已通，只是还不能接流量）：${starting[*]}——不补启、不算失败；启动任务在后台继续跑，稍后自己就绪"
   fi
   if [ ${#failed[@]} -gt 0 ]; then
     echo "补启两轮后仍未就绪：${failed[*]}（看 $LOG_DIR/<服务>.log 末尾的报错）" >&2
     return 1
   fi
+  [ ${#starting[@]} -gt 0 ] && return 2
   return 0
 }
 
@@ -847,7 +909,11 @@ run_all() { # mode
   t_mid=$((SECONDS - t_mid))
 
   t_svc=$SECONDS
-  start_all_services || exit 1
+  # 三态：0 全部就绪；2 起来了但个别服务仍在初始化——不阻断，派生数据与前端照常
+  # 往下走（能接流量的服务一样能用，等它自己就绪即可）；1 才是真失败，立即中断。
+  local svc_rc=0
+  start_all_services || svc_rc=$?
+  [ "$svc_rc" -eq 1 ] && exit 1
   t_svc=$((SECONDS - t_svc))
   t_derived=$SECONDS
   resync_derived
@@ -860,6 +926,8 @@ run_all() { # mode
   printf '启动阶段耗时：预检 %s 秒 · 中间件 %s 秒 · 服务 %s 秒 · 派生数据 %s 秒 · 前端 %s 秒 · 合计 %s 秒\n' \
     "$t_pre" "$t_mid" "$t_svc" "$t_derived" "$t_fe" "$((SECONDS - t_begin))"
   print_entries "$mode"
+  # 把服务阶段的三态码原样交给 one_shot，由它决定最终那句 ✓/✗ 怎么写。
+  return "$svc_rc"
 }
 
 # 一键启动两个模式走同一段收尾：全程输出各落一份日志（双击场景窗口会关，事后靠它复盘）。
@@ -875,13 +943,18 @@ one_shot() { # 子命令名 前端模式 中文名
   trap signal_cleanup INT TERM HUP
   mkdir -p "$LOG_DIR"
   rotate_log "$cmd"
-  if run_all "$mode" 2>&1 | tee "$LOG_DIR/$cmd.log"; then
-    echo "✓ $label 全部就绪（完整输出已存 $LOG_DIR/$cmd.log）"
-    rc=0
-  else
-    echo "✗ $label 没起来——往上翻找报错，完整输出已存 $LOG_DIR/$cmd.log" >&2
-    rc=1
-  fi
+  run_all "$mode" 2>&1 | tee "$LOG_DIR/$cmd.log"
+  # 判定按 run_all 的退出码分三态。PIPESTATUS[0] 是管道里 run_all 自己的退出码，
+  # 不受 tee 影响；判定行同时 tee -a 追加回日志——窗口双击启动时窗口会关，
+  # 这份日志是事后唯一能看见最终判定的地方（原先判定只写终端不写日志，
+  # dev.log 永远停在中途，复盘时看不出结局）。
+  rc=0
+  case "${PIPESTATUS[0]}" in
+    0) echo "✓ $label 全部就绪（完整输出已存 $LOG_DIR/$cmd.log）" | tee -a "$LOG_DIR/$cmd.log" ;;
+    2) echo "✓ $label 已启动：个别服务仍在初始化（见上面「仍在初始化」一行，启动任务在后台继续跑，稍后自己就绪）（完整输出已存 $LOG_DIR/$cmd.log）" | tee -a "$LOG_DIR/$cmd.log" ;;
+    *) echo "✗ $label 没起来——往上翻找报错，完整输出已存 $LOG_DIR/$cmd.log" | tee -a "$LOG_DIR/$cmd.log" >&2
+       rc=1 ;;
+  esac
   hold_window
   exit "$rc"
 }
@@ -899,6 +972,10 @@ case "${1:-all}" in
   # demo 是 master 的旧名。保留别名是因为 README / 规划文档 / 验收脚本注释里都还写着它，
   # 改名会让那些地方的说明一夜失效——下次同步文档时再逐步替换，行为完全一致。
   demo)    one_shot master master 演示环境 ;;
-  all)  start_all_services || exit 1 ;;
+  all)  start_all_services; rc=$?
+        # 与 run_all 同一口径：rc=2（个别服务仍在初始化）不阻断启动任务，也不报失败；
+        # 这条路径的契约是「起完就返回」，调用方（验收脚本）自己按端口/就绪轮询。
+        case "$rc" in 0|2) ;; *) exit 1 ;; esac ;;
+
   *)    for svc in "$@"; do start_one "$svc"; done ;;
 esac

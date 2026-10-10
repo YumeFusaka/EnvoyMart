@@ -7,15 +7,31 @@
 # NamingGrpcClientProxy.registerServiceForEphemeral）。**谁裸用默认值谁就是下一个倒霉蛋**，
 # 逐个服务去补只是在轮换受害者。
 #
-# 为什么不是关掉 failFast：注册本来就该重试。真的连不上 Nacos 时这里仍然会失败退出，
-# 只是不再把「九个 JVM 同时抢建连」这个瞬时拥塞也判成永久故障。
+# ⚠ 作用边界（2026-10-11 反编译逐键核实，别再把功劳记错）：
+#   注册建连的竞态**不在本文件能管的范围内**。逐环核实的结果：
+#   - failure-tolerance-enabled 只被**发现侧**读取（subscribe / getInstances 失败时
+#     回退本地缓存），注册路径读不到它；
+#   - watch-delay 只决定 NacosDiscoveryHeartBeatPublisher 的心跳发布周期，
+#     与建连重试无关；
+#   - 注册要用的键是 nacos.remote.client.grpc.retry.times（客户端建连重试预算），
+#     而 spring.cloud.nacos.discovery.* 只按 SAA 自己的字段名映射进客户端属性——
+#     **这个键在 yml 里没有入口**，写在这里也不会被读到（不报错、静默不生效）。
+#   它唯一可用的非代码通道是 JVM 参数：客户端属性源优先级为
+#   「显式 Properties > -D JVM 参数 > 环境变量」。run-local.sh 里
+#   NACOS_GRPC_RETRY_ARGS 就是这么注入的（-Dnacos.remote.client.grpc.retry.times=30，
+#   即 31 次建连尝试，覆盖冷启动风暴里实测 2.5~17.8 秒的单次建连耗时）。
+#
+# 为什么不是关掉 failFast：注册本来就该重试（重试预算见上，已加大）。真的连不上 Nacos
+# 时进程仍然会失败退出而不是静默带病启动——那种场景由 run-local.sh 的中间件预检
+# （真实握手探测）先拦住，不会拖到服务启动阶段。
 spring:
   cloud:
     nacos:
       discovery:
         register-enabled: true
-        # 建连失败不直接判死，先按下面的超时重试
+        # 发现侧容错：查实例失败时回退本地缓存，而不是直接抛错。
+        # 它守护的是「Nacos 抖动时服务间调用不中断」，不是注册本身。
         failure-tolerance-enabled: true
-        # 拉长建连窗口，覆盖九个服务同时冷启动的资源竞争期。
-        # 默认值在单服务启动时够用，并发时不够——而并发正是 run-local.sh 的常态。
+        # 客户端心跳发布周期。拉长到 10 秒只是降低九个服务同时心跳的节奏，
+        # 与注册建连的成败无关。
         watch-delay: 10000
