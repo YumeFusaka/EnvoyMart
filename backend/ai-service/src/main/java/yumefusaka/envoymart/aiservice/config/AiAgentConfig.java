@@ -191,9 +191,10 @@ public class AiAgentConfig {
                                               @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel,
                                               ToolRegistry toolRegistry, LLMConfig llmConfig,
                                                MeterRegistry meterRegistry,
-                                               ObservationRegistry observationRegistry) {
+                                               ObservationRegistry observationRegistry,
+                                               @Value("${envoymart.llm.timeout-ms:60000}") long timeoutMs) {
         return new LangChain4jLLMProvider(chatModel, streamingChatModel, toolRegistry, llmConfig, meterRegistry,
-                observationRegistry);
+                observationRegistry, timeoutMs);
     }
 
     @Bean

@@ -47,10 +47,20 @@ final class MedicalDoseAssertions {
 
     static String rejection(String claim, String source, List<String> terms, Set<String> verifiedSubjects, Set<String> verifiedPopulation) {
         List<Assertion> facts = assertions(source, terms, Set.of(), Set.of());
+        // “两者/二者”是原文常见的成对回指：句内解析不到完整关系对时，允许由引用切片中
+        // 数量与约束逐项一致的间隔断言来接住；数值、角色、人群、先后约束一条都不放宽。
+        boolean pairPronoun = PAIR_PRONOUN.matcher(MedicalEvidenceVerifier.normalize(claim)).find();
         for (Assertion item : assertions(claim, terms, verifiedSubjects, verifiedPopulation)) {
             if ("OTHER".equals(item.role())) return "剂量角色不明确";
-            if (item.entities().isEmpty() || "INTERVAL".equals(item.role()) && item.entities().size() < 2) return "数量主体不完整";
+            boolean unresolvedPairInterval = pairPronoun && "INTERVAL".equals(item.role()) && item.entities().size() < 2;
+            if (!unresolvedPairInterval
+                    && (item.entities().isEmpty() || "INTERVAL".equals(item.role()) && item.entities().size() < 2)) return "数量主体不完整";
             List<Assertion> matching = facts.stream().filter(fact -> item.quantity().equals(fact.quantity())).toList();
+            if (unresolvedPairInterval) {
+                // 代词复述只能落到引用切片里真正解析出成对实体的间隔断言上，单实体数值不算。
+                matching = matching.stream().filter(fact -> fact.entities().size() >= 2).toList();
+                if (matching.isEmpty()) return "间隔断言未被引用切片支持";
+            }
             if (matching.isEmpty()) return "数值未被引用切片支持";
             matching = matching.stream().filter(fact -> fact.entities().containsAll(item.entities())).toList();
             if (matching.isEmpty()) return "数量主体与引用切片不一致";

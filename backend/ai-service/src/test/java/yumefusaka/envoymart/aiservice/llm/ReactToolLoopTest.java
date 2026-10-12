@@ -90,6 +90,31 @@ class ReactToolLoopTest {
                 LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
     }
 
+    /**
+     * 对端已连接却不返回响应时（图谱重建里真实发生过），没有这层期限，调用方会永久挂住；
+     * 期限只影响"异常挂起"路径，正常调用不经过它。
+     */
+    @Test
+    @Timeout(20)
+    void 对端已连接但不返回响应时调用被期限截断而不是永久挂起() {
+        ChatModel hanging = new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                try {
+                    Thread.sleep(3_000);
+                } catch (InterruptedException ignored) {
+                    // 期限放弃等待后测试线程被中断；虚拟线程无论是否响应中断都不阻塞测试结束
+                }
+                return null;
+            }
+        };
+        LangChain4jLLMProvider deadlineProvider = new LangChain4jLLMProvider(hanging, null, new ToolRegistry(),
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry(), null, 300L);
+
+        assertThatThrownBy(() -> deadlineProvider.chat(messages(), LLMConfig.builder().model(MODEL).build()))
+                .hasMessageContaining("300ms 未返回");
+    }
+
     private List<ChatMessage> messages() {
         return List.of(ChatMessage.builder().role(ChatMessage.Role.USER).content("你好").build());
     }

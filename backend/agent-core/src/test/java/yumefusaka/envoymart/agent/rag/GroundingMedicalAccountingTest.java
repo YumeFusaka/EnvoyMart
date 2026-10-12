@@ -18,6 +18,37 @@ class GroundingMedicalAccountingTest {
     }
 
     @Test
+    void KG08症状处置实际进入医学事实和未支撑分母() {
+        String answer = "服用期间如出现异常出血、皮肤瘀斑等表现应及时就医 [1]。";
+        for (int mode = 0; mode < 3; mode++) {
+            var chunk = DocumentChunk.builder().docId("KB-0035").chunkId(mode == 0 ? "KB-0035_4" : "KB-0035_5")
+                    .score(mode == 2 ? 0.19916348767194514 : 0.9).title("孕期 DHA 藻油软胶囊产品说明书")
+                    .content(mode == 0 ? "《孕期 DHA 藻油软胶囊产品说明书》 > 第四章 相互作用与注意事项\n4.1 本品所含 DHA 具有轻微抗血小板聚集作用，与华法林、阿司匹林等抗凝或抗血小板药物合用时可能增加出血风险，合用前须咨询医师。\n4.2 准备接受手术者建议提前两周停用，并告知主刀医师正在服用本品。\n4.3 出血性疾病患者、正在服用抗凝药物者使用前应咨询医师。" : "《孕期 DHA 藻油软胶囊产品说明书》 > 第四章 相互作用与注意事项 > 4.4 部分人群服用后可能出现嗳气\n4.4 部分人群服用后可能出现嗳气、口中异味、腹泻等不适，随餐服用或减量后多可缓解。\n4.5 对本品任一成分过敏者禁用。\n4.6 本品不能替代均衡膳食，出现异常出血、皮肤瘀斑等表现应及时就医。").build();
+            var sample = new GroundingEvaluator.Sample("symptom-accounting", GroundingFixtures.Kind.ANSWERABLE, false,
+                    List.of(), List.of(chunk), answer, EvidenceGate.Level.SUFFICIENT, true,
+                    List.of(), true, "服用孕期DHA藻油期间出现异常出血、皮肤瘀斑怎么办？");
+            var outcome = GroundingEvaluator.evaluate(List.of(sample)).cases().getFirst();
+            assertThat(outcome.factSentences()).as("模式%d", mode).isEqualTo(1);
+            assertThat(outcome.checks()).as("模式%d", mode).isEqualTo(1);
+            assertThat(outcome.unsupported()).as("模式%d", mode).isEqualTo(mode == 1 ? 0 : 1);
+        }
+    }
+
+    @Test
+    void G06无授权版本裁定实际进入医学事实和未支撑分母() {
+        String answer = "知识库中两份《铁叶酸片产品说明书》对铁含量给出了不同数字，按版本取较新的一版：[1][2]";
+        var evidence = List.of(doc("KB-0038", "铁叶酸片产品说明书", "《铁叶酸片产品说明书》 > 第一章 产品概述\n1.1 本品为膳食营养补充剂，含铁与叶酸。\n1.2 规格为每片含铁 15 毫克（以元素铁计）与叶酸 400 微克。\n1.3 本品不能替代药物治疗缺铁性贫血。"),
+                doc("KB-0009", "铁叶酸片产品说明书", "《铁叶酸片产品说明书》 > 第一章 产品概述\n1.1 本品为膳食营养补充剂，主要成分为富马酸亚铁与叶酸。\n1.2 规格为每片含铁 10 毫克、叶酸 400 微克，每瓶 60 片。\n1.3 本品不能替代药物治疗疾病，不能替代医生处方的补铁制剂。"));
+        var sample = new GroundingEvaluator.Sample("version-accounting", GroundingFixtures.Kind.ANSWERABLE, false,
+                List.of(), evidence, answer, EvidenceGate.Level.SUFFICIENT, true, List.of(), true,
+                "铁叶酸片两份说明书规格不一样，应以哪一版为准？");
+        var outcome = GroundingEvaluator.evaluate(List.of(sample)).cases().getFirst();
+        assertThat(outcome.factSentences()).isEqualTo(1);
+        assertThat(outcome.checks()).isEqualTo(1);
+        assertThat(outcome.unsupported()).isEqualTo(1);
+    }
+
+    @Test
     void G14显式同数国际单位引用覆盖IU锚点() {
         String source = "维生素D推荐摄入量成人10微克每日（折合400国际单位），可耐受最高摄入量50微克每日（折合2000国际单位）。";
         var outcome = vitaminUpperOutcome(source,

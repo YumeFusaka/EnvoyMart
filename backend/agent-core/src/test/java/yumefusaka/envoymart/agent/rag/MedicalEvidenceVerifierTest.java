@@ -20,6 +20,59 @@ class MedicalEvidenceVerifierTest {
 
 
     @Test
+    void KG08症状处置必须按同切片强证据核验() {
+        String answer = "服用期间如出现异常出血、皮肤瘀斑等表现应及时就医 [1]。";
+        var unrelated = DocumentChunk.builder().docId("KB-0035").chunkId("KB-0035_4").score(0.9)
+                .title("孕期 DHA 藻油软胶囊产品说明书").content("《孕期 DHA 藻油软胶囊产品说明书》 > 第四章 相互作用与注意事项\n4.1 本品所含 DHA 具有轻微抗血小板聚集作用，与华法林、阿司匹林等抗凝或抗血小板药物合用时可能增加出血风险，合用前须咨询医师。\n4.2 准备接受手术者建议提前两周停用，并告知主刀医师正在服用本品。\n4.3 出血性疾病患者、正在服用抗凝药物者使用前应咨询医师。").build();
+        var correct = DocumentChunk.builder().docId("KB-0035").chunkId("KB-0035_5").score(0.9)
+                .title("孕期 DHA 藻油软胶囊产品说明书").content("《孕期 DHA 藻油软胶囊产品说明书》 > 第四章 相互作用与注意事项 > 4.4 部分人群服用后可能出现嗳气\n4.4 部分人群服用后可能出现嗳气、口中异味、腹泻等不适，随餐服用或减量后多可缓解。\n4.5 对本品任一成分过敏者禁用。\n4.6 本品不能替代均衡膳食，出现异常出血、皮肤瘀斑等表现应及时就医。").build();
+        var weak = DocumentChunk.builder().docId("KB-0035").chunkId("KB-0035_5").score(0.19916348767194514)
+                .title(correct.getTitle()).content(correct.getContent()).build();
+        assertThat(MedicalEvidenceVerifier.factSentences(answer)).containsExactly(answer);
+        assertThat(MedicalEvidenceVerifier.verify(true, answer, List.of(unrelated)).unsupported()).containsExactly(answer);
+        assertThat(MedicalEvidenceVerifier.verify(true, answer, List.of(correct)).unsupported()).isEmpty();
+        assertThat(MedicalEvidenceVerifier.verify(true, answer, List.of(weak)).unsupported()).containsExactly(answer);
+        for (String changed : List.of(answer.replace("异常出血", "呕血"), answer.replace("应及时就医", "应继续服用"))) {
+            assertThat(MedicalEvidenceVerifier.factSentences(changed)).containsExactly(changed);
+            assertThat(MedicalEvidenceVerifier.verify(true, changed, List.of(correct)).unsupported()).containsExactly(changed);
+        }
+        assertThat(MedicalEvidenceVerifier.factSentences("如有疑问请咨询医师或药师。")).isEmpty();
+    }
+
+    @Test
+    void G06版本优先裁定必须有原文替代授权而客观规格可并列() {
+        var older = DocumentChunk.builder().docId("KB-0038").chunkId("KB-0038_0").score(0.9).version("v2026.04")
+                .title("铁叶酸片产品说明书").content("《铁叶酸片产品说明书》 > 第一章 产品概述\n1.1 本品为膳食营养补充剂，含铁与叶酸。\n1.2 规格为每片含铁 15 毫克（以元素铁计）与叶酸 400 微克。\n1.3 本品不能替代药物治疗缺铁性贫血。").build();
+        var newer = DocumentChunk.builder().docId("KB-0009").chunkId("KB-0009_0").score(0.9).version("v2026.05")
+                .title("铁叶酸片产品说明书").content("《铁叶酸片产品说明书》 > 第一章 产品概述\n1.1 本品为膳食营养补充剂，主要成分为富马酸亚铁与叶酸。\n1.2 规格为每片含铁 10 毫克、叶酸 400 微克，每瓶 60 片。\n1.3 本品不能替代药物治疗疾病，不能替代医生处方的补铁制剂。").build();
+        String arbitrary = "知识库中两份《铁叶酸片产品说明书》对铁含量给出了不同数字，按版本取较新的一版：[1][2]";
+        assertThat(MedicalEvidenceVerifier.factSentences(arbitrary)).containsExactly(arbitrary);
+        assertThat(MedicalEvidenceVerifier.verify(true, arbitrary, List.of(older, newer)).unsupported()).containsExactly(arbitrary);
+        String contrast = "每片含铁15毫克与叶酸400微克 [1]。每片含铁10毫克与叶酸400微克 [2]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, contrast, List.of(older, newer)).unsupported()).isEmpty();
+        String authorized = "铁叶酸片产品说明书v2026.05明确替代v2026.04，应按新版说明书执行 [1]。";
+        var replacement = DocumentChunk.builder().docId("revision").chunkId("revision_0").score(0.9)
+                .title("铁叶酸片产品说明书").content("铁叶酸片产品说明书v2026.05明确替代v2026.04，应按新版说明书执行。").build();
+        assertThat(MedicalEvidenceVerifier.factSentences(authorized)).containsExactly(authorized);
+        assertThat(MedicalEvidenceVerifier.verify(true, authorized, List.of(replacement)).unsupported()).isEmpty();
+    }
+
+    @Test
+    void KG02间隔复述句允许两者指代但数量与约束仍逐项核对() {
+        var source = DocumentChunk.builder().docId("KB-0010").chunkId("KB-0010_5").score(0.9)
+                .title("膳食补充剂摄入上限与常见药物相互作用")
+                .content("《膳食补充剂摄入上限与常见药物相互作用》 > 第二章 常见药物相互作用\n2.3 钙剂与四环素类、喹诺酮类抗生素合用会形成难吸收的络合物，两者服用时间应间隔 2 小时以上。").build();
+        String interval = "处理办法是错开时间：两者服用时间应间隔至少 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, interval, List.of(source)).unsupported()).isEmpty();
+        String wrongHours = "处理办法是错开时间：两者服用时间应间隔至少 4 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, wrongHours, List.of(source)).unsupported()).containsExactly(wrongHours);
+        String exact = "处理办法是错开时间：两者服用时间应恰好间隔 2 小时 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, exact, List.of(source)).unsupported()).containsExactly(exact);
+        String noPronoun = "服用时间应间隔至少 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, noPronoun, List.of(source)).unsupported()).containsExactly(noPronoun);
+    }
+
+    @Test
     void G17来源展示框架不进入临床数量参与组但必须匹配引用商品() {
         var source = DocumentChunk.builder().docId("KB-0022").chunkId("KB-0022_8").score(0.9)
                 .title("复合维生素矿物质片产品说明书")

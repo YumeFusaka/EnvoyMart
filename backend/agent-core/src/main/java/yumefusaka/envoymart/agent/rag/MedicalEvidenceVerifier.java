@@ -60,6 +60,22 @@ public final class MedicalEvidenceVerifier {
             "(没有|无|不存在|存在|有)([^，,。；;！？!?]{0,12}?风险)");
     private static final Pattern SAFE_COMBINATION = Pattern.compile(
             "安全(?:同服|合用|一起吃)|(?:同服|合用|一起吃)(?:是|属于)?安全(?:的)?|没有冲突");
+    /**
+     * 症状警示句：给出可核对症状列表与行动建议，如“出现异常出血、皮肤瘀斑等表现应及时就医”。
+     * 通用提醒（“如有疑问请咨询医师”）没有症状中介语，不进入事实句分母与核验。
+     */
+    private static final Pattern SYMPTOM_WARNING = Pattern.compile(
+            "(?:出现|发生|若有|如有|若出现|如出现|一旦出现)(?<symptoms>[^，,。；;！？!?\\n]{2,60}?)(?:等)?(?:表现|症状|不适|反应|情况)(?:时)?[，,]?(?<action>(?:应|需|须|要|请|建议|务必)[^，,。；;！？!?\\n]{1,30})");
+    /** 版本优先裁定句：改变“以哪一份资料为准”的结论，必须由同一引用切片给出替代授权。 */
+    private static final Pattern VERSION_MENTION = Pattern.compile("v\\d{4}(?:\\.\\d+)?");
+    private static final Pattern VERSION_DECISION = Pattern.compile(
+            "(?:按|以|取|选|采用|选用|依据)[^，,。；;！？!?\\n]{0,12}(?:较新|最新|更新|新版|新版本|旧版|版本)"
+                    + "|(?:较新|最新|新版|新版本)[^，,。；;！？!?\\n]{0,12}(?:为准|优先|执行|采用|适用|有效)");
+    private static final Pattern VERSION_NEGATED_SUPERSEDE = Pattern.compile("(?:不能|不可|无法|难以)替代");
+    private static final Pattern VERSION_SUPERSEDE = Pattern.compile(
+            "(?:明确|应当|应)?(?:替代|取代|作废|废止|更替)"
+                    + "|以[^，,。；;！？!?\\n]{0,12}(?:为准|优先)"
+                    + "|按[^，,。；;！？!?\\n]{0,12}(?:新版|最新版本|较新版本)(?:说明书)?执行");
 
     private static final List<String> MEDICAL_TERMS = List.of(
             "磷虾油", "鱼油", "深海鱼油", "藻油", "DHA", "EPA", "维生素D3", "维生素D2",
@@ -260,7 +276,8 @@ public final class MedicalEvidenceVerifier {
                 || MedicalQuantities.hasUnparsedQuantity(text) || DOSE_REFERENCE.matcher(text).find() || RELATION_DIRECTION.matcher(text).find()
                 || RISK_PRESENCE.matcher(text).find() || INTERACTION_PRESENCE.matcher(text).find()
                 || hasMedicalEffect(text) || CLINICAL_POSTFIX.matcher(text).find() || ABSORPTION_COMPETITION.matcher(text).find()
-                || text.matches(".*(禁用|不宜使用|拮抗|安全.*(同服|合用|一起吃)|(同服|合用|一起吃).*安全|放心.*(服用|吃)|(可以|能够).*(同服|合用|一起吃|服用)|无风险|没有冲突|不存在相互作用).*" );
+                || text.matches(".*(禁用|不宜使用|拮抗|安全.*(同服|合用|一起吃)|(同服|合用|一起吃).*安全|放心.*(服用|吃)|(可以|能够).*(同服|合用|一起吃|服用)|无风险|没有冲突|不存在相互作用).*" )
+                || SYMPTOM_WARNING.matcher(text).find() || isVersionDecision(text);
     }
 
     private static boolean hasMedicalEffect(String text) {
@@ -425,6 +442,11 @@ public final class MedicalEvidenceVerifier {
                 return "图谱/关系声明没有图谱证据切片";
             }
         }
+        // 版本裁定会改变“以谁为准”的结论方向，只有引用切片原文给出替代授权才算被支撑。
+        if (isVersionDecision(normalizedSentence)
+                && citedEvidence.stream().noneMatch(chunk -> chunk != null && hasVersionAuthorization(normalize(sourceText(chunk))))) {
+            return "版本优先裁定缺少引用原文的替代授权";
+        }
 
         Set<String> mentionedTerms = claimTerms.stream()
                 .filter(term -> normalizedSentence.contains(normalize(term)))
@@ -476,6 +498,10 @@ public final class MedicalEvidenceVerifier {
             if (isMedicalFact(sentence) && !supportsRelationPolarity(clinicalSentence, sourceText(chunk), verifiedSubjects)) {
                 failures.add("关系对象或极性与引用切片不一致"); continue;
             }
+            String symptomReason = symptomWarningRejection(clinicalSentence, normalizedSource);
+            if (symptomReason != null) {
+                failures.add(symptomReason); continue;
+            }
             // 已结构化的临床方向由对象与极性核验；其余谓语仍须原文支持，不能借同段另一关系。
             String remainder = RELATION_DIRECTION.matcher(normalizedSentence).replaceAll("");
             remainder = CLINICAL_POSTFIX.matcher(remainder).replaceAll("");
@@ -490,6 +516,34 @@ public final class MedicalEvidenceVerifier {
             return null;
         }
         return "同一引用切片未支撑：" + String.join("；", failures);
+    }
+
+    /** 版本语境下的“以哪份资料为准”裁定：只认显式版本标识或新旧比较语。 */
+    private static boolean isVersionDecision(String normalizedSentence) {
+        boolean mentionsVersion = normalizedSentence.contains("版本") || VERSION_MENTION.matcher(normalizedSentence).find();
+        return mentionsVersion && VERSION_DECISION.matcher(normalizedSentence).find();
+    }
+
+    /** 引用切片是否给出替代授权；“不能替代药物治疗”是否定表述，不构成版本授权。 */
+    private static boolean hasVersionAuthorization(String normalizedSource) {
+        return VERSION_SUPERSEDE.matcher(VERSION_NEGATED_SUPERSEDE.matcher(normalizedSource).replaceAll("")).find();
+    }
+
+    /** 症状列表与行动都必须落在同一引用切片里，不能借同段别的“出血”语句补齐“及时就医”绑定。 */
+    private static String symptomWarningRejection(String sentence, String normalizedSource) {
+        Matcher warning = SYMPTOM_WARNING.matcher(CITATION.matcher(sentence).replaceAll(""));
+        if (!warning.find()) return null;
+        for (String symptom : warning.group("symptoms").split("[、，,;；和与及]")) {
+            String part = symptom.trim();
+            if (!part.isEmpty() && !normalizedSource.contains(part)) {
+                return "警示症状未被同一引用切片支持";
+            }
+        }
+        String action = warning.group("action").trim();
+        if (!action.isEmpty() && !normalizedSource.contains(action)) {
+            return "处置建议未被同一引用切片支持";
+        }
+        return null;
     }
 
     private static String productOwner(String title) {

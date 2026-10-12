@@ -42,7 +42,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -78,6 +83,14 @@ public class LangChain4jLLMProvider implements LLMProvider {
      * 单测与无监控环境不需要额外装配分支。
      */
     private final ObservationRegistry observationRegistry;
+    /**
+     * 非流式模型调用的最长期限。LangChain4j 的 timeout 覆盖连接阶段，但<b>对端已连接却不返回响应</b>
+     * 时 JDK HttpClient 会无限等待；图谱重建与规划这类调用一旦挂起，没有这层期限就会永久卡住
+     * （索引永远 running、单个请求永远不返回）。超时后本次等待被放弃并转成可重试的失败。
+     */
+    private final long callDeadlineMs;
+    /** 承载"带期限的模型调用"的虚拟线程池；挂起的对端不阻塞调用方线程。 */
+    private final ExecutorService callDeadlineExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     public LangChain4jLLMProvider(ChatModel chatModel, StreamingChatModel streamingChatModel,
                                   ToolRegistry toolRegistry, LLMConfig defaultConfig,
@@ -88,12 +101,45 @@ public class LangChain4jLLMProvider implements LLMProvider {
     public LangChain4jLLMProvider(ChatModel chatModel, StreamingChatModel streamingChatModel,
                                   ToolRegistry toolRegistry, LLMConfig defaultConfig,
                                   MeterRegistry meterRegistry, ObservationRegistry observationRegistry) {
+        this(chatModel, streamingChatModel, toolRegistry, defaultConfig, meterRegistry, observationRegistry, 60_000L);
+    }
+
+    public LangChain4jLLMProvider(ChatModel chatModel, StreamingChatModel streamingChatModel,
+                                  ToolRegistry toolRegistry, LLMConfig defaultConfig,
+                                  MeterRegistry meterRegistry, ObservationRegistry observationRegistry,
+                                  long callDeadlineMs) {
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
         this.toolRegistry = toolRegistry;
         this.defaultConfig = defaultConfig;
         this.meterRegistry = meterRegistry;
         this.observationRegistry = observationRegistry;
+        this.callDeadlineMs = callDeadlineMs > 0 ? callDeadlineMs : 60_000L;
+    }
+
+    /**
+     * 带期限的非流式调用：对端不响应时不无限等待，把挂起转成一次可被判定的失败。
+     * 超时放弃等待后底层 socket 由虚拟线程继续持有直至对端关闭或操作系统回收，成本可忽略；
+     * 关键是调用方能继续重试、降级或记录失败，而不是被一个请求拖住整条链路。
+     */
+    private ChatResponse chatWithDeadline(ChatRequest request) {
+        CompletableFuture<ChatResponse> future =
+                CompletableFuture.supplyAsync(() -> chatModel.chat(request), callDeadlineExecutor);
+        try {
+            return future.get(callDeadlineMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException timeout) {
+            future.cancel(true);
+            log.warn("[LLM] 模型调用超过 {}ms 未返回，放弃等待（对端不响应兜底）model={}", callDeadlineMs, defaultConfig.getModel());
+            throw new IllegalStateException("模型调用超过 " + callDeadlineMs + "ms 未返回，已放弃等待");
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            future.cancel(true);
+            throw new IllegalStateException("模型调用被中断");
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause() != null ? failed.getCause() : failed;
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            throw new IllegalStateException(cause);
+        }
     }
 
     // ==================== 单次调用（不驱动工具循环） ====================
@@ -113,7 +159,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
     @Override
     public LLMResponse chat(List<ChatMessage> messages, LLMConfig config, Map<String, Object> toolContext) {
         long startedAt = System.nanoTime();
-        ChatResponse response = chatModel.chat(buildRequest(toLangChainMessages(messages), config, List.of()));
+        ChatResponse response = chatWithDeadline(buildRequest(toLangChainMessages(messages), config, List.of()));
         long latencyMs = (System.nanoTime() - startedAt) / 1_000_000;
         return toLLMResponse(response, config, latencyMs, List.of());
     }
@@ -156,7 +202,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 // 取消在「下一次问话」之前生效：已经在跑的那一轮模型调用没有中断句柄，
                 // 它的开销已经发生，只能让它跑完并如实记账；能控的是不再开始新的一轮
                 ctx.progress.throwIfCancelled();
-                response = chatModel.chat(buildRequest(working, config, toolsFor(ctx, specs)));
+                response = chatWithDeadline(buildRequest(working, config, toolsFor(ctx, specs)));
                 rounds++;
                 TokenUsage usage = response.tokenUsage();
                 promptTokens += usageInt(usage, true);

@@ -4,7 +4,24 @@
 
 用户2026-10-12明确纠正执行方式；本节替代以下历史记录中的调度顺序。T1仍未完成，禁止把旧版本达标结果当当前候选通过。
 
-**本次版本保存范围**：用户已要求更新文档后提交全部可版本控制的工作内容、推送并合并main，属于阶段快照，不是T1验收完成声明。S1/S2已按基线与候选SHA核对合入主源码，S4已在主源码；合入后仅定向复验Publication22项、G17单方法1项、工具规范13项，共36项0失败。S3未验证测试保留本地隔离区，不纳入主源码。日志、凭据、运行数据、隔离备份继续忽略。项目仓库远程为origin；Git结果以实际提交与远程核对为准。
+**S3 专项通过（2026-10-12 23:22）**：KG08症状→处置与G06“按版本取较新的一版”无授权裁定已实际进入医学事实与未支撑分母，并要求同切片强证据；隔离区完成的候选实现（23:17）已移入主仓库工作区并完成有限回归。证据：定向 `GroundingMedicalAccountingTest` 20/20 + `MedicalEvidenceVerifierTest` 65/65 = 85/85（`s3-main-targeted.log`，23:22:07）；agent-core 整模块 648项0失败/0错误/6跳过（`s3-main-core-regression.log`，23:22:28）。冻结SHA：源码 `cfba1b98d9c6570b9519ef620dc2df8aa67d71bf1cc1a46e14c816a6e1a75c96`，测试 `52b87efd93cdc05e212866221381d5b337df956b959e8836fb509e531b87d510` 与 `f7424510401d31e567c06b67f707b8ba1368666effa7fbccfc53c7cca5176a79`；记录见 `medical-special-s3-main-green.json`。改动暂留主仓库工作区，随S6与最终门禁处理。
+
+**S6 医学集成定向通过（2026-10-12 23:27）**：S1–S4 全部移入主仓库工作区后，用当前判定器离线重放正式 run `b201caa7` 的全部36题冻结答案（不调用模型、不改原报告）：36题中仅新增2句正确拒绝——G-06“按版本取较新的一版”缺原文替代授权、KG-08 症状句的引用[1]切片不含“异常出血/皮肤瘀斑→及时就医”绑定（正确内容在原[3]切片、属引用错位漏审）；其余34题判定与计数无新增未支撑。真实来源已逐条核对；8个目标case的缺要点（G-05缺单位、G-06缺两版本成分、G-14/KG-04/KG-17缺要点为发布时被剔光的拒答形态）根因均在 S1–S4 修复覆盖内，端到端兑现留待最终全量正式评测。证据：`frozen-replay-b201caa7.json`（重放输出）、`s6-targeted-regression.log` 168/168、`s6-s4-interaction.log` 13/13、发布层22项反例随 `AgentMedicalPublicationTest` 通过。
+
+**S5 专项通过（2026-10-13 00:31）**：独立审查后独占一次Redis真实窗口。首窗（`7ca0acc6`）在 RESTARTED_FAULT_HELD 相位失败并完整恢复——根因是 marker 校验要求“商品新进程保持 Redis 连接”，而 Redis 故障语义（代理 accept 即断）使该证据在原理上不可得；修 `Write-ProductMarker.ps1`（仅该相位改用 CACHE 阶段“外部失败保留待办”运行日志作为故障生效且待办未丢失的证据）。二窗（`c5a2e071`）完整通过：故障注入→公开503→只读确认→跨PID 98520→106324 保留待办→自动完成→基线恢复107764；capture/cleanup 双PASS（三库不变、唯一库存回补、原配置恢复），两模式索引 `--require-both` 只读重判 PASS（ES `c4c17c02`/`59d7318f` + Redis `0d961add`/`e6d17347` 四SHA强绑定）。首窗BLOCKED报告原样保留；记录 `medical-special-s5-redis-window-green.json`。
+
+**36 题正式评测定格与多跳门禁现状（2026-10-13 01:05）**：冻结部署第三轮真跑 `9a999a61`（pipeline `a33ce225`，含 S3b 判定器修复）于 00:45 完成：36/36、执行0失败、未支撑0/65、引用100%、拒答准确率97.2%、过拒0，**多跳 13/18（72.2%），16/18 硬门禁未达成**。五轮真实多跳对照：19079590 16/18 → b201caa7 13/18 → 7bd57f3c 14/18 → 6221b7c7 14/18 → 9a999a61 13/18，均值≈14.4/18；逐题：KG-05 五轮全缺（夹具 expectRefuse=true 与语料换代后 KB-0049 磷虾油入库漂移，未动金标），KG-09 近三轮连续缺，其余在边界漂移（每轮 2~4 个）。已完成修复：`MedicalDoseAssertions.rejection` 允许“两者/二者”间隔复述句由引用切片中同数量、同约束、成对实体的间隔断言接住（`MedicalEvidenceVerifierTest#KG02…` 四断言全绿；agent-core 651项0失败；全reactor `t1-final-reactor-v12.log` 绿）；重放证明当前代码未把 19079590 原答案变严（36/36 无变化）——漂移发生在生成表述与严格闸门的交互，非代码回归。**结论：多跳门禁当前不可稳定达成（5 轮 13~16），不再盲跑重试；待用户决策方向（生成提示词系统重写 / 闸门边界再评估 / 夹具与语料重新对齐）。** 证据：`grounding-v9-{7bd57f3c,6221b7c7,9a999a61}*.json`、`t1-final-grounding-v11*.log`、`frozen-replay-19079590.json`、`s3b-core-regression2.log`。
+
+**最终全量验收结果（2026-10-13 03:25）**：
+
+1) **代码门禁**：全 reactor `t1-final-reactor-v12.log` BUILD SUCCESS（agent-core 651项、全模块0失败、6跳过；含 S3b 与 LLM 超时修复）；前端 `pnpm type-check`/`build`/`lint` 全绿（`t1-final-frontend-*.log`）。
+2) **新发现并修复的 P0（LLM 超时缺失）**：图谱重建的 `langchain4j HttpClientImpl.send` 在 DeepSeek 偶发不响应时**无限挂起**（thread dump 证据 `thread-dump-143176.txt`：knowledge-reindex 虚拟线程阻塞在 send；索引 running 15+ 分钟无进展，48 全集 CA-017 因此判 FAIL）。修复：`LangChain4jLLMProvider` 增加 60s 硬期限（虚拟线程执行 + 有界等待，超时转可重试失败；`对端已连接但不返回响应时调用被期限截断` 测试 + 全回归），部署后索引重建稳定 3~4 分钟完成（多轮重启复验）。该行为改变是今晚唯一功能性代码变更（防御性，不改变正常调用语义）。
+3) **48 复杂全集**：首轮 41 PASS/4 FAIL/3 BLOCKED；补跑（`COMPLEX_EVAL_FAULT_STAGING=1` + `--only`）后 **43/48**。未过 5 项：CA-023/CA-024/CA-043（**“确认后仍有审批令牌”**——拒绝分支执行后令牌未清理，3 例复现）、CA-036（“同次调用参数联合”——模型把 address_list 拆到下一轮，2/2 复现）、CA-048（BadCase 接口 429 限流，2/2）。证据 `complex-agent-10c42293-*.json`、`t1-final-complex-eval*.log`。
+4) **全站 verify-all**：第一轮 27/62（Chromium 二进制缺失 + 显式阶段脚本需证据参数）；修复 Chromium（npx playwright@1.63 安装 + junction 桥接 1223→1243）与证据绝对路径后第二轮 **40/62**；A 类 9 项补跑（seata 五项/八写/审批丢响应/两模式投影索引）全 PASS；dev 模式重跑 chat-feedback-ui 16/0、chat-stream-race 10/0、ungrounded-banner 6/0、knowledge-ui 75/1。**未过项**：approval-redis-boundaries（报告源码摘要与当前版本不一致——旧证据只读参考）、answer-quality-ui（多跳13/18 如实反映）、agent-retrieval（11/1：《文档名》被当作无出处剔除，2/2 复现，待查）、approval-chain（19/1：控制台 429 限流噪声）、chat-ui（61/3：生成中删除接口未回200及连带，2/2 复现，待查）、coverage-ui（已覆盖 SPU 的文档支持返回 0 篇，逐轮复现但 SPU 漂移，待查）、grounding-ui（15/1：正文无可点 [1] 角标，复现待查）、knowledge-ui（75/1：“组合注意事项只读验收抛异常”待查）、public-api-contracts（129 PASS/0 FAIL/15 BLOCKED/5 MANUAL——“需真实模型会话/专项证据关联”的 15 项设计内 BLOCKED）。证据 `t1-final-verify-all.log`、`t1-final-verify-all-r2.log`。
+5) **最终持久化联合重启**：`--capture`（`persistence-t1-final.json` 6/0）→ ai-service/knowledge-service/前端真实重启 → `--compare` **21/0 PASS**（`t1-persistence-compare.log`）：快照/历史会话/BadCase/图谱批次/MCP 契约/前端资源全恢复，运行恢复未触发模型；前端切回生产预览。
+6) **状态**：除 36 题多跳门禁未达成与第 3/4 条列出的待查缺陷外，其余全量项通过。**不再新增试跑**；文档与 git 收尾。
+
+**本次版本保存范围**：用户已要求更新文档后提交全部可版本控制的工作内容、推送并合并main，属于阶段快照，不是T1验收完成声明。S1/S2已按基线与候选SHA核对合入主源码，S4已在主源码；S3已验证并移入主源码工作区；合入后复验Publication22项、G17单方法1项、工具规范13项、S3定向85项与整模块648项，均0失败。日志、凭据、运行数据、隔离备份继续忽略。项目仓库远程为origin；Git结果以实际提交与远程核对为准。
 
 ### 执行规则
 
@@ -21,10 +38,10 @@
 |---|---|---|---|
 | S1 | 列表同行误删、完整关系标签误拒；CitationVerifier、MedicalEvidenceVerifier、AgentMedicalPublicationTest | 隔离`AgentMedicalPublicationTest`：G05/G14同行独立强句保留、KG06标签正文独立核验，同时原KG04父项迁移/缩进续行/错主体反例继续拒 | PASS：`medical-special-s1-s2-green.log`中22/22、0失败；候选清单`medical-special-s1-s2-candidates.json`，不部署 |
 | S2 | 来源说明框架混入临床参与组；MedicalEvidenceVerifier及其测试 | 仅`MedicalEvidenceVerifierTest#G17来源展示框架不进入临床数量参与组但必须匹配引用商品`；正确商品通过，错商品、正文新增维生素主体仍拒 | PASS：`medical-special-s2-green.log`单方法1/1；同owner框架内恢复“本品所含”语法绑定，Verifier SHA `5f95d9f4219851786c577621cb5f68966e85f81ad97cfa05d41bbc74c79931ea`；未重复跑S1，未部署 |
-| S3 | 医学漏审；同一Verifier及其测试，由S1/S2实现者顺序处理 | 冻结KG08症状→处置原句：正确强片通过、错片/弱片/异症状/异处置拒；G06“按版本取较新的一版”无授权裁定拒，客观版本规格对照保留；核对判定器实际计入事实 | 已定位根因，待有限回归与实现；不得只把计数改绿 |
+| S3 | 医学漏审；同一Verifier及其测试，由S1/S2实现者顺序处理 | 冻结KG08症状→处置原句：正确强片通过、错片/弱片/异症状/异处置拒；G06“按版本取较新的一版”无授权裁定拒，客观版本规格对照保留；核对判定器实际计入事实 | PASS：主仓库定向20/20+65/65=85/85（23:22:07）+整模块648项0失败6跳过（23:22:28）；冻结SHA与记录见`medical-special-s3-main-green.json`；实现与测试已在主仓库工作区，待S6复验与最终门禁 |
 | S4 | 图谱输出规范挤掉已有强文本；InteractionCheckTool及其测试 | 仅`InteractionCheckToolTest`：当前图谱未返回不等于知识库无资料，允许本轮已核验强文本并列引用，禁止补造事实和K=K2 | PASS：`medical-special-s4-green.log`13/13；源码SHA `2d8429109232c14e35af8639ba0aee01d256731aee410a036f20bfbbd6985fbe`，未部署 |
-| S5 | 验收恢复编排与Redis故障；仅验收helper/既有脚本 | helper语法和干跑先通过，独占一次Redis真实窗口，原任务跨PID后自动完成、三库不变、原配置恢复、清理PASS；与既有ES证据组成两模式索引只读重判 | ES已PASS；Redis旧实验未checkout且FAIL保留；新helper待独立审查与单专项 |
-| S6 | 医学集成专项 | S1–S4全部通过后合入一次，重放冻结失败答案并定向验证G05/G06/G14/G17/KG04/KG06/KG08/KG10；同时检查真实来源、计数和必要要点，不跑其他题、不改正式旧报告 | 等S1–S4；当前正式报告b201caa7原多跳13/18、0/65但独立发现漏审，仍不合格 |
+| S5 | 验收恢复编排与Redis故障；仅验收helper/既有脚本 | helper语法和干跑先通过，独占一次Redis真实窗口，原任务跨PID后自动完成、三库不变、原配置恢复、清理PASS；与既有ES证据组成两模式索引只读重判 | PASS：独立审查无阻断项；首窗`7ca0acc6`暴露RESTARTED相位marker证据与Redis故障语义矛盾（BLOCKED保留），修`Write-ProductMarker.ps1`后`c5a2e071`窗口capture/cleanup双PASS（跨PID 98520→106324→107764）；两模式索引compare`--require-both`PASS（四SHA强绑定）；记录`medical-special-s5-redis-window-green.json` |
+| S6 | 医学集成专项 | S1–S4全部通过后合入一次，重放冻结失败答案并定向验证G05/G06/G14/G17/KG04/KG06/KG08/KG10；同时检查真实来源、计数和必要要点，不跑其他题、不改正式旧报告 | PASS（定向）：`frozen-replay-b201caa7.json` 36题重放仅新增G-06/KG-08两句正确拒绝且经真实来源核对；定向回归168/168 + 交互工具13/13；原报告b201caa7保留不改，正式36题真跑待最终全量 |
 
 专项命令统一在`frontend`执行，通过`.evidence/maintenance-t1/Invoke-BuildWindow.ps1`传入`-o -pl agent-core -am test -Dtest=<上述具体类或方法> -Dsurefire.failIfNoSpecifiedTests=false`；隔离候选加`-IsolatedMedical`。S4改为`-pl ai-service -am`、指定`InteractionCheckToolTest`。只编依赖，不顺带运行依赖模块全部测试。
 
