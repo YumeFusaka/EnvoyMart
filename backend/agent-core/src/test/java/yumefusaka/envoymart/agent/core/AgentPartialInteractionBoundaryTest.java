@@ -48,6 +48,28 @@ class AgentPartialInteractionBoundaryTest {
     }
 
     @Test
+    void 部分未知的边界拒答必须把同轮证据门同步降为弱证据() {
+        var response = response(EvidenceGate.Level.SUFFICIENT, List.of(mixed()));
+
+        Agent.enforceUnknownInteractionRefusal(response, "阿司匹林的已核验条款保留[1]。", true);
+
+        // 输出已声明“无法判断具体相互作用”，同一轮就不能再记账为“证据充分到可以作答”；
+        // 评测与前端读的是同一个 level，两处判定必须一致。
+        assertThat(response.getEvidenceLevel()).isEqualTo(EvidenceGate.Level.WEAK);
+    }
+
+    @Test
+    void 对象全部收录时不改写结论也不动证据门() {
+        var resolved = report(List.of(Map.of("input", "磷虾油软胶囊", "found", true),
+                Map.of("input", "阿司匹林", "found", true)));
+        var response = response(EvidenceGate.Level.SUFFICIENT, List.of(resolved));
+
+        assertThat(Agent.enforceUnknownInteractionRefusal(response, "最新核验结论", true))
+                .isEqualTo("最新核验结论");
+        assertThat(response.getEvidenceLevel()).isEqualTo(EvidenceGate.Level.SUFFICIENT);
+    }
+
+    @Test
     void 最近一次失败或结构不完整不能借旧报告声称图谱未知() {
         for (var latest : List.of(
                 ToolExecution.builder().tool("interaction_check").success(false).build(),

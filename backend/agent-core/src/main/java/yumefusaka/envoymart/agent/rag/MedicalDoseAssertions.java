@@ -281,7 +281,19 @@ final class MedicalDoseAssertions {
         {
             String subjectText = subjectText(text);
             var subject = SUBJECT_HEAD.matcher(subjectText);
-            if (subject.find() && !POPULATION.matcher(subject.group(1)).matches() && !ROLE.matcher(subject.group(1)).find()
+            boolean matched = subject.find();
+            if (!matched) {
+                // 引导框架（“平台知识库的原文依据是：…”）会让行首锚定的主语头在冒号处断掉，
+                // 词表外的裸主体（如“抗生素”）补不进来，间隔断言随即被判“数量主体不完整”。
+                // 整段匹配失败时对最后一个冒号后的正文再解析一次；尾部同样解析不出就维持原判。
+                int cut = Math.max(subjectText.lastIndexOf('：'), subjectText.lastIndexOf(':'));
+                if (cut >= 0 && cut < subjectText.length() - 1) {
+                    subjectText = subjectText.substring(cut + 1);
+                    subject = SUBJECT_HEAD.matcher(subjectText);
+                    matched = subject.find();
+                }
+            }
+            if (matched && !POPULATION.matcher(subject.group(1)).matches() && !ROLE.matcher(subject.group(1)).find()
                     && !subjectText.matches("^(?:没有|不存在|无|存在|有|不会|不能|不|会|可能|可)?(?:相互作用|相互影响|影响).*" )
                     && !subjectText.matches("^(?:与|和|及)?(?:上述|这些|该|这|此)(?:药物|药品|产品|商品|补充剂).*" )
                     && !subject.group(1).matches("(?:但|而|也|同时|则|并|此外|另外|每|可耐受|一次|单次|首次|约|大约|至少|通常|一般|正常|健康|长期|本品|该产品).*" )

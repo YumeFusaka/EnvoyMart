@@ -1796,6 +1796,11 @@ public class Agent {
             if (!nearest.isEmpty()) boundary += "相近名称“" + String.join("、", nearest)
                     + "”仅为候选，请确认准确名称后再检查。";
             boundary += "涉及用药请咨询医师或药师。";
+            // 边界拒答与证据门必须说的是同一件事：输出都声明“无法判断具体相互作用”了，
+            // 同一轮就不能再记账为“证据充分到可以作答”——评测与前端读的是同一个 level。
+            if (response.getEvidenceLevel() == EvidenceGate.Level.SUFFICIENT) {
+                response.setEvidenceLevel(EvidenceGate.Level.WEAK);
+            }
             log.info("[Agent] 医学确定性边界 mode=PARTIAL_OR_TEXT_BACKED_INTERACTION_UNKNOWN 证据={} 未收录项={}",
                     response.getEvidenceLevel(), missing.size());
             if (reply != null && reply.contains(boundary)) return reply;

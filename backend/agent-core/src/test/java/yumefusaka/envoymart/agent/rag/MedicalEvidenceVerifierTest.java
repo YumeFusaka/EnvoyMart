@@ -84,6 +84,22 @@ class MedicalEvidenceVerifierTest {
     }
 
     @Test
+    void KG10话语框架后的裸主体参与间隔核验() {
+        var source = DocumentChunk.builder().docId("KB-0010").chunkId("KB-0010_5").score(0.9)
+                .title("膳食补充剂摄入上限与常见药物相互作用")
+                .content("2.5 益生菌与抗生素同服会显著降低活菌存活率，建议错开 2 小时以上。").build();
+        // 引导框架（含冒号）不应吞掉词表外的裸主体（“抗生素”），间隔断言仍要能核验
+        String framed = "平台知识库的原文依据是：益生菌与抗生素同服会显著降低活菌存活率，建议错开 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, framed, List.of(source)).unsupported()).isEmpty();
+        // 框架后只剩单个主体时维持拒答，不能把“建议”等引导词当第二个主体
+        String singleSubject = "平台知识库的原文依据是：建议钙错开 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, singleSubject, List.of(source)).unsupported()).containsExactly(singleSubject);
+        // 无框架的原句行为不变
+        String plain = "益生菌与抗生素同服会显著降低活菌存活率，建议错开 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, plain, List.of(source)).unsupported()).isEmpty();
+    }
+
+    @Test
     void 商品规格金额仅由同一SKU结构化产物豁免() {
         for (String text : List.of("SKU38 60片39元。", "SPU26 SKU38，规格60片/瓶，单价39.00元。")) {
             assertThat(MedicalEvidenceVerifier.verify(true, text, List.of(), List.of(productTool(true)))
