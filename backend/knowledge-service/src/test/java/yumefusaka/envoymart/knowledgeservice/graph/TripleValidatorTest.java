@@ -293,51 +293,83 @@ class TripleValidatorTest {
 
     // ==================== 组合禁忌 ====================
 
-    /** 一句话里明确列出三样，且给出共同后果 —— 这是唯一能支撑组合关系的句式 */
-    private static final String COMBO_BODY = """
-            复合矿物质补充剂说明书
-            本品含铁剂、钙剂与维生素D，三者同服可能增加结石风险，肾结石患者禁用。
-            铁剂与钙剂同服会影响铁的吸收。
-            维生素D 与噻嗪类利尿剂合用可能引起高钙血症。
-            """;
+    private static final String MINERAL_QUOTE = "钙剂、铁剂、锌三者同时补充时，在肠道吸收阶段会发生竞争并彼此抑制，建议不要同时服用，至少错开两小时。";
+    private static final String MINERAL_EFFECT = "在肠道吸收阶段会发生竞争并彼此抑制";
 
-    private static Triple combo(String members, String tailKind, String tailName, String quote) {
-        return new Triple("COMBINATION", members, null, "COMBINED_WITH", tailKind, tailName,
-                null, "三者同服可能增加结石风险", quote, false);
+    private static Triple minerals(String headKind, String members, String tail, String effect, String quote) {
+        return new Triple(headKind, members, null, "COMBINED_WITH", "NUTRIENT", tail,
+                null, effect, quote, false);
+    }
+
+    @Test
+    void 现有钙铁锌原文可支持组合同服注意事项且尾端可以是成员() {
+        var result = TripleValidator.validate(List.of(
+                minerals("COMBINATION", "钙剂+铁剂+锌", "锌", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", "本品为SPU26儿童钙软糖。" + MINERAL_QUOTE, List.of());
+        assertThat(result.accepted()).singleElement().satisfies(t -> {
+            assertThat(t.headName()).isEqualTo("combo:钙|铁剂|锌");
+            assertThat(t.effect()).isEqualTo(MINERAL_EFFECT);
+            assertThat(t.tailName()).isEqualTo("锌");
+            assertThat(t.quote()).isEqualTo(MINERAL_QUOTE);
+        });
+    }
+
+    @Test
+    void 组合头类型不合法即使成员有出处也拒绝() {
+        var result = TripleValidator.validate(List.of(
+                minerals("NUTRIENT", "钙剂+铁剂+锌", "锌", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE, List.of());
+        assertThat(result.count(TripleValidator.RejectReason.VOCABULARY)).isEqualTo(1);
+    }
+
+    @Test
+    void 组合后果必须原样来自同一引文不能推断或缺失() {
+        for (String effect : List.of("引起肾结石", "增加矿物质吸收", "")) {
+            var result = TripleValidator.validate(List.of(
+                    minerals("COMBINATION", "钙剂+铁剂+锌", "锌", effect, MINERAL_QUOTE)),
+                    "KB-0053", MINERAL_QUOTE, List.of());
+            assertThat(result.count(TripleValidator.RejectReason.UNGROUNDED)).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void 组合尾端在全文其他位置出现不能借作当前引文的依据() {
+        var result = TripleValidator.validate(List.of(
+                minerals("COMBINATION", "钙剂+铁剂+锌", "镁", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE + "另有镁补充剂。", List.of());
+        assertThat(result.count(TripleValidator.RejectReason.UNANCHORED)).isEqualTo(1);
+    }
+
+    @Test
+    void 组合成员与尾端可以用维护过的别名命中同一句() {
+        var result = TripleValidator.validate(List.of(
+                minerals("COMBINATION", "钙+口服铁剂+锌元素", "锌剂", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE, List.of());
+        assertThat(result.accepted()).hasSize(1);
     }
 
     @Test
     void 组合成员被引文全覆盖时入库_键按成员排序且可复现() {
-        // 「钙剂＋铁剂＋维生素D」与「铁剂＋钙剂＋维生素D」是同一个组合。
-        // 不排序的话同一件事会在图上分成两个节点，条数与来源各算一半 —— 而这是静默的
         TripleValidator.Result a = TripleValidator.validate(List.of(
-                combo("铁剂+钙剂+维生素D", "POPULATION", "肾结石患者",
-                        "本品含铁剂、钙剂与维生素D，三者同服可能增加结石风险")),
-                "KB-0031", COMBO_BODY, List.of());
+                minerals("COMBINATION", "钙剂+铁剂+锌", "锌", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE, List.of());
         TripleValidator.Result b = TripleValidator.validate(List.of(
-                combo("钙剂＋维生素D＋铁剂", "POPULATION", "肾结石患者",
-                        "本品含铁剂、钙剂与维生素D，三者同服可能增加结石风险")),
-                "KB-0031", COMBO_BODY, List.of());
+                minerals("COMBINATION", "锌＋铁剂＋钙剂", "锌", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE, List.of());
 
         assertThat(a.accepted()).hasSize(1);
         assertThat(b.accepted()).hasSize(1);
         assertThat(a.accepted().get(0).headName())
                 .isEqualTo(b.accepted().get(0).headName())
                 .startsWith("combo:")
-                // 成员已被别名归一（钙剂 → 钙），且按字典序拼接
-                .isEqualTo("combo:维生素d|钙|铁剂");
+                .isEqualTo("combo:钙|铁剂|锌");
     }
 
     @Test
     void 引文只提到部分成员_必须丢弃() {
-        // 这条是本批最要紧的判据。文档里有「铁剂与钙剂同服影响铁的吸收」这句话，
-        // 它确实是逐字存在的、也确实提到了两样东西；但模型把「维生素D」也塞进了组合，
-        // 而那句话里没有维生素D。放它入库，用户就会看到「铁剂+钙剂+维生素D 有结石风险」
-        // 这样一条**带着完整伪溯源**的结论 —— 少报一条组合远好过多报一条
         TripleValidator.Result result = TripleValidator.validate(List.of(
-                combo("铁剂+钙剂+维生素D", "POPULATION", "肾结石患者",
-                        "铁剂与钙剂同服会影响铁的吸收")),
-                "KB-0031", COMBO_BODY, List.of());
+                minerals("COMBINATION", "钙剂+铁剂+锌+维生素D", "锌", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE + "其他文段提到维生素D。", List.of());
 
         assertThat(result.accepted()).isEmpty();
         assertThat(result.count(TripleValidator.RejectReason.UNANCHORED)).isEqualTo(1);
@@ -345,11 +377,9 @@ class TripleValidatorTest {
 
     @Test
     void 组合成员使用别名时按规范成员核对引文() {
-        String body = "本品含富马酸亚铁、钙剂与维生素D，三者同服可能增加结石风险，肾结石患者禁用。";
         TripleValidator.Result result = TripleValidator.validate(List.of(
-                combo("富马酸亚铁+钙剂+维生素D", "POPULATION", "肾结石患者",
-                        "本品含富马酸亚铁、钙剂与维生素D，三者同服可能增加结石风险")),
-                "KB-ALIAS-COMBO", body, List.of());
+                minerals("COMBINATION", "口服铁剂+碳酸钙+锌元素", "锌剂", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE, List.of());
 
         assertThat(result.accepted()).hasSize(1);
         assertThat(result.rejectedTriples()).isEmpty();
@@ -357,11 +387,9 @@ class TripleValidatorTest {
 
     @Test
     void 只有一个成员的组合是畸形_必须丢弃() {
-        // 一个成员的「组合」与单跳是一回事，走 INTERACTS_WITH 表达即可。
-        // 放它进来等于给同一件事多加一条形状不同的边，查询时会报两遍
         TripleValidator.Result result = TripleValidator.validate(List.of(
-                combo("铁剂", "DRUG", "左旋多巴", "铁剂与钙剂同服会影响铁的吸收")),
-                "KB-0031", COMBO_BODY, List.of());
+                minerals("COMBINATION", "铁剂", "锌", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE, List.of());
 
         assertThat(result.accepted()).isEmpty();
         assertThat(result.count(TripleValidator.RejectReason.MALFORMED)).isEqualTo(1);
@@ -369,12 +397,9 @@ class TripleValidatorTest {
 
     @Test
     void 组合的尾端必须出现在原文里() {
-        // 尾端是编的（正文里没有「高钾血症患者」），整条丢弃 —— 与单跳那条判据一致。
-        // 组合的头不是实体，所以「端点有无出处」这条只剩尾端可查
         TripleValidator.Result result = TripleValidator.validate(List.of(
-                combo("铁剂+钙剂", "POPULATION", "高钾血症患者",
-                        "本品含铁剂、钙剂与维生素D，三者同服可能增加结石风险")),
-                "KB-0031", COMBO_BODY, List.of());
+                minerals("COMBINATION", "钙剂+铁剂+锌", "镁", MINERAL_EFFECT, MINERAL_QUOTE)),
+                "KB-0053", MINERAL_QUOTE, List.of());
 
         assertThat(result.accepted()).isEmpty();
         assertThat(result.count(TripleValidator.RejectReason.UNANCHORED)).isEqualTo(1);

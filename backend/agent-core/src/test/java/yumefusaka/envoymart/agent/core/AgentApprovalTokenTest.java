@@ -66,6 +66,9 @@ class AgentApprovalTokenTest {
     /** 记录每一次真实执行的入参 —— 「执行了没有、执行的是哪一单」全看它 */
     private static final class RecordingCancelTool implements Tool {
         private final List<Map<String, Object>> calls = new ArrayList<>();
+        private final List<ToolCall> queries = new ArrayList<>();
+        private final Map<String, ToolResult> receipts = new java.util.HashMap<>();
+        private ToolResult.OperationState nextState = ToolResult.OperationState.COMMITTED;
 
         @Override
         public ToolDefinition getDefinition() {
@@ -80,10 +83,22 @@ class AgentApprovalTokenTest {
         @Override
         public ToolResult execute(ToolCall call) {
             calls.add(call.getArguments());
-            return ToolResult.builder()
-                    .success(true)
+            ToolResult result = ToolResult.builder()
+                    .success(nextState == ToolResult.OperationState.COMMITTED)
+                    .operationState(nextState)
+                    .errorMessage(nextState == ToolResult.OperationState.COMMITTED ? null : "结果未知")
                     .output("订单 " + call.getArguments().get("orderId") + " 已取消，库存已回补。")
                     .build();
+            if (nextState == ToolResult.OperationState.COMMITTED) receipts.put(call.getOperationId(), result);
+            return result;
+        }
+
+        @Override
+        public ToolResult recover(ToolCall call) {
+            queries.add(call);
+            ToolResult result = receipts.get(call.getOperationId());
+            return result == null ? ToolResult.builder().success(false).operationState(ToolResult.OperationState.NOT_FOUND)
+                    .errorMessage("没有可核验的回执").build() : result.toBuilder().receiptReplayed(true).build();
         }
     }
 
@@ -116,9 +131,13 @@ class AgentApprovalTokenTest {
     }
 
     private static Agent agent(AgentGraph graph, ToolRegistry registry) {
+        return agent(graph, registry, null);
+    }
+
+    private static Agent agent(AgentGraph graph, ToolRegistry registry, String secret) {
         MockLLMProvider llm = new MockLLMProvider();
         return new Agent(
-                Agent.Config.builder().memoryConsolidationEnabled(false).build(),
+                Agent.Config.builder().memoryConsolidationEnabled(false).approvalSecret(secret).build(),
                 registry,
                 new IntentRouter(llm, LLM_CONFIG, new FlowRegistry()),
                 graph,
@@ -320,5 +339,96 @@ class AgentApprovalTokenTest {
         assertThat(cancel.calls)
                 .as("已开始的那单让它跑完（不可撤销操作悬在半途更糟），后一单绝不执行")
                 .containsExactly(Map.of("orderId", 12));
+    }
+
+    @Test
+    void 恢复只查原操作回执不进模型图且不重写已提交动作() {
+        RecordingCancelTool cancel = new RecordingCancelTool();
+        PendingGraph graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))));
+        ToolRegistry registry = new ToolRegistry(); registry.register(cancel);
+        Agent agent = agent(graph, registry);
+        String token = issueToken(agent, "u1", "s1");
+        var signed = agent.verifyApproval("u1", "s1", token, true).orElseThrow().getFirst();
+        agent.confirmApproved("u1", "s1", "确认执行", token, null, ToolProgressListener.NOOP);
+        int graphRuns = graph.runs.get();
+
+        var recovered = agent.recoverApproved("u1", "s1", token, false, ToolProgressListener.NOOP);
+
+        assertThat(cancel.calls).hasSize(1);
+        assertThat(cancel.queries).hasSize(1);
+        assertThat(cancel.queries.getFirst().getOperationId()).isEqualTo(signed.operationId());
+        assertThat(cancel.queries.getFirst().getArguments()).isEqualTo(signed.arguments());
+        assertThat(recovered.getToolExecutions().getFirst().isReceiptReplayed()).isTrue();
+        assertThat(graph.runs.get()).isEqualTo(graphRuns);
+    }
+
+    @Test
+    void 第一项未知后续动作不执行且查询不存在回执不补写() {
+        RecordingCancelTool cancel = new RecordingCancelTool(); cancel.nextState = ToolResult.OperationState.UNKNOWN;
+        PendingGraph graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12)),
+                PendingAction.of("order_cancel", Map.of("orderId", 13))));
+        ToolRegistry registry = new ToolRegistry(); registry.register(cancel);
+        Agent agent = agent(graph, registry);
+        String token = issueToken(agent, "u1", "s1");
+
+        var confirmed = agent.confirmApproved("u1", "s1", "确认执行", token, null, ToolProgressListener.NOOP);
+        var recovered = agent.recoverApproved("u1", "s1", token, false, ToolProgressListener.NOOP);
+
+        assertThat(cancel.calls).containsExactly(Map.of("orderId", 12));
+        assertThat(confirmed.getStage()).isEqualTo(TaskStage.WAITING_USER);
+        assertThat(recovered.getToolExecutions()).hasSize(1);
+        assertThat(recovered.getToolExecutions().getFirst().getOperationState()).isEqualTo(ToolResult.OperationState.NOT_FOUND);
+        assertThat(recovered.getReply()).contains("结果待确认");
+    }
+
+    @Test
+    void 过期原签名只有已接受账本授权才能恢复且原动作只写一次() {
+        var cancel = new RecordingCancelTool();
+        var graph = new PendingGraph(List.of());
+        var registry = new ToolRegistry(); registry.register(cancel);
+        String secret = "测试已接受恢复签名密钥";
+        var agent = agent(graph, registry, secret);
+        var clock = java.time.Clock.fixed(java.time.Instant.now().minusSeconds(601), java.time.ZoneOffset.UTC);
+        String token = new yumefusaka.envoymart.agent.tool.ApprovalTokens(secret, 600, clock).issue("u1", "s1",
+                List.of(PendingAction.of("order_cancel", Map.of("orderId", 12), "original-operation")));
+        assertThatThrownBy(() -> agent.recoverApproved("u1", "s1", token, true, ToolProgressListener.NOOP))
+                .isInstanceOf(IllegalArgumentException.class);
+        agent.recoverAcceptedApproved("u1", "s1", token, () -> true, ToolProgressListener.NOOP);
+        agent.recoverAcceptedApproved("u1", "s1", token, () -> true, ToolProgressListener.NOOP);
+        assertThat(cancel.calls).containsExactly(Map.of("orderId", 12));
+        assertThat(cancel.queries).allSatisfy(call -> assertThat(call.getOperationId()).isEqualTo("original-operation"));
+        assertThat(graph.runs.get()).isZero();
+    }
+
+    @Test
+    void 接受授权失效或签名用户不符绝不能绕过普通确认权限() {
+        var cancel = new RecordingCancelTool();
+        var registry = new ToolRegistry(); registry.register(cancel);
+        var graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12))));
+        var agent = agent(graph, registry);
+        String token = issueToken(agent, "u1", "s1");
+        final var checkedAgent = agent;
+        final String checkedToken = token;
+        assertThatThrownBy(() -> checkedAgent.recoverAcceptedApproved("u1", "s1", checkedToken, () -> false, ToolProgressListener.NOOP))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> checkedAgent.recoverAcceptedApproved("other", "s1", checkedToken, () -> true, ToolProgressListener.NOOP))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(cancel.calls).isEmpty();
+    }
+
+    @Test
+    void 查询回执后授权撤销或慢调用失租时不启动下一项原写操作() {
+        var cancel = new RecordingCancelTool();
+        var registry = new ToolRegistry(); registry.register(cancel);
+        var graph = new PendingGraph(List.of(PendingAction.of("order_cancel", Map.of("orderId", 12)),
+                PendingAction.of("order_cancel", Map.of("orderId", 13))));
+        var agent = agent(graph, registry);
+        String token = issueToken(agent, "u1", "s1");
+        var checks = new java.util.concurrent.atomic.AtomicInteger();
+        assertThatThrownBy(() -> agent.recoverAcceptedApproved("u1", "s1", token,
+                () -> checks.incrementAndGet() <= 2, ToolProgressListener.NOOP)).isInstanceOf(IllegalStateException.class);
+        assertThat(cancel.calls).containsExactly(Map.of("orderId", 12));
+        assertThat(cancel.queries).hasSize(2);
+        assertThat(graph.runs.get()).isEqualTo(1);
     }
 }

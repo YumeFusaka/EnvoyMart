@@ -29,6 +29,7 @@ import yumefusaka.envoymart.agent.rag.ConflictVerdictService;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.KnowledgePrompt;
+import yumefusaka.envoymart.agent.rag.MedicalEvidenceVerifier;
 import yumefusaka.envoymart.agent.rag.QueryExpansions;
 import yumefusaka.envoymart.agent.rag.QueryRewriter;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
@@ -40,6 +41,7 @@ import yumefusaka.envoymart.agent.core.task.HealthQueryCoverage;
 import yumefusaka.envoymart.agent.core.task.IntentDriftDetector;
 import yumefusaka.envoymart.agent.core.task.IntentSwitchDetector;
 import yumefusaka.envoymart.agent.core.task.ReferenceResolver;
+import yumefusaka.envoymart.agent.core.task.ProductCandidateList;
 import yumefusaka.envoymart.agent.core.task.SessionContext;
 import yumefusaka.envoymart.agent.core.task.SessionContextStore;
 import yumefusaka.envoymart.agent.core.task.TaskCheckpoint;
@@ -80,6 +82,7 @@ import java.util.function.Consumer;
  */
 @Slf4j
 public class Agent {
+    private static final tools.jackson.databind.ObjectMapper TOOL_DATA_MAPPER = new tools.jackson.databind.ObjectMapper();
 
     /**
      * 确认令牌失效时的答复。
@@ -153,6 +156,7 @@ public class Agent {
      * 不存的话，模型只能靠历史里那段文字去数，而它数的是自己的措辞，不是卡片顺序。
      */
     private static final String SNAPSHOT_CANDIDATES = "lastCandidates";
+    private static final String SNAPSHOT_PRODUCT_CANDIDATES = "productCandidates";
 
     /** 各会话的对话轮次计数，用于按间隔触发记忆抽取 */
     private final Map<String, Integer> turnCounters = new ConcurrentHashMap<>();
@@ -328,7 +332,10 @@ public class Agent {
         //    而不是我们从候选列表里查出来的那一条。
         SessionContext sessionContext = loadSessionContext(userId, sessionId);
         List<String> candidates = candidatesOf(sessionContext);
-        String withReference = ReferenceResolver.resolve(message, candidates);
+        List<ProductCandidateList.Item> savedProducts = ProductCandidateList.restore(
+                sessionContext.contextSnapshot().get(SNAPSHOT_PRODUCT_CANDIDATES));
+        String withReference = savedProducts.isEmpty() ? ReferenceResolver.resolve(message, candidates)
+                : ReferenceResolver.resolveCandidates(message, savedProducts);
         if (!withReference.equals(message)) {
             log.info("[Agent][Reference] 序号指代已消解：「{}」→「{}」", message, withReference);
         }
@@ -395,12 +402,22 @@ public class Agent {
         if (pendingHint != null) {
             systemPrompt = systemPrompt + "\n\n" + pendingHint;
         }
+        if (!switchVerdict.switched() || message.contains("原列表") || message.contains("刚才列表")) {
+            systemPrompt = systemPrompt + candidateContext(sessionContext);
+        }
 
         AgentResponse response;
         List<DocumentChunk> knowledge;
         EvidenceGate.Decision evidence;
+        boolean medicalQuestion = MedicalEvidenceVerifier.isMedicalQuestion(message)
+                || MedicalEvidenceVerifier.isMedicalQuestion(retrievalQuery);
+        boolean deferMedicalText = onChunk != null
+                && (medicalQuestion || ProductCandidateList.requestsNewList(message));
+        // 保持执行图的流式分支与取消检查，只在出口丢弃未经审核的正文。
+        Consumer<String> generationSink = deferMedicalText ? chunk -> { } : onChunk;
         try {
-            response = execute(userId, sessionId, message, retrievalQuery, systemPrompt, retriever, onChunk, progress);
+            // 执行图必须看到与检索侧相同的确定性序号指代，否则规划器会凭模型记忆再猜一遍。
+            response = execute(userId, sessionId, withReference, retrievalQuery, systemPrompt, retriever, generationSink, progress);
             // 检索在图里跑完才回填：轮空（闲聊/业务操作）时两个引用都还是 null，
             // 此时按「没检索」处理，而不是按「检索了、没有依据」——两者对用户说法不同
             RetrievalOutcome outcome = retrievalRef.get();
@@ -433,7 +450,25 @@ public class Agent {
         // 两道后置关放在 try 之外：降级回答同样要过——它也是一段要发给用户的话
         // 后置校验和独立冲突核对必须使用用户本轮原话；retrievalQuery 可能经过指代改写，
         // 只能用于检索，不能改变“用户到底问了什么”的判定语义。
-        groundResponse(response, knowledge, message);
+        groundResponse(response, knowledge, message, medicalQuestion);
+        // 这里只补真实商品名/规格，不生成医学结论；正文、卡片与会话序号必须同源。
+        if (ProductCandidateList.requestsNewList(message)) {
+            List<ProductCandidateList.Item> products = ProductCandidateList.from(response.getToolExecutions());
+            boolean searched = response.getToolExecutions() != null && response.getToolExecutions().stream()
+                    .anyMatch(e -> e != null && e.isSuccess() && "product_search".equals(e.getTool()));
+            if (searched) response.setProductCandidates(products);
+            if (!products.isEmpty()) {
+                response.setReply(ProductCandidateList.withoutProductOrdinals(response.getReply(), products)
+                        + ProductCandidateList.render(products));
+                if (!deferMedicalText && onChunk != null && (progress == null || !progress.cancelled())) {
+                    emit(onChunk, ProductCandidateList.render(products));
+                }
+                log.info("[Agent][候选] 已发布权威候选列表 数量={} 顺序=工具轨迹首次出现", products.size());
+            }
+        }
+        if (deferMedicalText && (progress == null || !progress.cancelled())) {
+            emit(onChunk, response.getReply());
+        }
 
         // 只在真的改写过时下发：检索用了什么句，是「回答为什么对/为什么没查到」的
         // 第一手证据（日志里也有一份），不为没改写的情况塞一个与 message 相同的值
@@ -497,6 +532,11 @@ public class Agent {
                     .stage(TaskStage.DONE)
                     .build();
         }
+        java.util.Set<String> uniqueOperations = new java.util.HashSet<>();
+        if (actions.get().stream().anyMatch(action -> action.operationId() == null || action.operationId().isBlank()
+                || !uniqueOperations.add(action.operationId()))) {
+            throw new IllegalArgumentException("原审批缺少唯一 operationId，不能执行或升级旧意图");
+        }
 
         Optional<TaskCheckpoint> checkpoint = taskStateStore.load(userId, taskId(userId, sessionId));
         String continuationPrompt = checkpoint.map(TaskCheckpoint::continuationPrompt).orElse(null);
@@ -507,7 +547,9 @@ public class Agent {
                 // 已开始的那条让它跑完（尤其是不可撤销操作，悬在半途的结局比慢更糟），
                 // 还没开始的绝不放行
                 progress.throwIfCancelled();
-                executions.add(runApproved(userId, action, progress));
+                ToolExecution execution = runApproved(userId, action, progress);
+                executions.add(execution);
+                if (execution.getOperationState() != ToolResult.OperationState.COMMITTED) break;
             }
         } catch (AgentCancelledException e) {
             // 中止发生在确认执行的中途时，回复文案还没生成——但「哪几条真的执行了」
@@ -518,10 +560,12 @@ public class Agent {
             throw e;
         }
         String reply = renderApproved(executions);
+        boolean completed = executions.size() == actions.get().size()
+                && executions.stream().allMatch(item -> item.getOperationState() == ToolResult.OperationState.COMMITTED);
         log.info("[Agent] 确认轮执行完成 userId={} 操作数={} 成功={}", userId, executions.size(),
                 executions.stream().filter(ToolExecution::isSuccess).count());
         if (continuationPrompt != null && !continuationPrompt.isBlank()
-                && executions.stream().allMatch(ToolExecution::isSuccess)) {
+                && completed) {
             taskStateStore.clear(userId, taskId(userId, sessionId));
             emit(onChunk, reply);
             String continuationMessage = continuationPrompt + "\n\n本批已确认执行结果：\n" + reply
@@ -539,15 +583,90 @@ public class Agent {
             return continuation;
         }
         // 没有后续计划时，确认现场在这里作废；有后续计划的分支已由嵌套续作负责保存新现场。
-        taskStateStore.clear(userId, taskId(userId, sessionId));
+        if (completed) taskStateStore.clear(userId, taskId(userId, sessionId));
         emit(onChunk, reply);
         return AgentResponse.builder()
                 .reply(reply)
                 .source("approved")
                 .toolExecutions(executions)
-                // 确认轮的载荷已经在上一轮定死，这一轮只是执行——执行完即完成
-                .stage(TaskStage.DONE)
+                .pendingActions(completed ? null : actions.get().stream().map(PendingAction::describe).toList())
+                .pendingActionDetails(completed ? null : approvalRecoveryDetails(actions.get()))
+                .approvalToken(completed ? null : approvalToken)
+                .stage(completed ? TaskStage.DONE : TaskStage.WAITING_USER)
                 .build();
+    }
+
+    public Optional<List<PendingAction>> verifyApproval(String userId, String sessionId, String token, boolean queryOnly) {
+        return queryOnly ? approvals.verifyForRecovery(token, userId, sessionId)
+                : approvals.verify(token, userId, sessionId);
+    }
+
+    public Optional<ApprovalTokens.VerifiedGrant> verifyApprovalGrant(String userId, String sessionId, String token) {
+        return approvals.verifyGrantForRecovery(token, userId, sessionId);
+    }
+
+    public AgentResponse confirmApproved(String userId, String sessionId, String message, String token,
+                                         Consumer<String> onChunk, ToolProgressListener listener) {
+        return executeApproved(userId, sessionId, message, token, onChunk, ToolProgressListener.orNoop(listener));
+    }
+
+    /** 原签名批次恢复不会续作模型任务；只读查询不会执行任何没有回执的动作。 */
+    public AgentResponse recoverApproved(String userId, String sessionId, String token, boolean retry,
+                                         ToolProgressListener listener) {
+        Optional<List<PendingAction>> signed = verifyApproval(userId, sessionId, token, !retry);
+        if (signed.isEmpty()) throw new IllegalArgumentException("原审批签名或用户会话不匹配，不能恢复");
+        return recoverSignedActions(userId, token, signed.get(), retry, () -> true, listener);
+    }
+
+    private AgentResponse recoverSignedActions(String userId, String token, List<PendingAction> actions, boolean retry,
+                                               java.util.function.BooleanSupplier acceptedAuthorization,
+                                               ToolProgressListener listener) {
+        ToolProgressListener progress = ToolProgressListener.orNoop(listener);
+        java.util.Set<String> operations = new java.util.HashSet<>();
+        for (PendingAction action : actions) {
+            if (action.operationId() == null || action.operationId().isBlank() || !operations.add(action.operationId())) {
+                throw new IllegalArgumentException("原审批缺少唯一 operationId，无法安全恢复");
+            }
+        }
+        List<ToolExecution> executions = new ArrayList<>();
+        for (PendingAction action : actions) {
+            progress.throwIfCancelled();
+            ToolExecution execution = runSignedAction(userId, action, progress, true);
+            if (retry && execution.getOperationState() != ToolResult.OperationState.COMMITTED) {
+                progress.throwIfCancelled();
+                if (!acceptedAuthorization.getAsBoolean()) throw new IllegalStateException("原批次接受授权已失效，不能继续写操作");
+                execution = runSignedAction(userId, action, progress, false);
+            }
+            executions.add(execution);
+            if (execution.getOperationState() != ToolResult.OperationState.COMMITTED) break;
+        }
+        boolean completed = executions.size() == actions.size()
+                && executions.stream().allMatch(item -> item.getOperationState() == ToolResult.OperationState.COMMITTED);
+        return AgentResponse.builder().reply(renderApproved(executions)).source("approval-recovery")
+                .toolExecutions(List.copyOf(executions))
+                .pendingActions(completed ? null : actions.stream().map(PendingAction::describe).toList())
+                .pendingActionDetails(completed ? null : approvalRecoveryDetails(actions))
+                .approvalToken(completed ? null : token)
+                .stage(completed ? TaskStage.DONE : TaskStage.WAITING_USER).build();
+    }
+
+    public AgentResponse recoverAcceptedApproved(String userId, String sessionId, String token,
+                                                 java.util.function.BooleanSupplier acceptedAuthorization,
+                                                 ToolProgressListener listener) {
+        var grant = verifyApprovalGrant(userId, sessionId, token)
+                .orElseThrow(() -> new IllegalArgumentException("原审批签名或用户会话不匹配，不能恢复"));
+        if (grant.recoverySeconds() == 0 && approvals.verify(token, userId, sessionId).isEmpty()) {
+            throw new IllegalArgumentException("旧审批签名已过期，仅支持回执查询");
+        }
+        if (acceptedAuthorization == null || !acceptedAuthorization.getAsBoolean()) {
+            throw new IllegalStateException("原批次接受授权无效，不能恢复写操作");
+        }
+        return recoverSignedActions(userId, token, grant.actions(), true, acceptedAuthorization, listener);
+    }
+
+    private static List<Map<String, Object>> approvalRecoveryDetails(List<PendingAction> actions) {
+        return actions.stream().map(action -> Map.<String, Object>of("tool", action.tool(),
+                "arguments", action.arguments(), "operationId", action.operationId())).toList();
     }
 
     /**
@@ -558,19 +677,31 @@ public class Agent {
      * 能通过它的，只可能是服务端按签名载荷发起的这一次。
      */
     private ToolExecution runApproved(String userId, PendingAction action, ToolProgressListener progress) {
+        return runSignedAction(userId, action, progress, false);
+    }
+
+    private ToolExecution runSignedAction(String userId, PendingAction action, ToolProgressListener progress, boolean queryOnly) {
         // 确认轮同样发进度：用户点完「确认」后界面上要能看到「正在取消订单」，
         // 否则这段执行是黑盒——而它恰恰是不可撤销操作，最需要过程可见
         progress.onStart(action.tool());
-        ToolResult result = toolRegistry.execute(new ToolCall(
+        ToolCall call = new ToolCall(
                 UUID.randomUUID().toString(), action.tool(), action.arguments(), true, userId,
-                action.operationId()));
+                action.operationId());
+        ToolResult result = queryOnly ? toolRegistry.recover(call) : toolRegistry.execute(call);
+        if (result.getOperationState() == null) {
+            result = result.toBuilder().success(false).operationState(ToolResult.OperationState.UNKNOWN)
+                    .errorMessage("没有取得完整权威回执，执行结果待确认").build();
+        }
         progress.onFinish(action.tool(), result.isSuccess(), result.isNoData(), result.getLatencyMs());
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
-                : "执行失败：" + result.getErrorMessage();
+                : (result.getOperationState() == ToolResult.OperationState.REJECTED ? "操作被明确拒绝：" : "执行结果待确认：")
+                + result.getErrorMessage();
         return ToolExecution.builder()
                 .tool(action.tool())
                 .operationId(action.operationId())
+                .operationState(result.getOperationState())
+                .receiptReplayed(result.isReceiptReplayed())
                 .input(String.valueOf(action.arguments()))
                 .output(output)
                 .success(result.isSuccess())
@@ -586,8 +717,10 @@ public class Agent {
     /** 结果逐字来自工具，不做任何润色——这条路径上「好看」是次要的，「与事实一致」才是全部 */
     private String renderApproved(List<ToolExecution> executions) {
         long ok = executions.stream().filter(ToolExecution::isSuccess).count();
-        String head = ok == executions.size() ? "已按你的确认执行："
-                : ok == 0 ? "已按你的确认执行，但没能成功：" : "已按你的确认执行，部分成功：";
+        boolean unknown = executions.stream().anyMatch(item -> item.getOperationState() == ToolResult.OperationState.UNKNOWN
+                || item.getOperationState() == ToolResult.OperationState.NOT_FOUND);
+        String head = unknown ? "执行结果待确认，未开始的后续操作已停止："
+                : ok == executions.size() ? "已取得本批操作的权威回执：" : "本批操作被明确拒绝，后续操作未执行：";
         StringBuilder sb = new StringBuilder(head);
         for (ToolExecution execution : executions) {
             sb.append("\n- ").append(execution.getOutput());
@@ -1074,8 +1207,9 @@ public class Agent {
                 .reduce((a, b) -> a + "、" + b)
                 .orElse("");
         return "【未完成的操作】上一轮有个需要用户确认的操作还没执行：" + calls
-                + "。如果用户这一轮表示同意或催促，请提示他使用上一条消息里的确认按钮；"
-                + "不要重新推导一个新的操作。";
+                + "。用户仅表示同意或催促且目标未变时，提示使用上一条消息里的确认按钮，不能自动执行；"
+                + "用户纠正商品、规格或数量时，旧载荷已经不代表本轮目标，不能复用，"
+                + "必须按本轮明确目标重新查询并生成新的待审批操作。";
     }
 
     /**
@@ -1127,12 +1261,18 @@ public class Agent {
             if (progress != null) {
                 snapshot.put(SNAPSHOT_CLARIFICATION, snapshotOf(progress));
             }
-            // 记下这一轮端给用户的候选，供下一轮解析「第二个」。
-            // **只在真有候选时覆盖**：这一轮没给候选（问订单、问政策）不该把上一轮
-            // 的候选抹掉——用户完全可能先看一眼推荐、问个别的事、再回头说「第二个」
-            List<String> candidates = ReferenceResolver.candidatesOf(response == null ? null : response.getReply());
-            if (!candidates.isEmpty()) {
-                snapshot.put(SNAPSHOT_CANDIDATES, candidates);
+            // 原列表属于会话事实，跨话题仍可明确回指；单品操作不改它，新候选发布时整份替换。
+            if (previous.contextSnapshot().containsKey(SNAPSHOT_CANDIDATES)) {
+                snapshot.put(SNAPSHOT_CANDIDATES, previous.contextSnapshot().get(SNAPSHOT_CANDIDATES));
+            }
+            if (previous.contextSnapshot().containsKey(SNAPSHOT_PRODUCT_CANDIDATES)) {
+                snapshot.put(SNAPSHOT_PRODUCT_CANDIDATES, previous.contextSnapshot().get(SNAPSHOT_PRODUCT_CANDIDATES));
+            }
+            if (response != null && response.getProductCandidates() != null) {
+                snapshot.put(SNAPSHOT_CANDIDATES, response.getProductCandidates().stream()
+                        .map(item -> item.name() + "（" + item.key() + "）").toList());
+                snapshot.put(SNAPSHOT_PRODUCT_CANDIDATES, ProductCandidateList.snapshot(response.getProductCandidates()));
+                log.info("[Agent][候选] 已替换会话候选快照 数量={}", response.getProductCandidates().size());
             }
             next = next.advance(next.currentSubtask(), snapshot, now);
             sessionContextStore.save(next);
@@ -1189,6 +1329,25 @@ public class Agent {
             return List.of();
         }
         return asStringList(context.contextSnapshot().get(SNAPSHOT_CANDIDATES));
+    }
+
+    private static String candidateContext(SessionContext context) {
+        List<String> names = candidatesOf(context);
+        if (names.isEmpty()) return "";
+        StringBuilder text = new StringBuilder("\n\n## 完整候选列表（最近一次明确搜索/推荐，序号稳定）\n");
+        List<ProductCandidateList.Item> products = ProductCandidateList.restore(
+                context.contextSnapshot().get(SNAPSHOT_PRODUCT_CANDIDATES));
+        for (int i = 0; i < names.size(); i++) {
+            text.append(i + 1).append(". ").append(names.get(i));
+            if (i < products.size() && !products.get(i).specs().isEmpty()) {
+                text.append("；规格：").append(String.join(" / ", products.get(i).specs()));
+            }
+            text.append('\n');
+        }
+        text.append("用户的原列表序号只指这份列表；单品详情、加购或确认回执不会替换它。")
+                .append("需要执行时先按商品编号重新查询真实规格；新查询通常只返回一个目标商品，")
+                .append("因此 $N[i] 的 i 是本轮查询结果下标，不是原列表的全局序号。\n");
+        return text.toString();
     }
 
     /** 把澄清进度写进快照（可序列化形态）。快照里只留标量，见 taskStateOf 的同类说明 */
@@ -1282,11 +1441,19 @@ public class Agent {
      * 先抽冲突再校验引用，冲突内容才不会被当成无出处的断言剔掉——
      * 那些细节正是要让用户看到的东西。
      * <p>
-     * 流式下这里改写的是 done 帧里的完整答案，而 delta 已经推出去了；
-     * 前端会用 done 帧覆盖已渲染文本。原因见 {@link CitationVerifier}。
+     * 普通流式轮次用 done 覆盖 delta；医学轮次的正文等本方法完成后才发布，
+     * 工具进度仍实时发送，取消时不会留下未经审核的医学正文。
      */
-    private void groundResponse(AgentResponse response, List<DocumentChunk> knowledge, String userMessage) {
-        if (response == null || response.getReply() == null || response.getReply().isBlank()) {
+    private void groundResponse(AgentResponse response, List<DocumentChunk> knowledge, String userMessage,
+                                boolean medicalQuestion) {
+        if (response == null) {
+            return;
+        }
+        if (response.getReply() == null || response.getReply().isBlank()) {
+            if (medicalQuestion) {
+                response.setReply("当前没有可核验的医学回答，请咨询医师或药师，遵医嘱安排用药。");
+                response.setUnsupportedStripped(true);
+            }
             return;
         }
         // 本轮证据 = 入口检索 + 工具中途检索到的切片，后者接在入口之后编号：
@@ -1303,9 +1470,17 @@ public class Agent {
         // 的状态分叉，评测也会把正确回答误报成过拒。
         refreshEvidenceLevel(response, evidence);
         int evidenceCount = evidence.size();
+        if (medicalQuestion) auditMedicalStage("GENERATED", response.getReply(), evidence, Map.of());
 
         // 《文档名》→[n] 必须先于冲突抽取：冲突段里的「哪几条对不上」只认编号与「条目 n」
-        String numbered = CitationVerifier.numberTitles(response.getReply(), evidence);
+        CitationVerifier.TitleNumbering titleNumbering = CitationVerifier.numberTitlesWithDiagnostics(response.getReply(), evidence);
+        String numbered = titleNumbering.reply();
+        if (medicalQuestion) for (var resolution : titleNumbering.resolutions()) {
+            log.info("[Agent] 引用标题定位 caseId={} start={} end={} candidates={} selected={} reason={}",
+                    org.slf4j.MDC.get("groundingCaseId"), resolution.start(), resolution.end(),
+                    resolution.candidates(), resolution.selected(), resolution.reason());
+        }
+        if (medicalQuestion) auditMedicalStage("TITLE_LOCATED", numbered, evidence, Map.of());
         ConflictReporter.Report report = ConflictReporter.extract(numbered, evidenceCount);
 
         // 主回答没有自己报出冲突时，再用一次**不带对话历史**的独立核对兜一遍。
@@ -1348,13 +1523,42 @@ public class Agent {
             }
         }
 
+        citableTitles.removeAll(CitationVerifier.ambiguousTitles(evidence));
         SemanticGroundingVerifier.Verdict semanticVerdict = semanticReview(report.reply(), userMessage, evidence,
                 response.getToolExecutions(), evidenceCount, citableTitles, toolStrings);
-        String acceptedReply = CitationVerifier.removeRejected(report.reply(), semanticVerdict.unsupported());
+        if (medicalQuestion) auditMedicalStage("SEMANTIC_REVIEW", report.reply(), evidence,
+                semanticVerdict.unsupported().stream().collect(java.util.stream.Collectors.toMap(
+                        java.util.function.Function.identity(), ignored -> "SEMANTIC_UNSUPPORTED", (first, second) -> first)));
+        Map<String, String> listRejections = new LinkedHashMap<>();
+        var semanticRemoval = removeMedicalRejected(response, report.reply(), semanticVerdict.unsupported(), medicalQuestion, config.getRagGateThresholds());
+        semanticRemoval.dependentSentences().forEach(sentence -> listRejections.put(sentence, "列表父项被语义审核拒绝，依赖子项联合剔除"));
+        String acceptedReply = semanticRemoval.reply();
         String repairedReply = CitationVerifier.repairCitations(acceptedReply, semanticVerdict.citations(), evidence);
         // 语义审核可能恢复/保留工具输出里的《文档名》引用；编号归一化必须在最终文本上再跑一次，
         // 否则确定性校验会把它当成已声明出处而保留，前端却没有可点击的角标。
         repairedReply = CitationVerifier.numberTitles(repairedReply, evidence);
+        if (medicalQuestion) {
+            var citationRepairs = MedicalEvidenceVerifier.supportedCitationRepairs(repairedReply, evidence,
+                    config.getRagGateThresholds(), response.getRetrieval() == null ? Set.of() : response.getRetrieval().graphChunkIds());
+            if (!citationRepairs.isEmpty()) {
+                log.info("[Agent] 医学引用修复 caseId={} repairedSentences={} reason=EXTRANEOUS_UNSUPPORTED_REF",
+                        org.slf4j.MDC.get("groundingCaseId"), citationRepairs.size());
+                repairedReply = CitationVerifier.repairCitations(repairedReply, citationRepairs, evidence);
+            }
+        }
+        MedicalEvidenceVerifier.Verdict medicalVerdict = MedicalEvidenceVerifier.verify(
+                medicalQuestion, repairedReply, evidence, response.getToolExecutions(),
+                config.getRagGateThresholds(), response.getRetrieval() == null
+                        ? Set.of() : response.getRetrieval().graphChunkIds());
+        if (medicalQuestion) auditMedicalStage("MEDICAL_REVIEW", repairedReply, evidence, medicalVerdict.reasons());
+        if (!medicalVerdict.unsupported().isEmpty()) {
+            log.info("[Agent] 医学严格证据闸门 medical={} rejected={} reasons={}",
+                    medicalVerdict.medical(), medicalVerdict.unsupported().size(),
+                    new LinkedHashSet<>(medicalVerdict.reasons().values()));
+            var medicalRemoval = removeMedicalRejected(response, repairedReply, medicalVerdict.unsupported(), medicalQuestion, config.getRagGateThresholds());
+            medicalRemoval.dependentSentences().forEach(sentence -> listRejections.put(sentence, "列表父项被医学审核拒绝，依赖子项联合剔除"));
+            repairedReply = medicalRemoval.reply();
+        }
         report = new ConflictReporter.Report(repairedReply, report.conflicts());
         Set<String> semanticExemptions = semanticExemptions(report.reply(), semanticVerdict,
                 evidenceCount, citableTitles, toolStrings);
@@ -1373,11 +1577,34 @@ public class Agent {
         ToolFactVerifier.Verdict facts =
                 ToolFactVerifier.verify(verdict.reply(), response.getToolExecutions());
 
-        response.setReply(facts.reply());
+        String finalReply = facts.reply();
+        if (medicalVerdict.medical() && (finalReply == null || finalReply.isBlank())) {
+            finalReply = "当前检索证据不足以支持该医学问题的结论，请咨询医师或药师，遵医嘱安排用药。";
+        }
+        finalReply = enforceUnknownInteractionRefusal(response, finalReply, medicalQuestion);
+        String publicationInput = finalReply;
+        MedicalPublication publication = finalizeMedicalReply(response, finalReply, medicalQuestion,
+                config.getRagGateThresholds(), !MedicalEvidenceVerifier.factSentences(numbered).isEmpty()
+                        && MedicalEvidenceVerifier.factSentences(finalReply).isEmpty());
+        finalReply = publication.reply();
+        if (medicalQuestion) {
+            if (!listRejections.isEmpty()) log.info("[Agent] 医学列表依赖联合剔除 count={} reason=LIST_PARENT_REJECTED", listRejections.size());
+            auditMedicalStage("PUBLICATION_REVIEW", publicationInput, evidence, publication.reasons());
+            auditMedicalStage("FINAL", finalReply, evidence, Map.of());
+            log.info("[Agent] 医学完整性结算 beforeFacts={} finalFacts={} semanticRemoved={} medicalRemoved={} citationRemoved={} publicationRemoved={}",
+                    MedicalEvidenceVerifier.factSentences(numbered).size(), MedicalEvidenceVerifier.factSentences(finalReply).size(),
+                    semanticVerdict.unsupported().size(), medicalVerdict.unsupported().size(), verdict.unsupported().size(),
+                    publication.reasons().size());
+        }
+        response.setReply(finalReply);
         Set<String> rejectedClaims = new LinkedHashSet<>(semanticVerdict.unsupported());
+        rejectedClaims.addAll(medicalVerdict.unsupported());
         rejectedClaims.addAll(verdict.unsupported());
+        rejectedClaims.addAll(publication.reasons().keySet());
+        rejectedClaims.addAll(listRejections.keySet());
         response.setUnsupportedClaims(rejectedClaims.isEmpty() ? null : List.copyOf(rejectedClaims));
-        response.setUnsupportedStripped(verdict.stripped() || !semanticVerdict.unsupported().isEmpty());
+        response.setUnsupportedStripped(verdict.stripped() || !semanticVerdict.unsupported().isEmpty()
+                || !medicalVerdict.unsupported().isEmpty() || !publication.reasons().isEmpty() || !listRejections.isEmpty());
         response.setUngrounded(verdict.ungrounded());
         response.setConflicts(report.conflicts().isEmpty() ? null : report.conflicts());
         response.setFactMismatches(facts.mismatches().isEmpty() ? null : facts.mismatches());
@@ -1395,18 +1622,199 @@ public class Agent {
         }
     }
 
+    record MedicalPublication(String reply, Map<String, String> reasons) { }
+
+    private static CitationVerifier.RejectedText removeMedicalRejected(AgentResponse response, String reply, List<String> rejected,
+                                                                      boolean medical, EvidenceGate.Thresholds thresholds) {
+        if (!medical) return new CitationVerifier.RejectedText(CitationVerifier.removeRejected(reply, rejected), List.of());
+        List<DocumentChunk> evidence = response.getKnowledge() == null ? List.of() : response.getKnowledge();
+        Set<String> graphIds = response.getRetrieval() == null ? Set.of() : response.getRetrieval().graphChunkIds();
+        return CitationVerifier.removeRejectedWithListDependencies(reply, rejected, child ->
+                !MedicalEvidenceVerifier.isDependentListSentence(child) && !MedicalEvidenceVerifier.factSentences(child).isEmpty()
+                        && MedicalEvidenceVerifier.verify(true, child, evidence, response.getToolExecutions(), thresholds, graphIds).unsupported().isEmpty());
+    }
+
+    static MedicalPublication finalizeMedicalReply(AgentResponse response, String reply, boolean medicalQuestion,
+                                                  EvidenceGate.Thresholds thresholds, boolean earlierFactsRemoved) {
+        if (!medicalQuestion) return new MedicalPublication(reply, Map.of());
+        String current = reply == null ? "" : reply;
+        Map<String, String> rejected = new LinkedHashMap<>();
+        List<DocumentChunk> evidence = response.getKnowledge() == null ? List.of() : response.getKnowledge();
+        Set<String> graphIds = response.getRetrieval() == null ? Set.of() : response.getRetrieval().graphChunkIds();
+        int limit = MedicalEvidenceVerifier.factSentences(current).size() + 1;
+        // 剔除声明会使后续指代失去依据；每轮只删除，最多检查原事实句数加一轮。
+        for (int pass = 0; pass < limit; pass++) {
+            var verdict = MedicalEvidenceVerifier.verify(true, current, evidence, response.getToolExecutions(), thresholds, graphIds);
+            if (verdict.unsupported().isEmpty()) {
+                String unknownBoundary = enforceUnknownInteractionRefusal(response, "", true);
+                boolean verifiedBoundary = unknownBoundary != null && !unknownBoundary.isBlank() && current.contains(unknownBoundary);
+                if (!current.isBlank() && ((!earlierFactsRemoved && rejected.isEmpty())
+                        || !MedicalEvidenceVerifier.factSentences(current).isEmpty() || verifiedBoundary)) {
+                    return new MedicalPublication(current, Map.copyOf(rejected));
+                }
+                break;
+            }
+            rejected.putAll(verdict.reasons());
+            var removal = removeMedicalRejected(response, current, verdict.unsupported(), true, thresholds);
+            removal.dependentSentences().forEach(sentence -> rejected.put(sentence, "列表父项被拒，依赖子项联合剔除"));
+            String stripped = removal.reply();
+            if (java.util.Objects.equals(current, stripped)) {
+                log.warn("[Agent] 医学发布审核无法剔除未支撑句，转确定性拒答 count={}", verdict.unsupported().size());
+                break;
+            }
+            current = stripped == null ? "" : stripped;
+        }
+        return new MedicalPublication(insufficientMedicalReply(response), Map.copyOf(rejected));
+    }
+
+    private static String insufficientMedicalReply(AgentResponse response) {
+        List<Map<?, ?>> items = latestInteractionItems(response);
+        if (items != null && items.size() == 2) {
+            List<String> names = new ArrayList<>();
+            for (Map<?, ?> item : items) {
+                if (!(item.get("input") instanceof String input) || input.isBlank() || input.length() > 100) break;
+                String name = item.get("label") instanceof String label && !label.isBlank() && label.length() <= 100 ? label : input;
+                names.add(name);
+            }
+            if (names.size() == 2 && !names.getFirst().equals(names.getLast())) {
+                log.info("[Agent] 医学确定性拒答 mode=SCOPED_INTERACTION_INSUFFICIENT objects=2");
+                return "目前缺少可核验的医学依据，无法根据本次检查判断" + String.join("与", names)
+                        + "的具体关系，请咨询医师或药师。";
+            }
+        }
+        return "当前检索证据不足以支持该医学问题的结论，请咨询医师或药师，遵医嘱安排用药。";
+    }
+
+    /** 最近一次失败或不可用即停止，不能从早先成功检查恢复本轮拒答的对象范围。 */
+    private static List<Map<?, ?>> latestInteractionItems(AgentResponse response) {
+        if (response == null || response.getToolExecutions() == null) return null;
+        List<ToolExecution> tools = response.getToolExecutions();
+        for (int index = tools.size() - 1; index >= 0; index--) {
+            ToolExecution tool = tools.get(index);
+            if (tool == null || !"interaction_check".equals(tool.getTool())) continue;
+            if (!tool.isSuccess() || tool.isNoData() || tool.getRawData() == null) return null;
+            Object decoded;
+            try { decoded = TOOL_DATA_MAPPER.convertValue(tool.getRawData(), Object.class); }
+            catch (RuntimeException invalid) {
+                log.warn("[Agent] 相互作用边界跳过 reason=INVALID_CHECK_STRUCTURE");
+                return null;
+            }
+            if (!(decoded instanceof Map<?, ?> report) || !Boolean.TRUE.equals(report.get("available"))
+                    || !(report.get("items") instanceof List<?> items) || items.isEmpty()) return null;
+            List<Map<?, ?>> parsed = new ArrayList<>();
+            for (Object item : items) {
+                if (!(item instanceof Map<?, ?> fields) || !(fields.get("found") instanceof Boolean)) return null;
+                parsed.add(fields);
+            }
+            return List.copyOf(parsed);
+        }
+        return null;
+    }
+
+    /** 仅内部固定评测保存有界句子；普通对话不记录医学正文。 */
+    static String evalMedicalAuditBody(String caseId, String sentence) {
+        if (caseId == null || !caseId.matches("(?:G-(?:0[1-9]|1[0-9]|2[0-4])|KG-(?:0[1-9]|1[0-2]))")
+                || sentence == null) return null;
+        int maximum = 2048;
+        return TOOL_DATA_MAPPER.writeValueAsString(Map.of("sentence", sentence.substring(0, Math.min(maximum, sentence.length())),
+                "truncated", sentence.length() > maximum));
+    }
+
+    private void auditMedicalStage(String stage, String reply, List<DocumentChunk> evidence, Map<String, String> reasons) {
+        int previousOffset = 0;
+        int occurrence = 0;
+        List<String> factSentences = MedicalEvidenceVerifier.factSentences(reply);
+        log.info("[Agent] 医学阶段摘要 caseId={} stage={} factCount={} rejectedCount={}",
+                org.slf4j.MDC.get("groundingCaseId"), stage, factSentences.size(), reasons.size());
+        for (String sentence : factSentences) {
+            int start = reply.indexOf(sentence, previousOffset);
+            int end = start < 0 ? -1 : start + sentence.length();
+            if (end >= 0) previousOffset = end;
+            List<String> refs = new ArrayList<>();
+            List<String> sources = new ArrayList<>();
+            var matcher = java.util.regex.Pattern.compile("\\[(\\d+)]").matcher(sentence);
+            while (matcher.find()) {
+                refs.add(matcher.group(1));
+                try {
+                    int ref = Integer.parseInt(matcher.group(1));
+                    if (ref > 0 && ref <= evidence.size() && evidence.get(ref - 1) != null) {
+                        DocumentChunk chunk = evidence.get(ref - 1);
+                        sources.add(chunk.getDocId() + ":" + chunk.getChunkId());
+                    }
+                } catch (NumberFormatException ignored) { }
+            }
+            String hash;
+            String stableId;
+            try {
+                hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(sentence.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                stableId = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(CitationVerifier.diagnosticSentenceBody(sentence).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            } catch (java.security.NoSuchAlgorithmException unavailable) {
+                throw new IllegalStateException("JDK 缺少 SHA-256", unavailable);
+            }
+            log.info("[Agent] 医学阶段 caseId={} stage={} occurrence={} start={} end={} sentenceHash={} stableSentenceId={} refs={} sources={} reason={}",
+                    org.slf4j.MDC.get("groundingCaseId"), stage, occurrence++, start, end, hash, stableId,
+                    refs, sources, reasons.getOrDefault(sentence, "PRESENT"));
+            String auditBody = evalMedicalAuditBody(org.slf4j.MDC.get("groundingCaseId"), sentence);
+            if (auditBody != null) log.info("[Agent] 医学验收句 caseId={} stage={} sentenceHash={} body={}",
+                    org.slf4j.MDC.get("groundingCaseId"), stage, hash, auditBody);
+        }
+    }
+
+    /** 未收录对象的图谱边界由结构化结果决定，不能借另一对象的已知关系替它作答。 */
+    static String enforceUnknownInteractionRefusal(AgentResponse response, String reply, boolean medicalQuestion) {
+        if (!medicalQuestion || response.getToolExecutions() == null) {
+            return reply;
+        }
+        List<Map<?, ?>> items = latestInteractionItems(response);
+        if (items == null) return reply;
+        {
+            boolean allUnknown = items.stream().allMatch(item -> Boolean.FALSE.equals(((Map<?, ?>) item).get("found")));
+            if (allUnknown && (response.getEvidenceLevel() == EvidenceGate.Level.NONE
+                    || response.getEvidenceLevel() == EvidenceGate.Level.WEAK)) {
+                log.info("[Agent] 医学确定性拒答 mode=ALL_INTERACTION_UNKNOWN 证据={} 未收录项={}",
+                        response.getEvidenceLevel(), items.size());
+                return "目前缺少相关原文依据，无法判断这些物品能否一起使用或食用。"
+                        + "本次检查的对象在平台知识图谱中都没有收录；没有收录不等于安全，也不能据此断言存在冲突。"
+                        + "请提供准确商品名或成分名，以便核对；涉及用药请咨询医师或药师。";
+            }
+            List<Map<?, ?>> missing = items.stream().<Map<?, ?>>map(item -> (Map<?, ?>) item)
+                    .filter(item -> Boolean.FALSE.equals(item.get("found"))).toList();
+            if (missing.isEmpty() || items.stream().anyMatch(item -> !(((Map<?, ?>) item).get("input") instanceof String input)
+                    || input.isBlank() || input.length() > 100)) return reply;
+
+            String names = items.stream().map(item -> (String) ((Map<?, ?>) item).get("input"))
+                    .distinct().collect(java.util.stream.Collectors.joining("与"));
+            String absent = missing.stream().map(item -> (String) item.get("input"))
+                    .distinct().collect(java.util.stream.Collectors.joining("、"));
+            String boundary = "仅依据本次图谱检查，无法判断" + names + "的具体相互作用。"
+                    + "图谱没有收录以下称呼：" + absent + "。没有收录不等于安全，也不能据此断言存在冲突。";
+            List<String> nearest = missing.stream().map(item -> item.get("nearest"))
+                    .filter(value -> value instanceof String name && !name.isBlank() && name.length() <= 100)
+                    .map(String.class::cast).distinct().toList();
+            if (!nearest.isEmpty()) boundary += "相近名称“" + String.join("、", nearest)
+                    + "”仅为候选，请确认准确名称后再检查。";
+            boundary += "涉及用药请咨询医师或药师。";
+            log.info("[Agent] 医学确定性边界 mode=PARTIAL_OR_TEXT_BACKED_INTERACTION_UNKNOWN 证据={} 未收录项={}",
+                    response.getEvidenceLevel(), missing.size());
+            if (reply != null && reply.contains(boundary)) return reply;
+            return (reply == null || reply.isBlank() ? "" : reply + "\n\n") + boundary;
+        }
+    }
+
     private void refreshEvidenceLevel(AgentResponse response, List<DocumentChunk> evidence) {
         refreshEvidenceLevel(response, evidence, config.getRagGateThresholds());
     }
 
     static void refreshEvidenceLevel(AgentResponse response, List<DocumentChunk> evidence,
                                      EvidenceGate.Thresholds thresholds) {
-        if (response == null || response.getRetrieval() == null) {
+        if (response == null) {
             return;
         }
         RetrievalOutcome retrieval = response.getRetrieval();
         EvidenceGate.Decision decision = EvidenceGate.evaluate(
-                evidence, thresholds, retrieval.graphChunkIds());
+                evidence, thresholds, retrieval == null ? Set.of() : retrieval.graphChunkIds());
         response.setEvidenceLevel(decision.level());
     }
 
@@ -1677,8 +2085,8 @@ public class Agent {
             if (!continuing.completedSteps().isEmpty()) {
                 sb.append("已经查过的步骤：").append(String.join("、", continuing.completedSteps()))
                         .append("\n")
-                        .append("用户这一轮若在接着问同一件事，**不要重复上面已经查过的步骤**，")
-                        .append("直接使用已有结论往下走。\n");
+                        .append("上述记录只证明工具名曾被调用，不代表这一轮的目标或参数已查过；")
+                        .append("写操作需要本轮真实字段时必须重新查询，不能把历史的 $N 当成本轮输出。\n");
             }
             if (!continuing.pendingTools().isEmpty()) {
                 sb.append("还有待确认的操作：").append(String.join("、", continuing.pendingTools())).append("\n");
@@ -1743,6 +2151,9 @@ public class Agent {
                       那句话既不会触发确认流程，也会让这一轮提前结束、工具永远发不出去。
                     - 只有当你缺少**必须由用户提供**的信息（比如要取消哪一单、要退哪一件）时，
                       才停下来问用户；能自己查到的信息不要问。
+                    - 加购、下单、修改购物车等已声明需要确认的操作：目标/规格/数量已经明确且用户说「等我确认」时，
+                      **先发出工具调用生成待审批操作**，不能只用文字说「确认后我再加购」。
+                      多规格仍未选定或目标不唯一时，只问缺少的**必须由用户提供**的信息，不能猜 SKU。
                     """);
         }
         KnowledgePrompt.Section section = KnowledgePrompt.render(knowledge, evidence, canSearchAgain);
@@ -1882,6 +2293,8 @@ public class Agent {
         private EvidenceGate.Level evidenceLevel;
         /** 本轮实际发生的工具调用轨迹 */
         private List<ToolExecution> toolExecutions;
+        /** 确定性发布的商品候选表，与前端商品卡片和会话序号共同同源。 */
+        private List<ProductCandidateList.Item> productCandidates;
         /**
          * 等待用户确认的高危操作，形如 {@code order_cancel(orderId=12)}——<b>展示用</b>，
          * 前端据此渲染确认卡片。执行不认它，认的是 {@link #approvalToken} 里的载荷。

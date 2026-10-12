@@ -115,6 +115,12 @@ public class ChatResponse {
      * 全看模型重入时有没有从记忆里把意图回忆出来。
      */
     private String approvalToken;
+    private String approvalStatus;
+    private boolean approvalRetryAllowed;
+    private Boolean approvalRecordAvailable;
+    private String approvalRecordError;
+    private Long approvalRecoverySeconds;
+    private Long approvalRecoveryUntil;
 
     /**
      * 本轮证据门的判定，决定 {@link #knowledge} 该被说成什么。

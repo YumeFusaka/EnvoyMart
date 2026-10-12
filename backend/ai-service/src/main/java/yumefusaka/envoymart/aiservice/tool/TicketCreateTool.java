@@ -11,7 +11,7 @@ import yumefusaka.envoymart.aiservice.model.AgentCreateTicketRequest;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** 创建客服工单；返回创建回执并尝试用详情接口复核归属与状态。 */
+/** 创建客服工单，返回同一事务保存的工单及首条消息回执。 */
 @Slf4j
 public class TicketCreateTool implements Tool {
 
@@ -28,6 +28,7 @@ public class TicketCreateTool implements Tool {
                 .description("提交客服工单。category 只能是 ORDER、REFUND、PRODUCT、OTHER；"
                         + "标题和问题描述必须来自用户原话，可选 orderId 关联当前用户订单，需要用户确认。")
                 .requiresConfirmation(true)
+                .acceptsOperationId(true)
                 .parameters(Map.of(
                         "category", ToolDefinition.ParameterSpec.builder().type("string")
                                 .description("ORDER/REFUND/PRODUCT/OTHER").required(true).build(),
@@ -42,6 +43,10 @@ public class TicketCreateTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, false);
+    }
+    @Override public ToolResult recover(ToolCall call) { return execute(call, true); }
+    private ToolResult execute(ToolCall call, boolean queryOnly) {
         try {
             String userId = call.requireUserId();
             AgentCreateTicketRequest request = new AgentCreateTicketRequest();
@@ -52,28 +57,25 @@ public class TicketCreateTool implements Tool {
             request.setTitle(required(call, "title"));
             request.setContent(required(call, "content"));
             request.setOrderId(optionalLong(call.getArguments().get("orderId")));
-            Map<String, Object> created = Downstream.mutate("工单", () -> ticketClient.create(userId, request));
-            if (created == null || created.isEmpty()) {
-                throw new IllegalStateException("工单创建没有返回权威回执");
-            }
+            Map<String, Object> parameters = new LinkedHashMap<>();
+            parameters.put("category", request.getCategory()); parameters.put("title", request.getTitle());
+            parameters.put("content", request.getContent()); parameters.put("orderId", request.getOrderId());
+            var operation = WriteReceipts.context(call, parameters);
+            var receipt = WriteReceipts.run(operation, queryOnly, Map.class,
+                    () -> ticketClient.operationReceipt(userId, operation.operationId(), operation.toolName(), operation.parametersHash()),
+                    () -> ticketClient.createReceipt(userId, operation.operationId(), request));
+            Map<String, Object> created = receipt.data();
+            WriteReceipts.require(created != null && created.get("ticket") instanceof Map<?, ?> ticket
+                    && ticket.get("id") instanceof Number id && id.longValue() > 0 && "OPEN".equals(ticket.get("status"))
+                    && created.get("messages") instanceof java.util.List<?> messages && !messages.isEmpty());
             Map<String, Object> authoritative = created;
-            Object ticket = created.get("ticket");
-            if (ticket instanceof Map<?, ?> ticketMap && ticketMap.get("id") != null) {
-                try {
-                    Map<String, Object> detail = Downstream.read("工单", () -> ticketClient.detail(
-                            userId, Long.parseLong(String.valueOf(ticketMap.get("id")))));
-                    if (detail != null && !detail.isEmpty()) authoritative = detail;
-                } catch (RuntimeException e) {
-                    log.warn("[TicketCreateTool] 工单创建后详情复核失败，将返回创建回执：{}", e.getMessage());
-                }
-            }
-            return ToolResult.builder().success(true)
+            return ToolResult.builder().success(true).operationState(ToolResult.OperationState.COMMITTED).receiptReplayed(receipt.replayed())
                     .output("工单已提交，客服会按工单记录跟进。")
                     .rawData(authoritative)
                     .facts(Map.of("工单状态", "OPEN"))
                     .build();
         } catch (Exception e) {
-            return Downstream.failure("工单提交", e);
+            return WriteReceipts.failure(e, "工单提交");
         }
     }
 

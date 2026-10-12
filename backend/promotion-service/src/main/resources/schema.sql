@@ -74,3 +74,32 @@ create table if not exists promotion_rule (
     sort int not null default 0,
     index idx_promotion_rule_activity (activity_id, threshold)
 );
+-- 领券成功回执；不写失败回执，不清理既有业务行。
+create table if not exists promotion_operation_receipt (
+    id bigint auto_increment primary key,
+    user_id varchar(32) not null,
+    operation_id varchar(256) not null,
+    tool_name varchar(64) not null,
+    parameters_hash char(64) not null,
+    global_xid varchar(128) character set ascii collate ascii_bin,
+    decision_mark varchar(24) character set ascii collate ascii_bin,
+    hash_version smallint not null,
+    receipt_version smallint not null,
+    response_json json,
+    created_at datetime(3) not null,
+    completed_at datetime(3),
+    constraint uk_promotion_operation_user unique (user_id, operation_id),
+    index idx_promotion_operation_completed (completed_at)
+);
+
+-- Seata AT恢复数据只由事务框架维护；启动检查拒绝同名不兼容表，不自动改表。
+create table if not exists undo_log (
+    branch_id bigint not null,
+    xid varchar(128) not null,
+    context varchar(128) not null,
+    rollback_info longblob not null,
+    log_status int not null,
+    log_created datetime(6) not null,
+    log_modified datetime(6) not null,
+    unique key ux_undo_log (xid, branch_id)
+);

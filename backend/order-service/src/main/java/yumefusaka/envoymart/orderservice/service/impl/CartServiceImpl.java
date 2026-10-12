@@ -24,17 +24,19 @@ import java.util.stream.Collectors;
 @Service
 public class CartServiceImpl implements CartService {
 
-    private static final int MAX_QUANTITY = 99;
     private static final int SELECTED = 1;
     private static final int UNSELECTED = 0;
 
     private final CartItemMapper cartItemMapper;
     private final ProductClient productClient;
+    private final yumefusaka.envoymart.orderservice.service.UserTradeGuard userTradeGuard;
 
     public CartServiceImpl(CartItemMapper cartItemMapper,
-                           ProductClient productClient) {
+                           ProductClient productClient,
+                           yumefusaka.envoymart.orderservice.service.UserTradeGuard userTradeGuard) {
         this.cartItemMapper = cartItemMapper;
         this.productClient = productClient;
+        this.userTradeGuard = userTradeGuard;
     }
 
     /**
@@ -58,7 +60,10 @@ public class CartServiceImpl implements CartService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
     public CartItemResponse add(String userId, AddCartItemRequest request) {
+        userTradeGuard.acquire(userId);
         SkuSnapshot sku = requireSku(request.getSkuId());
 
         CartItemEntity existing = cartItemMapper.selectOne(new LambdaQueryWrapper<CartItemEntity>()
@@ -90,21 +95,23 @@ public class CartServiceImpl implements CartService {
 
     /** 把数量加上去并封顶。封顶而不是报错：用户连点几次不该收到一个错误弹窗 */
     private CartItemResponse mergeQuantity(String userId, Long skuId, int delta, SkuSnapshot sku) {
+        if (cartItemMapper.incrementQuantity(userId, skuId, delta) != 1) {
+            throw new IllegalStateException("购物车条目已不存在，请重试");
+        }
         CartItemEntity entity = cartItemMapper.selectOne(new LambdaQueryWrapper<CartItemEntity>()
-                .eq(CartItemEntity::getUserId, userId)
-                .eq(CartItemEntity::getSkuId, skuId));
+                .eq(CartItemEntity::getUserId, userId).eq(CartItemEntity::getSkuId, skuId));
         if (entity == null) {
             throw new IllegalStateException("购物车条目已不存在，请重试");
         }
-        entity.setQuantity(Math.min(entity.getQuantity() + delta, MAX_QUANTITY));
-        entity.setUpdatedAt(Times.now());
-        cartItemMapper.updateById(entity);
         return toResponse(entity, sku);
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
     public CartItemResponse updateQuantity(String userId, Long id, UpdateCartItemRequest request) {
-        CartItemEntity entity = requireOwned(userId, id);
+        userTradeGuard.acquire(userId);
+        CartItemEntity entity = requireOwnedLocked(userId, id);
         entity.setQuantity(request.getQuantity());
         entity.setUpdatedAt(Times.now());
         cartItemMapper.updateById(entity);
@@ -112,14 +119,20 @@ public class CartServiceImpl implements CartService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
     public void remove(String userId, Long id) {
-        requireOwned(userId, id);
+        userTradeGuard.acquire(userId);
+        requireOwnedLocked(userId, id);
         cartItemMapper.deleteById(id);
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
     public CartItemResponse setSelected(String userId, Long id, boolean selected) {
-        CartItemEntity entity = requireOwned(userId, id);
+        userTradeGuard.acquire(userId);
+        CartItemEntity entity = requireOwnedLocked(userId, id);
         entity.setSelected(selected ? SELECTED : UNSELECTED);
         entity.setUpdatedAt(Times.now());
         cartItemMapper.updateById(entity);
@@ -127,8 +140,10 @@ public class CartServiceImpl implements CartService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public List<CartItemResponse> setAllSelected(String userId, boolean selected) {
+        userTradeGuard.acquire(userId);
         cartItemMapper.update(null, new LambdaUpdateWrapper<CartItemEntity>()
                 .eq(CartItemEntity::getUserId, userId)
                 .set(CartItemEntity::getSelected, selected ? SELECTED : UNSELECTED)
@@ -184,11 +199,9 @@ public class CartServiceImpl implements CartService {
      * 「条目不存在」与「条目不属于你」返回同一句话：区分开来等于告诉调用方
      * 哪些 id 是有效的，越权探测就此变成一次盲注。
      */
-    private CartItemEntity requireOwned(String userId, Long id) {
-        CartItemEntity entity = id == null ? null : cartItemMapper.selectById(id);
-        if (entity == null || !entity.getUserId().equals(userId)) {
-            throw new IllegalArgumentException("购物车条目不存在");
-        }
+    private CartItemEntity requireOwnedLocked(String userId, Long id) {
+        CartItemEntity entity = id == null ? null : cartItemMapper.lockOwned(userId, id);
+        if (entity == null) throw new IllegalArgumentException("购物车条目不存在");
         return entity;
     }
 

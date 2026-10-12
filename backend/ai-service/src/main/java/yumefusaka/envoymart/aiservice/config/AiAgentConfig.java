@@ -95,6 +95,14 @@ import java.util.concurrent.TimeUnit;
 @Configuration
 public class AiAgentConfig {
 
+    /** 生产装配不能用随机签名密钥冒充跨重启恢复能力。 */
+    static void requireStableApprovalSecret(String approvalSecret) {
+        boolean configured = approvalSecret != null && !approvalSecret.isBlank();
+        boolean minimumLength = configured && approvalSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length >= 32;
+        log.info("[Approval] 生产审批签名配置 configured={} minimumLength32={}", configured, minimumLength);
+        if (!configured) throw new IllegalStateException("缺少既有 AGENT_APPROVAL_SECRET，不能启动具有跨重启恢复保证的审批能力");
+    }
+
     // ==================== 模型接入 ====================
 
     /**
@@ -637,6 +645,7 @@ public class AiAgentConfig {
                        ConflictVerdictService conflictVerdictService,
                        SessionContextStore sessionContextStore,
                        @Value("${envoymart.agent.approval-secret:}") String approvalSecret) {
+        requireStableApprovalSecret(approvalSecret);
         return new Agent(
                 Agent.Config.builder().memoryWindow(16).ragTopK(3).longTermRecallTopK(3)
                         .consolidationEveryTurns(3).approvalSecret(approvalSecret)

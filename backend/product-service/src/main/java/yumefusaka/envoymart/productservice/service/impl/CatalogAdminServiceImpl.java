@@ -290,11 +290,8 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
         entity.setSort(request.getSort() == null ? 0 : request.getSort());
         attributeMapper.updateById(entity);
 
-        if (renamed) {
-            // 参数名被拼进了 ES 的 attribute_text（「净含量:90克」整串进索引），
-            // 不刷的话搜「净含量」搜不到，而商品详情页显示的是新名字 —— 两处对不上
-            refreshProductsWithAttribute(attributeId);
-        }
+        // 名称、输入类型影响索引文本/拆分，单位影响详情；更新后统一登记全部引用商品。
+        refreshProductsWithAttribute(attributeId);
         log.info("[管理] 编辑参数项 id={} name={} renamed={}", attributeId, name, renamed);
     }
 
@@ -347,7 +344,7 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
                 .map(SpuAttributeValueEntity::getSpuId)
                 .distinct()
                 .toList();
-        derivedRefresh.afterCommit(spuIds);
+        derivedRefresh.request(spuIds);
     }
 
     private static AdminAttribute toAdminAttribute(ProductAttributeEntity entity) {
@@ -463,7 +460,7 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
         if (categoryIds.isEmpty()) {
             return;
         }
-        derivedRefresh.afterCommit(spuMapper.selectList(new LambdaQueryWrapper<ProductSpuEntity>()
+        derivedRefresh.request(spuMapper.selectList(new LambdaQueryWrapper<ProductSpuEntity>()
                         .select(ProductSpuEntity::getId)
                         .in(ProductSpuEntity::getCategoryId, categoryIds))
                 .stream()
@@ -472,7 +469,7 @@ public class CatalogAdminServiceImpl implements CatalogAdminService {
     }
 
     private void refreshProductsOfBrand(Long brandId) {
-        derivedRefresh.afterCommit(spuMapper.selectList(new LambdaQueryWrapper<ProductSpuEntity>()
+        derivedRefresh.request(spuMapper.selectList(new LambdaQueryWrapper<ProductSpuEntity>()
                         .select(ProductSpuEntity::getId)
                         .eq(ProductSpuEntity::getBrandId, brandId))
                 .stream()

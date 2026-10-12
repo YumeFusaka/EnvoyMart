@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import {
   createAddress,
@@ -19,6 +19,9 @@ const profile = computed(() => userStore.profile)
 
 const addresses = ref<UserAddress[]>([])
 const loading = ref(false)
+let mounted = true
+let loadSequence = 0
+onBeforeUnmount(() => { mounted = false; loadSequence += 1 })
 /**
  * 加载失败的原因。与 addresses 为空必须分开：
  * 此前只有 try/finally，接口挂了 addresses 停在 []，界面显示「还没有收货地址」——
@@ -78,16 +81,20 @@ const rules: FormRules = {
 }
 
 async function loadAddresses() {
+  const sequence = ++loadSequence
   loading.value = true
   try {
-    addresses.value = await listAddresses()
+    const result = await listAddresses()
+    if (!mounted || sequence !== loadSequence) return
+    addresses.value = result
     error.value = null
   } catch (e) {
+    if (!mounted || sequence !== loadSequence) return
     // 拦截器已经弹过一次全局提示，这里只留页面内的停留态与重试入口
     error.value = e instanceof Error ? e.message : '加载失败'
     addresses.value = []
   } finally {
-    loading.value = false
+    if (mounted && sequence === loadSequence) loading.value = false
   }
 }
 
@@ -211,8 +218,9 @@ onMounted(() => {
       </div>
 
       <div v-loading="loading" class="address-wrap">
+        <el-skeleton v-if="loading" :rows="3" animated />
         <ErrorState
-          v-if="!loading && error"
+          v-else-if="error"
           :message="error"
           :on-retry="loadAddresses"
         />

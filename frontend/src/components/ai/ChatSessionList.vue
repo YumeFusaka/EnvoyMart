@@ -7,6 +7,8 @@ const props = defineProps<{
   sessions: ChatSessionSummary[]
   activeId: string | null
   loading: boolean
+  error?: string
+  onRetry?: () => void
 }>()
 
 const emit = defineEmits<{
@@ -56,11 +58,16 @@ const buckets = computed<Bucket[]>(() => {
       <span v-for="i in 3" :key="i" class="session-list__skeleton-bar" />
     </div>
 
+    <div v-else-if="error" class="session-list__error" role="alert">
+      <p>{{ error }}</p>
+      <el-button type="primary" link @click="props.onRetry?.()">重新加载</el-button>
+    </div>
+
     <p v-else-if="!sessions.length" class="session-list__empty">
       还没有历史会话。问点什么，这里会留下记录。
     </p>
 
-    <nav v-else class="session-list__groups" aria-label="历史会话">
+    <nav v-if="!loading && sessions.length" class="session-list__groups" aria-label="历史会话">
       <section v-for="bucket in buckets" :key="bucket.label">
         <h3 class="session-list__label">{{ bucket.label }}</h3>
         <ul>
@@ -236,6 +243,21 @@ const buckets = computed<Bucket[]>(() => {
   color: var(--color-text-muted);
   font-size: var(--ys-font-sm);
   line-height: var(--ys-leading-base);
+}
+
+.session-list__error {
+  display: grid;
+  gap: var(--ys-space-2);
+  padding: var(--ys-space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--ys-font-xs);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ys-radius-md);
+}
+
+.session-list__error p {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .session-list__skeleton {

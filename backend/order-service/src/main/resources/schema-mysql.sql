@@ -1,4 +1,18 @@
 -- ==================== MySQL 幂等迁移 ====================
+CREATE TABLE IF NOT EXISTS order_user_trade_guard (
+    user_id VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+    revision BIGINT NOT NULL DEFAULT 0
+) ENGINE=InnoDB;
+
+SET @trade_xid_ddl = IF(
+    EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='shop_order')
+    AND NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='shop_order' AND column_name='global_xid'),
+    'ALTER TABLE shop_order ADD COLUMN global_xid VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL',
+    'DO 0'
+);
+PREPARE trade_xid_statement FROM @trade_xid_ddl;
+EXECUTE trade_xid_statement;
+DEALLOCATE PREPARE trade_xid_statement;
 -- 这个文件会排在 schema.sql **之前**执行（platform=mysql 时 Spring 的默认
 -- 脚本列表是 [schema-mysql.sql, schema.sql]），空库上表还不存在，所以每条
 -- 迁移都必须先判表存在：不存在就整段降级为 DO 0，建表交给随后的 schema.sql。

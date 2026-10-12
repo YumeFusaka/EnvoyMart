@@ -57,8 +57,9 @@ public final class CitationVerifier {
      */
     private static final Pattern TITLE_CITATION = Pattern.compile("《([^》]{1,60})》");
 
-    /** 模型把书名号引用替换成编号后留下的空括号，例如「（）。 [1]」。 */
-    private static final Pattern EMPTY_CITATION_WRAPPER = Pattern.compile("[（(]\\s*[）)]");
+    /** 编号移到句末后，出处标签不能单独留在空括号里。 */
+    private static final Pattern EMPTY_CITATION_WRAPPER = Pattern.compile(
+            "[（(]\\s*(?:(?:出处|来源)\\s*[:：]\\s*)?[）)]");
     private static final Pattern MEASURED_NUMBER = Pattern.compile(
             "\\d+(?:\\.\\d+)?\\s*(?:毫克|微克|IU|小时|天|粒|片|元|%|克|分钟|个月)");
 
@@ -415,16 +416,116 @@ public final class CitationVerifier {
     }
 
     public static String removeRejected(String reply, List<String> rejected) {
-        if (reply == null || rejected == null || rejected.isEmpty()) return reply;
+        return removeRejectedWithListDependencies(reply, rejected, ignored -> false).reply();
+    }
+
+    public record RejectedText(String reply, List<String> dependentSentences) { }
+    private static final Pattern LIST_LINE = Pattern.compile("^([ \\t]*)(?:[-*+]|\\d+[.)])\\s+(.+?)\\s*$");
+    private static final Pattern LIST_CONTINUATION = Pattern.compile("^([ \\t]+)(\\S.*?)\\s*$");
+
+    /** 只认原文缩进祖先；空段、正文及标题切断列表，不能用前一个同级项补主体。 */
+    public static List<String> listAncestors(String reply, int offset) {
+        List<String> ancestors = new ArrayList<>();
+        List<Integer> indents = new ArrayList<>();
+        int start = 0;
+        for (String line : reply.split("(?<=\\n)", -1)) {
+            Matcher item = LIST_LINE.matcher(line.stripTrailing());
+            if (!item.matches()) {
+                Matcher continuation = LIST_CONTINUATION.matcher(line.stripTrailing());
+                if (continuation.matches() && !isListBoundary(continuation.group(2)) && !indents.isEmpty()
+                        && listIndent(continuation.group(1)) > indents.getLast()) {
+                    if (offset >= start && offset < start + line.length()) return List.copyOf(ancestors);
+                } else {
+                    ancestors.clear(); indents.clear();
+                }
+            } else {
+                int indent = listIndent(item.group(1));
+                while (!indents.isEmpty() && indents.getLast() >= indent) {
+                    indents.removeLast(); ancestors.removeLast();
+                }
+                if (offset >= start && offset < start + line.length()) return List.copyOf(ancestors);
+                ancestors.add(item.group(2)); indents.add(indent);
+            }
+            start += line.length();
+        }
+        return List.of();
+    }
+
+    /** 拒父项时闭合依赖子树；调用方证明独立的子项提升为同级，避免挂到上一父项。 */
+    public static RejectedText removeRejectedWithListDependencies(String reply, List<String> rejected,
+                                                                  java.util.function.Predicate<String> independent) {
+        if (reply == null || rejected == null || rejected.isEmpty()) return new RejectedText(reply, List.of());
         Set<String> rejectedSet = new LinkedHashSet<>(rejected);
+        List<String> dependents = new ArrayList<>();
+        StringBuilder structured = new StringBuilder();
+        Integer rejectedIndent = null;
+        for (String line : reply.split("(?<=\\n)", -1)) {
+            Matcher item = LIST_LINE.matcher(line.stripTrailing());
+            if (!item.matches()) {
+                Matcher continuation = LIST_CONTINUATION.matcher(line.stripTrailing());
+                if (continuation.matches() && !isListBoundary(continuation.group(2))) {
+                    if (rejectedIndent != null && listIndent(continuation.group(1)) > rejectedIndent) {
+                        String standalone = line.substring(continuation.group(1).length());
+                        if (independent.test(standalone.trim())) structured.append(standalone);
+                        else SENTENCE.matcher(line).results().map(match -> match.group().trim())
+                                .filter(value -> !value.isBlank()).forEach(dependents::add);
+                        continue;
+                    }
+                    if (rejectedIndent != null && listIndent(continuation.group(1)) <= rejectedIndent) rejectedIndent = null;
+                    structured.append(line);
+                    continue;
+                }
+                rejectedIndent = null;
+                structured.append(line);
+                continue;
+            }
+            int indent = listIndent(item.group(1));
+            if (rejectedIndent != null && indent <= rejectedIndent) rejectedIndent = null;
+            boolean directlyRejected = SENTENCE.matcher(line).results().anyMatch(match -> rejectedSet.contains(match.group().trim()));
+            if (directlyRejected) {
+                // 即使子项本身也未通过核验，原父项失效仍是其不可迁挂的结构性拒因。
+                if (rejectedIndent != null) SENTENCE.matcher(line).results().map(match -> match.group().trim())
+                        .filter(rejectedSet::contains).forEach(dependents::add);
+                if (rejectedIndent == null) rejectedIndent = indent;
+                // 同行是排版单位；拒绝其中一条事实不能连带删除独立完整事实，也不能让剩余事实继续授权原子树。
+                SENTENCE.matcher(line).results().map(match -> match.group().trim())
+                        .filter(value -> !value.isBlank() && !rejectedSet.contains(value)).forEach(value -> {
+                            String standalone = value.replaceFirst("^(?:[-*+]|\\d+[.)])\\s*", "");
+                            if (independent.test(standalone)) structured.append("- ").append(standalone).append('\n');
+                            else dependents.add(value);
+                        });
+                continue;
+            }
+            if (rejectedIndent != null) {
+                String standalone = line.substring(item.group(1).length());
+                if (independent.test(standalone.trim())) {
+                    structured.append(standalone);
+                } else {
+                    SENTENCE.matcher(line).results().map(match -> match.group().trim()).filter(value -> !value.isBlank()).forEach(dependents::add);
+                }
+                continue;
+            }
+            structured.append(line);
+        }
+        String body = structured.toString();
         List<int[]> spans = new ArrayList<>();
-        Matcher matcher = SENTENCE.matcher(reply);
+        Matcher matcher = SENTENCE.matcher(body);
         while (matcher.find()) {
             if (rejectedSet.contains(matcher.group().trim())) {
                 spans.add(new int[] {matcher.start(), matcher.end()});
             }
         }
-        return spans.isEmpty() ? reply : TextRanges.delete(reply, spans);
+        return new RejectedText(spans.isEmpty() ? body : TextRanges.delete(body, spans), List.copyOf(dependents));
+    }
+
+    private static int listIndent(String whitespace) {
+        int indent = 0;
+        for (char value : whitespace.toCharArray()) indent += value == '\t' ? 4 : 1;
+        return indent;
+    }
+
+    private static boolean isListBoundary(String body) {
+        return body.startsWith("#") || body.startsWith("```") || body.matches("\\*\\*[^*]+\\*\\*\\s*");
     }
 
     /**
@@ -576,9 +677,8 @@ public final class CitationVerifier {
      * 整条溯源链路就断了。两边提示词都已写明「各管各的」，但提示词是请求不是保证：
      * 查它有没有照做、并把入口还回去，是校验层该干的活。
      * <p>
-     * <b>同一份文档的多个切片取最靠前的那一条。</b>本项目 47 篇文档切成 408 片，
-     * 多切片是常态。模型写《文档名》时本来就没指明是哪个切片，指向该文档最相关
-     * （即排在前面）的那条，不比一个不能点的书名号更错，而它让用户有得点。
+     * 同标题有多个切片时，只有句子正文被唯一候选逐字支持才恢复编号；
+     * 无法定位保留原标题，不能用召回顺序冒充证据位置。
      * <p>
      * 不在证据里的《X》原样保留：那是工具输出里平台声明过的另一个出处
      * （见 {@link #collectToolTitles}），它有出处但没编号，{@link #hasValidCitation} 认它。
@@ -587,29 +687,84 @@ public final class CitationVerifier {
      * 只认编号与「条目 n」，先归一化，抽取器才认得出这条冲突指的是哪几条证据。
      */
     public static String numberTitles(String reply, List<DocumentChunk> evidence) {
+        return numberTitlesWithDiagnostics(reply, evidence).reply();
+    }
+
+    public record TitleResolution(int start, int end, List<Integer> candidates, Integer selected, String reason) { }
+    public record TitleNumbering(String reply, List<TitleResolution> resolutions) { }
+
+    public static TitleNumbering numberTitlesWithDiagnostics(String reply, List<DocumentChunk> evidence) {
         if (reply == null || reply.isBlank() || evidence == null || evidence.isEmpty()) {
-            return reply;
+            return new TitleNumbering(reply, List.of());
         }
-        Map<String, Integer> byTitle = new HashMap<>();
+        Map<String, List<Integer>> byTitle = new HashMap<>();
         for (int i = 0; i < evidence.size(); i++) {
             Set<String> titles = new LinkedHashSet<>();
             DocumentChunk chunk = evidence.get(i);
+            if (chunk == null) continue;
             collectTitles(titles, chunk.getTitle(), chunk.getPosition());
             for (String title : titles) {
-                byTitle.putIfAbsent(title, i + 1);
+                byTitle.computeIfAbsent(title, ignored -> new ArrayList<>()).add(i + 1);
             }
         }
         if (byTitle.isEmpty()) {
-            return reply;
+            return new TitleNumbering(reply, List.of());
         }
+        List<TitleResolution> resolutions = new ArrayList<>();
         Matcher m = TITLE_CITATION.matcher(reply);
         StringBuilder sb = new StringBuilder(reply.length());
         while (m.find()) {
-            Integer no = byTitle.get(normalizeTitle(m.group(1)));
+            List<Integer> candidates = byTitle.get(normalizeTitle(m.group(1)));
+            Integer no = candidates == null ? null : candidates.size() == 1 ? candidates.getFirst()
+                    : locateTitleChunk(reply, m.start(), m.end(), candidates, evidence);
+            resolutions.add(new TitleResolution(m.start(), m.end(), candidates == null ? List.of() : List.copyOf(candidates),
+                    no, candidates == null ? "UNDECLARED_TITLE" : candidates.size() == 1 ? "UNIQUE_TITLE"
+                    : no == null ? "BODY_UNRESOLVED" : "UNIQUE_BODY"));
             m.appendReplacement(sb, Matcher.quoteReplacement(no == null ? m.group() : "[" + no + "]"));
         }
         m.appendTail(sb);
-        return sb.toString();
+        return new TitleNumbering(sb.toString(), List.copyOf(resolutions));
+    }
+
+    private static Integer locateTitleChunk(String reply, int start, int end, List<Integer> candidates,
+                                            List<DocumentChunk> evidence) {
+        int sentenceStart = start;
+        while (sentenceStart > 0 && "。！？!?；;\n".indexOf(reply.charAt(sentenceStart - 1)) < 0) sentenceStart--;
+        int sentenceEnd = end;
+        while (sentenceEnd < reply.length() && "。！？!?；;\n".indexOf(reply.charAt(sentenceEnd)) < 0) sentenceEnd++;
+        String sentence = TITLE_CITATION.matcher(reply.substring(sentenceStart, sentenceEnd)).replaceAll("");
+        sentence = CITATION.matcher(sentence).replaceAll("")
+                .replaceAll("[（(]\\s*(?:出处|来源)?\\s*[:：]?\\s*[）)]", "");
+        String claim = citationBody(sentence);
+        if (claim.isEmpty()) return null;
+        List<Integer> supporting = candidates.stream().filter(ref -> {
+            DocumentChunk chunk = evidence.get(ref - 1);
+            return chunk.getContent() != null && citationBody(chunk.getContent()).contains(claim);
+        }).toList();
+        return supporting.size() == 1 ? supporting.getFirst() : null;
+    }
+
+    private static String citationBody(String text) {
+        return MedicalEvidenceVerifier.normalize(text).replaceAll("[\\p{P}\\p{S}\\s]", "");
+    }
+
+    /** 仅供诊断关联；不改变事实原句、偏移或判定键。 */
+    public static String diagnosticSentenceBody(String sentence) {
+        String body = CITATION.matcher(TITLE_CITATION.matcher(sentence).replaceAll("")).replaceAll("");
+        body = body.replaceFirst("^\\s*(?:[-*]+\\s*)?(?:另一版是|一版是|也就是说|综上所述|综上|因此)[：:,，\\s]*", "");
+        return citationBody(body.replaceAll("[（(]\\s*(?:出处|来源)?\\s*[:：]?\\s*[）)]", ""));
+    }
+
+    public static Set<String> ambiguousTitles(List<DocumentChunk> evidence) {
+        Map<String, Integer> counts = new HashMap<>();
+        if (evidence != null) for (DocumentChunk chunk : evidence) {
+            if (chunk == null) continue;
+            Set<String> titles = new LinkedHashSet<>();
+            collectTitles(titles, chunk.getTitle(), chunk.getPosition());
+            titles.forEach(title -> counts.merge(title, 1, Integer::sum));
+        }
+        return counts.entrySet().stream().filter(entry -> entry.getValue() > 1).map(Map.Entry::getKey)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     /**

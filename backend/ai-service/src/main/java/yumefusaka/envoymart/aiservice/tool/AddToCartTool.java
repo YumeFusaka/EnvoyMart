@@ -47,6 +47,7 @@ public class AddToCartTool implements Tool {
                         + "如果用户要的商品还没查过，先调用 product_search。"
                         + "数量用户没提就传 1。")
                 .requiresConfirmation(true)
+                .acceptsOperationId(true)
                 .parameters(Map.of(
                         "skuId", ToolDefinition.ParameterSpec.builder()
                                 .type("integer")
@@ -62,6 +63,12 @@ public class AddToCartTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, false);
+    }
+
+    @Override public ToolResult recover(ToolCall call) { return execute(call, true); }
+
+    private ToolResult execute(ToolCall call, boolean queryOnly) {
         try {
             String userId = call.requireUserId();
             Long skuId = skuIdOf(call);
@@ -70,16 +77,18 @@ public class AddToCartTool implements Tool {
             AgentAddCartRequest request = new AgentAddCartRequest();
             request.setSkuId(skuId);
             request.setQuantity(quantity);
-            // 写操作：下游说没做成时绝不重发。重发就是加两件——用户只想要一件，
-            // 而购物车里会静静多出一件，他自己都未必发现
-            AgentCartItem item = Downstream.mutate("购物车", () -> orderClient.addCartItem(userId, request));
-            if (item == null) {
-                return ToolResult.builder().success(false)
-                        .output("加入购物车没有成功，请让用户稍后再试。")
-                        .build();
-            }
+            // 应答丢失后只查询原操作，不能改操作号重新加购。
+            var operation = WriteReceipts.context(call, Map.of("skuId", skuId, "quantity", quantity));
+            var receipt = WriteReceipts.run(operation, queryOnly, AgentCartItem.class,
+                    () -> orderClient.operationReceipt(userId, operation.operationId(), operation.toolName(), operation.parametersHash()),
+                    () -> orderClient.addCartItemReceipt(userId, operation.operationId(), request));
+            AgentCartItem item = receipt.data();
+            WriteReceipts.require(item != null && item.getId() != null && item.getId() > 0
+                    && skuId.equals(item.getSkuId()) && item.getQuantity() != null && item.getQuantity() > 0
+                    && item.getSubtotal() != null && item.getSubtotal() >= 0 && item.getName() != null);
             return ToolResult.builder()
                     .success(true)
+                    .operationState(ToolResult.OperationState.COMMITTED).receiptReplayed(receipt.replayed())
                     .output("已加入购物车：" + item.getName()
                             + (item.getSpecText() == null ? "" : "（" + item.getSpecText() + "）")
                             + " × " + item.getQuantity()
@@ -88,7 +97,7 @@ public class AddToCartTool implements Tool {
                     .rawData(item)
                     .build();
         } catch (Exception e) {
-            return Downstream.failure("加入购物车", e);
+            return WriteReceipts.failure(e, "加入购物车");
         }
     }
 

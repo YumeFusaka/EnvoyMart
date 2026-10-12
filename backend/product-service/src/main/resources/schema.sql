@@ -227,6 +227,29 @@ create table if not exists stock_log (
 
 -- ==================== 收藏 ====================
 
+-- 任务随业务事务与AT后像一起提交；元数据永久保留，物理删除SPU不移除版本闸。
+create table if not exists product_projection_task (
+    id bigint auto_increment primary key,
+    spu_id bigint not null,
+    global_xid varchar(128),
+    created_at datetime not null,
+    completed_at datetime,
+    attempts int not null default 0,
+    next_attempt_at datetime,
+    last_error_type varchar(128),
+    applied_task_id bigint,
+    publish_mode varchar(32),
+    index idx_projection_pending (completed_at, next_attempt_at, id),
+    index idx_projection_spu (spu_id, completed_at),
+    index idx_projection_spu_version (spu_id, id)
+) engine=InnoDB;
+
+create table if not exists product_projection_spu_guard (
+    spu_id bigint primary key,
+    es_version_base bigint,
+    last_applied_task_id bigint not null default 0
+) engine=InnoDB;
+
 -- 用户收藏的商品。
 --
 -- 为什么放在商品库而不是用户库：收藏夹页要展示商品卡片（图、价、评分、是否在售），

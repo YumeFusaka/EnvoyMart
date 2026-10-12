@@ -182,8 +182,8 @@ public class InteractionCheckTool implements Tool {
         for (InteractionReport.Item item : report.items()) {
             if (!item.found()) {
                 anyMissing = true;
-                sb.append("\n【").append(item.input()).append("】图谱中没有收录\n")
-                        .append("  没有收录不等于安全，只是平台查不到这样东西。\n");
+                sb.append("\n【").append(item.input()).append("】本次图谱检查未收录该称呼\n")
+                        .append("  没有收录不等于安全；这只说明本次图谱检查没有匹配到该称呼。\n");
                 if (item.hasNearestHint()) {
                     // 只是候选：让模型去问一句「你是不是想问这个」，而不是自己替用户认下来。
                     // 若在这里直接改用 nearest 重查，猜错一次就会给出一条张冠李戴的风险结论
@@ -194,18 +194,18 @@ public class InteractionCheckTool implements Tool {
                     } else {
                         sb.append("用这个名字");
                     }
-                    sb.append("重新检查一次；否则照实说没有收录。\n");
+                    sb.append("重新检查一次；否则照实说明本次图谱检查未收录该称呼。\n");
                 }
                 continue;
             }
-            sb.append("\n【").append(item.label()).append("】已收录\n");
+            sb.append("\n【").append(item.label()).append("】本次图谱检查已收录\n");
 
             String substances = substanceLine(item);
             if (!substances.isEmpty()) {
                 sb.append("  图谱展开出的成分与营养素：").append(substances).append("\n");
             }
             if (item.risks().isEmpty()) {
-                sb.append("  未发现已知的相互作用或人群禁忌。\n");
+                sb.append("  本次图谱检查未返回已知的相互作用或人群禁忌。\n");
                 continue;
             }
             anyRisk = true;
@@ -217,12 +217,15 @@ public class InteractionCheckTool implements Tool {
         sb.append("\n回答要求：\n");
         if (anyRisk) {
             sb.append("- 有风险的项：如实说明是什么风险、和什么一起会出问题，并带上出处（《文档名》）。\n")
-                    .append("- 涉及处方药或已确诊疾病的，提醒用户遵医嘱，不要给出「可以吃/不能吃」的处方级结论。\n");
+                    .append("- 涉及处方药或已确诊疾病的，提醒用户遵医嘱，不要给出「可以吃/不能吃」的处方级结论。\n")
+                    .append("- 组合注意事项只说明原文所列整组共同服用的条件和后果，不据此判断子集安全或绝对禁用。\n");
         }
-        sb.append("- 「图谱中没有收录」的项：明确说平台没有收录这样东西，"
+        sb.append("- 「本次图谱检查未收录」的项：只说明本次检查没有匹配到该称呼，"
                 + "**不要说成「没有冲突」**——这两句话在这个场景里意思相反。\n")
-                .append("- 「已收录 + 未发现风险」的项：可以说未发现已知相互作用，但要与「没有收录」分开表述。\n")
-                .append("- 只引用上面出现的出处，不要补充图谱之外的知识。\n");
+                .append("- 「已收录 + 未返回风险」的项：只说明本次图谱检查未返回相关关系，不能据此断言知识库或全部平台资料未收录，也不能据此断言不存在风险。\n")
+                .append("- 本轮已经检索且通过证据核验的强文本条款可以并列引用；分别说明图谱检查范围与文本原文事实，图谱未返回关系不得取消已有文本出处。\n")
+                .append("- 图谱关系只引用本工具实际返回的出处；并列的强文本使用其已核验出处，并保留商品、人群及条件范围，不把文本说成图谱已返回的关系。\n")
+                .append("- 不得补写未检索到的知识或常识，不得为补齐图谱而猜测实体等价、药物分类、剂量或相互作用。\n");
         if (anyMissing) {
             // 让模型有下一步可走，而不是卡在「查不到」上——商品名不完整是最常见的原因
             sb.append("- 未收录的是商品时，先调 product_search 拿到准确商品名或编号，再重新检查一次。\n");
@@ -246,7 +249,8 @@ public class InteractionCheckTool implements Tool {
         // 组合禁忌要先说清「哪几样一起」——这条边的主体不是一个实体而是几样东西的组合，
         // 只写「与某药物有组合禁忌」的话，用户不知道该调整哪几样里的哪一样
         if (isCombination(edge)) {
-            StringBuilder sb = new StringBuilder("  ⚠ 组合禁忌（").append(combinationMembers(edge)).append(" 同服）：");
+            StringBuilder sb = new StringBuilder("  ⚠ ").append(GraphRelation.COMBINED_WITH.label())
+                    .append("（").append(combinationMembers(edge)).append(" 同服）：");
             if (notBlank(edge.effect())) {
                 sb.append(edge.effect().strip());
             }

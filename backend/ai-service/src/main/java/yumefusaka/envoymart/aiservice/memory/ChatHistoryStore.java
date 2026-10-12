@@ -52,6 +52,8 @@ public class ChatHistoryStore {
     private static final String META_PREFIX = "chat:meta:";
     private static final String INDEX_PREFIX = "chat:sessions:";
     private static final String DELETED_PREFIX = "chat:deleted:";
+    private static final String APPROVAL_PREFIX = "chat:approval:";
+    private static final Duration APPROVAL_LEASE = Duration.ofSeconds(30);
 
     /** 与短期记忆窗口同一档 TTL：一段会话的生命周期只有一个真相 */
     private static final Duration TTL = Duration.ofDays(7);
@@ -90,12 +92,37 @@ public class ChatHistoryStore {
     public record SessionSummary(String sessionId, String title, Instant createdAt, Instant updatedAt, long messageCount) {
     }
 
+    public record ApprovalBatch(String token, StoredMessage original, String status, long acceptedAt,
+                                String ownerNonce, long leaseUntil, Map<String, Object> result, long recoveryUntil) {
+        public ApprovalBatch(String token, StoredMessage original, String status, long acceptedAt,
+                             String ownerNonce, long leaseUntil, Map<String, Object> result) {
+            this(token, original, status, acceptedAt, ownerNonce, leaseUntil, result, 0);
+        }
+        public boolean accepted() { return acceptedAt > 0; }
+        public boolean cancelled() { return "CANCELLED".equals(status) || "DISMISSED".equals(status); }
+    }
+
+    public record ApprovalLease(ApprovalBatch batch, String ownerNonce, boolean writable) {
+    }
+
+    /** 仅表示授权存储不可读，不能用来吞掉签名或业务异常。 */
+    public static final class ApprovalRecordUnreadableException extends IllegalStateException {
+        public ApprovalRecordUnreadableException(Throwable cause) { super("原审批授权记录无法读取，只能查询权威回执", cause); }
+    }
+
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    private final java.time.Clock approvalClock;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public ChatHistoryStore(StringRedisTemplate redis, ObjectMapper objectMapper) {
+        this(redis, objectMapper, java.time.Clock.systemUTC());
+    }
+
+    ChatHistoryStore(StringRedisTemplate redis, ObjectMapper objectMapper, java.time.Clock approvalClock) {
         this.redis = redis;
         this.objectMapper = objectMapper;
+        this.approvalClock = approvalClock;
     }
 
     /** 每一轮的身份只能由服务端产生，客户端生成的临时 key 不可用于反馈或授权。 */
@@ -371,36 +398,269 @@ public class ChatHistoryStore {
             Map<String, Object> response = new java.util.LinkedHashMap<>(message.response());
             if ("CONFIRMED".equals(response.get("approvalStatus"))) return false;
             if (!(response.get("pendingActions") instanceof List<?> actions) || actions.isEmpty()) return false;
-            response.remove("approvalToken");
+            String token = value(response, "approvalToken");
+            if (token == null) return false;
+            String batchKey = approvalKey(userId, sessionId, token);
+            String ledger = readApprovalRecord(batchKey);
+            ApprovalBatch old = ledger == null ? new ApprovalBatch(token, message, "PENDING", 0, null, 0, null)
+                    : decodeApprovalRecord(ledger);
+            if (!token.equals(old.token()) || "CONFIRMED".equals(old.status())) return false;
+            ApprovalBatch cancelled = new ApprovalBatch(token, old.original(), "CANCELLED", old.acceptedAt(), null, 0, old.result(), old.recoveryUntil());
             response.put("approvalStatus", "DISMISSED");
             response.put("stage", "DONE");
-            response.put("reply", "已取消，本次没有执行任何操作。");
+            String reply = old.accepted() ? "已停止后续操作；已开始操作的结果可查询原回执。" : "已取消，本次没有执行任何操作。";
+            response.put("reply", reply);
             StoredMessage updated = new StoredMessage(message.id(), message.role(),
-                    "已取消，本次没有执行任何操作。", message.at(), response);
+                    reply, message.at(), response);
             var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
-                    "if redis.call('LINDEX',KEYS[1],0)~=ARGV[1] then return 0 end; "
-                            + "redis.call('LSET',KEYS[1],0,ARGV[2]); return 1", Long.class);
-            return Long.valueOf(1).equals(redis.execute(script, List.of(key), raw, serialize(updated)));
+                    "local ledger=redis.call('HGET',KEYS[2],'record'); if (ledger or '')~=ARGV[3] then return 0 end; "
+                            + "local rows=redis.call('LRANGE',KEYS[1],0,199); for i,row in ipairs(rows) do "
+                            + "if row==ARGV[1] then redis.call('LSET',KEYS[1],i-1,ARGV[2]); "
+                            + "redis.call('HSET',KEYS[2],'record',ARGV[4]); redis.call('PEXPIRE',KEYS[2],ARGV[5]); return 1 end end; return 0", Long.class);
+            return Long.valueOf(1).equals(redis.execute(script, List.of(key, batchKey), raw, serialize(updated),
+                    ledger == null ? "" : ledger, objectMapper.writeValueAsString(cancelled), String.valueOf(TTL.toMillis())));
         }
         return false;
     }
 
-    public boolean claimApproval(String userId, String sessionId, String token) {
-        String key = histKey(userId, sessionId);
-        String raw = redis.opsForList().index(key, 0);
-        if (raw == null) return false;
-        StoredMessage message = objectMapper.readValue(raw, StoredMessage.class);
-        if (!"assistant".equals(message.role()) || message.response() == null
-                || !token.equals(message.response().get("approvalToken"))) return false;
-        Map<String, Object> response = new java.util.LinkedHashMap<>(message.response());
-        response.remove("approvalToken");
-        response.put("approvalStatus", "CONFIRMED");
-        response.put("stage", "DONE");
-        StoredMessage claimed = new StoredMessage(message.id(), message.role(), message.content(), message.at(), response);
+    boolean claimApproval(String userId, String sessionId, String token) {
+        return beginApproval(userId, sessionId, token, true, true).writable();
+    }
+
+    /** 只有首次接受才要求最新待确认消息；已接受批次恢复依靠原 token 账本，不随新消息失效。 */
+    ApprovalLease beginApproval(String userId, String sessionId, String token, boolean initial, boolean execute) {
+        return beginApproval(userId, sessionId, token, initial, execute, 0, Long.MAX_VALUE / 1000 - 1, true);
+    }
+
+    public ApprovalLease beginApproval(String userId, String sessionId, String token, boolean initial, boolean execute,
+                                       long recoverySeconds, long signatureExpiresAtSeconds, boolean signatureUnexpired) {
+        String key = approvalKey(userId, sessionId, token);
+        String existing = readApprovalRecord(key);
+        ApprovalBatch batch = existing == null ? null : decodeApprovalRecord(existing);
+        if (batch != null && !token.equals(batch.token())) throw new IllegalStateException("审批账本身份不匹配");
+        long now = approvalClock.millis();
+        long signatureUntil = Math.addExact(Math.multiplyExact(signatureExpiresAtSeconds, 1000), 999);
+        if (recoverySeconds < 0 || recoverySeconds > 86400) throw new IllegalStateException("审批恢复期限无效");
+        if (batch != null && batch.accepted()) {
+            long expectedUntil = recoverySeconds == 0 ? signatureUntil : Math.addExact(batch.acceptedAt(), recoverySeconds * 1000);
+            if (batch.acceptedAt() > signatureUntil || (batch.recoveryUntil() != expectedUntil
+                    && !(recoverySeconds == 0 && batch.recoveryUntil() == 0))) {
+                throw new ApprovalRecordUnreadableException(new IllegalArgumentException("审批接受时间或恢复截止时间不匹配原签名"));
+            }
+            if (execute && now >= expectedUntil) return new ApprovalLease(batch, null, false);
+        } else if (execute && (!signatureUnexpired || now > signatureUntil)) return new ApprovalLease(batch, null, false);
+        if (!execute) {
+            try {
+                if (batch != null && isDeleted(userId, sessionId)) {
+                    batch = new ApprovalBatch(token, batch.original(), "CANCELLED", batch.acceptedAt(), null, 0,
+                            batch.result(), batch.recoveryUntil());
+                }
+                return new ApprovalLease(batch == null ? historicalApproval(userId, sessionId, token) : batch, null, false);
+            }
+            catch (org.springframework.dao.DataAccessException unavailable) { throw new ApprovalRecordUnreadableException(unavailable); }
+        }
+        if (isDeleted(userId, sessionId)) throw new IllegalStateException("会话已删除，只能查询原操作回执");
+        String expectedHead = "";
+        if (batch == null || (!batch.accepted() && "PENDING".equals(batch.status()))) {
+            if (!initial) throw new IllegalStateException("原授权接受记录不存在，只能查询执行结果");
+            expectedHead = redis.opsForList().index(histKey(userId, sessionId), 0);
+            if (expectedHead == null) return new ApprovalLease(null, null, false);
+            StoredMessage head = objectMapper.readValue(expectedHead, StoredMessage.class);
+            if (head.id() == null || head.id().isBlank() || head.at() == null || !"assistant".equals(head.role()) || head.response() == null
+                    || !token.equals(head.response().get("approvalToken"))
+                    || !(head.response().get("pendingActions") instanceof List<?> actions) || actions.isEmpty()
+                    || (batch != null && !batch.original().id().equals(head.id()))
+                    || (head.response().get("approvalStatus") != null && !"PENDING".equals(head.response().get("approvalStatus")))) {
+                return new ApprovalLease(null, null, false);
+            }
+            batch = new ApprovalBatch(token, head, "PENDING", 0, null, 0, null);
+        } else if ((initial && batch.accepted()) || batch.cancelled() || "CONFIRMED".equals(batch.status()) || batch.leaseUntil() > now) {
+            return new ApprovalLease(batch, null, false);
+        }
+        String owner = UUID.randomUUID().toString();
+        ApprovalBatch acquired = new ApprovalBatch(token, batch.original(), "IN_FLIGHT",
+                batch.acceptedAt() == 0 ? now : batch.acceptedAt(), owner, now + APPROVAL_LEASE.toMillis(), batch.result(),
+                batch.accepted() ? batch.recoveryUntil() : recoverySeconds == 0 ? signatureUntil : now + recoverySeconds * 1000);
         var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
-                "if redis.call('LINDEX',KEYS[1],0)~=ARGV[1] then return 0 end; "
-                        + "redis.call('LSET',KEYS[1],0,ARGV[2]); return 1", Long.class);
-        return Long.valueOf(1).equals(redis.execute(script, List.of(key), raw, serialize(claimed)));
+                "local current=redis.call('HGET',KEYS[1],'record'); "
+                        + "if ARGV[1]=='' then if current then return 0 end "
+                        + "else if current~=ARGV[1] then return 0 end end; "
+                        + "if ARGV[2]~='' and redis.call('LINDEX',KEYS[2],0)~=ARGV[2] then return 0 end; "
+                        + "if redis.call('EXISTS',KEYS[3])==1 then return 0 end; "
+                        + "local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000); if now>tonumber(ARGV[5]) then return 0 end; "
+                        + "redis.call('HSET',KEYS[1],'record',ARGV[3]); redis.call('PEXPIRE',KEYS[1],ARGV[4]); return 1", Long.class);
+        Long accepted = redis.execute(script, List.of(key, histKey(userId, sessionId), DELETED_PREFIX + userId + ":" + sessionId),
+                existing == null ? "" : existing, expectedHead, objectMapper.writeValueAsString(acquired), String.valueOf(TTL.toMillis()),
+                String.valueOf(batch.accepted() ? acquired.recoveryUntil() - 1 : signatureUntil));
+        if (!Long.valueOf(1).equals(accepted)) return new ApprovalLease(batch, null, false);
+        updateApprovalMessage(userId, sessionId, acquired, null);
+        return new ApprovalLease(acquired, owner, true);
+    }
+
+    public ApprovalBatch historicalApproval(String userId, String sessionId, String token) {
+        for (StoredMessage message : loadMessages(userId, sessionId, MAX_MESSAGES)) {
+            if ("assistant".equals(message.role()) && message.response() != null && token.equals(message.response().get("approvalToken"))) {
+                return new ApprovalBatch(token, message, value(message.response(), "approvalStatus"), 0, null, 0, null);
+            }
+        }
+        return null;
+    }
+
+    /** 续租也校验 owner；租约被接管或用户取消后，旧执行者不得继续后续写操作。 */
+    public boolean renewApproval(String userId, String sessionId, String token, String owner) {
+        String key = approvalKey(userId, sessionId, token);
+        String raw = readApprovalRecord(key);
+        if (raw == null || isDeleted(userId, sessionId)) return false;
+        ApprovalBatch old = decodeApprovalRecord(raw);
+        if (!token.equals(old.token()) || !owner.equals(old.ownerNonce()) || old.cancelled()
+                || old.leaseUntil() <= approvalClock.millis()
+                || (old.recoveryUntil() > 0 && old.recoveryUntil() <= approvalClock.millis())) return false;
+        ApprovalBatch next = new ApprovalBatch(token, old.original(), "IN_FLIGHT", old.acceptedAt(), owner,
+                approvalClock.millis() + APPROVAL_LEASE.toMillis(), old.result(), old.recoveryUntil());
+        return compareAndSetOwnedApproval(userId, sessionId, key, raw, next, old);
+    }
+
+    public boolean finishApproval(String userId, String sessionId, String token, String owner,
+                                  String status, Object result) {
+        String key = approvalKey(userId, sessionId, token);
+        String raw = readApprovalRecord(key);
+        if (raw == null) return false;
+        ApprovalBatch old = decodeApprovalRecord(raw);
+        if (!token.equals(old.token()) || !owner.equals(old.ownerNonce()) || old.cancelled()
+                || old.leaseUntil() <= approvalClock.millis()) return false;
+        Map<String, Object> payload = toMap(result);
+        if (payload == null) throw new IllegalStateException("审批结果无法保存，保留未知状态");
+        ApprovalBatch next = new ApprovalBatch(token, old.original(), status, old.acceptedAt(), null, 0, payload, old.recoveryUntil());
+        if (!compareAndSetOwnedApproval(userId, sessionId, key, raw, next, old)) return false;
+        updateApprovalMessage(userId, sessionId, next, payload);
+        return true;
+    }
+
+    /** 完成账本、墓碑与单次发布在同一Lua内核对，取消或失去所有权的请求不能复活新确认卡。 */
+    public boolean publishNextApproval(String userId, String sessionId, String token, String userMessage, Object response) {
+        String key = approvalKey(userId, sessionId, token);
+        String raw = readApprovalRecord(key);
+        if (raw == null) return false;
+        ApprovalBatch batch = decodeApprovalRecord(raw);
+        if (!"CONFIRMED".equals(batch.status())) return false;
+        Map<String, Object> payload = toMap(response);
+        TurnIdentity identity = identityFrom(payload);
+        if (identity == null || payload == null || !"PENDING".equals(payload.get("approvalStatus"))) return false;
+        Instant now = Instant.now();
+        StoredMessage user = new StoredMessage(identity.userMessageId(), "user", userMessage, now, null);
+        StoredMessage assistant = new StoredMessage(identity.assistantMessageId(), "assistant", value(payload, "reply"), now, payload);
+        var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
+                "if redis.call('HGET',KEYS[1],'record')~=ARGV[1] or redis.call('EXISTS',KEYS[2])==1 "
+                        + "or redis.call('HEXISTS',KEYS[1],'nextPublished')==1 then return 0 end; "
+                        + "redis.call('HSET',KEYS[1],'nextPublished','1'); "
+                        + "redis.call('LPUSH',KEYS[3],ARGV[2],ARGV[3]); redis.call('LTRIM',KEYS[3],0,199); "
+                        + "redis.call('HSETNX',KEYS[4],'title',ARGV[4]); redis.call('HSETNX',KEYS[4],'createdAt',ARGV[5]); "
+                        + "redis.call('ZADD',KEYS[5],ARGV[6],ARGV[7]); "
+                        + "for i=1,5 do if i~=2 then redis.call('PEXPIRE',KEYS[i],ARGV[8]) end end; return 1", Long.class);
+        return Long.valueOf(1).equals(redis.execute(script, List.of(key, DELETED_PREFIX + userId + ":" + sessionId,
+                histKey(userId, sessionId), metaKey(userId, sessionId), indexKey(userId)), raw, serialize(user),
+                serialize(assistant), titleOf(userMessage), now.toString(), String.valueOf(now.toEpochMilli()), sessionId,
+                String.valueOf(TTL.toMillis())));
+    }
+
+    private boolean compareAndSetApproval(String key, String expected, ApprovalBatch next) {
+        var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
+                "if redis.call('HGET',KEYS[1],'record')~=ARGV[1] then return 0 end; "
+                        + "redis.call('HSET',KEYS[1],'record',ARGV[2]); redis.call('PEXPIRE',KEYS[1],ARGV[3]); return 1", Long.class);
+        return Long.valueOf(1).equals(redis.execute(script, List.of(key), expected,
+                objectMapper.writeValueAsString(next), String.valueOf(TTL.toMillis())));
+    }
+
+    private boolean compareAndSetOwnedApproval(String userId, String sessionId, String key, String expected,
+                                               ApprovalBatch next, ApprovalBatch old) {
+        long deadline = old.recoveryUntil() > 0 ? Math.min(old.leaseUntil(), old.recoveryUntil()) : old.leaseUntil();
+        var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
+                "if redis.call('HGET',KEYS[1],'record')~=ARGV[1] then return 0 end; "
+                        + "if redis.call('EXISTS',KEYS[2])==1 then return 0 end; "
+                        + "local t=redis.call('TIME'); if t[1]*1000+math.floor(t[2]/1000)>=tonumber(ARGV[4]) then return 0 end; "
+                        + "redis.call('HSET',KEYS[1],'record',ARGV[2]); redis.call('PEXPIRE',KEYS[1],ARGV[3]); return 1", Long.class);
+        return Long.valueOf(1).equals(redis.execute(script, List.of(key, DELETED_PREFIX + userId + ":" + sessionId), expected,
+                objectMapper.writeValueAsString(next), String.valueOf(TTL.toMillis()), String.valueOf(deadline)));
+    }
+
+    private void updateApprovalMessage(String userId, String sessionId, ApprovalBatch batch, Map<String, Object> result) {
+        if (batch.original() == null || isDeleted(userId, sessionId)) return;
+        Map<String, Object> response = new java.util.LinkedHashMap<>(batch.original().response());
+        if (result != null) response.putAll(result);
+        response.put("approvalToken", batch.token());
+        response.put("approvalStatus", batch.status());
+        response.put("approvalRecoveryUntil", batch.recoveryUntil() == 0 ? null : batch.recoveryUntil());
+        if (batch.cancelled() || "CONFIRMED".equals(batch.status()) || batch.leaseUntil() > approvalClock.millis()) {
+            response.put("approvalRetryAllowed", false);
+        }
+        response.put("stage", "CONFIRMED".equals(batch.status()) ? "DONE" : "WAITING_USER");
+        response.put("pendingActions", batch.original().response().get("pendingActions"));
+        response.put("pendingActionDetails", batch.original().response().get("pendingActionDetails"));
+        response.put("assistantMessageId", batch.original().id());
+        response.put("turnId", batch.original().response().get("turnId"));
+        response.put("userMessageId", batch.original().response().get("userMessageId"));
+        String content = value(response, "reply");
+        StoredMessage updated = new StoredMessage(batch.original().id(), "assistant",
+                content == null ? batch.original().content() : content, batch.original().at(), response);
+        var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
+                "if redis.call('HGET',KEYS[2],'record')~=ARGV[3] then return 0 end; "
+                        + "local rows=redis.call('LRANGE',KEYS[1],0,199); "
+                        + "for i,raw in ipairs(rows) do local ok,row=pcall(cjson.decode,raw); "
+                        + "if ok and row.id==ARGV[1] and row.response and row.response.approvalToken==ARGV[4] "
+                        + "then redis.call('LSET',KEYS[1],i-1,ARGV[2]); return 1 end end; return 0", Long.class);
+        redis.execute(script, List.of(histKey(userId, sessionId), approvalKey(userId, sessionId, batch.token())),
+                batch.original().id(), serialize(updated), objectMapper.writeValueAsString(batch), batch.token());
+    }
+
+    public void observeApproval(String userId, String sessionId, String token, String status, Object response) {
+        String key = approvalKey(userId, sessionId, token);
+        String raw = readApprovalRecord(key);
+        if (raw == null) return;
+        ApprovalBatch old = decodeApprovalRecord(raw);
+        if (!token.equals(old.token()) || old.leaseUntil() > approvalClock.millis() || "CONFIRMED".equals(old.status())) return;
+        Map<String, Object> payload = toMap(response);
+        if (payload == null) throw new IllegalStateException("审批回执查询结果无法保存");
+        ApprovalBatch next = new ApprovalBatch(token, old.original(), old.cancelled() ? old.status() : status,
+                old.acceptedAt(), null, 0, payload, old.recoveryUntil());
+        if (compareAndSetApproval(key, raw, next)) updateApprovalMessage(userId, sessionId, next, payload);
+    }
+
+    private static String approvalKey(String userId, String sessionId, String token) {
+        if (token == null || token.isBlank() || token.length() > 8192) throw new IllegalArgumentException("原审批令牌不能为空或超长");
+        try {
+            String fingerprint = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            return APPROVAL_PREFIX + userId + ":" + sessionId + ":" + fingerprint;
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("无法计算审批指纹", impossible); }
+    }
+
+    private String readApprovalRecord(String key) {
+        try {
+            Object value = redis.opsForHash().get(key, "record");
+            return value == null ? null : value.toString();
+        } catch (org.springframework.dao.DataAccessException unavailable) {
+            throw new ApprovalRecordUnreadableException(unavailable);
+        }
+    }
+
+    private ApprovalBatch decodeApprovalRecord(String json) {
+        try {
+            ApprovalBatch batch = objectMapper.readValue(json, ApprovalBatch.class);
+            if (batch == null || batch.token() == null || batch.token().isBlank() || batch.status() == null
+                    || !java.util.Set.of("PENDING", "IN_FLIGHT", "UNKNOWN", "REJECTED", "CONFIRMED", "CANCELLED", "DISMISSED").contains(batch.status())
+                    || batch.original() == null || batch.original().id() == null || batch.original().id().isBlank()
+                    || !"assistant".equals(batch.original().role()) || batch.original().at() == null
+                    || batch.original().response() == null || !batch.token().equals(batch.original().response().get("approvalToken"))
+                    || !(batch.original().response().get("pendingActions") instanceof List<?> actions) || actions.isEmpty()
+                    || batch.acceptedAt() < 0 || batch.leaseUntil() < 0 || batch.recoveryUntil() < 0
+                    || (batch.acceptedAt() == 0 && !"PENDING".equals(batch.status()) && !batch.cancelled())
+                    || ("IN_FLIGHT".equals(batch.status()) && (batch.ownerNonce() == null || batch.ownerNonce().isBlank() || batch.leaseUntil() == 0))) {
+                throw new IllegalArgumentException("授权记录字段缺失或原消息身份不匹配");
+            }
+            return batch;
+        } catch (RuntimeException corrupted) {
+            throw new ApprovalRecordUnreadableException(corrupted);
+        }
     }
 
     /**

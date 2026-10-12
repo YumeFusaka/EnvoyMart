@@ -122,4 +122,7 @@ public class DocumentChunk {
      * 用原文，事实仍然留给下游。这两件事过去被压成了同一个字段。
      */
     private Boolean graphBacked;
+
+    /** 本轮图谱来源直接连接当前查询点名的双方；只用于有界候选保留，不改变证据门或评分。 */
+    private Boolean graphQueryMatched;
 }

@@ -3,7 +3,9 @@ package yumefusaka.envoymart.aiservice.tool;
 import org.junit.jupiter.api.Test;
 import yumefusaka.envoymart.agent.rag.Document;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
+import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
+import yumefusaka.envoymart.agent.rag.RetrievalOutcome;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
@@ -27,6 +29,7 @@ class KnowledgeSearchToolTest {
         RuntimeException boom;
         String lastQuery;
         int lastTopK;
+        java.util.Set<String> graphChunkIds = java.util.Set.of();
 
         @Override
         public void ingest(Document document) {
@@ -45,6 +48,11 @@ class KnowledgeSearchToolTest {
             }
             return chunks;
         }
+
+        @Override
+        public RetrievalOutcome retrieveWithOutcome(String query, int topK) {
+            return new RetrievalOutcome(retrieve(query, topK), graphChunkIds, !graphChunkIds.isEmpty(), null);
+        }
     }
 
     private static ToolCall call(Map<String, Object> args) {
@@ -59,6 +67,41 @@ class KnowledgeSearchToolTest {
                 .content("成人每日推荐摄入量为 400IU，可耐受最高摄入量为 4000IU。")
                 .source("manual").version("v2026.03")
                 .build();
+    }
+
+    @Test
+    void 非空弱匹配不提升为结论依据或全库不存在的证明() {
+        StubEngine engine = new StubEngine();
+        engine.chunks = List.of(chunk().toBuilder().score(0.17).reranked(true).build());
+        ToolResult result = new KnowledgeSearchTool(engine).execute(call(Map.of("query", "不存在政策甲 退货规则")));
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.isNoData()).isFalse();
+        assertThat(result.getOutput()).contains("依据不足", "不得作为结论依据", "没有查到明确依据")
+                .doesNotContain("可作为依据", "4000IU");
+        assertThat(result.getRawData()).isEqualTo(engine.chunks);
+        assertThat(result.getEvidence()).as("弱匹配保留诊断，但不能进入可引用证据集合").isEmpty();
+    }
+
+    @Test
+    void 注入阈值与入口证据门逐位一致() {
+        StubEngine engine = new StubEngine();
+        engine.chunks = List.of(chunk().toBuilder().score(0.30).reranked(true).build());
+        EvidenceGate.Thresholds strict = new EvidenceGate.Thresholds(0.45, 0.40);
+        assertThat(EvidenceGate.evaluate(engine.chunks, strict).level()).isEqualTo(EvidenceGate.Level.WEAK);
+        assertThat(new KnowledgeSearchTool(engine, strict).execute(call(Map.of("query", "维生素D"))).getOutput())
+                .contains("依据不足").doesNotContain("可作为依据");
+        assertThat(new KnowledgeSearchTool(engine).execute(call(Map.of("query", "维生素D"))).getOutput())
+                .contains("可作为依据");
+    }
+
+    @Test
+    void 请求级图谱依据与入口证据门共用判据() {
+        StubEngine engine = new StubEngine();
+        engine.chunks = List.of(chunk().toBuilder().score(0.17).reranked(true).build());
+        engine.graphChunkIds = java.util.Set.of("graph-truncated");
+        assertThat(new KnowledgeSearchTool(engine).execute(call(Map.of("query", "维生素D"))).getOutput())
+                .contains("可作为依据");
     }
 
     @Test

@@ -68,12 +68,35 @@ public final class GroundingEvaluator {
     public record Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
                          List<String> mustMention, List<DocumentChunk> evidence, String answer,
                          EvidenceGate.Level evidenceLevel, boolean toolEvidence,
-                         List<String> semanticExemptions, boolean graphEvidence) {
+                         List<String> semanticExemptions, boolean graphEvidence,
+                         String userMessage, boolean interactionBoundaryEvidence,
+                         List<yumefusaka.envoymart.agent.llm.ToolExecution> tools) {
+        public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
+                      List<String> mustMention, List<DocumentChunk> evidence, String answer,
+                      EvidenceGate.Level evidenceLevel, boolean toolEvidence,
+                      List<String> semanticExemptions, boolean graphEvidence, String userMessage, boolean interactionBoundaryEvidence) {
+            this(id, kind, expectRefuse, mustMention, evidence, answer, evidenceLevel, toolEvidence,
+                    semanticExemptions, graphEvidence, userMessage, interactionBoundaryEvidence, List.of());
+        }
+        public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
+                      List<String> mustMention, List<DocumentChunk> evidence, String answer,
+                      EvidenceGate.Level evidenceLevel, boolean toolEvidence,
+                      List<String> semanticExemptions, boolean graphEvidence, String userMessage) {
+            this(id, kind, expectRefuse, mustMention, evidence, answer, evidenceLevel,
+                    toolEvidence, semanticExemptions, graphEvidence, userMessage, false);
+        }
+        public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
+                      List<String> mustMention, List<DocumentChunk> evidence, String answer,
+                      EvidenceGate.Level evidenceLevel, boolean toolEvidence,
+                      List<String> semanticExemptions, boolean graphEvidence) {
+            this(id, kind, expectRefuse, mustMention, evidence, answer, evidenceLevel,
+                    toolEvidence, semanticExemptions, graphEvidence, null);
+        }
         public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
                       List<String> mustMention, List<DocumentChunk> evidence, String answer,
                       EvidenceGate.Level evidenceLevel, boolean toolEvidence) {
             this(id, kind, expectRefuse, mustMention, evidence, answer, evidenceLevel,
-                    toolEvidence, List.of(), false);
+                    toolEvidence, List.of(), false, null);
         }
 
         public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
@@ -81,11 +104,12 @@ public final class GroundingEvaluator {
                       EvidenceGate.Level evidenceLevel, boolean toolEvidence,
                       List<String> semanticExemptions) {
             this(id, kind, expectRefuse, mustMention, evidence, answer, evidenceLevel,
-                    toolEvidence, semanticExemptions, false);
+                    toolEvidence, semanticExemptions, false, null);
         }
 
         public Sample {
             semanticExemptions = semanticExemptions == null ? List.of() : List.copyOf(semanticExemptions);
+            tools = tools == null ? List.of() : List.copyOf(tools);
         }
     }
 
@@ -145,7 +169,17 @@ public final class GroundingEvaluator {
                               int sentences, int factSentences, int unsupported, int checks,
                               int wrongCitations, int outOfRange, boolean gateRefused,
                               boolean refusalCorrect, boolean multiHopHit,
-                              List<CitationCheck> citations, String rootCause) {
+                              List<CitationCheck> citations, String rootCause,
+                              boolean answerComplete, List<String> missingRequired) {
+        public CaseOutcome(String id, GroundingFixtures.Kind kind, Mode mode, boolean answerable,
+                           int sentences, int factSentences, int unsupported, int checks,
+                           int wrongCitations, int outOfRange, boolean gateRefused,
+                           boolean refusalCorrect, boolean multiHopHit,
+                           List<CitationCheck> citations, String rootCause) {
+            this(id, kind, mode, answerable, sentences, factSentences, unsupported, checks,
+                    wrongCitations, outOfRange, gateRefused, refusalCorrect, multiHopHit,
+                    citations, rootCause, false, List.of());
+        }
     }
 
     /**
@@ -198,6 +232,30 @@ public final class GroundingEvaluator {
     }
 
     private static CaseOutcome evaluateCase(Sample sample) {
+        CaseOutcome outcome = evaluateContent(sample);
+        boolean currentInteraction = MedicalCompletenessContract.hasCurrentInteractionContract(sample);
+        List<String> missing = new ArrayList<>(currentInteraction ? MedicalCompletenessContract.interactionMissing(sample)
+                : MedicalCompletenessContract.hasFiniteClinicalContract(sample) ? List.of() : completenessAnchorsMissingFromAnswer(sample));
+        missing.addAll(MedicalCompletenessContract.missing(sample));
+        missing = List.copyOf(new LinkedHashSet<>(missing));
+        boolean clinicalQuestion = sample.userMessage() != null && sample.userMessage().matches(
+                ".*(?:摄入|剂量|用量|服用|同服|合用|用药|抗凝|相互作用|吸收|过敏|禁忌|最高|超量|补钙|补铁|怎么安排|每天需要).*" );
+        boolean emptyMedical = clinicalQuestion && MedicalEvidenceVerifier.isMedicalQuestion(sample.userMessage())
+                && MedicalEvidenceVerifier.factSentences(sample.answer()).isEmpty() && !sample.expectRefuse();
+        boolean complete = missing.isEmpty() && !emptyMedical && outcome.unsupported() == 0
+                && (currentInteraction || outcome.refusalCorrect())
+                && (currentInteraction || !sample.expectRefuse() || sample.kind() != GroundingFixtures.Kind.MULTI_HOP
+                || sample.interactionBoundaryEvidence());
+        return new CaseOutcome(outcome.id(), outcome.kind(), outcome.mode(), outcome.answerable(),
+                outcome.sentences(), outcome.factSentences(), outcome.unsupported(), outcome.checks(),
+                outcome.wrongCitations(), outcome.outOfRange(), outcome.gateRefused(), outcome.refusalCorrect(),
+                outcome.multiHopHit(), outcome.citations(), !complete && "NONE".equals(outcome.rootCause())
+                ? missing.stream().anyMatch(point -> point.startsWith("MISSING_RETRIEVAL_CONTEXT"))
+                ? "MISSING_RETRIEVAL_CONTEXT" : "INCOMPLETE_ANSWER" : outcome.rootCause(), complete,
+                emptyMedical && missing.isEmpty() ? List.of("NO_SUPPORTED_MEDICAL_FACT") : missing);
+    }
+
+    private static CaseOutcome evaluateContent(Sample sample) {
         int evidenceCount = sample.evidence() == null ? 0 : sample.evidence().size();
         String answer = sample.answer() == null ? "" : sample.answer();
         Set<String> citableTitles = citableTitlesOf(sample);
@@ -209,6 +267,8 @@ public final class GroundingEvaluator {
         // 收不到；线上收得到。它只可能让线上比评测更宽，不会让评测比线上更松。
         CitationVerifier.Verdict verdict =
                 CitationVerifier.verify(answer, evidenceCount, sample.toolEvidence(), citableTitles);
+        MedicalEvidenceVerifier.Verdict medical = MedicalEvidenceVerifier.verify(
+                sample.userMessage(), answer, sample.evidence());
 
         boolean answerable = sample.kind() != GroundingFixtures.Kind.UNANSWERABLE;
         boolean gateRefused = sample.evidenceLevel() != EvidenceGate.Level.SUFFICIENT;
@@ -216,8 +276,9 @@ public final class GroundingEvaluator {
         int outOfRange = countOutOfRange(answer, evidenceCount);
         boolean multiHopHit = sample.kind() == GroundingFixtures.Kind.MULTI_HOP
                 && anchorsMissingFromAnswer(sample).isEmpty()
-                && (sample.graphEvidence()
-                || distinctCitedDocs(sample, evidenceCount, citableTitles) >= 2);
+                && (sample.expectRefuse()
+                ? gateRefused && sample.interactionBoundaryEvidence() && medical.unsupported().isEmpty()
+                : sample.graphEvidence() || distinctCitedDocs(sample, evidenceCount, citableTitles) >= 2);
 
         // 不该答的用例只看一件事：门判得对不对。它答了什么不进另外三项的账——
         // 那些账的分母是"该答的题"，把拒答的产出混进来会两头失真
@@ -229,6 +290,14 @@ public final class GroundingEvaluator {
 
         List<Integer> answerRefs = validRefs(answer, evidenceCount, sample, citableTitles);
         if (answerRefs.isEmpty()) {
+            if (!medical.unsupported().isEmpty()) {
+                List<CitationCheck> missing = medical.unsupported().stream().map(sentence ->
+                        new CitationCheck(sentence, List.of(), List.of(),
+                                outOfRangeIn(sentence, evidenceCount) ? CitationVerdict.OUT_OF_RANGE : CitationVerdict.MISSING)).toList();
+                return new CaseOutcome(sample.id(), sample.kind(), Mode.WHOLE_UNGROUNDED, true,
+                        verdict.sentences(), missing.size(), missing.size(), 0, 0, outOfRange, gateRefused,
+                        refusalCorrect, multiHopHit, missing, rootCause(sample, gateRefused, missing.size(), outOfRange));
+            }
             // 没有引用：区分「工具轮次」与「整篇无依据」——判据取自 CitationVerifier，
             // 两边对同一份回答给出同一个定性
             if (!verdict.ungrounded()) {
@@ -250,6 +319,9 @@ public final class GroundingEvaluator {
         // 靠块内角标兜底的句子没有自己的引用可评（它们仍进幻觉率，那是另一个问题）
         int accuracyChecks = 0;
         int accuracyWrong = 0;
+        Set<String> countedFacts = new LinkedHashSet<>();
+        Set<String> medicalRejected = new LinkedHashSet<>(medical.unsupported());
+        Set<String> medicalFacts = medical.medical() ? new LinkedHashSet<>(MedicalEvidenceVerifier.factSentences(answer)) : Set.of();
         for (String block : blocksOf(answer)) {
             List<String> sentences = sentencesOf(block);
             Set<Integer> blockRefs = new LinkedHashSet<>();
@@ -257,13 +329,18 @@ public final class GroundingEvaluator {
                 blockRefs.addAll(validRefs(sentence, evidenceCount, sample, citableTitles));
             }
             for (String sentence : sentences) {
-                if (presentationOnly(sentence) || boundaryOnly(sentence)) {
+                boolean medicalFact = medicalFacts.contains(sentence.trim());
+                if (sourceLabelOnly(sentence)) {
+                    continue;
+                }
+                if (!medicalFact && (presentationOnly(sentence) || boundaryOnly(sentence))) {
                     continue;
                 }
                 List<String> anchors = anchorsIn(sentence, sample.mustMention());
                 List<Integer> ownRefs = validRefs(sentence, evidenceCount, sample, citableTitles);
-                if (!anchors.isEmpty() && !ownRefs.isEmpty()) {
-                    boolean covered = covered(sample, ownRefs, anchors);
+                if ((!anchors.isEmpty() || medicalFact) && !ownRefs.isEmpty()) {
+                    boolean covered = (anchors.isEmpty() || covered(sample, ownRefs, anchors))
+                            && !medicalRejected.contains(sentence.trim());
                     checks.add(new CitationCheck(sentence.trim(), anchors, ownRefs,
                             covered ? CitationVerdict.OK : CitationVerdict.WRONG_TARGET));
                     accuracyChecks++;
@@ -272,14 +349,15 @@ public final class GroundingEvaluator {
                         unsupported++;
                     }
                 }
-                if (anchors.isEmpty() || isLeadIn(sentence)) {
+                if (!medicalFact && (anchors.isEmpty() || isLeadIn(sentence))) {
                     continue;
                 }
                 factSentences++;
-                if (sample.semanticExemptions().contains(sentence.trim())) {
+                if (!medicalFact && sample.semanticExemptions().contains(sentence.trim())) {
                     factSentences--;
                     continue;
                 }
+                countedFacts.add(sentence.trim());
                 if (ownRefs.isEmpty()) {
                     // 自身没角标：看同块（列表/整段常共用一个角标）
                     if (blockRefs.isEmpty()) {
@@ -293,6 +371,39 @@ public final class GroundingEvaluator {
                                 CitationVerdict.WRONG_TARGET));
                     }
                 }
+            }
+        }
+
+        // 医学严格闸门检查的是“实体/关系/证据片段一致”，可能覆盖普通 mustMention
+        // 没有列出的句子。把它们补进同一份句子级结果，保证离线与线上指标共用分母。
+        for (String rejected : medicalRejected) {
+            int existingIndex = -1;
+            for (int index = 0; index < checks.size(); index++) {
+                if (checks.get(index).sentence().equals(rejected)) {
+                    existingIndex = index;
+                    break;
+                }
+            }
+            if (existingIndex >= 0) {
+                CitationCheck existing = checks.get(existingIndex);
+                if (existing.verdict() == CitationVerdict.OK) {
+                    checks.set(existingIndex, new CitationCheck(existing.sentence(), existing.anchors(),
+                            existing.refs(), CitationVerdict.WRONG_TARGET));
+                    unsupported++;
+                    accuracyWrong++;
+                }
+                continue;
+            }
+            List<Integer> refs = validRefs(rejected, evidenceCount, sample, citableTitles);
+            checks.add(new CitationCheck(rejected, List.of(), refs,
+                    refs.isEmpty() ? CitationVerdict.MISSING : CitationVerdict.WRONG_TARGET));
+            if (!countedFacts.contains(rejected)) {
+                factSentences++;
+            }
+            unsupported++;
+            if (!refs.isEmpty()) {
+                accuracyChecks++;
+                accuracyWrong++;
             }
         }
 
@@ -311,12 +422,24 @@ public final class GroundingEvaluator {
                 || text.endsWith("：") || text.endsWith(":");
     }
 
+    /** 纯出处没有事实正文；标题内的剂量或临床断言仍承担证据责任。 */
+    private static boolean sourceLabelOnly(String sentence) {
+        String visible = MedicalText.visible(sentence).trim();
+        if (CitationVerifier.titlesIn(visible).isEmpty()
+                || CitationVerifier.containsConcreteClaim(visible)
+                || !MedicalEvidenceVerifier.factSentences(visible).isEmpty()) {
+            return false;
+        }
+        String body = visible.replaceFirst("^\\s*(?:出处|来源)\\s*[:：]\\s*", "");
+        return CitationVerifier.diagnosticSentenceBody(body).isEmpty();
+    }
+
     private static boolean boundaryOnly(String sentence) {
         String text = sentence == null ? "" : sentence.trim();
         return !CitationVerifier.containsConcreteClaim(text) && text.matches(".*(请咨询|咨询医生|咨询医师|咨询药师|遵医嘱|不要自行调整|及时就医|"
                 + "不能代替医嘱|不能代替药物|不能替代|不能替你|平台不能|没有收录|没有查到|暂时没有|"
                 + "不等于没有|没有单列|没有直接收录|图谱里没有|知识库中没有|不能直接等同|仅供参考|"
-                + "以商品页|商品详情页|处方药|可以告诉我|方便告诉我|需要的话|如需|更关心).*" );
+                + "以商品页|商品详情页|处方药|无法判断|相近名称|请确认|可以告诉我|方便告诉我|需要的话|如需|更关心).*" );
     }
 
     /** 评测失败的第一根因，供 bad case 汇总，不替代逐句判定。 */
@@ -424,6 +547,7 @@ public final class GroundingEvaluator {
     private static int longSentenceCount(String text) {
         return (int) sentencesOf(text).stream()
                 .filter(s -> !s.isBlank())
+                .filter(s -> !sourceLabelOnly(s))
                 .filter(s -> s.trim().codePointCount(0, s.trim().length()) >= FACT_MIN_LENGTH)
                 .count();
     }
@@ -447,7 +571,7 @@ public final class GroundingEvaluator {
     private static List<Integer> validRefs(String text, int evidenceCount,
                                            Sample sample, Set<String> citableTitles) {
         Set<Integer> refs = new LinkedHashSet<>();
-        Matcher matcher = CITATION.matcher(text);
+        Matcher matcher = CITATION.matcher(MedicalText.references(CitationVerifier.numberTitles(text, sample.evidence())));
         while (matcher.find()) {
             int no = Integer.parseInt(matcher.group(1));
             if (no >= 1 && no <= evidenceCount) {
@@ -455,19 +579,21 @@ public final class GroundingEvaluator {
             }
         }
         for (String title : titlesCitedIn(text, citableTitles)) {
+            List<Integer> candidates = new ArrayList<>();
             for (int i = 0; i < sample.evidence().size(); i++) {
                 DocumentChunk chunk = sample.evidence().get(i);
                 if (chunk != null && title.equals(CitationVerifier.normalizeTitle(chunk.getTitle()))) {
-                    refs.add(i + 1);
+                    candidates.add(i + 1);
                 }
             }
+            if (candidates.size() == 1) refs.add(candidates.getFirst());
         }
         return List.copyOf(refs);
     }
 
     private static int countOutOfRange(String text, int evidenceCount) {
         int count = 0;
-        Matcher matcher = CITATION.matcher(text);
+        Matcher matcher = CITATION.matcher(MedicalText.references(text));
         while (matcher.find()) {
             int no = Integer.parseInt(matcher.group(1));
             if (no < 1 || no > evidenceCount) {
@@ -489,7 +615,26 @@ public final class GroundingEvaluator {
         if (chunk == null || chunk.getContent() == null) {
             return false;
         }
-        return normalize(chunk.getContent()).contains(normalize(anchor));
+        String content = normalize(chunk.getContent());
+        String normalizedAnchor = normalize(anchor);
+        if (content.contains(normalizedAnchor)) return true;
+        // 只认可来源明确写出的同数单位别名，不从微克换算IU，也不借其他切片补数值。
+        Matcher quantity = Pattern.compile("^(\\d+(?:\\.\\d+)?)(?:iu|国际单位)$").matcher(normalizedAnchor);
+        if (!quantity.matches()) return false;
+        return Pattern.compile("(?<![a-z0-9.])" + Pattern.quote(quantity.group(1)) + "(?:iu|国际单位)(?![a-z0-9.])")
+                .matcher(content).find();
+    }
+
+    /** 独立完整性认可相同单位与七日期限的两种写法；原多跳和事实覆盖仍按原始锚点逐字判断。 */
+    private static List<String> completenessAnchorsMissingFromAnswer(Sample sample) {
+        List<String> missing = anchorsMissingFromAnswer(sample);
+        String answer = normalize(MedicalText.visible(sample.answer()));
+        boolean internationalUnit = answer.contains("国际单位")
+                || Pattern.compile("(?<![a-z])iu(?![a-z])").matcher(answer).find();
+        boolean sevenDays = answer.contains("七天") || answer.contains("七日");
+        return missing.stream().filter(anchor -> !(internationalUnit
+                && List.of("国际单位", "iu").contains(normalize(anchor)))
+                && !(sevenDays && List.of("七天", "七日").contains(normalize(anchor)))).toList();
     }
 
     /** 答案里漏掉的锚点 —— 多跳命中率要求它为空 */
@@ -505,7 +650,7 @@ public final class GroundingEvaluator {
     private static int distinctCitedDocs(Sample sample, int evidenceCount, Set<String> citableTitles) {
         Set<String> docs = new LinkedHashSet<>();
         String answer = sample.answer() == null ? "" : sample.answer();
-        Matcher matcher = CITATION.matcher(answer);
+        Matcher matcher = CITATION.matcher(MedicalText.references(answer));
         while (matcher.find()) {
             int no = Integer.parseInt(matcher.group(1));
             if (no >= 1 && no <= evidenceCount && sample.evidence().get(no - 1) != null) {
@@ -527,9 +672,11 @@ public final class GroundingEvaluator {
         Set<String> titles = new LinkedHashSet<>();
         if (sample.evidence() != null) {
             for (DocumentChunk chunk : sample.evidence()) {
+                if (chunk == null) continue;
                 CitationVerifier.collectTitles(titles, chunk.getTitle(), chunk.getPosition());
             }
         }
+        titles.removeAll(CitationVerifier.ambiguousTitles(sample.evidence()));
         return titles;
     }
 

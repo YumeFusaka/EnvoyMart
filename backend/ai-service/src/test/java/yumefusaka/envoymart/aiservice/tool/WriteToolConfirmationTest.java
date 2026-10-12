@@ -41,7 +41,7 @@ class WriteToolConfirmationTest {
     private ToolCall call(String tool, Map<String, Object> args) {
         Map<String, Object> copy = new HashMap<>(args);
         copy.values().removeIf(java.util.Objects::isNull);
-        return new ToolCall("t1", tool, copy, false, USER);
+        return new ToolCall("t1", tool, copy, true, USER, "test:" + tool);
     }
 
     private static AgentCartItem cartItem() {
@@ -69,7 +69,12 @@ class WriteToolConfirmationTest {
     @Test
     void 普通商品标题不会让确认卡片误导用户() {
         OrderClient client = mock(OrderClient.class);
-        when(client.addCartItem(anyString(), any())).thenReturn(Result.success(cartItem()));
+        stubMissing(client);
+        when(client.addCartItemReceipt(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            var request = invocation.getArgument(2, yumefusaka.envoymart.aiservice.model.AgentAddCartRequest.class);
+            var operation = yumefusaka.envoymart.common.operation.OperationContext.of(USER, "test:cart_add", "cart_add", Map.of("skuId", request.getSkuId(), "quantity", request.getQuantity()));
+            return new yumefusaka.envoymart.common.operation.OperationReceiptReply<>(operation, Result.success(cartItem()), false).response();
+        });
 
         ToolResult result = new AddToCartTool(client).execute(call("cart_add", Map.of("skuId", 101, "quantity", 2)));
 
@@ -81,13 +86,18 @@ class WriteToolConfirmationTest {
     @Test
     void 加购数量缺省为一() {
         OrderClient client = mock(OrderClient.class);
-        when(client.addCartItem(anyString(), any())).thenReturn(Result.success(cartItem()));
+        stubMissing(client);
+        when(client.addCartItemReceipt(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            var request = invocation.getArgument(2, yumefusaka.envoymart.aiservice.model.AgentAddCartRequest.class);
+            var operation = yumefusaka.envoymart.common.operation.OperationContext.of(USER, "test:cart_add", "cart_add", Map.of("skuId", request.getSkuId(), "quantity", request.getQuantity()));
+            return new yumefusaka.envoymart.common.operation.OperationReceiptReply<>(operation, Result.success(cartItem()), false).response();
+        });
 
         new AddToCartTool(client).execute(call("cart_add", Map.of("skuId", 101)));
 
         org.mockito.ArgumentCaptor<yumefusaka.envoymart.aiservice.model.AgentAddCartRequest> captor =
                 org.mockito.ArgumentCaptor.forClass(yumefusaka.envoymart.aiservice.model.AgentAddCartRequest.class);
-        verify(client).addCartItem(anyString(), captor.capture());
+        verify(client).addCartItemReceipt(anyString(), anyString(), captor.capture());
         assertThat(captor.getValue().getQuantity()).isEqualTo(1);
     }
 
@@ -102,7 +112,7 @@ class WriteToolConfirmationTest {
         ToolResult result = new AddToCartTool(client).execute(call("cart_add", Map.of("skuId", 101, "quantity", 0)));
 
         assertThat(result.isSuccess()).isFalse();
-        verify(client, never()).addCartItem(anyString(), any());
+        verify(client, never()).addCartItemReceipt(anyString(), anyString(), any());
     }
 
     /**
@@ -120,7 +130,7 @@ class WriteToolConfirmationTest {
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.getErrorMessage()).contains("product_search");
-        verify(client, never()).addCartItem(anyString(), any());
+        verify(client, never()).addCartItemReceipt(anyString(), anyString(), any());
     }
 
     // ==================== 下单 ====================
@@ -153,16 +163,28 @@ class WriteToolConfirmationTest {
         // 失败结果把话说在 errorMessage 上（output 只承载成功时的正文），
         // 断言要看模型真正拿到的那一句
         assertThat(result.getErrorMessage()).contains("receiverProvince");
-        verify(client, never()).checkout(anyString(), any());
+        verify(client, never()).checkoutReceipt(anyString(), anyString(), any());
     }
 
     @Test
     void 下单成功时提醒还要支付() {
         OrderClient client = mock(OrderClient.class);
         OrderResponse order = new OrderResponse();
+        order.setId(1L);
+        order.setStatus("CREATED");
         order.setOrderNo("EM20261004001");
         order.setPayAmount(12900L);
-        when(client.checkout(anyString(), any())).thenReturn(Result.success(order));
+        stubMissing(client);
+        when(client.checkoutReceipt(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            var request = invocation.getArgument(2, yumefusaka.envoymart.aiservice.model.AgentCheckoutRequest.class);
+            Map<String, Object> parameters = new java.util.LinkedHashMap<>();
+            parameters.put("receiverName", request.getReceiverName()); parameters.put("receiverPhone", request.getReceiverPhone());
+            parameters.put("receiverProvince", request.getReceiverProvince()); parameters.put("receiverCity", request.getReceiverCity());
+            parameters.put("receiverDistrict", request.getReceiverDistrict()); parameters.put("receiverDetail", request.getReceiverDetail());
+            parameters.put("remark", request.getRemark()); parameters.put("userCouponId", null);
+            var operation = yumefusaka.envoymart.common.operation.OperationContext.of(USER, "test:cart_checkout", "cart_checkout", parameters);
+            return new yumefusaka.envoymart.common.operation.OperationReceiptReply<>(operation, Result.success(order), false).response();
+        });
 
         ToolResult result = new CheckoutTool(client).execute(call("cart_checkout", Map.of(
                 "receiverName", "张三", "receiverPhone", "13800000000",
@@ -186,23 +208,38 @@ class WriteToolConfirmationTest {
         assertThat(new AfterSaleTool(client)
                 .execute(call("after_sale_apply", Map.of("orderItemId", 1, "type", "bogus")))
                 .isSuccess()).isFalse();
-        verify(client, never()).applyAfterSale(anyString(), any());
+        verify(client, never()).applyAfterSaleReceipt(anyString(), anyString(), any());
     }
 
     @Test
     void 售后提交回执带上单号与状态() {
         OrderClient client = mock(OrderClient.class);
         AgentAfterSaleResult receipt = new AgentAfterSaleResult();
+        receipt.setId(1L);
         receipt.setAfterSaleNo("AS20261004001");
         receipt.setStatusText("待审核");
         receipt.setRefundAmount(8900L);
         receipt.setDocRef("KB-0004");
-        when(client.applyAfterSale(anyString(), any())).thenReturn(Result.success(receipt));
+        stubMissing(client);
+        when(client.applyAfterSaleReceipt(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            var request = invocation.getArgument(2, yumefusaka.envoymart.aiservice.model.AgentAfterSaleRequest.class);
+            Map<String, Object> parameters = new java.util.LinkedHashMap<>();
+            parameters.put("orderItemId", request.getOrderItemId()); parameters.put("type", request.getType());
+            parameters.put("reason", request.getReason()); parameters.put("description", request.getDescription()); parameters.put("qualityIssue", request.getQualityIssue());
+            var operation = yumefusaka.envoymart.common.operation.OperationContext.of(USER, "test:after_sale_apply", "after_sale_apply", parameters);
+            return new yumefusaka.envoymart.common.operation.OperationReceiptReply<>(operation, Result.success(receipt), false).response();
+        });
 
         ToolResult result = new AfterSaleTool(client)
-                .execute(call("after_sale_apply", Map.of("orderItemId", 7, "type", "return")));
+                .execute(call("after_sale_apply", Map.of("orderItemId", 7, "type", "return_refund", "reason", "不想要了")));
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.getOutput()).contains("AS20261004001").contains("待审核").contains("89.00");
+    }
+
+    private static void stubMissing(OrderClient client) {
+        when(client.operationReceipt(anyString(), anyString(), anyString(), anyString())).thenAnswer(invocation ->
+                yumefusaka.envoymart.common.operation.OperationReceiptReply.notFound(
+                        yumefusaka.envoymart.common.operation.OperationContext.expected(invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2), invocation.getArgument(3))));
     }
 }

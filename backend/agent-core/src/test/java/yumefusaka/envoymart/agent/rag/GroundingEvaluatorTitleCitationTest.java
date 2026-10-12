@@ -129,4 +129,61 @@ class GroundingEvaluatorTitleCitationTest {
         assertThat(outcome.unsupported()).isZero();
         assertThat(outcome.wrongCitations()).isZero();
     }
+
+    private static Sample residualTitleSample(String answer) {
+        String title = "孕期 DHA 藻油软胶囊产品说明书";
+        return new Sample("KG-08-title", Kind.ANSWERABLE, false, List.of("DHA", "地址"),
+                List.of(doc("dha-a", title), doc("dha-b", title), DocumentChunk.builder()
+                        .chunkId("shipping-1").docId("shipping").title("发货规则")
+                        .content("订单发货须核对地址。").build()),
+                answer, EvidenceGate.Level.SUFFICIENT, false, List.of(), false,
+                "DHA与抗凝药合用有什么风险？");
+    }
+
+    @Test
+    void KG08纯出处残留不计入事实和未支撑分母() {
+        String title = "《孕期 DHA 藻油软胶囊产品说明书》";
+        CaseOutcome outcome = GroundingEvaluator.evaluate(List.of(residualTitleSample(
+                "订单发货须核对地址[3]。\n\n**（" + title + "）\n\n（" + title + "）\n\n（" + title + "）")))
+                .cases().getFirst();
+
+        assertThat(outcome.factSentences()).isEqualTo(1);
+        assertThat(outcome.unsupported()).isZero();
+        assertThat(outcome.citations()).hasSize(1);
+    }
+
+    @Test
+    void 没有正文引用时纯出处标签仍不制造无依据事实() {
+        CaseOutcome outcome = GroundingEvaluator.evaluate(List.of(residualTitleSample(
+                "**（《孕期 DHA 藻油软胶囊产品说明书》）"))).cases().getFirst();
+
+        assertThat(outcome.factSentences()).isZero();
+        assertThat(outcome.unsupported()).isZero();
+    }
+
+    @Test
+    void 纯出处标签之后真实无引用风险仍判未支撑() {
+        CaseOutcome outcome = GroundingEvaluator.evaluate(List.of(residualTitleSample(
+                "订单发货须核对地址[3]。\n\n（《孕期 DHA 藻油软胶囊产品说明书》）\n\nDHA增加出血风险。")))
+                .cases().getFirst();
+
+        assertThat(outcome.factSentences()).isEqualTo(2);
+        assertThat(outcome.unsupported()).isEqualTo(1);
+        assertThat(outcome.citations()).anySatisfy(check -> {
+            assertThat(check.sentence()).isEqualTo("DHA增加出血风险。");
+            assertThat(check.verdict()).isEqualTo(GroundingEvaluator.CitationVerdict.MISSING);
+        });
+    }
+
+    @Test
+    void 书名号或排版包装内真实断言仍严格计数() {
+        for (String claim : List.of("（《DHA增加出血风险》）", "（《DHA每日100mg产品说明书》）",
+                "**DHA增加出血风险。**", "（《孕期 DHA 藻油软胶囊产品说明书》）DHA增加出血风险。")) {
+            CaseOutcome outcome = GroundingEvaluator.evaluate(List.of(residualTitleSample(
+                    "订单发货须核对地址[3]。\n\n" + claim))).cases().getFirst();
+
+            assertThat(outcome.factSentences()).as(claim).isEqualTo(2);
+            assertThat(outcome.unsupported()).as(claim).isEqualTo(1);
+        }
+    }
 }

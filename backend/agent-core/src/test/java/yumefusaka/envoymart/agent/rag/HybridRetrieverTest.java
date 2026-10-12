@@ -62,6 +62,59 @@ class HybridRetrieverTest {
     }
 
     @Test
+    void KG03完整2点4关系穿过RRF和重排两次截断且保留真实分数() {
+        String query = "铁叶酸片中的铁会影响左旋多巴吸收吗？";
+        var target = DocumentChunk.builder().chunkId("KB-0010_5").docId("KB-0010")
+                .title("膳食补充剂摄入上限与常见药物相互作用").source("guideline").version("v2026.02")
+                .charOffset(410).chunkIndex(5)
+                .content("2.4 铁剂与左旋多巴、甲状腺素合用会降低后者吸收，应间隔至少 2 小时。").build();
+        var texts = new java.util.ArrayList<>(java.util.stream.IntStream.range(0, 6).mapToObj(index ->
+                DocumentChunk.builder().chunkId("neighbor-" + index).docId("neighbor-" + index)
+                        .content(("铁叶酸片 铁 左旋多巴 吸收 " + query).repeat(3)).build()).toList());
+        texts.add(target);
+        var graph = new java.util.ArrayList<>(texts.subList(0, 6));
+        graph.add(target.toBuilder().source(DocumentChunk.SOURCE_GRAPH).graphQueryMatched(true)
+                .content("图谱推导：铁 相互作用 左旋多巴\n原文：" + target.getContent()).build());
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var requested = new java.util.concurrent.atomic.AtomicInteger();
+        var candidateIds = new java.util.concurrent.atomic.AtomicReference<List<String>>();
+        Reranker scoreAll = (input, candidates, limit) -> {
+            calls.incrementAndGet(); requested.set(limit);
+            candidateIds.set(candidates.stream().map(DocumentChunk::getChunkId).toList());
+            return candidates.stream().sorted(java.util.Comparator.comparingInt(chunk ->
+                            Boolean.TRUE.equals(chunk.getGraphQueryMatched()) ? 1 : 0))
+                    .map(chunk -> chunk.toBuilder().reranked(true)
+                            .score(Boolean.TRUE.equals(chunk.getGraphQueryMatched()) ? 0.17 : 0.91).build())
+                    .limit(limit).toList();
+        };
+        var retriever = HybridRetriever.overChunks(new InMemoryVectorStore(new SimpleEmbeddingService()),
+                texts, scoreAll, (input, limit) -> graph);
+        var result = retriever.retrieveWithOutcome(query, 1);
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(requested.get()).isEqualTo(candidateIds.get().size());
+        assertThat(candidateIds.get()).contains("KB-0010_5");
+        assertThat(result.chunks()).hasSize(1).first().satisfies(chunk -> {
+            assertThat(chunk.getChunkId()).isEqualTo("KB-0010_5");
+            assertThat(chunk.getContent()).isEqualTo(target.getContent());
+            assertThat(chunk.getVersion()).isEqualTo("v2026.02");
+            assertThat(chunk.getCharOffset()).isEqualTo(410);
+            assertThat(chunk.getGraphBacked()).isTrue();
+            assertThat(chunk.getGraphQueryMatched()).isTrue();
+            assertThat(chunk.getReranked()).isTrue();
+            assertThat(chunk.getScore()).isEqualTo(0.17);
+        });
+        assertThat(target.getGraphQueryMatched()).isNull();
+        graph.set(graph.size() - 1, graph.getLast().toBuilder().graphQueryMatched(null).build());
+        var ordinary = retriever.retrieveWithOutcome("铁叶酸片与钙或陌生药会相互影响吗？", 1);
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(requested.get()).isEqualTo(1);
+        assertThat(ordinary.chunks()).hasSize(1).first().satisfies(chunk -> {
+            assertThat(chunk.getChunkId()).isNotEqualTo("KB-0010_5");
+            assertThat(chunk.getGraphQueryMatched()).isNull();
+        });
+    }
+
+    @Test
     void 词面与语义都够不着的问题由图谱路捞回() {
         List<DocumentChunk> result = overChunks(List.of(), (query, topK) -> List.of(GRAPH_CHUNK))
                 .retrieve("SPU5 和华法林冲突吗", 5);

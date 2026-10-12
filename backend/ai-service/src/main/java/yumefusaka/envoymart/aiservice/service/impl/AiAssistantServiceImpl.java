@@ -62,6 +62,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
      */
     @Override
     public ChatResponse chat(String userId, ChatRequest request) {
+        if (hasApproval(request)) return processApproval(userId, request, true, true, null, ToolProgressListener.NOOP);
         log.info("[AiService] chat userId={} sessionId={} msg={}",
                 userId, request.getSessionId(), request.getMessage());
 
@@ -81,9 +82,8 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         }
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
-            claimApproval(userId, request);
             ChatHistoryStore.TurnIdentity identity = identityFor(userId, request);
-            ChatResponse response = toChatResponse(request, agent.chat(
+            ChatResponse response = toChatResponse(userId, request, agent.chat(
                     userId, request.getSessionId(), request.getMessage(), request.getApprovalToken()), ledger, identity);
             recordTurn(userId, request, response, identity);
             idempotency.complete(userId, requestId, response);
@@ -94,6 +94,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
     @Override
     public ChatResponse chatStream(String userId, ChatRequest request, java.util.function.Consumer<String> onChunk,
                                    ToolProgressListener progress) {
+        if (hasApproval(request)) return processApproval(userId, request, true, true, onChunk, progress);
         log.info("[AiService] chatStream userId={} sessionId={} msg={}",
                 userId, request.getSessionId(), request.getMessage());
 
@@ -113,7 +114,6 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         }
 
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
-            claimApproval(userId, request);
             ChatHistoryStore.TurnIdentity identity = identityFor(userId, request);
             // 旁录一份已交付文本。正常收尾时它与 response.getReply() 相同（甚至更短——
             // done 帧要过后置校验，剔除过的句子不出现在 reply 里）；被取消时它是唯一的
@@ -122,7 +122,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
             StringBuilder delivered = new StringBuilder();
             ToolProgressListener effective = ToolProgressListener.orNoop(progress);
             try {
-                ChatResponse response = toChatResponse(request, agent.chatStream(
+                ChatResponse response = toChatResponse(userId, request, agent.chatStream(
                         userId, request.getSessionId(), request.getMessage(), request.getApprovalToken(),
                         chunk -> {
                             // 只把「交付得出去」的分片计入。断开之后模型还在推的分片，
@@ -196,14 +196,181 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         return ChatHistoryStore.newTurnIdentity();
     }
 
-    private void claimApproval(String userId, ChatRequest request) {
-        if (request.getApprovalToken() != null && !request.getApprovalToken().isBlank()
-                && !history.claimApproval(userId, request.getSessionId(), request.getApprovalToken())) {
-            throw new IllegalStateException("这次确认已提交、取消或被新消息替代，没有重复执行任何操作");
+    private static boolean hasApproval(ChatRequest request) {
+        return request.getApprovalToken() != null && !request.getApprovalToken().isBlank();
+    }
+
+    @Override
+    public ChatResponse recoverApproval(String userId, String sessionId, String token, boolean retry) {
+        ChatRequest request = new ChatRequest();
+        request.setSessionId(sessionId);
+        request.setApprovalToken(token);
+        request.setMessage(retry ? "按原参数继续确认" : "查询原操作执行结果");
+        return processApproval(userId, request, false, retry, null, ToolProgressListener.NOOP);
+    }
+
+    private ChatResponse processApproval(String userId, ChatRequest request, boolean initial, boolean retry,
+                                         java.util.function.Consumer<String> onChunk, ToolProgressListener listener) {
+        String token = request.getApprovalToken();
+        var signed = agent.verifyApproval(userId, request.getSessionId(), token, true);
+        if (signed.isEmpty()) throw new IllegalArgumentException("原审批签名或用户会话不匹配");
+        var grant = agent.verifyApprovalGrant(userId, request.getSessionId(), token)
+                .orElseThrow(() -> new IllegalArgumentException("原审批恢复授权签名无效"));
+        boolean unexpired = agent.verifyApproval(userId, request.getSessionId(), token, false).isPresent();
+        ChatHistoryStore.ApprovalLease loadedLease;
+        boolean recordReadable = true;
+        String recordError = null;
+        try { loadedLease = history.beginApproval(userId, request.getSessionId(), token, initial, retry && (unexpired || !initial),
+                grant.recoverySeconds(), grant.expiresAtSeconds(), unexpired); }
+        catch (ChatHistoryStore.ApprovalRecordUnreadableException unavailable) {
+            if (retry) throw unavailable;
+            log.warn("[Approval] 授权账本不可读，仅查询权威回执 session={}", request.getSessionId());
+            recordReadable = false;
+            recordError = "原审批授权记录无法读取，仅查询首次回执；继续确认已禁用。";
+            ChatHistoryStore.ApprovalBatch original = null;
+            try { original = history.historicalApproval(userId, request.getSessionId(), token); }
+            catch (org.springframework.dao.DataAccessException unavailableHistory) { log.warn("[Approval] 原消息历史也不可读，恢复不生成消息身份 session={}", request.getSessionId()); }
+            loadedLease = new ChatHistoryStore.ApprovalLease(original, null, false);
+        }
+        final ChatHistoryStore.ApprovalLease lease = loadedLease;
+        ChatHistoryStore.ApprovalBatch batch = lease.batch();
+        boolean write = lease.writable();
+        ToolProgressListener delegate = ToolProgressListener.orNoop(listener);
+        ToolProgressListener guarded = new ToolProgressListener() {
+            public void onStart(String tool) {
+                if (write && !history.renewApproval(userId, request.getSessionId(), token, lease.ownerNonce())) {
+                    throw new IllegalStateException("原批次授权或执行租约已变化，后续操作已停止");
+                }
+                delegate.onStart(tool);
+            }
+            public void onFinish(String tool, boolean success, boolean noData, long latencyMs) {
+                delegate.onFinish(tool, success, noData, latencyMs);
+            }
+            public boolean cancelled() { return delegate.cancelled(); }
+        };
+        ChatHistoryStore.TurnIdentity identity = batch == null || batch.original() == null ? null : identityOf(batch.original());
+        try (TokenLedger.Scope ledger = TokenLedger.begin()) {
+            Agent.AgentResponse result;
+            if (initial && write) {
+                result = agent.confirmApproved(userId, request.getSessionId(), request.getMessage(), token, onChunk, guarded);
+            } else if (write && grant.recoverySeconds() > 0) {
+                result = agent.recoverAcceptedApproved(userId, request.getSessionId(), token, () -> {
+                    var current = history.beginApproval(userId, request.getSessionId(), token, false, false,
+                            grant.recoverySeconds(), grant.expiresAtSeconds(), unexpired).batch();
+                    return current != null && current.accepted() && !current.cancelled()
+                            && lease.ownerNonce().equals(current.ownerNonce()) && current.leaseUntil() > System.currentTimeMillis()
+                            && current.recoveryUntil() > System.currentTimeMillis();
+                }, guarded);
+            } else result = agent.recoverApproved(userId, request.getSessionId(), token, write, guarded);
+            var executions = result.getToolExecutions() == null ? List.<ToolExecution>of() : result.getToolExecutions();
+            int actionCount = signed.get().size();
+            List<ToolExecution> originalResults = executions.stream().limit(actionCount).toList();
+            String status = batch != null && batch.cancelled() ? "CANCELLED"
+                    : originalResults.size() == actionCount && originalResults.stream().allMatch(item -> item.getOperationState()
+                    == yumefusaka.envoymart.agent.tool.ToolResult.OperationState.COMMITTED) ? "CONFIRMED"
+                    : originalResults.stream().anyMatch(item -> item.getOperationState()
+                    == yumefusaka.envoymart.agent.tool.ToolResult.OperationState.REJECTED) ? "REJECTED"
+                    : batch != null && batch.leaseUntil() > System.currentTimeMillis() && !write ? "IN_FLIGHT" : "UNKNOWN";
+            ChatResponse response = toChatResponse(userId, request, result, ledger, identity);
+            response.setApprovalRecoverySeconds(grant.recoverySeconds());
+            response.setApprovalRecoveryUntil(batch == null || batch.recoveryUntil() == 0 ? null : batch.recoveryUntil());
+            response.setApprovalRecordAvailable(recordReadable && batch != null && batch.accepted());
+            response.setApprovalRecordError(recordError);
+            boolean nextApproval = response.getApprovalToken() != null && !token.equals(response.getApprovalToken());
+            if (nextApproval) response.setApprovalRecoveryUntil(null);
+            if (initial && write && nextApproval) {
+                ChatHistoryStore.TurnIdentity nextIdentity = ChatHistoryStore.newTurnIdentity();
+                response.setTurnId(nextIdentity.turnId()); response.setUserMessageId(nextIdentity.userMessageId());
+                response.setAssistantMessageId(nextIdentity.assistantMessageId());
+            }
+            response.setApprovalStatus(response.getApprovalToken() != null && !token.equals(response.getApprovalToken())
+                    ? "PENDING" : status);
+            response.setApprovalRetryAllowed(recordReadable && (grant.recoverySeconds() == 0 ? unexpired
+                    : batch != null && batch.recoveryUntil() > System.currentTimeMillis()) && batch != null && batch.accepted() && !batch.cancelled()
+                    && !"CONFIRMED".equals(status) && !"IN_FLIGHT".equals(status));
+            if (!initial || !write) {
+                response.setApprovalToken(token);
+                if (batch != null && batch.original() != null && batch.original().response() != null) {
+                    response.setPendingActions(stringList(batch.original().response().get("pendingActions")));
+                    response.setPendingActionDetails(actionDetails(batch.original().response().get("pendingActionDetails")));
+                }
+            }
+            boolean finished = write && history.finishApproval(userId, request.getSessionId(), token, lease.ownerNonce(), status, response);
+            if (initial && write && nextApproval) {
+                if (!finished || !history.publishNextApproval(userId, request.getSessionId(), token, request.getMessage(), response)) {
+                    response.setApprovalToken(token); response.setApprovalStatus("UNKNOWN"); response.setApprovalRetryAllowed(false);
+                    response.setPendingActions(batch == null ? List.of() : stringList(batch.original().response().get("pendingActions")));
+                    response.setPendingActionDetails(batch == null ? List.of() : actionDetails(batch.original().response().get("pendingActionDetails")));
+                    response.setReply("本批执行结果请查询原回执；后续确认未发布，请重新发起剩余需求。");
+                    if (identity != null) {
+                        response.setTurnId(identity.turnId()); response.setUserMessageId(identity.userMessageId());
+                        response.setAssistantMessageId(identity.assistantMessageId());
+                    }
+                }
+            }
+            else {
+                try { history.observeApproval(userId, request.getSessionId(), token, status, response); }
+                catch (RuntimeException unavailable) { log.warn("[Approval] 查询结果无法回写授权账本 session={}", request.getSessionId()); }
+            }
+            try {
+                var currentLease = history.beginApproval(userId, request.getSessionId(), token, false, false,
+                        grant.recoverySeconds(), grant.expiresAtSeconds(), unexpired);
+                var current = currentLease == null ? null : currentLease.batch();
+                if (current == null || !current.accepted()) {
+                    response.setApprovalRecordAvailable(false);
+                    response.setApprovalRetryAllowed(false);
+                }
+                if (current != null && ("CONFIRMED".equals(current.status())
+                        || grant.recoverySeconds() > 0 && current.recoveryUntil() <= System.currentTimeMillis())) {
+                    response.setApprovalRetryAllowed(false);
+                }
+                if (current != null && current.cancelled()) {
+                    response.setApprovalStatus("CANCELLED");
+                    response.setApprovalRetryAllowed(false);
+                } else if (current != null && current.leaseUntil() > System.currentTimeMillis()
+                        && (!write || !java.util.Objects.equals(current.ownerNonce(), lease.ownerNonce()))) {
+                    response.setApprovalStatus("IN_FLIGHT");
+                    response.setApprovalRetryAllowed(false);
+                }
+            } catch (ChatHistoryStore.ApprovalRecordUnreadableException unavailable) {
+                response.setApprovalRecordAvailable(false);
+                response.setApprovalRecordError("原审批授权记录无法读取，仅保留已核验的首次回执；继续确认已禁用。");
+                response.setApprovalRetryAllowed(false);
+            }
+            log.info("[Approval] 原批次处理 session={} mode={} status={} steps={}/{}", request.getSessionId(),
+                    write ? "SIGNED_EXECUTE" : "RECEIPT_QUERY", response.getApprovalStatus(), originalResults.size(), actionCount);
+            return response;
+        } catch (RuntimeException failure) {
+            if (write) {
+                String failureStatus = AgentCancelledException.isCancellation(failure) ? "CANCELLED" : "UNKNOWN";
+                ChatResponse unknown = ChatResponse.builder().sessionId(request.getSessionId()).approvalToken(token)
+                        .approvalStatus(failureStatus).reply("执行结果待确认，请查询原操作回执，后续操作没有继续执行。").build();
+                try { history.finishApproval(userId, request.getSessionId(), token, lease.ownerNonce(), failureStatus, unknown); }
+                catch (RuntimeException storageFailure) { log.warn("[Approval] 无法保存未知结果，保留原租约 session={}", request.getSessionId()); }
+            }
+            throw failure;
         }
     }
 
-    private ChatResponse toChatResponse(ChatRequest request, Agent.AgentResponse agentResp,
+    private static ChatHistoryStore.TurnIdentity identityOf(ChatHistoryStore.StoredMessage message) {
+        var response = message.response();
+        String turnId = response == null ? null : Objects.toString(response.get("turnId"), null);
+        String userId = response == null ? null : Objects.toString(response.get("userMessageId"), null);
+        return new ChatHistoryStore.TurnIdentity(turnId == null ? "turn-" + message.id() : turnId,
+                userId == null ? "u-" + message.id() : userId, message.id());
+    }
+
+    private static List<String> stringList(Object value) {
+        return value instanceof List<?> values ? values.stream().map(String::valueOf).toList() : List.of();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<java.util.Map<String, Object>> actionDetails(Object value) {
+        return value instanceof List<?> values ? values.stream().filter(java.util.Map.class::isInstance)
+                .map(item -> (java.util.Map<String, Object>) item).toList() : List.of();
+    }
+
+    private ChatResponse toChatResponse(String userId, ChatRequest request, Agent.AgentResponse agentResp,
                                         TokenLedger.Scope ledger,
                                         ChatHistoryStore.TurnIdentity identity) {
         List<ToolExecution> executions = agentResp.getToolExecutions() == null
@@ -213,20 +380,23 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 .usage(usageOf(ledger))
                 .requestId(RequestId.current())
                 .sessionId(request.getSessionId())
-                .turnId(identity.turnId())
-                .userMessageId(identity.userMessageId())
-                .assistantMessageId(identity.assistantMessageId())
+                .turnId(identity == null ? null : identity.turnId())
+                .userMessageId(identity == null ? null : identity.userMessageId())
+                .assistantMessageId(identity == null ? null : identity.assistantMessageId())
                 .reply(agentResp.getReply())
                 .retrievalQuery(agentResp.getRetrievalQuery())
                 .expansion(expandView(agentResp.getExpansion()))
                 .memoryTrace(memoryTraceView(agentResp.getMemoryTrace()))
                 .knowledge(convertKnowledge(agentResp.getKnowledge()))
                 .toolCalls(executions.stream().map(this::toToolCall).toList())
-                .recommendedProducts(extractProducts(executions, agentResp.getReply()))
+                .recommendedProducts(extractProducts(executions, agentResp.getReply(), agentResp.getProductCandidates()))
                 .pendingPayments(extractPayments(executions))
                 .pendingActions(agentResp.getPendingActions())
                 .pendingActionDetails(commerceCards.approvalDetails(agentResp.getPendingActionDetails()))
                 .approvalToken(agentResp.getApprovalToken())
+                .approvalRecoverySeconds(agentResp.getApprovalToken() == null ? null
+                        : agent.verifyApprovalGrant(userId, request.getSessionId(), agentResp.getApprovalToken())
+                        .map(yumefusaka.envoymart.agent.tool.ApprovalTokens.VerifiedGrant::recoverySeconds).orElse(null))
                 .evidenceLevel(agentResp.getEvidenceLevel())
                 // 阶段用 name() 而不是 toString()：枚举名是稳定契约，toString 可能被人
                 // 重写成中文标签，那时前端的判断会静默失效
@@ -349,6 +519,9 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
     private ToolCallResponse toToolCall(ToolExecution execution) {
         return ToolCallResponse.builder()
+                .operationId(execution.getOperationId())
+                .operationState(execution.getOperationState())
+                .receiptReplayed(execution.isReceiptReplayed())
                 .tool(execution.getTool())
                 .input(execution.getInput())
                 .output(execution.getOutput())
@@ -423,6 +596,23 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                                 (first, ignored) -> first,
                                 java.util.LinkedHashMap::new),
                         map -> List.copyOf(map.values())));
+    }
+
+    /** 发布了权威列表时按同一商品键顺序投影卡片，不再从模型正文重新判断或排序。 */
+    private List<ProductSummary> extractProducts(List<ToolExecution> executions, String reply,
+            List<yumefusaka.envoymart.agent.core.task.ProductCandidateList.Item> candidates) {
+        if (candidates == null || candidates.isEmpty()) return extractProducts(executions, reply);
+        java.util.Map<String, ProductSummary> summaries = new java.util.LinkedHashMap<>();
+        for (ToolExecution execution : executions) {
+            if (!execution.isSuccess() || !(execution.getRawData() instanceof List<?> values)) continue;
+            for (Object value : values) {
+                ProductSummary product = toProductSummary(value);
+                if (product != null && product.getId() != null) {
+                    summaries.putIfAbsent("SPU" + product.getId(), product);
+                }
+            }
+        }
+        return candidates.stream().map(item -> summaries.get(item.key())).filter(Objects::nonNull).toList();
     }
 
     /** 只有最终回答明确提到的商品才生成商品卡片，避免把检索候选集误当成推荐结果。 */

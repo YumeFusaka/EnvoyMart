@@ -96,14 +96,23 @@ async function pay() {
 }
 
 const loadFailed = ref(false)
+const loading = ref(true)
+let mounted = true
+let loadSequence = 0
 
 async function load() {
+  const sequence = ++loadSequence
+  loading.value = true
   loadFailed.value = false
   try {
-    order.value = await getOrder(orderId.value)
+    const result = await getOrder(orderId.value)
+    if (!mounted || sequence !== loadSequence) return
+    order.value = result
     tick()
   } catch {
-    loadFailed.value = true
+    if (mounted && sequence === loadSequence) loadFailed.value = true
+  } finally {
+    if (mounted && sequence === loadSequence) loading.value = false
   }
 }
 
@@ -114,10 +123,13 @@ onMounted(async () => {
     return
   }
   await load()
+  if (!mounted) return
   timer = setInterval(tick, 1000)
 })
 
 onUnmounted(() => {
+  mounted = false
+  loadSequence += 1
   // 页面离开必须清掉定时器：它每秒触发一次响应式更新，
   // 留着会在后台一直跑，而且引用的组件已经卸载
   if (timer) {
@@ -138,7 +150,8 @@ onUnmounted(() => {
       </p>
     </header>
 
-    <ErrorState v-if="loadFailed" message="订单信息加载失败" :on-retry="load" />
+    <el-skeleton v-if="loading" :rows="6" animated />
+    <ErrorState v-else-if="loadFailed" message="订单信息加载失败" :on-retry="load" />
 
     <template v-else-if="order">
       <section class="surface">

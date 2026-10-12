@@ -18,6 +18,8 @@ import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeChunkEntity;
 import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeDocumentEntity;
 import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeChunkMapper;
 import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeDocumentMapper;
+import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeDocProductMapper;
+import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeDocProductEntity;
 import yumefusaka.envoymart.knowledgeservice.mapper.GraphBuildFailureMapper;
 import yumefusaka.envoymart.knowledgeservice.entity.GraphBuildFailureEntity;
 import java.time.LocalDateTime;
@@ -54,15 +56,23 @@ public class GraphService {
     private final KnowledgeChunkMapper chunkMapper;
     private final KnowledgeGraphStore graphStore;
     private final GraphBuildFailureMapper failureMapper;
+    private final KnowledgeDocProductMapper bindingMapper;
 
     @Autowired
     public GraphService(KnowledgeDocumentMapper documentMapper,
                         KnowledgeChunkMapper chunkMapper,
-                        KnowledgeGraphStore graphStore, GraphBuildFailureMapper failureMapper) {
+                        KnowledgeGraphStore graphStore, GraphBuildFailureMapper failureMapper,
+                        KnowledgeDocProductMapper bindingMapper) {
         this.documentMapper = documentMapper;
         this.chunkMapper = chunkMapper;
         this.graphStore = graphStore;
         this.failureMapper = failureMapper;
+        this.bindingMapper = bindingMapper;
+    }
+
+    public GraphService(KnowledgeDocumentMapper documentMapper, KnowledgeChunkMapper chunkMapper,
+                        KnowledgeGraphStore graphStore, GraphBuildFailureMapper failureMapper) {
+        this(documentMapper, chunkMapper, graphStore, failureMapper, null);
     }
 
     /** 兼容只读查询单测；失败记录仅在写入路径需要。 */
@@ -217,7 +227,7 @@ public class GraphService {
     private String normalizeStage(String stage) {
         if (stage == null || stage.isBlank()) return "UNKNOWN";
         return switch (stage.toUpperCase()) {
-            case "EXTRACT", "NORMALIZE", "LINK", "RELATION_VALIDATE", "WRITE", "VALIDATION", "CATALOG" -> stage.toUpperCase();
+            case "EXTRACT", "NORMALIZE", "LINK", "RELATION_VALIDATE", "WRITE", "VALIDATION", "CATALOG", "BATCH" -> stage.toUpperCase();
             default -> "UNKNOWN";
         };
     }
@@ -228,7 +238,7 @@ public class GraphService {
     }
 
     public List<GraphBuildFailureEntity> failures(String batchId, String docNo, String stage,
-                                                   String reasonCode, int limit) {
+                                                   String reasonCode, String entityKey, String relation, int limit) {
         var query = Wrappers.<GraphBuildFailureEntity>lambdaQuery()
                 .orderByDesc(GraphBuildFailureEntity::getOccurredAt)
                 .last("limit " + Math.clamp(limit, 1, 5000));
@@ -236,6 +246,12 @@ public class GraphService {
         if (docNo != null && !docNo.isBlank()) query.eq(GraphBuildFailureEntity::getDocNo, docNo);
         if (stage != null && !stage.isBlank()) query.eq(GraphBuildFailureEntity::getStage, stage);
         if (reasonCode != null && !reasonCode.isBlank()) query.eq(GraphBuildFailureEntity::getReasonCode, reasonCode);
+        // 实体标识精确匹配任一端点，避免子串把不同实体混入同一诊断结果。
+        if (entityKey != null && !entityKey.isBlank()) query.and(endpoints -> endpoints
+                .eq(GraphBuildFailureEntity::getEntityKey, entityKey)
+                .or().eq(GraphBuildFailureEntity::getNormalizedHead, entityKey)
+                .or().eq(GraphBuildFailureEntity::getNormalizedTail, entityKey));
+        if (relation != null && !relation.isBlank()) query.eq(GraphBuildFailureEntity::getRelation, relation);
         if (failureMapper == null) return List.of();
         List<GraphBuildFailureEntity> rows = failureMapper.selectList(query);
         rows.forEach(row -> {
@@ -379,6 +395,11 @@ public class GraphService {
         // 分配规则见 combinationsFor
         List<GraphEdge> combinations = allNames.isEmpty() ? List.of()
                 : withTitles(graphStore.combinationsOf(List.copyOf(allNames)));
+        List<GraphEdge> riskAndCombinations = new ArrayList<>(risks);
+        riskAndCombinations.addAll(combinations);
+        RiskSources riskSources = riskSources(riskAndCombinations);
+        risks = withVerifiedSentenceContext(risks, riskSources);
+        combinations = withVerifiedSentenceContext(combinations, riskSources);
 
         List<InteractionReport.Item> items = new ArrayList<>(inputs0.size());
         for (String input : inputs0) {
@@ -415,6 +436,7 @@ public class GraphService {
                 if (!headMine && !tailMine) {
                     continue;
                 }
+                if (!riskAppliesTo(e, key, mine, riskSources)) continue;
                 // 头的这一端是我的，对方就是尾；反之亦然。
                 // 保留 head/tail 的原始方向（CAUTION_FOR 的方向有语义），只用 counterpart 说明「哪边是对方」
                 GraphEdge withCounterpart = e
@@ -435,7 +457,8 @@ public class GraphService {
             // 这不是重复渲染：用户逐项核对时会发现每一项都指向同一个组合结论，
             // 而那正是他该得到的印象（不是 A 单独有事、也不是 B 单独有事）
             // 并把组合成员写进 chain —— 用户要看的正是「哪几样凑在一起才出的这件事」
-            mineRisks.addAll(combinationsFor(mineNames, combinations));
+            mineRisks.addAll(combinationsFor(mineNames, combinations).stream()
+                    .filter(edge -> riskAppliesTo(edge, key, mine, riskSources)).toList());
 
             // 回答里的名字用**用户自己的写法**（raw），不用图谱里的键：他问的是
             // 「鱼油软胶囊」，回一句「spu5 没有风险」既对不上号也看不懂
@@ -486,10 +509,8 @@ public class GraphService {
         // 只给风险边的话，用户会看到一条关于「深海鱼油」的警告，
         // 而他从没提过深海鱼油——看起来像答非所问。
         //
-        // **组成边排前面**，因为下面会按 limit 截断：它的条数等于用户点到的商品数
-        // （只有 PRODUCT 作头的边才是组成边），天然就少；而风险边可能几十条。
-        // 反过来排的话，一次「SPU7 有什么禁忌」正好会在第 5 条上把那条唯一的桥截掉，
-        // 剩下的全是没有来路的警告——正是这段话开头说的那种答非所问
+        // 单商品仍先放组成桥；双主体问题在来源核验后优先保留连接当前双方的关系，
+        // 不能让组成桥和单侧邻居挤掉用户实际询问的关系。
         List<GraphEdge> edges = new ArrayList<>(graphStore.compositionOf(linked));
         edges.addAll(graphStore.risksOf(List.copyOf(scope)));
         // 组合禁忌也算风险依据：用户这一句话里同时提到了某组合的全部成员时，
@@ -499,6 +520,8 @@ public class GraphService {
         if (edges.isEmpty()) {
             return List.of();
         }
+        RiskSources riskSources = riskSources(edges);
+        edges = withVerifiedSentenceContext(edges, riskSources);
 
         // 同一个切片上前几条边只是同一句话支撑的不同三元组，对检索而言是一片依据。
         // 去重放在这里而不是让调用方做：切片粒度是这一层的概念
@@ -517,12 +540,127 @@ public class GraphService {
             if (!reachableFromLinked) {
                 continue;
             }
+            if (!"CONTAINS".equals(e.relation()) && linked.stream().noneMatch(root ->
+                    riskAppliesTo(e, root, substances.stream().filter(s -> root.equals(s.rootName())).toList(), riskSources))) continue;
             unique.putIfAbsent(e.docId() + '\u0000' + e.chunkId() + '\u0000' + e.relation(),
                     chain.isEmpty() ? e : e.withChain(chain));
         }
-        return withTitles(List.copyOf(unique.values())).stream()
+        List<GraphEdge> ordered = withTitles(List.copyOf(unique.values())).stream()
+                .sorted(java.util.Comparator.comparingInt(edge -> matchesCurrentPair(edge, linked, substances) ? 0 : 1))
+                .toList();
+        List<GraphEdge> kept = ordered.stream()
                 .limit(Math.max(1, limit))
                 .toList();
+        log.info("[GraphRecall] 阶段=来源核验后候选 chunks={} pairChunks={} kept={}",
+                ordered.stream().map(GraphEdge::chunkId).toList(),
+                ordered.stream().filter(edge -> matchesCurrentPair(edge, linked, substances)).map(GraphEdge::chunkId).toList(),
+                kept.stream().map(GraphEdge::chunkId).toList());
+        return kept;
+    }
+
+    /** 同一商品的两个成分不是查询的两个独立对象；两端必须分别由不同已链接主体到达。 */
+    private static boolean matchesCurrentPair(GraphEdge edge, List<String> linked, List<Substance> substances) {
+        if ("CONTAINS".equals(edge.relation()) || edge.head() == null || edge.tail() == null
+                || edge.head().name().equals(edge.tail().name())) return false;
+        Set<String> headRoots = rootsOf(edge.head().name(), linked, substances);
+        Set<String> tailRoots = rootsOf(edge.tail().name(), linked, substances);
+        return headRoots.stream().anyMatch(head -> tailRoots.stream().anyMatch(tail -> !head.equals(tail)));
+    }
+
+    private static Set<String> rootsOf(String endpoint, List<String> linked, List<Substance> substances) {
+        Set<String> roots = new LinkedHashSet<>();
+        if (linked.contains(endpoint)) roots.add(endpoint);
+        substances.stream().filter(substance -> endpoint.equals(substance.name()) && linked.contains(substance.rootName()))
+                .map(Substance::rootName).forEach(roots::add);
+        return roots;
+    }
+
+    private record RiskSources(Map<String, KnowledgeDocumentEntity> documents,
+                               Map<String, Set<String>> products, Map<String, KnowledgeChunkEntity> chunks) { }
+
+    /** 读取存量边也核查事实源；一次批读，不在每条边上请求数据库。 */
+    private RiskSources riskSources(List<GraphEdge> edges) {
+        Set<String> docNos = edges.stream().map(GraphEdge::docId).filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Map<String, KnowledgeDocumentEntity> documents = new LinkedHashMap<>();
+        Map<String, Set<String>> products = new LinkedHashMap<>();
+        Map<String, KnowledgeChunkEntity> chunks = new LinkedHashMap<>();
+        if (!docNos.isEmpty()) {
+            documentMapper.selectList(Wrappers.<KnowledgeDocumentEntity>lambdaQuery()
+                    .in(KnowledgeDocumentEntity::getDocNo, docNos)).forEach(doc -> documents.put(doc.getDocNo(), doc));
+            if (bindingMapper != null) bindingMapper.selectList(Wrappers.<KnowledgeDocProductEntity>lambdaQuery()
+                    .in(KnowledgeDocProductEntity::getDocNo, docNos)
+                    .eq(KnowledgeDocProductEntity::getRole, KnowledgeDocProductEntity.Role.SUBJECT.name()))
+                    .forEach(binding -> products.computeIfAbsent(binding.getDocNo(), ignored -> new LinkedHashSet<>())
+                            .add("spu" + binding.getSpuId()));
+        }
+        Set<String> chunkIds = edges.stream().map(GraphEdge::chunkId).filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        if (!chunkIds.isEmpty()) chunkMapper.selectList(Wrappers.<KnowledgeChunkEntity>lambdaQuery()
+                .in(KnowledgeChunkEntity::getChunkId, chunkIds)).forEach(chunk -> chunks.put(chunk.getChunkId(), chunk));
+        return new RiskSources(Map.copyOf(documents), Map.copyOf(products), Map.copyOf(chunks));
+    }
+
+    /** 仅恢复当前同原片里的连续完整句，不把相邻条款的条件拼到该关系上。 */
+    private List<GraphEdge> withVerifiedSentenceContext(List<GraphEdge> edges, RiskSources sources) {
+        return edges.stream().map(edge -> {
+            if ("CONTAINS".equals(edge.relation())) return edge;
+            KnowledgeDocumentEntity doc = sources.documents().get(edge.docId());
+            KnowledgeChunkEntity chunk = sources.chunks().get(edge.chunkId());
+            String reason = null;
+            if (doc == null || doc.getContent() == null || chunk == null || chunk.getDocId() == null
+                    || !chunk.getDocId().equals(doc.getId()) || chunk.getContent() == null) reason = "CURRENT_DOC_CHUNK_MISMATCH";
+            else if (edge.quote() == null || edge.quote().isBlank() || edge.quoteStart() == null || edge.quoteEnd() == null
+                    || edge.quoteStart() < 0 || edge.quoteEnd() > doc.getContent().length() || edge.quoteEnd() < edge.quoteStart()
+                    || !doc.getContent().substring(edge.quoteStart(), edge.quoteEnd()).equals(edge.quote())) reason = "QUOTE_SPAN_MISMATCH";
+            if (reason != null) {
+                log.info("[Graph] 连续句上下文未恢复 doc={} chunk={} reason={}", edge.docId(), edge.chunkId(), reason);
+                return edge;
+            }
+            String content = doc.getContent();
+            int start = edge.quoteStart();
+            int end = edge.quoteEnd();
+            while (start > 0 && "。！？!?；;\n".indexOf(content.charAt(start - 1)) < 0) start--;
+            while (end < content.length() && "。！？!?；;\n".indexOf(content.charAt(end)) < 0) end++;
+            if (end < content.length() && "。！？!?；;".indexOf(content.charAt(end)) >= 0) end++;
+            String sentence = content.substring(start, end);
+            if (chunk.getCharOffset() == null || edge.quoteStart() < chunk.getCharOffset()
+                    || !chunk.getContent().contains(edge.quote()) || !chunk.getContent().contains(sentence)) {
+                log.info("[Graph] 连续句上下文未恢复 doc={} chunk={} reason=SENTENCE_OUTSIDE_CURRENT_CHUNK", edge.docId(), edge.chunkId());
+                return edge;
+            }
+            if (start != edge.quoteStart() || end != edge.quoteEnd()) log.info(
+                    "[Graph] 连续句上下文已恢复 doc={} chunk={} originalStart={} originalEnd={} start={} end={}",
+                    edge.docId(), edge.chunkId(), edge.quoteStart(), edge.quoteEnd(), start, end);
+            return new GraphEdge(edge.head(), edge.relation(), edge.effect(), edge.tail(), edge.docId(), edge.docTitle(),
+                    edge.chunkId(), start, end, sentence, edge.counterpart(), edge.chain());
+        }).toList();
+    }
+
+    private boolean riskAppliesTo(GraphEdge edge, String root, List<Substance> substances, RiskSources sources) {
+        List<String> members = combinationMembersOf(edge.head().name());
+        boolean direct = root.equals(edge.head().name()) || root.equals(edge.tail().name()) || members.contains(root);
+        List<String> chain = chainOf(substances, edge);
+        boolean combinationReachable = substances.stream().anyMatch(substance -> members.contains(substance.name()));
+        if (!direct && chain.isEmpty() && !combinationReachable) return false;
+        KnowledgeDocumentEntity document = sources.documents().get(edge.docId());
+        String quote = edge.quote();
+        String reason = null;
+        if (document == null || quote == null || quote.isBlank() || document.getContent() == null
+                || !document.getContent().contains(quote)) reason = "SOURCE_MISSING";
+        else if (Integer.valueOf(0).equals(document.getStatus())) reason = "SOURCE_DISABLED";
+        else {
+            boolean sourceProduct = sources.products().getOrDefault(edge.docId(), Set.of()).contains(root);
+            // “本品”及配方/过敏限定归产品；成分同名不能把此类边迁移到另一产品。
+            boolean productScoped = java.util.regex.Pattern.compile("本品|该产品|本产品|配方|鱼类|甲壳类|任一成分|过敏")
+                    .matcher(quote).find();
+            boolean explicitHead = members.isEmpty() ? quote.contains(edge.head().label())
+                    : members.stream().allMatch(quote::contains);
+            boolean explicitGeneric = !productScoped && explicitHead && quote.contains(edge.tail().label());
+            if (!sourceProduct && !explicitGeneric) reason = "PRODUCT_SCOPE_UNPROVEN";
+        }
+        if (reason != null) log.info("[Graph] 风险来源核查跳过 doc={} chunk={} reason={}", edge.docId(), edge.chunkId(), reason);
+        return reason == null;
     }
 
     /**

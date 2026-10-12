@@ -41,12 +41,17 @@ class AgentToolEvidenceTest {
     private static final LLMConfig LLM_CONFIG = LLMConfig.builder().model("stub").build();
 
     private static DocumentChunk chunk(String chunkId, String title) {
+        String content = switch (title) {
+            case "维生素D3说明书" -> "维生素D3每日上限为2000IU。";
+            case "药物相互作用手册" -> "与华法林同服需谨慎。";
+            default -> "原文内容";
+        };
         return DocumentChunk.builder()
                 .chunkId(chunkId)
                 .docId("doc-" + chunkId)
                 .title(title)
                 .position("《" + title + "》 > 第一章")
-                .content("原文内容")
+                .content(content)
                 .build();
     }
 
@@ -82,6 +87,9 @@ class AgentToolEvidenceTest {
         public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                                LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
                                java.util.function.Supplier<RetrievalResult> retriever) {
+            if (onChunk != null) {
+                onChunk.accept(answer);
+            }
             // steps 不能留空：Agent 用它区分 react / plan 两个出口（getSteps().isEmpty()）
             // 检索的产物由执行图回传——桩图绕开了图，就得自己调一次检索闭包，
             // 否则 Agent 会当作「本轮没有入口检索」，依据列表随之空掉
@@ -93,6 +101,10 @@ class AgentToolEvidenceTest {
     }
 
     private static Agent agent(AgentGraph graph) {
+        return agent(graph, null);
+    }
+
+    private static Agent agent(AgentGraph graph, QueryRewriter rewriter) {
         MockLLMProvider llm = new MockLLMProvider();
         return new Agent(
                 Agent.Config.builder().memoryConsolidationEnabled(false).build(),
@@ -104,7 +116,81 @@ class AgentToolEvidenceTest {
                 new UserProfileStore(),
                 ONE_ENTRY,
                 null,
-                new QueryRewriter(llm, LLM_CONFIG));
+                rewriter == null ? new QueryRewriter(llm, LLM_CONFIG) : rewriter);
+    }
+
+    @Test
+    void 全部图谱未知且证据不足时最终正文确定性明确无法判断() {
+        for (var level : List.of(yumefusaka.envoymart.agent.rag.EvidenceGate.Level.NONE,
+                yumefusaka.envoymart.agent.rag.EvidenceGate.Level.WEAK)) {
+            var response = Agent.AgentResponse.builder().reply("图谱没有收录，可以安全同服。")
+                    .evidenceLevel(level).toolExecutions(List.of(unknownInteraction(true, true))).build();
+            assertThat(Agent.enforceUnknownInteractionRefusal(response, response.getReply(), true))
+                    .contains("无法判断", "没有收录不等于安全")
+                    .doesNotContain("可以安全同服");
+        }
+    }
+
+    @Test
+    void 真实医学剥句后的出口仍必须保留明确拒答() {
+        String answer = "成分甲乙图谱都没收录。没有收录不等于安全，也不等于有冲突，因此无法就它们能否一起吃给出判断。";
+        StubGraph graph = new StubGraph(answer, List.of(unknownInteraction(true, true))) {
+            @Override
+            public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
+                                   LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
+                                   java.util.function.Supplier<RetrievalResult> retriever) {
+                return super.run(userId, message, systemPrompt, conversation, guard, onChunk, progress, null);
+            }
+        };
+        var response = agent(graph).chat("u1", "unknown-s", "成分甲和成分乙能一起吃吗", null);
+        assertThat(response.getEvidenceLevel()).isEqualTo(yumefusaka.envoymart.agent.rag.EvidenceGate.Level.NONE);
+        assertThat(response.getReply()).contains("无法判断", "没有收录不等于安全");
+    }
+
+    @Test
+    void 图谱边界保留已核验正文而失败或不可用检查不伪造边界() {
+        var level = yumefusaka.envoymart.agent.rag.EvidenceGate.Level.WEAK;
+        var partial = Agent.AgentResponse.builder().evidenceLevel(level)
+                .toolExecutions(List.of(unknownInteraction(true, false))).build();
+        assertThat(Agent.enforceUnknownInteractionRefusal(partial, "原回复", true)).startsWith("原回复")
+                .contains("仅依据本次图谱检查", "无法判断", "没有收录不等于安全");
+        for (var tool : List.of(unknownInteraction(false, true),
+                ToolExecution.builder().tool("interaction_check").success(false)
+                        .rawData(unknownInteraction(true, true).getRawData()).build())) {
+            var response = Agent.AgentResponse.builder().evidenceLevel(level).toolExecutions(List.of(tool)).build();
+            assertThat(Agent.enforceUnknownInteractionRefusal(response, "原回复", true)).isEqualTo("原回复");
+        }
+        var sufficient = Agent.AgentResponse.builder()
+                .evidenceLevel(yumefusaka.envoymart.agent.rag.EvidenceGate.Level.SUFFICIENT)
+                .toolExecutions(List.of(unknownInteraction(true, true))).build();
+        assertThat(Agent.enforceUnknownInteractionRefusal(sufficient, "原回复", true)).startsWith("原回复")
+                .contains("仅依据本次图谱检查", "无法判断", "没有收录不等于安全");
+        assertThat(Agent.enforceUnknownInteractionRefusal(sufficient, "原回复", false)).isEqualTo("原回复");
+    }
+
+    @Test
+    void 图谱结构化record与Map遵循同一拒答契约且不接受缺失found() {
+        var typed = ToolExecution.builder().tool("interaction_check").success(true)
+                .rawData(new ReportShape(true, List.of(new ItemShape(false), new ItemShape(false)))).build();
+        var response = Agent.AgentResponse.builder().evidenceLevel(yumefusaka.envoymart.agent.rag.EvidenceGate.Level.NONE)
+                .toolExecutions(List.of(typed)).build();
+        assertThat(Agent.enforceUnknownInteractionRefusal(response, "没有记录", true)).contains("无法判断");
+        response.setEvidenceLevel(yumefusaka.envoymart.agent.rag.EvidenceGate.Level.SUFFICIENT);
+        assertThat(Agent.enforceUnknownInteractionRefusal(response, "保留无称呼报告的正文", true)).isEqualTo("保留无称呼报告的正文");
+        response.setToolExecutions(List.of(typed, ToolExecution.builder().tool("interaction_check").success(true)
+                .rawData(java.util.Map.of("available", true, "items", List.of(java.util.Map.of("input", "甲")))).build()));
+        assertThat(Agent.enforceUnknownInteractionRefusal(response, "保留最新结果", true)).isEqualTo("保留最新结果");
+    }
+
+    private record ReportShape(boolean available, List<ItemShape> items) { }
+    private record ItemShape(boolean found) { }
+
+    private static ToolExecution unknownInteraction(boolean available, boolean allUnknown) {
+        return ToolExecution.builder().tool("interaction_check").success(true)
+                .rawData(java.util.Map.of("available", available, "items", List.of(
+                        java.util.Map.of("input", "成分甲", "found", false),
+                        java.util.Map.of("input", "成分乙", "found", !allUnknown))))
+                .build();
     }
 
     @Test
@@ -114,7 +200,7 @@ class AgentToolEvidenceTest {
                 .output("知识库检索结果（命中 1 条）\n\n[片段 1] 出处：《药物相互作用手册》 > 3.1\n与华法林同服需谨慎")
                 .rawData(List.of(chunk("c2", "药物相互作用手册")))
                 .build();
-        Agent agent = agent(new StubGraph("每日上限为 2000IU [1]。与华法林同服需谨慎（《药物相互作用手册》）。",
+        Agent agent = agent(new StubGraph("维生素D3每日上限为 2000IU [1]。与华法林同服需谨慎（《药物相互作用手册》）。",
                 List.of(search)));
 
         Agent.AgentResponse response = agent.chat("u1", "s1", "维生素D3和华法林能一起吃吗", null);
@@ -144,7 +230,7 @@ class AgentToolEvidenceTest {
                 .output("知识库检索结果（命中 1 条）")
                 .rawData(List.of(chunk("c1", "维生素D3说明书")))
                 .build();
-        Agent agent = agent(new StubGraph("上限为 2000IU（《维生素D3说明书》）。", List.of(search)));
+        Agent agent = agent(new StubGraph("维生素D3每日上限为 2000IU（《维生素D3说明书》）。", List.of(search)));
 
         Agent.AgentResponse response = agent.chat("u1", "s1", "维生素D3每天吃多少", null);
 
@@ -226,5 +312,53 @@ class AgentToolEvidenceTest {
         assertThat(response.getReply())
                 .as("SPU99 从没被检索到过，这是一条编造的商品")
                 .doesNotContain("SPU99");
+    }
+
+    @Test
+    void 医学流式正文只能发出审核后的内容且全剔除时拒答() {
+        String unsafe = "维生素D3每日上限为9000IU [1]。";
+        Agent agent = agent(new StubGraph(unsafe, List.of()));
+        List<String> chunks = new java.util.ArrayList<>();
+
+        var response = agent.chatStream("u1", "s1", "维生素D3每日上限是多少", null, chunks::add, null);
+
+        assertThat(response.getReply()).contains("证据不足").doesNotContain("9000IU");
+        assertThat(response.isUnsupportedStripped()).isTrue();
+        assertThat(response.getUnsupportedClaims()).contains(unsafe);
+        assertThat(chunks).containsExactly(response.getReply());
+    }
+
+    @Test
+    void 真实KG02孤立关系残句在最终正文剔除并明确拒答() {
+        String fragment = "会相互影响 [1]。";
+        var response = agent(new StubGraph(fragment, List.of()))
+                .chat("u1", "kg02-fragment", "钙与喹诺酮抗生素会相互影响吗？", null);
+        assertThat(response.getReply()).contains("证据不足").doesNotContain("会相互影响");
+        assertThat(response.getUnsupportedClaims()).contains(fragment);
+        assertThat(response.isUnsupportedStripped()).isTrue();
+    }
+
+    @Test
+    void 医学模型空答返回固定拒答() {
+        for (String answer : java.util.Arrays.asList(null, "", "  ")) {
+            Agent agent = agent(new StubGraph(answer, List.of()));
+            var response = agent.chat("u1", "s1", "镁每天吃多少？", null);
+            assertThat(response.getReply()).contains("没有可核验的医学回答");
+        }
+    }
+
+    @Test
+    void 指代追问沿用同一个医学模式完成缓冲和审核() {
+        QueryRewriter rewriter = new QueryRewriter(new MockLLMProvider(), LLM_CONFIG) {
+            @Override
+            public String rewrite(String message, List<ChatMessage> history) {
+                return "维生素D3每天吃多少？";
+            }
+        };
+        Agent agent = agent(new StubGraph("维生素D3每日上限为9000IU [1]。", List.of()), rewriter);
+        List<String> chunks = new java.util.ArrayList<>();
+        var response = agent.chatStream("u1", "s1", "那这个每天吃多少？", null, chunks::add, null);
+        assertThat(response.getReply()).contains("证据不足").doesNotContain("9000IU");
+        assertThat(chunks).containsExactly(response.getReply());
     }
 }

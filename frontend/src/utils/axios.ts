@@ -4,6 +4,13 @@ import router from '@/router'
 import { ElMessage } from 'element-plus'
 import type { ApiResponse } from '@/types/models'
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** 调用方按当前会话范围处理错误提示，避免旧请求在新页面弹提示。认证失效处理不受影响。 */
+    quietError?: boolean
+  }
+}
+
 const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
 const instance = axios.create({
@@ -41,7 +48,7 @@ instance.interceptors.response.use(
     if (res.data.code === 200) {
       return res
     }
-    ElMessage({ message: res.data.msg || '服务异常', type: 'error' })
+    if (!res.config.quietError) ElMessage({ message: res.data.msg || '服务异常', type: 'error' })
     // 抛 Error 而不是那个响应体对象：页面里写的是 `e instanceof Error ? e.message : '加载失败'`，
     // 抛普通对象会让它们**全部**退化成「加载失败」，后端那句「商品不存在或已下架」就只剩
     // 右上角一闪而过的提示，页面里留给用户重试的地方反而什么都不说。
@@ -50,18 +57,18 @@ instance.interceptors.response.use(
     error.code = res.data.code
     // 标记「这条错误已经给过用户提示」：全局兜底据此去重，
     // 否则同一个失败会先弹一次这里、再由 unhandledrejection 弹第二次
-    ;(error as Error & { __notified?: boolean }).__notified = true
+    ;(error as Error & { __notified?: boolean }).__notified = !res.config.quietError
     return Promise.reject(error)
   },
   (err) => {
-    ElMessage({ message: err.response?.data?.data || err.response?.data?.msg || '服务异常', type: 'error' })
+    if (!err.config?.quietError) ElMessage({ message: err.response?.data?.data || err.response?.data?.msg || '服务异常', type: 'error' })
     if (err.response?.status === 401) {
       const userStore = useUserStore()
       userStore.clearSession()
       router.push('/login')
     }
     // 同上：网络/HTTP 错误也标记为已提示
-    ;(err as { __notified?: boolean }).__notified = true
+    ;(err as { __notified?: boolean }).__notified = !err.config?.quietError
     return Promise.reject(err)
   }
 )

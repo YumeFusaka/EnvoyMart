@@ -287,7 +287,7 @@ public final class TripleValidator {
     }
 
     /**
-     * 组合禁忌的校验路径 —— 「两两没事、三样一起有事」这一条。
+     * 组合注意事项的校验路径：同一引文必须覆盖全部成员、尾端与逐字后果。
      * <p>
      * <b>与单跳校验的三处不同，每一处都是必须的：</b>
      * <ol>
@@ -310,6 +310,9 @@ public final class TripleValidator {
     private static Verdict validateCombination(Triple t, String docId, Compact body,
                                                List<KnowledgeChunkEntity> chunks,
                                                EntityKind tailKind) {
+        if (!GraphRelation.COMBINED_WITH.acceptsHead(EntityKind.parse(t.headKind()))) {
+            return Verdict.reject(RejectReason.VOCABULARY, "组合关系的头必须是 COMBINATION：" + candidate(t));
+        }
         List<String> members = combinationMembers(t.headName());
         if (members.size() < 2) {
             return Verdict.reject(RejectReason.MALFORMED, "组合成员少于两个：" + candidate(t));
@@ -350,14 +353,18 @@ public final class TripleValidator {
                 return Verdict.reject(RejectReason.UNANCHORED, "组合引文未覆盖成员「" + member + "」：" + candidate(t));
             }
         }
-        if (!body.anchors(tail.kind(), tailWritten, t.tailLabel())) {
-            return Verdict.reject(RejectReason.UNANCHORED, "组合尾端未在正文中出现：" + candidate(t));
+        if (!containsMember(compactQuote, tail.name())) {
+            return Verdict.reject(RejectReason.UNANCHORED, "组合引文未覆盖尾端「" + tail.name() + "」：" + candidate(t));
+        }
+        String effect = t.effect() == null ? "" : t.effect().strip();
+        if (effect.isEmpty() || effect.length() > MAX_EFFECT_CHARS || !quote.contains(effect)) {
+            return Verdict.reject(RejectReason.UNGROUNDED, "组合 effect 必须是同一引文中的非空逐字片段：" + candidate(t));
         }
 
         return Verdict.accept(new GroundedTriple(EntityKind.COMBINATION, comboKey, display,
                 GraphRelation.COMBINED_WITH, tail.kind(), tail.name(),
                 displayLabel(tail, tailWritten, t.tailLabel(), t.tailName()),
-                truncate(t.effect()), docId, chunkIdAt(chunks, span[0]), span[0], span[1], quote));
+                effect, docId, chunkIdAt(chunks, span[0]), span[0], span[1], quote));
     }
 
     /** 规范成员可能以别名出现在原文中，组合引文核对也必须沿用同一张别名表。 */

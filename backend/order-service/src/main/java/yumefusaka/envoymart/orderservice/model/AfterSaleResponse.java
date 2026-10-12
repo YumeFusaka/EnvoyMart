@@ -2,6 +2,8 @@ package yumefusaka.envoymart.orderservice.model;
 
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -9,6 +11,8 @@ import java.util.List;
 /** 售后单。金额单位「分」 */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class AfterSaleResponse {
 
     private Long id;

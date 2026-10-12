@@ -14,6 +14,9 @@ import lombok.Data;
 @Data
 @Builder(toBuilder = true)
 public class ToolResult {
+    public enum OperationState { COMMITTED, REJECTED, UNKNOWN, NOT_FOUND }
+    private OperationState operationState;
+    private boolean receiptReplayed;
     private boolean success;
     private String output;          // 文本结果
     private Object rawData;         // 结构化数据（可选）

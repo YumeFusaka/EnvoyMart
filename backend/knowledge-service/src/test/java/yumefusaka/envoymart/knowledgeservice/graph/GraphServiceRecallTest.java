@@ -7,6 +7,7 @@ import yumefusaka.envoymart.contract.GraphEdge;
 import yumefusaka.envoymart.contract.GraphNode;
 import yumefusaka.envoymart.contract.Substance;
 import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeDocumentEntity;
+import yumefusaka.envoymart.knowledgeservice.entity.KnowledgeChunkEntity;
 import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeChunkMapper;
 import yumefusaka.envoymart.knowledgeservice.mapper.KnowledgeDocumentMapper;
 
@@ -34,6 +35,8 @@ class GraphServiceRecallTest {
         // 手动初始化一次即可，避免 withTitles 的 lambdaQuery 在测试里抛「找不到 lambda 缓存」
         TableInfoHelper.initTableInfo(new org.apache.ibatis.builder.MapperBuilderAssistant(
                 new Configuration(), ""), KnowledgeDocumentEntity.class);
+        TableInfoHelper.initTableInfo(new org.apache.ibatis.builder.MapperBuilderAssistant(
+                new Configuration(), ""), KnowledgeChunkEntity.class);
     }
 
     private static GraphNode node(String name) {
@@ -42,19 +45,115 @@ class GraphServiceRecallTest {
 
     private static GraphEdge edge(String head, String tail) {
         return new GraphEdge(node(head), "INTERACTS_WITH", "可能增加出血风险", node(tail),
-                "KB-0006", null, "KB-0006_4", 402, 432, "与华法林合用时可能增加出血风险", null, List.of());
+                "KB-0006", null, "KB-0006_4", 402, 432, head + "与" + tail + "合用时可能增加出血风险", null, List.of());
     }
 
     /** 换一个 docId/chunkId 的边：否则去重键相同，无关边会被去重吞掉，测不到过滤 */
     private static GraphEdge edgeIn(String docId, String chunkId, String head, String tail) {
         return new GraphEdge(node(head), "INTERACTS_WITH", "可能增加出血风险", node(tail),
-                docId, null, chunkId, 402, 432, "与华法林合用时可能增加出血风险", null, List.of());
+                docId, null, chunkId, 402, 432, head + "与" + tail + "合用时可能增加出血风险", null, List.of());
+    }
+
+    private static KnowledgeDocumentEntity sourceDocument(String docNo, String content) {
+        var document = new KnowledgeDocumentEntity();
+        document.setDocNo(docNo);
+        document.setTitle(docNo);
+        document.setContent(content);
+        return document;
+    }
+
+    @Test
+    void KG03双主体完整2点4来源在limit前优于组成桥和单侧邻居() {
+        String query = "铁叶酸片中的铁会影响左旋多巴吸收吗？";
+        String quote = "2.4 铁剂与左旋多巴、甲状腺素合用会降低后者吸收，应间隔至少 2 小时。";
+        var target = new GraphEdge(node("铁"), "INTERACTS_WITH", "降低吸收", node("左旋多巴"),
+                "KB-0010", null, "KB-0010_5", 0, quote.length(), quote, null, List.of());
+        var bridge = new GraphEdge(new GraphNode("spu30", "铁叶酸片", "PRODUCT"), "CONTAINS", null,
+                node("铁"), "KB-0009", null, "KB-0009_0", 0, 6, "本品含铁。", null, List.of());
+        var neighbors = java.util.stream.IntStream.range(0, 4).mapToObj(index -> {
+            String text = "铁与钙存在吸收竞争。";
+            return new GraphEdge(node("铁"), "INTERACTS_WITH", "吸收竞争", node("钙"),
+                    "KB-N" + index, null, "KB-N" + index + "_0", 0, text.length(), text, null, List.of());
+        }).toList();
+        var risks = new java.util.ArrayList<>(neighbors); risks.add(target);
+        var docs = mock(KnowledgeDocumentMapper.class);
+        var documents = new java.util.ArrayList<KnowledgeDocumentEntity>();
+        for (var risk : risks) {
+            var document = sourceDocument(risk.docId(), risk.quote());
+            document.setId((long) documents.size() + 1); documents.add(document);
+        }
+        when(docs.selectList(any())).thenReturn(documents);
+        var chunks = mock(KnowledgeChunkMapper.class);
+        var current = new KnowledgeChunkEntity(); current.setDocId(documents.getLast().getId());
+        current.setChunkId(target.chunkId()); current.setContent(quote); current.setCharOffset(0);
+        when(chunks.selectList(any())).thenReturn(List.of(current));
+        var store = mock(KnowledgeGraphStore.class); when(store.isAvailable()).thenReturn(true);
+        when(store.linkEntities(any())).thenReturn(List.of("spu30", "左旋多巴"));
+        when(store.expandSubstances(anyList())).thenReturn(List.of(
+                new Substance("spu30", "铁叶酸片", "铁", "铁", "INGREDIENT", List.of("铁叶酸片", "铁")),
+                substance("左旋多巴", "左旋多巴")));
+        when(store.compositionOf(anyList())).thenReturn(List.of(bridge));
+        when(store.risksOf(anyList())).thenReturn(risks);
+        var service = new GraphService(docs, chunks, store);
+        assertThat(service.recall(query, 3)).hasSize(3).first()
+                .satisfies(edge -> {
+                    assertThat(edge.chunkId()).isEqualTo("KB-0010_5");
+                    assertThat(edge.quote()).isEqualTo(quote);
+                    assertThat(edge.chain()).containsExactly("铁叶酸片", "铁");
+                });
+        when(store.linkEntities(any())).thenReturn(List.of("spu30"));
+        assertThat(service.recall("铁叶酸片有什么注意事项？", 1)).first()
+                .satisfies(edge -> assertThat(edge.relation()).isEqualTo("CONTAINS"));
+        when(store.linkEntities(any())).thenReturn(List.of("spu30", "钙"));
+        when(store.expandSubstances(anyList())).thenReturn(List.of(
+                new Substance("spu30", "铁叶酸片", "铁", "铁", "INGREDIENT", List.of("铁叶酸片", "铁")),
+                substance("钙", "钙")));
+        assertThat(service.recall("铁叶酸片与钙会相互影响吗？", 1)).first()
+                .satisfies(edge -> assertThat(edge.chunkId()).isNotEqualTo("KB-0010_5"));
+        when(store.linkEntities(any())).thenReturn(List.of("spu30", "左旋多巴"));
+        documents.getLast().setStatus(0);
+        assertThat(service.recall(query, 10)).extracting(GraphEdge::chunkId).doesNotContain("KB-0010_5");
+    }
+
+    @Test
+    void G13从同原片连续2点4句恢复间隔不借2点3钙条件() {
+        String quote = "铁剂与左旋多巴、甲状腺素合用会降低后者吸收";
+        String body = "2.3 钙与四环素类抗生素应间隔3小时。\n2.4 " + quote + "，应间隔至少2小时。\n2.5 其它说明。";
+        var doc = sourceDocument("KB-0010", body); doc.setId(10L);
+        var chunk = new KnowledgeChunkEntity(); chunk.setDocId(10L); chunk.setChunkId("KB-0010_5");
+        chunk.setCharOffset(0); chunk.setContent(body);
+        var docs = mock(KnowledgeDocumentMapper.class); when(docs.selectList(any())).thenReturn(List.of(doc));
+        var chunks = mock(KnowledgeChunkMapper.class); when(chunks.selectList(any())).thenReturn(List.of(chunk));
+        var store = mock(KnowledgeGraphStore.class); when(store.isAvailable()).thenReturn(true);
+        when(store.linkEntities(any())).thenReturn(List.of("铁剂", "左旋多巴"));
+        when(store.expandSubstances(anyList())).thenReturn(List.of(substance("铁剂", "铁剂"), substance("左旋多巴", "左旋多巴")));
+        when(store.resolveKeys(anyList())).thenReturn(java.util.Map.of("铁剂", "铁剂", "左旋多巴", "左旋多巴"));
+        int start = body.indexOf(quote);
+        var risk = new GraphEdge(node("铁剂"), "INTERACTS_WITH", "降低吸收", node("左旋多巴"),
+                "KB-0010", null, "KB-0010_5", start, start + quote.length(), quote, null, List.of());
+        when(store.risksOf(anyList())).thenReturn(List.of(risk));
+        var service = new GraphService(docs, chunks, store);
+        GraphEdge result = service.recall("铁剂与左旋多巴", 5).getFirst();
+        assertThat(result.quote()).contains("2.4", quote, "应间隔至少2小时").doesNotContain("钙", "3小时");
+        assertThat(body.substring(result.quoteStart(), result.quoteEnd())).isEqualTo(result.quote());
+        assertThat(service.interactions(List.of("铁剂", "左旋多巴")).items().getFirst().risks().getFirst().quote())
+                .isEqualTo(result.quote());
+        chunk.setDocId(11L);
+        assertThat(service.recall("铁剂与左旋多巴", 5).getFirst().quote()).isEqualTo(quote);
+        chunk.setDocId(10L); chunk.setChunkId("OTHER");
+        assertThat(service.recall("铁剂与左旋多巴", 5).getFirst().quote()).isEqualTo(quote);
+        chunk.setChunkId("KB-0010_5");
+        when(store.risksOf(anyList())).thenReturn(List.of(new GraphEdge(risk.head(), risk.relation(), risk.effect(), risk.tail(),
+                risk.docId(), null, risk.chunkId(), 0, quote.length(), quote, null, List.of())));
+        assertThat(service.recall("铁剂与左旋多巴", 5).getFirst().quote()).isEqualTo(quote);
     }
 
     @Test
     void 与用户实体无关的边被过滤掉() {
         KnowledgeDocumentMapper documentMapper = mock(KnowledgeDocumentMapper.class);
-        when(documentMapper.selectList(any())).thenReturn(List.of());
+        when(documentMapper.selectList(any())).thenReturn(List.of(
+                sourceDocument("KB-0006", "深海鱼油与华法林合用时可能增加出血风险"),
+                sourceDocument("KB-0019", "氨基葡萄糖与华法林合用时可能增加出血风险")));
         KnowledgeGraphStore store = mock(KnowledgeGraphStore.class);
         when(store.isAvailable()).thenReturn(true);
         // 用户问的是「K2 和鱼油」——只链接到「深海鱼油」
@@ -80,7 +179,8 @@ class GraphServiceRecallTest {
     @Test
     void 命中边带上可达链() {
         KnowledgeDocumentMapper documentMapper = mock(KnowledgeDocumentMapper.class);
-        when(documentMapper.selectList(any())).thenReturn(List.of());
+        when(documentMapper.selectList(any())).thenReturn(List.of(
+                sourceDocument("KB-0006", "深海鱼油与华法林合用时可能增加出血风险")));
         KnowledgeGraphStore store = mock(KnowledgeGraphStore.class);
         when(store.isAvailable()).thenReturn(true);
         when(store.linkEntities(any())).thenReturn(List.of("深海鱼油"));
@@ -95,12 +195,13 @@ class GraphServiceRecallTest {
         assertThat(result.get(0).head().name()).isEqualTo("深海鱼油");
     }
 
-    // ==================== 组合禁忌（「两两没事、三样一起有事」） ====================
+    // ==================== 原文明示的共同服用条件 ====================
 
     private static GraphEdge combo(String members, String tail) {
         return new GraphEdge(new GraphNode("combo:" + members, members.replace("|", " + "), "COMBINATION"),
-                "COMBINED_WITH", "三者同服可能增加结石风险", node(tail),
-                "KB-0031", null, "KB-0031_2", 30, 60, "铁剂、钙剂与维生素D 三者同服可能增加结石风险",
+                "COMBINED_WITH", "在肠道吸收阶段会发生竞争并彼此抑制", node(tail),
+                "KB-0053", null, "KB-0053_0", 18, 80,
+                "钙剂、铁剂、锌三者同时补充时，在肠道吸收阶段会发生竞争并彼此抑制，建议不要同时服用，至少错开两小时。",
                 null, List.of());
     }
 
@@ -111,24 +212,22 @@ class GraphServiceRecallTest {
     /**
      * 三样都问到 —— 组合必须出现在结果里。
      * <p>
-     * 这条是本次改造的核心：{@code A}、{@code B}、{@code C} 之间一条
-     * {@code INTERACTS_WITH} 都没有（两两拆开看谁都没问题），
-     * 单跳路一个字都答不出来，只有这张「组合」边能把它说出来。
+     * 保留原文共同服用的完整条件，不对任何子集是否安全下结论。
      */
     @Test
-    void 三样都问到时组合禁忌出现在结果里() {
+    void 三样都问到时组合注意事项出现在结果里() {
         KnowledgeGraphStore store = mock(KnowledgeGraphStore.class);
         when(store.isAvailable()).thenReturn(true);
-        when(store.resolveKeys(anyList())).thenReturn(java.util.Map.of("铁剂", "铁剂", "钙", "钙", "维生素d", "维生素d"));
+        when(store.resolveKeys(anyList())).thenReturn(java.util.Map.of("铁剂", "铁剂", "钙", "钙", "锌", "锌"));
         when(store.expandSubstances(anyList())).thenReturn(List.of(
-                substance("铁剂", "铁剂"), substance("钙", "钙"), substance("维生素d", "维生素d")));
+                substance("铁剂", "铁剂"), substance("钙", "钙"), substance("锌", "锌")));
         when(store.risksOf(anyList())).thenReturn(List.of());
-        when(store.combinationsOf(anyList())).thenReturn(List.of(combo("维生素d|钙|铁剂", "肾结石患者")));
+        when(store.combinationsOf(anyList())).thenReturn(List.of(combo("钙|铁剂|锌", "锌")));
         KnowledgeDocumentMapper docMapper = mock(KnowledgeDocumentMapper.class);
-        when(docMapper.selectList(any())).thenReturn(List.of());
+        when(docMapper.selectList(any())).thenReturn(List.of(sourceDocument("KB-0053", combo("钙|铁剂|锌", "锌").quote())));
         GraphService service = new GraphService(docMapper, mock(KnowledgeChunkMapper.class), store);
 
-        var report = service.interactions(List.of("铁剂", "钙", "维生素D"));
+        var report = service.interactions(List.of("铁剂", "钙", "锌"));
 
         assertThat(report.available()).isTrue();
         assertThat(report.items())
@@ -140,14 +239,12 @@ class GraphServiceRecallTest {
     /**
      * 只问到两样 —— 组合<b>不能</b>出现。
      * <p>
-     * 这一条比上一条更要紧。组合节点 {@code combo:维生素d|钙|铁剂} 的语义是
-     * 「三样都要在场才算数」；用户只带了其中两样时，把这条风险扣在他手上，
-     * 他会得到一个与现实不符的结论（他分开吃、以为规避了，其实风险与第三样有关）。
+     * 组合节点只支持原文所列整组条件，不能把缺成员的输入当成完整组命中。
      * <b>按「相交」匹配就是把一条条件边当成无条件边</b> —— 这正是只加
      * {@code COMBINATION_RELATION} 到无向匹配里会犯的错。
      */
     @Test
-    void 只问到组合的一部分时不报组合禁忌() {
+    void 只问到组合的一部分时不报完整组注意事项() {
         KnowledgeGraphStore store = mock(KnowledgeGraphStore.class);
         when(store.isAvailable()).thenReturn(true);
         when(store.resolveKeys(anyList())).thenReturn(java.util.Map.of("铁剂", "铁剂", "钙", "钙"));

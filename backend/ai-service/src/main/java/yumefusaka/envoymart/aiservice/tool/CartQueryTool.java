@@ -34,6 +34,8 @@ public class CartQueryTool implements Tool {
         return ToolDefinition.builder()
                 .name("cart_query")
                 .description("查询当前用户购物车里的全部商品：名称、规格、单价、数量、小计与是否可购买。"
+                        + "结果按实际列表顺序标注候选[0]、候选[1]，每条带购物车行 ID（id）与 SKU（skuId）。"
+                        + "后续 cart_update / cart_remove 的 cartItemId 必须使用该条 id，不能使用 skuId。"
                         + "用户问「我购物车里有什么」「购物车多少钱」「这个加入购物车了吗」时使用。"
                         + "购物车为空时返回空列表，如实告诉用户购物车是空的，不要编造条目。")
                 .parameters(Map.of())
@@ -48,6 +50,7 @@ public class CartQueryTool implements Tool {
             if (items == null || items.isEmpty()) {
                 return ToolResult.builder().success(true)
                         .output("购物车是空的。")
+                        .rawData(List.of())
                         .build();
             }
 
@@ -55,8 +58,11 @@ public class CartQueryTool implements Tool {
                     .append(items.size()).append(" 种商品：\n");
             long total = 0L;
             int unavailable = 0;
-            for (AgentCartItem item : items) {
-                sb.append("  · ").append(item.getName());
+            for (int index = 0; index < items.size(); index++) {
+                AgentCartItem item = items.get(index);
+                // 候选序号与 rawData 顺序一致，避免模型把 SKU 或展示序号当作购物车行 ID。
+                sb.append("  · 候选[").append(index).append("] 行ID=").append(item.getId())
+                        .append(" SKU=").append(item.getSkuId()).append("：").append(item.getName());
                 if (item.getSpecText() != null && !item.getSpecText().isBlank()) {
                     sb.append("（").append(item.getSpecText()).append("）");
                 }

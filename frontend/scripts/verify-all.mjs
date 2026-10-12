@@ -24,8 +24,9 @@
  *   node scripts/verify-all.mjs --list       # 只列要跑哪些，不动手
  */
 import { spawnSync } from 'node:child_process'
-import { readdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { readdirSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -41,6 +42,7 @@ const T1_CONTRACT = [
   'verify-failure-recovery.mjs',
   'verify-persistence-restart.mjs',
   'verify-permission-matrix.mjs',
+  'verify-approval-redis-boundaries.mjs',
 ]
 
 /** 不是验收脚本的：夹具采集与截图工具，混进来只会让人以为它挂了；还有它自己 */
@@ -50,6 +52,21 @@ const args = process.argv.slice(2)
 const withSlow = args.includes('--slow')
 const listOnly = args.includes('--list')
 const onlyArg = args.find((a) => a.startsWith('--only='))
+const apiEvidence = args.find((arg) => arg.startsWith('--api-evidence='))?.slice('--api-evidence='.length)
+const receiptCapture = args.find((arg) => arg.startsWith('--write-receipts-capture='))?.slice('--write-receipts-capture='.length)
+const receiptRestart = args.find((arg) => arg.startsWith('--write-receipts-restart='))?.slice('--write-receipts-restart='.length)
+const paymentCapture = args.find((arg) => arg.startsWith('--payment-callback-capture='))?.slice('--payment-callback-capture='.length)
+const refundCapture = args.find((arg) => arg.startsWith('--refund-retry-capture='))?.slice('--refund-retry-capture='.length)
+const approvalCapture = args.find((arg) => arg.startsWith('--approval-recovery-capture='))?.slice('--approval-recovery-capture='.length)
+const approvalRestart = args.find((arg) => arg.startsWith('--approval-recovery-restart='))?.slice('--approval-recovery-restart='.length)
+const approvalRedisEvidenceArg = args.find((arg) => arg.startsWith('--approval-redis-evidence='))?.slice('--approval-redis-evidence='.length)
+const approvalRedisEvidence = approvalRedisEvidenceArg ? resolve(approvalRedisEvidenceArg) : null
+const aiPublicCapture = args.find((arg) => arg.startsWith('--ai-public-capture='))?.slice('--ai-public-capture='.length)
+const pageWriteCapture = args.find((arg) => arg.startsWith('--page-write-capture='))?.slice('--page-write-capture='.length)
+const persistenceBaseline = args.find((arg) => arg.startsWith('--persistence-baseline='))?.slice('--persistence-baseline='.length)
+const seataEvidence = args.find((arg) => arg.startsWith('--seata-evidence='))?.slice('--seata-evidence='.length)
+const firstCouponEvidence = args.find((arg) => arg.startsWith('--seata-first-coupon='))?.slice('--seata-first-coupon='.length)
+const projectionRecoveryEvidence = args.find((arg) => arg.startsWith('--projection-recovery-evidence='))?.slice('--projection-recovery-evidence='.length)
 const only = onlyArg
   ? onlyArg
       .slice('--only='.length)
@@ -110,6 +127,15 @@ console.log('')
 
 const results = []
 const startedAt = Date.now()
+const runId = randomUUID()
+const evidenceDirectory = resolve(HERE, '../.evidence')
+mkdirSync(evidenceDirectory, { recursive: true })
+const evidencePath = resolve(evidenceDirectory, 'verify-all-' + runId + '.json')
+function saveEvidence() {
+  writeFileSync(evidencePath, JSON.stringify({ version: 1, runId, startedAt: new Date(startedAt).toISOString(),
+    updatedAt: new Date().toISOString(), results: results.map(({ script, ok, counts, seconds, output, timedOut, status }) =>
+      ({ script, ok, counts, seconds, output, timedOut, status })) }, null, 2))
+}
 
 for (const [index, script] of scripts.entries()) {
   const label = `[${index + 1}/${scripts.length}] ${script}`
@@ -117,7 +143,25 @@ for (const [index, script] of scripts.entries()) {
   const began = Date.now()
   // stdout 也收进来（而不是 inherit）：失败时只把失败那个的输出打出来，
   // 二十几个脚本各打几百行的话，真正的红在哪一行要靠翻很久
-  const run = spawnSync('node', [script], {
+  let scriptArgs = []
+  if (script === 'verify-public-api-contracts.mjs' && apiEvidence) scriptArgs = ['--evidence=' + apiEvidence]
+  if (script === 'verify-write-operation-receipts.mjs' && receiptCapture) scriptArgs = ['--compare=' + receiptCapture, ...(receiptRestart ? ['--restart-evidence=' + receiptRestart] : [])]
+  if (script === 'verify-payment-callback-live.mjs' && paymentCapture) scriptArgs = ['--compare=' + paymentCapture]
+  if (script === 'verify-refund-retry-live.mjs' && refundCapture) scriptArgs = ['--compare=' + refundCapture]
+  if (script === 'verify-approval-recovery-live.mjs' && approvalCapture) scriptArgs = ['--compare=' + approvalCapture, ...(approvalRestart ? ['--restart-evidence=' + approvalRestart] : [])]
+  if (script === 'verify-approval-redis-boundaries.mjs' && approvalRedisEvidence) scriptArgs = ['--evidence=' + approvalRedisEvidence]
+  if (script === 'verify-ai-public-api-live.mjs' && aiPublicCapture) scriptArgs = ['--compare=' + aiPublicCapture]
+  if (script === 'verify-platform-writes-ui.mjs' && pageWriteCapture) scriptArgs = ['--compare=' + pageWriteCapture]
+  if (script === 'verify-persistence-restart.mjs' && persistenceBaseline) scriptArgs = ['--compare', '--baseline=' + persistenceBaseline]
+  if (seataEvidence && [
+    'verify-write-receipt-phase1.mjs',
+    'verify-write-receipt-seata.mjs',
+    'verify-write-receipt-seata-late-coupon.mjs',
+    'verify-write-receipt-seata-coupon-rollback.mjs',
+  ].includes(script)) scriptArgs = ['--compare=' + seataEvidence]
+  if (script === 'verify-write-receipt-first-coupon.mjs' && firstCouponEvidence) scriptArgs = ['--compare=' + firstCouponEvidence]
+  if (script === 'verify-product-projection-recovery.mjs' && projectionRecoveryEvidence) scriptArgs = ['--compare=' + projectionRecoveryEvidence, '--require-both']
+  const run = spawnSync('node', [script, ...scriptArgs], {
     cwd: HERE,
     encoding: 'utf8',
     timeout: SLOW.includes(script) ? TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
@@ -130,6 +174,7 @@ for (const [index, script] of scripts.entries()) {
   const ok = run.status === 0 && !timedOut
 
   results.push({ script, ok, counts, seconds, output, timedOut, status: run.status })
+  saveEvidence()
 
   if (ok) {
     console.log(
@@ -152,6 +197,7 @@ const assertions = results.reduce(
 )
 const untallied = results.filter((r) => !r.counts)
 const totalSeconds = ((Date.now() - startedAt) / 1000).toFixed(1)
+console.log('逐脚本运行证据：' + evidencePath)
 
 console.log(`\n${'='.repeat(72)}`)
 console.log('全链路验收汇总')

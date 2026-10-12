@@ -2,6 +2,7 @@ package yumefusaka.envoymart.aiservice.rag;
 
 import lombok.extern.slf4j.Slf4j;
 import yumefusaka.envoymart.agent.graph.GraphRelation;
+import yumefusaka.envoymart.agent.graph.EntityNames;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
 import yumefusaka.envoymart.agent.rag.Retriever;
 import yumefusaka.envoymart.aiservice.client.KnowledgeClient;
@@ -60,7 +61,40 @@ public class GraphEvidenceRetriever implements Retriever {
             return List.of();
         }
 
-        return edges.stream().map(GraphEvidenceRetriever::toChunk).toList();
+        List<DocumentChunk> chunks = edges.stream().map(edge -> toChunk(edge).toBuilder()
+                .graphQueryMatched(matchesCurrentPair(query, edge) ? Boolean.TRUE : null).build()).toList();
+        log.info("[GraphRecall] 阶段=图谱适配 chunks={} pairChunks={}",
+                chunks.stream().map(DocumentChunk::getChunkId).toList(),
+                chunks.stream().filter(chunk -> Boolean.TRUE.equals(chunk.getGraphQueryMatched()))
+                        .map(DocumentChunk::getChunkId).toList());
+        return chunks;
+    }
+
+    /** 来源资格由召回服务核验；此处只认原查询中的双方名称及明确的商品到端点可达链，不猜别名。 */
+    private static boolean matchesCurrentPair(String query, GraphEdge edge) {
+        if ("CONTAINS".equals(edge.relation()) || edge.head() == null || edge.tail() == null
+                || edge.docId() == null || edge.docId().isBlank() || edge.chunkId() == null || edge.chunkId().isBlank()
+                || edge.quote() == null || edge.quote().isBlank()) return false;
+        String normalized = EntityNames.normalize(query);
+        String head = EntityNames.normalize(edge.head().name()), tail = EntityNames.normalize(edge.tail().name());
+        if (head.isEmpty() || tail.isEmpty() || head.equals(tail)) return false;
+        boolean headNamed = namesEndpoint(normalized, edge.head());
+        boolean tailNamed = namesEndpoint(normalized, edge.tail());
+        if (edge.chain() != null && edge.chain().size() > 1 && named(normalized, edge.chain().getFirst())) {
+            String endpoint = EntityNames.normalize(edge.chain().getLast());
+            if (endpoint.equals(head) || endpoint.equals(EntityNames.normalize(edge.head().label()))) headNamed = true;
+            if (endpoint.equals(tail) || endpoint.equals(EntityNames.normalize(edge.tail().label()))) tailNamed = true;
+        }
+        return headNamed && tailNamed;
+    }
+
+    private static boolean namesEndpoint(String query, yumefusaka.envoymart.contract.GraphNode node) {
+        return named(query, node.name()) || named(query, node.label());
+    }
+
+    private static boolean named(String query, String value) {
+        String name = EntityNames.normalize(value);
+        return !name.isEmpty() && query.contains(name);
     }
 
     /**

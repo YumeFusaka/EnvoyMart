@@ -19,6 +19,7 @@ import yumefusaka.envoymart.agent.llm.PlanStep;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
+import yumefusaka.envoymart.agent.rag.MedicalEvidenceVerifier;
 import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolProgressListener;
@@ -161,7 +162,7 @@ public class AgentGraph {
      * 而那正是规划节点已经在判断的事。把判断放回节点里，就不必为了省一次检索
      * 再多花一次模型调用（见 {@code LLMProvider#planWithIntent}）。
      *
-     * @param retriever 真正执行检索的闭包；只在规划判定 needRetrieval=true 时被调用一次
+     * @param retriever 真正执行检索的闭包；模型要求检索或本轮显式询问知识时被调用一次
      */
     public GraphResult run(String userId, String message, String systemPrompt, List<ChatMessage> conversation,
                            LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
@@ -268,29 +269,8 @@ public class AgentGraph {
         // 单独再问一次模型等于为省一次检索多花一次调用
         yumefusaka.envoymart.agent.llm.PlanWithIntent planned =
                 llmProvider.planWithIntent(ctx.message(), toolRegistry.listDefinitions(), context);
-        List<PlanStep> plan = compilePlan(filterRegistered(planned.plan()), ctx, ctx.planId());
+        List<PlanStep> plan = compileAndRepairPlan(planned.plan(), ctx, ctx.planId(), context);
         boolean needRetrieval = planned.needRetrieval();
-        // 计划里引用了「本步或更晚的步骤」= 缺了一步。这是模型最典型的一种漏步：
-        // 用户说「先搜一下再把它加购」，它只写了加购那步、参数写成 $0.skuId 指望
-        // 前面的搜索「本来就在」。
-        //
-        // 只重规划一次、且把话说清楚，不做更复杂的自动补步：该补哪一步取决于
-        // 「哪个工具能产出这个字段」，而那是模型的判断——由我们猜，猜错了会补出一个
-        // 用户没要的调用；由模型改，它手上有完整的工具表。
-        if (hasUnresolvableReference(plan) && ctx.guard().allowPlanRound()) {
-            log.info("[Graph] 计划含无法解析的引用（引用了本步或更晚的步骤），带着说明重规划一次");
-            String hint = context + """
-
-                    【重要】上一次的计划里，有步骤的参数写成了 "$N.字段" 但 N 不小于那一步自己的序号。
-                    那意味着「产出这个字段的步骤没有写进计划」。
-                    请把产出该值的步骤补进前面（例如先 product_search 拿到 skuId，再 cart_add 引用它），
-                    并把引用指向那个步骤的正确序号。""";
-            List<PlanStep> repaired = compilePlan(filterRegistered(
-                    llmProvider.plan(ctx.message(), toolRegistry.listDefinitions(), hint)), ctx, ctx.planId());
-            if (!hasUnresolvableReference(repaired)) {
-                plan = repaired;
-            }
-        }
         log.debug("[Graph] plan: {}", plan.stream().map(PlanStep::getTool).toList());
         // 首轮意图只在这里写一次：planNode 只在图的入口被调用，重规划走的是
         // replanNode，不会回到这里。于是「冻结」是结构保证的，不靠一个 if 判断
@@ -318,6 +298,11 @@ public class AgentGraph {
     private Map<String, Object> retrieveNode(GraphContext ctx, GraphState state) {
         ctx.progress().throwIfCancelled();
         boolean need = Boolean.TRUE.equals(state.get(KEY_NEED_RETRIEVAL, Boolean.TRUE));
+        boolean required = requiresKnowledgeRetrieval(ctx.message());
+        if (!need && required) {
+            log.info("[Graph] 本轮执行入口检索（显式知识/医疗问题覆盖规划无需检索判定）");
+            need = true;
+        }
         List<PlanStep> plan = state.get(KEY_PLAN, List.<PlanStep>of());
         if (!need) {
             // 跳过检索也要把「为什么没检索」写进 prompt：否则模型看到的是一个没有知识段的
@@ -342,24 +327,38 @@ public class AgentGraph {
         return updates(KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
     }
 
-    /**
-     * 计划里有没有「解析不出来」的引用 —— 引用的下标不小于它自己所在的下标。
-     * <p>
-     * 这类引用的共同点是<b>那一步还没跑、也不会有值</b>。它不会在规划阶段报错，
-     * 只会在执行时被原样传给工具，然后以两种难看的方式失败：integer 参数抛
-     * {@code NumberFormatException} 并把 JVM 原文转给用户；字符串参数把占位句
-     * 当值用（收货人填成「待用户提供」）。在这里判出来，才有机会让模型补上那一步。
-     */
-    private static boolean hasUnresolvableReference(List<PlanStep> plan) {
-        for (int i = 0; i < plan.size(); i++) {
-            for (String reference : referencesOf(plan.get(i).getArguments())) {
-                int referenced = Integer.parseInt(reference);
-                if (referenced >= i) {
-                    return true;
-                }
-            }
+    /** 显式证据请求不能被规划器的省略判断抹掉；只读本轮原话，不把历史当作本轮证据。 */
+    private static boolean requiresKnowledgeRetrieval(String message) {
+        return MedicalEvidenceVerifier.isMedicalQuestion(message)
+                || (message != null && message.matches("(?s).*(知识库|知识图谱|图谱|原文|引用|溯源|说明书|政策|规则|条款|规定|成分|用量|禁忌).*"));
+    }
+
+    /** 编译错误驱动修复，不能再检查被编译器置空的计划；每次候选最多修复一次。 */
+    private List<PlanStep> compileAndRepairPlan(List<PlanStep> input, GraphContext ctx,
+                                               String planId, String context) {
+        List<PlanStep> plan = compilePlan(input, ctx, planId);
+        String rejection = ctx.planError().get();
+        if (rejection == null) {
+            return plan;
         }
-        return false;
+        if (!ctx.guard().allowPlanRound()) {
+            log.warn("[Graph] 计划修复预算不足，已阻断执行 原因={}", rejection);
+            return List.of();
+        }
+        ctx.progress().throwIfCancelled();
+        log.info("[Graph] 计划校验失败，带拒绝原因修复一次 原因={}", rejection);
+        String hint = context + "\n\n【计划校验失败】" + rejection + "\n" + """
+                请重新给出完整可执行计划，保留用户目标，仅使用已注册工具。
+                dependsOn 和 $N 引用必须指向本轮计划中更早的真实步骤；缺少产出该值的步骤时补在前面。
+                商品候选与规格可写为 $0[0].skus[1].skuId；多商品或多规格不得省略下标，不能猜编号。
+                不要仅删除非法步骤后沿用旧引用序号；重新核对整份计划的依赖和字段引用。
+                """;
+        plan = compilePlan(llmProvider.plan(ctx.message(), toolRegistry.listDefinitions(), hint), ctx, planId);
+        if (plan.isEmpty() && ctx.planError().get() == null) {
+            return rejectPlan(ctx, "计划修复未给出可执行步骤");
+        }
+        log.info("[Graph] 计划修复结束 有效={} 步骤数={}", ctx.planError().get() == null, plan.size());
+        return plan;
     }
 
     /**
@@ -369,6 +368,7 @@ public class AgentGraph {
      * 由解析器再次校验。
      */
     private List<PlanStep> compilePlan(List<PlanStep> input, GraphContext ctx, String planId) {
+        ctx.planError().set(null);
         if (input == null || input.isEmpty()) {
             return List.of();
         }
@@ -377,26 +377,31 @@ public class AgentGraph {
         for (int i = 0; i < input.size(); i++) {
             PlanStep step = input.get(i);
             if (step == null || step.getTool() == null || step.getTool().isBlank()) {
-                ctx.planError().compareAndSet(null, "计划包含空工具步骤");
-                return List.of();
+                return rejectPlan(ctx, "计划包含空工具步骤");
+            }
+            if (toolRegistry.get(step.getTool()).isEmpty()) {
+                return rejectPlan(ctx, "步骤 " + i + " 使用了未注册工具");
             }
             LinkedHashSet<Integer> dependencies = new LinkedHashSet<>();
             if (step.getDependsOn() != null) {
                 for (Integer dependency : step.getDependsOn()) {
                     if (dependency == null || dependency < 0 || dependency >= i) {
-                        ctx.planError().compareAndSet(null, "步骤 " + i + " 的 dependsOn 指向了非法步骤");
-                        return List.of();
+                        return rejectPlan(ctx, "步骤 " + i + " 的 dependsOn 指向了非法步骤");
                     }
                     dependencies.add(dependency);
                 }
             }
             Map<String, Integer> bindings = new LinkedHashMap<>();
-            for (Reference reference : referencesDetailedOf(step.getArguments())) {
+            List<Reference> references;
+            try {
+                references = referencesDetailedOf(step.getArguments());
+            } catch (IllegalArgumentException e) {
+                return rejectPlan(ctx, "步骤 " + i + " 包含非法字段引用或超范围下标");
+            }
+            for (Reference reference : references) {
                 int referenced = reference.stepIndex();
                 if (referenced < 0 || referenced >= input.size() || referenced >= i) {
-                    ctx.planError().compareAndSet(null,
-                            "步骤 " + i + " 引用了不存在或未来的步骤 $" + referenced);
-                    return List.of();
+                    return rejectPlan(ctx, "步骤 " + i + " 引用了不存在或未来的步骤 $" + referenced);
                 }
                 dependencies.add(referenced);
                 bindings.put(reference.raw(), referenced);
@@ -404,8 +409,7 @@ public class AgentGraph {
             // operationId 属于服务端请求边界，不接受模型自定义值；否则固定 ID 会绕过本次请求 nonce。
             String operationId = operationId(ctx, planId, i);
             if (!operationIds.add(operationId)) {
-                ctx.planError().compareAndSet(null, "计划包含重复 operationId：" + operationId);
-                return List.of();
+                return rejectPlan(ctx, "计划包含重复操作标识");
             }
             compiled.add(step.toBuilder()
                     .dependsOn(List.copyOf(dependencies))
@@ -416,33 +420,41 @@ public class AgentGraph {
         return List.copyOf(compiled);
     }
 
+    private static List<PlanStep> rejectPlan(GraphContext ctx, String reason) {
+        ctx.planError().set(reason);
+        log.warn("[Graph] 计划已拒绝 原因={}", reason);
+        return List.of();
+    }
+
     private static String operationId(GraphContext ctx, String planId, int stepIndex) {
         String session = ctx.sessionId() == null || ctx.sessionId().isBlank() ? "anonymous" : ctx.sessionId();
         return session + ":" + planId + ":step-" + stepIndex;
-    }
-
-    /** 递归找出参数里所有 {$N} 引用的下标（字符串、列表、对象三种形态都要下钻） */
-    private static List<String> referencesOf(Object value) {
-        List<String> found = new ArrayList<>();
-        if (value instanceof String text) {
-            java.util.regex.Matcher m = STEP_REF.matcher(text);
-            while (m.find()) {
-                found.add(m.group(1));
-            }
-        } else if (value instanceof List<?> list) {
-            list.forEach(item -> found.addAll(referencesOf(item)));
-        } else if (value instanceof Map<?, ?> map) {
-            map.values().forEach(item -> found.addAll(referencesOf(item)));
-        }
-        return found;
     }
 
     private static List<Reference> referencesDetailedOf(Object value) {
         List<Reference> found = new ArrayList<>();
         if (value instanceof String text) {
             java.util.regex.Matcher matcher = STEP_REF.matcher(text);
+            StringBuilder remainder = new StringBuilder();
             while (matcher.find()) {
+                if (matcher.end() < text.length()) {
+                    char next = text.charAt(matcher.end());
+                    if (next == '[' || (next == '.' && matcher.end() + 1 < text.length()
+                            && (text.charAt(matcher.end() + 1) == '.'
+                            || Character.isDigit(text.charAt(matcher.end() + 1))))) {
+                        throw new IllegalArgumentException("非法引用路径");
+                    }
+                }
+                java.util.regex.Matcher path = REF_PATH_TOKEN.matcher(matcher.group(2));
+                while (path.find()) {
+                    if (path.group(2) != null) Integer.parseInt(path.group(2));
+                }
                 found.add(new Reference(Integer.parseInt(matcher.group(1)), matcher.group()));
+                matcher.appendReplacement(remainder, "");
+            }
+            matcher.appendTail(remainder);
+            if (STEP_REF_MARKER.matcher(remainder).find()) {
+                throw new IllegalArgumentException("不完整字段引用");
             }
         } else if (value instanceof List<?> list) {
             list.forEach(item -> found.addAll(referencesDetailedOf(item)));
@@ -505,15 +517,17 @@ public class AgentGraph {
      */
     private Map<String, Object> evaluateNode(GraphContext ctx, GraphState state) {
         List<GraphStep> steps = state.get(KEY_STEPS, List.<GraphStep>of());
+        int round = state.get(KEY_ROUND, 1);
 
         boolean blocked = steps.stream()
+                .filter(step -> step.getRound() == round)
                 .anyMatch(step -> !step.isOptional() && (!step.isSuccess() || step.isNoData()));
         // 还有预算就允许再规划一轮，否则直接作答
         boolean canReplan = blocked && ctx.guard().allowPlanRound();
 
         log.debug("[Graph] evaluate blocked={} canReplan={} {}", blocked, canReplan, ctx.guard().summary());
 
-        return updates(KEY_ROUND, state.get(KEY_ROUND, 1) + 1,
+        return updates(KEY_ROUND, round + 1,
                 KEY_STAGE, canReplan ? TaskStage.PLANNING : TaskStage.CHECKING,
                 KEY_ROUTE, canReplan ? ROUTE_REPLAN : ROUTE_ANSWER);
     }
@@ -522,11 +536,16 @@ public class AgentGraph {
     private Map<String, Object> replanNode(GraphContext ctx, GraphState state) {
         // 重规划是一次真实计费的模型调用，取消后不该再发起
         ctx.progress().throwIfCancelled();
-        ctx.planError().set(null);
         List<GraphStep> steps = state.get(KEY_STEPS, List.<GraphStep>of());
-        List<PlanStep> plan = compilePlan(filterRegistered(replan(ctx, steps)), ctx, ctx.planId());
-        log.debug("[Graph] replanned: {}", plan.stream().map(PlanStep::getTool).toList());
+        int round = state.get(KEY_ROUND, 1);
+        List<PlanStep> plan = compileAndRepairPlan(replan(ctx, steps), ctx,
+                ctx.planId() + ":round-" + round, planContext(ctx)
+                        + "\n已执行的步骤（不得重复已完成的写操作）：\n" + traceOf(steps));
+        // $N 只指向本轮计划，不能取同下标的历史输出；诊断与最终合成仍保留完整轨迹。
+        ctx.stepOutputs().clear();
+        log.info("[Graph] 重规划 round={} steps={} previousSteps={}", round, plan.size(), steps.size());
         Map<String, Object> result = updates(KEY_PLAN, plan,
+                KEY_PLAN_ERROR, ctx.planError().get() == null ? "" : ctx.planError().get(),
                 KEY_STAGE, plan.isEmpty() ? TaskStage.CHECKING : TaskStage.EXECUTING,
                 KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
         if (ctx.planError().get() != null) {
@@ -698,7 +717,7 @@ public class AgentGraph {
     /** 递归检查参数中是否仍残留未解析的步骤引用。 */
     private static boolean hasUnresolvedReference(Object value) {
         if (value instanceof String text) {
-            return STEP_REF.matcher(text).find();
+            return STEP_REF_MARKER.matcher(text).find();
         }
         if (value instanceof List<?> list) {
             return list.stream().anyMatch(AgentGraph::hasUnresolvedReference);
@@ -735,9 +754,13 @@ public class AgentGraph {
         return value;
     }
 
-    /** 引用语法：{@code $N.field}（N 是更早步骤的序号） */
+    /** 引用语法：前置步骤 + 任意嵌套字段/列表路径，完整匹配避免把后缀当成普通文本。 */
     private static final java.util.regex.Pattern STEP_REF =
-            java.util.regex.Pattern.compile("\\$(\\d+)(?:\\[(\\d+)])?\\.([A-Za-z_][A-Za-z0-9_]*)");
+            java.util.regex.Pattern.compile("\\$(\\d+)((?:\\[\\d+])*(?:\\.[A-Za-z_][A-Za-z0-9_]*(?:\\[\\d+])*)+)");
+    private static final java.util.regex.Pattern STEP_REF_MARKER =
+            java.util.regex.Pattern.compile("\\$-?\\d+");
+    private static final java.util.regex.Pattern REF_PATH_TOKEN =
+            java.util.regex.Pattern.compile("\\.([A-Za-z_][A-Za-z0-9_]*)|\\[(\\d+)]");
 
     /**
      * 把整串就是一个引用的值换成<b>它原本的类型</b>，而不是拼成字符串。
@@ -749,7 +772,7 @@ public class AgentGraph {
     private Object resolveString(String text, GraphContext ctx, int currentIndex) {
         java.util.regex.Matcher whole = STEP_REF.matcher(text);
         if (whole.matches()) {
-            return lookup(ctx, Integer.parseInt(whole.group(1)), indexOf(whole), whole.group(3), text, currentIndex);
+            return lookup(ctx, Integer.parseInt(whole.group(1)), whole.group(2), text, currentIndex);
         }
         // 混合文本（如 "订单 $0.orderNo 的物流"）：逐段替换，得到的仍是字符串
         StringBuilder sb = new StringBuilder();
@@ -759,7 +782,7 @@ public class AgentGraph {
         while (m.find()) {
             any = true;
             sb.append(text, last, m.start());
-            Object value = lookup(ctx, Integer.parseInt(m.group(1)), indexOf(m), m.group(3), m.group(), currentIndex);
+            Object value = lookup(ctx, Integer.parseInt(m.group(1)), m.group(2), m.group(), currentIndex);
             sb.append(value);
             last = m.end();
         }
@@ -774,12 +797,7 @@ public class AgentGraph {
      * 取值。取不到时<b>返回原串</b>（并记一条日志）而不是 null 或空串——
      * 让工具带着那串没解析出来的文本失败，比带着一个「参数存在但是空」的谜面失败好排查。
      */
-    private static int indexOf(java.util.regex.Matcher matcher) {
-        return matcher.group(2) == null ? -1 : Integer.parseInt(matcher.group(2));
-    }
-
-    private Object lookup(GraphContext ctx, int stepIndex, int itemIndex,
-                          String field, String raw, int currentIndex) {
+    private Object lookup(GraphContext ctx, int stepIndex, String path, String raw, int currentIndex) {
         if (stepIndex >= currentIndex) {
             log.warn("[Graph] 步骤 {} 引用了不早于自己的步骤 {}（{}），保持原样", currentIndex, stepIndex, raw);
             return raw;
@@ -789,12 +807,28 @@ public class AgentGraph {
             log.warn("[Graph] 步骤 {} 引用的 {} 无可取值（第 {} 步没有成功输出）", currentIndex, raw, stepIndex);
             return raw;
         }
-        Object value = readField(source, itemIndex, field);
+        Object value = readPath(source, path);
         if (value == null) {
-            log.warn("[Graph] 步骤 {} 引用的字段 {}.{} 不存在", currentIndex, stepIndex, field);
+            log.warn("[Graph] 步骤 {} 的引用无法取值 来源步骤={} 原因=字段缺失、下标越界或列表选择不唯一",
+                    currentIndex, stepIndex);
             return raw;
         }
         return value;
+    }
+
+    /** 逐层读取，不把列表转成字符串；任一层失败保留整条引用供执行准入阻断。 */
+    private static Object readPath(Object source, String path) {
+        Object current = source;
+        java.util.regex.Matcher token = REF_PATH_TOKEN.matcher(path);
+        while (token.find() && current != null) {
+            if (token.group(1) != null) {
+                current = readField(current, -1, token.group(1));
+            } else {
+                int index = Integer.parseInt(token.group(2));
+                current = current instanceof List<?> list && index < list.size() ? list.get(index) : null;
+            }
+        }
+        return current;
     }
 
     /**
@@ -805,6 +839,9 @@ public class AgentGraph {
      * （{@code getXxx}/{@code isXxx}）与 record 的访问器，两者覆盖了本项目全部 DTO 形态。
      */
     private static Object readField(Object source, int itemIndex, String field) {
+        if (source == null) {
+            return null;
+        }
         // 未带下标时只有单元素列表才安全；多元素列表禁止默认取第一项，
         // 否则双商品任务会静默把第二个写操作绑定到第一个 SKU。
         if (source instanceof List<?> list) {
@@ -842,7 +879,7 @@ public class AgentGraph {
 
     private void invokeBatch(List<PlanStep> plan, List<Integer> batch, int round, GraphContext ctx,
                              List<GraphStep> steps) {
-        List<Future<GraphStep>> futures = new ArrayList<>(batch.size());
+        List<Future<StepResult>> futures = new ArrayList<>(batch.size());
         for (Integer index : batch) {
             PlanStep step = plan.get(index);
             // 工具在这里换到别的线程上跑。工具内部发起的跨服务调用要能带上请求上下文，
@@ -857,7 +894,21 @@ public class AgentGraph {
             try {
                 // 必须带超时：下游工具卡住时裸 get() 会无限期占着请求线程。
                 // 超时后按"该步骤失败"处理，让图继续走 evaluate，而不是把整轮对话拖死。
-                batchResults.add(futures.get(i).get(STEP_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+                StepResult accepted = futures.get(i).get(STEP_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                // 只有仍在等待的结果才允许发布。cancel(true) 无法保证远程调用立即停止，
+                // 超时任务的晚返回不能再写本轮或后续轮的输出，也不能重复结束进度。
+                if (accepted.execution() != null) {
+                    ToolResult result = accepted.result();
+                    ctx.progress().onFinish(step.getTool(), result.isSuccess(), result.isNoData(), result.getLatencyMs());
+                    if (result.isSuccess() && result.getRawData() != null) {
+                        ctx.stepOutputs().put(index, result.getRawData());
+                    }
+                    ctx.executions().add(accepted.execution());
+                    if (accepted.operationId() != null && !accepted.operationId().isBlank()) {
+                        ctx.executedOperations().putIfAbsent(accepted.operationId(), accepted.step());
+                    }
+                }
+                batchResults.add(accepted.step());
             } catch (TimeoutException e) {
                 log.warn("[Graph] step {} 超时（{}ms），标记为失败", index, STEP_TIMEOUT_MS);
                 // 超时的那一步已经 onStart 过（进度芯片已经亮了），必须补一个 onFinish——
@@ -900,7 +951,7 @@ public class AgentGraph {
         steps.addAll(batchResults);
     }
 
-    private GraphStep executeStep(int round, int index, PlanStep step, GraphContext ctx) {
+    private StepResult executeStep(int round, int index, PlanStep step, GraphContext ctx) {
         // 同批次里后开跑的步骤也要各自检查：批次是一起提交的，但执行是先后开始的
         ctx.progress().throwIfCancelled();
         Map<String, Object> arguments = step.getArguments() == null ? Map.of() : step.getArguments();
@@ -908,11 +959,11 @@ public class AgentGraph {
         // 循环护栏：超出预算就不再执行，把原因交回给模型
         if (!ctx.guard().allowToolCall(step.getTool(), arguments)) {
             toolRegistry.recordBlocked(step.getTool());
-            return GraphStep.builder()
+            return new StepResult(GraphStep.builder()
                     .round(round).index(index).tool(step.getTool())
                     .reason(step.getReason()).optional(step.isOptional())
                     .success(false).output(ctx.guard().getStopReason())
-                    .build();
+                    .build(), null, null, null);
         }
 
         // 身份从上下文注入，绝不取自模型给的 arguments——模型不知道真实用户是谁，只能编。
@@ -921,27 +972,19 @@ public class AgentGraph {
         String operationId = step.getOperationId();
         if (operationId != null && ctx.executedOperations().containsKey(operationId)) {
             log.info("[Graph] operationId={} 已执行，跳过重复步骤 tool={}", operationId, step.getTool());
-            return ctx.executedOperations().get(operationId);
+            return new StepResult(ctx.executedOperations().get(operationId), null, null, operationId);
         }
         ctx.progress().onStart(step.getTool());
         ToolResult result = toolRegistry.execute(new ToolCall(
                 "graph_" + round + "_" + index, step.getTool(), arguments, false, ctx.userId(), operationId));
-        ctx.progress().onFinish(step.getTool(), result.isSuccess(), result.isNoData(), result.getLatencyMs());
 
         String output = result.isSuccess()
                 ? String.valueOf(result.getOutput())
                 : "工具执行失败：" + result.getErrorMessage();
 
-        // 这一步的结构化结果留给后面的步骤引用（$N.field）。只在成功时留：
-        // 失败的结果引用起来只会让下一步拿一个空值去调用，不如让它带着占位串原样失败，
-        // 至少日志里看得见是哪一步没成
-        if (result.isSuccess() && result.getRawData() != null) {
-            ctx.stepOutputs().put(index, result.getRawData());
-        }
-
         // 调用轨迹带 rawData（可能是任意业务 DTO），放在上下文里而非图状态，
-        // 避免图保存快照时序列化失败
-        ctx.executions().add(ToolExecution.builder()
+        // 避免图保存快照时序列化失败；实际发布由消费 Future 的执行线程裁决。
+        ToolExecution execution = ToolExecution.builder()
                 .tool(step.getTool())
                 .operationId(operationId)
                 .input(String.valueOf(arguments))
@@ -953,7 +996,7 @@ public class AgentGraph {
                 .evidence(result.getEvidence())
                 .facts(result.getFacts())
                 .entities(result.getEntities())
-                .build());
+                .build();
 
         GraphStep graphStep = GraphStep.builder()
                 .round(round).index(index).tool(step.getTool())
@@ -961,11 +1004,10 @@ public class AgentGraph {
                 .success(result.isSuccess()).output(output)
                 .noData(result.isSuccess() && result.isNoData())
                 .build();
-        if (operationId != null && !operationId.isBlank()) {
-            ctx.executedOperations().putIfAbsent(operationId, graphStep);
-        }
-        return graphStep;
+        return new StepResult(graphStep, execution, result, operationId);
     }
+
+    private record StepResult(GraphStep step, ToolExecution execution, ToolResult result, String operationId) { }
 
     private List<PlanStep> replan(GraphContext ctx, List<GraphStep> steps) {
         boolean anyNoData = steps.stream().anyMatch(GraphStep::isNoData);
@@ -1234,19 +1276,6 @@ public class AgentGraph {
         return map;
     }
 
-    private List<PlanStep> filterRegistered(List<PlanStep> plan) {
-        if (plan == null || plan.isEmpty()) {
-            return List.of();
-        }
-        List<PlanStep> valid = plan.stream()
-                .filter(step -> toolRegistry.get(step.getTool()).isPresent())
-                .toList();
-        if (valid.size() != plan.size()) {
-            log.warn("[Graph] dropped {} step(s) referencing unknown tools", plan.size() - valid.size());
-        }
-        return valid;
-    }
-
     private boolean requiresConfirmation(PlanStep step) {
         return toolRegistry.get(step.getTool())
                 .map(tool -> tool.getDefinition().isRequiresConfirmation())
@@ -1302,8 +1331,7 @@ public class AgentGraph {
             String requestPlanId = "plan-" + UUID.randomUUID();
             return new GraphContext(userId, sessionId, message, systemPrompt, conversation, requestPlanId, guard, onChunk, progress,
                     Collections.synchronizedList(new ArrayList<>()), new ArrayList<>(),
-                    // 步骤输出表：让后面的步骤能引用前面步骤查出来的值。
-                    // 用 ConcurrentMap 是因为同批次步骤是并发执行的
+                    // 步骤输出只在 invokeBatch 接受结果后发布，供后续步骤引用。
                     new java.util.concurrent.ConcurrentHashMap<>(),
                     new java.util.concurrent.ConcurrentHashMap<>(),
                     new java.util.concurrent.atomic.AtomicReference<>(),

@@ -15,6 +15,7 @@ class ToolRegistryApprovalTest {
     @Test
     void 同一operationId重复提交只产生一次真实副作用() {
         AtomicInteger calls = new AtomicInteger();
+        Map<String, ToolResult> durableResults = new java.util.concurrent.ConcurrentHashMap<>();
         Tool tool = new Tool() {
             @Override
             public ToolDefinition getDefinition() {
@@ -24,8 +25,10 @@ class ToolRegistryApprovalTest {
 
             @Override
             public ToolResult execute(ToolCall call) {
-                calls.incrementAndGet();
-                return ToolResult.builder().success(true).output("done").build();
+                return durableResults.computeIfAbsent(call.getOperationId(), key -> {
+                    calls.incrementAndGet();
+                    return ToolResult.builder().success(true).operationState(ToolResult.OperationState.COMMITTED).output("done").build();
+                });
             }
         };
         ToolRegistry registry = new ToolRegistry();
@@ -35,6 +38,9 @@ class ToolRegistryApprovalTest {
 
         assertThat(registry.execute(first).isSuccess()).isTrue();
         assertThat(registry.execute(retry).isSuccess()).isTrue();
+        ToolRegistry restarted = new ToolRegistry();
+        restarted.register(tool);
+        assertThat(restarted.execute(retry).isSuccess()).isTrue();
         assertThat(calls).hasValue(1);
     }
 
@@ -73,7 +79,7 @@ class ToolRegistryApprovalTest {
 
     @Test
     void 确认后高危工具正常执行() {
-        ToolResult result = registry().execute(new ToolCall("1", "order_cancel", Map.of(), true));
+        ToolResult result = registry().execute(new ToolCall("1", "order_cancel", Map.of(), true, "u1", "op-cancel"));
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.getOutput()).isEqualTo("已取消");

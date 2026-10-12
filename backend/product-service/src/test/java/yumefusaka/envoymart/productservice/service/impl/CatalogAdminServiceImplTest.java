@@ -18,6 +18,7 @@ import yumefusaka.envoymart.productservice.mapper.ProductAttributeMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSpuMapper;
 import yumefusaka.envoymart.productservice.mapper.SpuAttributeValueMapper;
 import yumefusaka.envoymart.productservice.model.admin.CategoryUpsertRequest;
+import yumefusaka.envoymart.productservice.model.admin.AttributeUpsertRequest;
 import yumefusaka.envoymart.productservice.service.CategoryService;
 
 import java.util.List;
@@ -204,7 +205,7 @@ class CatalogAdminServiceImplTest {
         service.updateCategory(5L, categoryRequest(1L, "维生素D3"));
 
         ArgumentCaptor<List<Long>> captor = ArgumentCaptor.captor();
-        verify(derivedRefresh).afterCommit(captor.capture());
+        verify(derivedRefresh).request(captor.capture());
         assertThat(captor.getValue()).containsExactly(9001L, 9002L);
     }
 
@@ -215,7 +216,74 @@ class CatalogAdminServiceImplTest {
 
         service.updateCategory(5L, categoryRequest(1L, "维生素D"));
 
-        verify(derivedRefresh, never()).afterCommit(anyList());
+        verify(derivedRefresh, never()).request(anyList());
+    }
+
+    @Test
+    void 同名修改参数单位仍须刷新详情且受影响商品去重() {
+        updateAttributeAndRequireRefresh("TEXT", "毫克");
+    }
+
+    @Test
+    void 同名修改参数输入类型仍须刷新ES属性拆分() {
+        updateAttributeAndRequireRefresh("MULTI_SELECT", "克");
+    }
+
+    private void updateAttributeAndRequireRefresh(String type, String unit) {
+        var attribute = attribute();
+        when(attributeMapper.selectById(10L)).thenReturn(attribute);
+        when(attributeMapper.selectCount(any())).thenReturn(0L);
+        var first = new SpuAttributeValueEntity(); first.setSpuId(20L);
+        var repeated = new SpuAttributeValueEntity(); repeated.setSpuId(20L);
+        var second = new SpuAttributeValueEntity(); second.setSpuId(21L);
+        when(spuAttributeValueMapper.selectList(any())).thenReturn(List.of(first, repeated, second));
+        var request = attributeRequest(); request.setInputType(type); request.setUnit(unit);
+        service.updateAttribute(10L, request);
+        assertThat(attribute.getInputType()).isEqualTo(type);
+        assertThat(attribute.getUnit()).isEqualTo(unit);
+        verify(derivedRefresh).request(List.of(20L, 21L));
+    }
+
+    @Test
+    void 新建参数定义未有商品取值时不生成无目标刷新() {
+        when(categoryMapper.selectById(5L)).thenReturn(category(5L, 1L, "营养", 2, "1/5"));
+        when(attributeMapper.selectCount(any())).thenReturn(0L);
+        when(attributeMapper.insert(any(ProductAttributeEntity.class))).thenAnswer(call -> {
+            call.<ProductAttributeEntity>getArgument(0).setId(10L); return 1;
+        });
+        assertThat(service.createAttribute(5L, attributeRequest())).isEqualTo(10L);
+        verify(derivedRefresh, never()).request(anyList());
+    }
+
+    @Test
+    void 删除被引用参数拒绝且没有刷新或半删() {
+        when(attributeMapper.selectById(10L)).thenReturn(attribute());
+        when(spuAttributeValueMapper.selectCount(any())).thenReturn(1L);
+        assertThatThrownBy(() -> service.deleteAttribute(10L)).isInstanceOf(IllegalStateException.class);
+        verify(attributeMapper, never()).deleteById(any(Long.class));
+        verify(derivedRefresh, never()).request(anyList());
+    }
+
+    @Test
+    void 删除无引用参数不改变任何商品副本() {
+        when(attributeMapper.selectById(10L)).thenReturn(attribute());
+        when(spuAttributeValueMapper.selectCount(any())).thenReturn(0L);
+        service.deleteAttribute(10L);
+        verify(attributeMapper).deleteById(10L);
+        verify(derivedRefresh, never()).request(anyList());
+    }
+
+    private ProductAttributeEntity attribute() {
+        var attribute = new ProductAttributeEntity();
+        attribute.setId(10L); attribute.setCategoryId(5L); attribute.setName("净含量");
+        attribute.setInputType("TEXT"); attribute.setUnit("克");
+        return attribute;
+    }
+
+    private AttributeUpsertRequest attributeRequest() {
+        var request = new AttributeUpsertRequest();
+        request.setName("净含量"); request.setInputType("TEXT"); request.setUnit("克");
+        return request;
     }
 
     // ==================== 夹具 ====================

@@ -536,14 +536,37 @@ public class LangChain4jLLMProvider implements LLMProvider {
                                 "optional":false,"dependsOn":[]}。
                                 规则：只能使用下面列出的工具；工具参数尽量从用户请求与已知背景中提取；
                                 不需要多步就返回只含一个元素的数组；无法完成则返回 []。
+                                【审批不是模型追问】工具标注“系统审批”时，规划/调用该工具只创建待审批操作，不会立即写入。
+                                用户明确目标、规格与数量并说“等我确认”“等待确认”“确认后再加购”，
+                                必须把相应写工具放进计划，由系统生成确认卡；不能只查询后口头询问，也不能返回空计划等回复。
+                                用户说“先不加购/只看看”时不得计划加购；目标或多规格仍不明确时才澄清，不能猜SKU。
                                 dependsOn 填「本步骤依赖的步骤序号」（从 0 开始）：
                                 只有需要用到前面某一步的结果时才填，互不依赖的步骤留空数组，
                                 这样它们会被并发执行。例如先查订单再取消，取消那步就要依赖查询步。
                                 **当某一步的参数要用到前面步骤查出来的值时，写成
-                                "$步骤序号.字段名"**（字段名照抄前一步输出里的字段，例如
-                                "$0.skuId"、"$0[1].skuId"、"$1.id"），执行器会在那一步查完之后把真实值填进去。
-                                同一个 product_search 返回多个商品时，第一个商品用 "$0[0].skuId"，第二个商品用 "$0[1].skuId"；
-                                用户要分别操作多个商品时，不能重复使用 "$0.skuId"。
+                                "$步骤序号.字段名"**，支持嵌套字段与列表下标，例如
+                                "$0[1].skuId"、"$0[0].skus[1].skuId"、"$1.id"；执行器会用真实输出填值。
+                                product_search 返回商品候选列表，每个候选有 skus 规格列表；
+                                skus 中包含 skuId、specText、price、stock、purchasable。
+                                仅商品只有一个规格时，候选顶层的 skuId 才有值，多规格时顶层 skuId 为空。
+                                同一次搜索中的第一个商品用 "$0[0]"，第二个用 "$0[1]"，但引用必须继续指定字段；
+                                选第一个商品的第二个规格用 "$0[0].skus[1].skuId"。
+                                用户未指定规格且有多个规格时，不得默认选第一项、不得猜编号，应询问用户选规格。
+                                各层列表只有唯一元素时才允许省略该层下标；分别操作多个商品不能重复引用同一候选。
+                                跨轮商品序号以背景里的“完整候选列表”为准；优先按商品编号精确 product_search，
+                                商品搜索回答会由系统附上权威候选序号，请不要另排一份商品编号列表；说明/风险提示保留正常段落。
+                                “第二个规格”是已选商品内部的规格序号，不是完整商品列表的第二个商品。
+                                旧列表第2款查回后通常是本轮搜索的第0条，应引用 "$0[0]" 而不是沿用旧序号 "$0[1]"。
+                                指定规格时按本轮结果 skus 的 specText 对应下标；两件商品要分别查询与分别绑定，不能复用同一SKU。
+                                商品只有唯一SKU时，“单一规格/未标注规格文字”或空规格无需重复询问，使用真实唯一skuId；
+                                多SKU而未选规格时仍必须澄清。取消旧待确认操作并改选商品时，只生成新目标的审批，不复用旧目标。
+                                cart_query 返回当前购物车行列表，行 id 与 skuId 是不同编号；
+                                cart_update / cart_remove 的 cartItemId 必须取目标行的 id，不能取 skuId 或展示序号。
+                                用户说「第一行改2件」「删除第二行」时，本轮必须先 cart_query 取得当前行列表，
+                                再分别引用 "$0[0].id" / "$0[1].id"，修改数量传 quantity=2。
+                                $N 只指向本轮计划步骤，不能引用上一轮计划或历史回答中的第 N 步；
+                                历史回答可帮助识别商品与规格，行 ID 缺失或状态不明时重新 cart_query，不猜 ID。
+                                重新查询发现条目与历史所指不一致时，先澄清目标，不按新的序号悄悄替换旧目标。
                                 订单查询返回的 id 是取消、物流等工具需要的数字内部 ID；orderNo 是用户可见的 YS 开头订单号，不能用于 order_cancel 的 orderId。
                                 绝不要写「上一步的 XX」「来自第 0 步搜索结果的 XX」这类描述性文字——
                                 它们不会被替换，会被原样当成参数传给工具，然后失败。
@@ -553,8 +576,9 @@ public class LangChain4jLLMProvider implements LLMProvider {
                                 引用会原样传下去然后失败。用户说「先搜一下再把它加购」时，
                                 计划应该有两个元素：先 product_search，再 cart_add(dependsOn:[0])。
                                 例：先 product_search 查到商品、再 cart_add 加购，加购那步写
-                                {"tool":"cart_add","arguments":{"skuId":"$0.skuId","quantity":1},
+                                {"tool":"cart_add","arguments":{"skuId":"$0[0].skuId","quantity":1},
                                  "dependsOn":[0]}。
+                                此例要求目标商品只有一个规格；用户已明确选第二个规格时改用 "$0[0].skus[1].skuId"。
                                 arguments 的键必须逐字照抄工具说明里列出的参数名，不要改写大小写、
                                 不要把驼峰改成下划线——工具按声明名取参数，写错的键取不到值。
                                 只输出 JSON，不要任何解释。
@@ -705,6 +729,9 @@ public class LangChain4jLLMProvider implements LLMProvider {
     private static String describeTool(ToolDefinition definition) {
         StringBuilder sb = new StringBuilder("- ").append(definition.getName())
                 .append(": ").append(definition.getDescription());
+        if (definition.isRequiresConfirmation()) {
+            sb.append("\n  系统审批：调用只生成待审批操作，用户通过签名确认后才执行；规划器不要用口头询问代替工具步骤。");
+        }
         Map<String, ToolDefinition.ParameterSpec> parameters = definition.getParameters();
         if (parameters == null || parameters.isEmpty()) {
             return sb.toString();
@@ -733,15 +760,14 @@ public class LangChain4jLLMProvider implements LLMProvider {
         List<PlanStep> steps = new ArrayList<>();
         for (Map<String, Object> item : items) {
             Object tool = item.get("tool");
-            if (tool == null) {
-                continue;
-            }
             steps.add(PlanStep.builder()
-                    .tool(String.valueOf(tool))
+                    // 缺工具名也必须保留为 null：不能在解析阶段删掉它，
+                    // 否则后续步骤的 $N / dependsOn 下标会被重排，错误引用可能指向另一工具。
+                    .tool(tool == null ? null : String.valueOf(tool))
                     .arguments((Map<String, Object>) item.getOrDefault("arguments", Map.of()))
                     .reason(String.valueOf(item.getOrDefault("reason", "")))
                     .optional(Boolean.TRUE.equals(item.get("optional")))
-                    .dependsOn(parseDependsOn(item.get("dependsOn"), steps.size()))
+                    .dependsOn(parseDependsOn(item.get("dependsOn")))
                     .build());
         }
         return steps;
@@ -750,19 +776,28 @@ public class LangChain4jLLMProvider implements LLMProvider {
     /**
      * 解析步骤依赖。
      * <p>
-     * 只接受<b>指向更早步骤</b>的合法下标：指向自己或指向后面的步骤都会让分层执行
-     * 陷入环或执行空转，宁可当作无依赖也不要把它带进执行阶段。
+     * 保留原始下标，非法类型使用负数标记，由图的编译入口统一拒绝和修复。
+     * 解析器不得删约束或截断小数，否则非法计划会绕过编译阶段的安全校验。
      */
-    private List<Integer> parseDependsOn(Object raw, int currentIndex) {
-        if (!(raw instanceof List<?> list)) {
+    private List<Integer> parseDependsOn(Object raw) {
+        if (raw == null) {
             return List.of();
         }
-        return list.stream()
-                .filter(Number.class::isInstance)
-                .map(value -> ((Number) value).intValue())
-                .filter(index -> index >= 0 && index < currentIndex)
-                .distinct()
-                .toList();
+        if (!(raw instanceof List<?> list)) {
+            return List.of(-1);
+        }
+        List<Integer> dependencies = new ArrayList<>();
+        for (Object value : list) {
+            if (!(value instanceof Number number)
+                    || number.doubleValue() != number.longValue()
+                    || number.longValue() > Integer.MAX_VALUE
+                    || number.longValue() < Integer.MIN_VALUE) {
+                dependencies.add(-1);
+            } else {
+                dependencies.add(number.intValue());
+            }
+        }
+        return List.copyOf(dependencies);
     }
 
     // ==================== 请求构造与结果映射 ====================

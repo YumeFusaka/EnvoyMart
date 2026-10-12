@@ -23,6 +23,9 @@ public interface OrderDomainService {
 
     OrderResponse checkout(String userId, CheckoutRequest request);
 
+    yumefusaka.envoymart.common.operation.OperationReceiptReply<OrderResponse> checkoutWithOperation(
+            String userId, CheckoutRequest request, yumefusaka.envoymart.common.operation.OperationContext operation);
+
     /**
      * 结算页试算：金额、券的可用性与抵扣。
      * <p>

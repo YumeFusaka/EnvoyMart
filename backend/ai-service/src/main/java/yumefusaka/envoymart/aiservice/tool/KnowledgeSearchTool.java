@@ -2,8 +2,10 @@ package yumefusaka.envoymart.aiservice.tool;
 
 import lombok.extern.slf4j.Slf4j;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
+import yumefusaka.envoymart.agent.rag.EvidenceGate;
 import yumefusaka.envoymart.agent.rag.KnowledgePrompt;
 import yumefusaka.envoymart.agent.rag.RAGEngine;
+import yumefusaka.envoymart.agent.rag.RetrievalOutcome;
 import yumefusaka.envoymart.agent.tool.Tool;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
@@ -42,9 +44,15 @@ public class KnowledgeSearchTool implements Tool {
     private static final int QUOTE_CHARS = 400;
 
     private final RAGEngine ragEngine;
+    private final EvidenceGate.Thresholds thresholds;
 
     public KnowledgeSearchTool(RAGEngine ragEngine) {
+        this(ragEngine, EvidenceGate.Thresholds.defaults());
+    }
+
+    public KnowledgeSearchTool(RAGEngine ragEngine, EvidenceGate.Thresholds thresholds) {
         this.ragEngine = ragEngine;
+        this.thresholds = java.util.Objects.requireNonNull(thresholds);
     }
 
     @Override
@@ -84,8 +92,12 @@ public class KnowledgeSearchTool implements Tool {
         int topK = clampTopK(call.getArguments().get("limit"));
 
         try {
-            List<DocumentChunk> chunks = ragEngine.retrieve(query, topK);
-            if (chunks == null || chunks.isEmpty()) {
+            RetrievalOutcome outcome = ragEngine.retrieveWithOutcome(query, topK);
+            List<DocumentChunk> chunks = outcome.chunks();
+            EvidenceGate.Decision decision = EvidenceGate.evaluate(chunks, thresholds, outcome.graphChunkIds());
+            log.info("[KnowledgeSearch] 证据门={} 切片={} 图谱触达={} 原因={}",
+                    decision.level(), chunks.size(), outcome.graphChunkIds().size(), decision.reason());
+            if (decision.level() == EvidenceGate.Level.NONE) {
                 // 「跑通了但没查到」是第三种结局：换个查询词可能就有，不能报成失败，
                 // 也不能让模型把「没检索到」念成「知识库说了没有」
                 return ToolResult.builder().success(true).noData(true)
@@ -93,8 +105,10 @@ public class KnowledgeSearchTool implements Tool {
                         .build();
             }
             return ToolResult.builder().success(true)
-                    .output(render(query, chunks))
+                    .output(decision.isSufficient() ? render(query, chunks) : weakText())
                     .rawData(chunks)
+                    // 诊断召回不等于可引用证据；显式空集合阻止后置合并从 rawData 回填弱依据。
+                    .evidence(decision.isSufficient() ? chunks : List.of())
                     .build();
         } catch (Exception e) {
             log.error("[KnowledgeSearch] 检索失败 query={}", query, e);
@@ -130,8 +144,18 @@ public class KnowledgeSearchTool implements Tool {
 
                 处理要求：
                 - 不要用你自己的知识补全这个问题；涉及平台规则、商品参数时如实说明知识库中没有查到依据。
+                - 只能说本次没有查到明确依据，不得断言某政策、商品或关系在全库不存在，也不能用其他主题的条目证明其不存在。
                 - 可以换更具体的名词再检索一次（如把「这个能不能吃」换成具体成分名）。
                 """.formatted(query);
+    }
+
+    private String weakText() {
+        return """
+                本次查询的依据不足，平台暂时没有查到明确依据。
+                - 召回的内容不得作为结论依据，不要列出其规则、金额、时效、成分用量，也不要套用其他政策回答当前主题。
+                - 只说明本次查询无法确认，不得断言该政策、商品或关系在全库不存在；其他主题的条目不能证明其不存在。
+                - 不得用常识补齐，也不得加“仅供参考”后继续提供缺少依据的结论。建议提供准确名称或联系人工客服确认。
+                """;
     }
 
     private String render(String query, List<DocumentChunk> chunks) {
@@ -150,6 +174,7 @@ public class KnowledgeSearchTool implements Tool {
                 - 反过来也一样：**系统提示里的条目仍然标 [编号]，不要一并改写成《文档名》**。
                   两套写法按来源分、不按文档分——编号是界面上点回原文的入口。
                 - 片段没有覆盖的内容不要用常识补全，如实说这部分知识库没有查到。
+                - 其他主题的条目不能证明用户所问政策、商品或关系不存在；检索未命中只说明本次没有查到，不代表全库不存在。
                 - 涉及处方药或已确诊疾病的，提醒用户遵医嘱，不要给出「可以吃/不能吃」的处方级结论。
                 """.formatted(example)).toString();
     }

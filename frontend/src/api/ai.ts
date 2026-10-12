@@ -59,8 +59,8 @@ export async function fetchSessions() {
   return response.data.data as ChatSessionSummary[]
 }
 
-export async function fetchSessionMessages(sessionId: string) {
-  const response = await request.get(`/ai/sessions/${encodeURIComponent(sessionId)}/messages`)
+export async function fetchSessionMessages(sessionId: string, options?: { quietError?: boolean }) {
+  const response = await request.get(`/ai/sessions/${encodeURIComponent(sessionId)}/messages`, options)
   return response.data.data as StoredChatMessage[]
 }
 
@@ -68,8 +68,13 @@ export async function deleteSession(sessionId: string) {
   await request.delete(`/ai/sessions/${encodeURIComponent(sessionId)}`)
 }
 
-export async function dismissApproval(sessionId: string, messageId: string) {
-  await request.post(`/ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/dismiss-approval`)
+export async function dismissApproval(sessionId: string, messageId: string, options?: { quietError?: boolean }) {
+  await request.post(`/ai/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/dismiss-approval`, undefined, options)
+}
+
+export async function recoverApproval(sessionId: string, approvalToken: string, retry = false) {
+  const response = await request.post(`/ai/sessions/${encodeURIComponent(sessionId)}/approvals/recover`, { approvalToken, retry })
+  return response.data.data as ChatResponse
 }
 
 export type BadCaseReason = 'FACT_ERROR' | 'NO_ANSWER' | 'IRRELEVANT_EVIDENCE' | 'TOOL_ERROR' | 'HARD_TO_READ' | 'OTHER'

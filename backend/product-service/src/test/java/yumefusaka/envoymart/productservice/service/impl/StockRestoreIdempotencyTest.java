@@ -59,16 +59,17 @@ class StockRestoreIdempotencyTest {
         StockLogMapper logMapper = mock(StockLogMapper.class);
         when(skuMapper.restoreStock(anyLong(), anyInt())).thenReturn(1);
         when(skuMapper.selectStock(anyLong())).thenReturn(300);
+        when(skuMapper.selectById(anyLong())).thenReturn(sku());
 
         // 第一次：写流水成功，认领到手
         when(logMapper.insert(any(StockLogEntity.class))).thenReturn(1);
-        StockServiceImpl first = new StockServiceImpl(skuMapper, logMapper, new org.springframework.beans.factory.support.DefaultListableBeanFactory().getBeanProvider(yumefusaka.envoymart.productservice.search.ProductSyncService.class));
+        StockServiceImpl first = new StockServiceImpl(skuMapper, logMapper, mock(yumefusaka.envoymart.productservice.projection.ProductProjectionRequests.class));
         first.restore(request());
 
         // 第二次：唯一键冲突 —— 这正是数据库在说「这件事已经做过了」
         when(logMapper.insert(any(StockLogEntity.class)))
                 .thenThrow(new DuplicateKeyException("uk_stock_log_biz_action"));
-        StockServiceImpl second = new StockServiceImpl(skuMapper, logMapper, new org.springframework.beans.factory.support.DefaultListableBeanFactory().getBeanProvider(yumefusaka.envoymart.productservice.search.ProductSyncService.class));
+        StockServiceImpl second = new StockServiceImpl(skuMapper, logMapper, mock(yumefusaka.envoymart.productservice.projection.ProductProjectionRequests.class));
         second.restore(request());
 
         // 库存只被加过一次 —— 这是本测试唯一真正关心的事
@@ -83,8 +84,7 @@ class StockRestoreIdempotencyTest {
                 .thenThrow(new DuplicateKeyException("dup"));
 
         new StockServiceImpl(skuMapper, logMapper,
-                new org.springframework.beans.factory.support.DefaultListableBeanFactory()
-                        .getBeanProvider(yumefusaka.envoymart.productservice.search.ProductSyncService.class))
+                mock(yumefusaka.envoymart.productservice.projection.ProductProjectionRequests.class))
                 .restore(request());
 
         verify(skuMapper, never()).restoreStock(anyLong(), anyInt());
@@ -97,14 +97,14 @@ class StockRestoreIdempotencyTest {
         StockLogMapper logMapper = mock(StockLogMapper.class);
         when(skuMapper.restoreStock(anyLong(), anyInt())).thenReturn(1);
         when(skuMapper.selectStock(anyLong())).thenReturn(300);
+        when(skuMapper.selectById(anyLong())).thenReturn(sku());
         when(logMapper.insert(any(StockLogEntity.class))).thenReturn(1);
 
         StockChangeRequest manual = StockChangeRequest.builder()
                 .skuId(1L).quantity(5).bizType("MANUAL").build();
 
         StockServiceImpl service = new StockServiceImpl(skuMapper, logMapper,
-                new org.springframework.beans.factory.support.DefaultListableBeanFactory()
-                        .getBeanProvider(yumefusaka.envoymart.productservice.search.ProductSyncService.class));
+                mock(yumefusaka.envoymart.productservice.projection.ProductProjectionRequests.class));
         service.restore(manual);
         service.restore(manual);
 

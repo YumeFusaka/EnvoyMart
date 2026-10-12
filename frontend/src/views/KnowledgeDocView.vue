@@ -37,9 +37,34 @@ const danglingChunk = computed(
   () => Boolean(activeChunkId.value) && !loading.value && !activeChunk.value,
 )
 
+const requestedQuote = computed(() => typeof route.query.quote === 'string' ? route.query.quote : '')
+const hasQuoteLocation = computed(() => Boolean(requestedQuote.value) || route.query.start !== undefined || route.query.end !== undefined)
+/** 拒绝候选不是事实；只高亮在当前原文中逐字核实的位置，禁止夹紧过期偏移后冒充出处。 */
+const quoteRange = computed(() => {
+  const content = doc.value?.content ?? ''
+  const quote = requestedQuote.value
+  if (!quote) return null
+  const startText = route.query.start
+  const endText = route.query.end
+  if (startText !== undefined || endText !== undefined) {
+    if (typeof startText !== 'string' || typeof endText !== 'string' || !/^\d+$/.test(startText) || !/^\d+$/.test(endText)) return null
+    const start = Number(startText)
+    const end = Number(endText)
+    return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 0 && end > start && end <= content.length && content.slice(start, end) === quote ? { start, end } : null
+  }
+  // 历史候选没有偏移时，仅在唯一逐字命中时定位，重复引文不猜位置。
+  const start = content.indexOf(quote)
+  return start >= 0 && content.indexOf(quote, start + 1) < 0 ? { start, end: start + quote.length } : null
+})
+const invalidQuoteLocation = computed(() => hasQuoteLocation.value && !loading.value && !quoteRange.value)
+
 /** 正文按高亮区间切成三段。偏移是 UTF-16 码元，正是 JS 字符串的下标 */
 const segments = computed(() => {
   const content = doc.value?.content ?? ''
+  if (hasQuoteLocation.value) {
+    const range = quoteRange.value
+    return range ? { head: content.slice(0, range.start), mark: content.slice(range.start, range.end), tail: content.slice(range.end) } : null
+  }
   const chunk = activeChunk.value
   if (!chunk || chunk.charOffset === null || chunk.charOffset === undefined) {
     return null
@@ -84,11 +109,11 @@ function scrollToMark() {
 
 function selectChunk(chunk: ChunkRef) {
   // 同一个键再次点击时也要生效，所以带上 replace 也不去重
-  router.replace({ query: { ...route.query, chunk: chunk.chunkId } })
+  router.replace({ query: { chunk: chunk.chunkId } })
 }
 
 watch(() => route.params.docNo, load, { immediate: true })
-watch(activeChunkId, async () => {
+watch(() => [activeChunkId.value, route.query.quote, route.query.start, route.query.end], async () => {
   await nextTick()
   scrollToMark()
 })
@@ -131,6 +156,9 @@ watch(activeChunkId, async () => {
       <p v-if="danglingChunk" class="doc-alert" role="alert">
         引用的切片 <code>{{ activeChunkId }}</code> 不在这篇文档里。这通常意味着检索侧与存储侧
         用了不同的切分参数，请以时间为准重新发起一次提问。
+      </p>
+      <p v-if="invalidQuoteLocation" class="doc-alert" role="alert">
+        候选引文无法在当前原文中精确定位：偏移可能已过期、引文未逐字命中或存在多处相同引文。未进行高亮，请核对正文，不能将候选视为已确认事实。
       </p>
 
       <div class="doc-body">

@@ -18,6 +18,32 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class ApprovalTokensTest {
 
+    private static String signPayload(Map<String, Object> payload) throws Exception {
+        String body = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                new tools.jackson.databind.ObjectMapper().writeValueAsBytes(payload));
+        var mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec(SECRET.getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
+        return body + "." + java.util.HexFormat.of().formatHex(mac.doFinal(body.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void 老签名缺少恢复时长不自动升级且新时长必须是签入的有效整数() throws Exception {
+        var clock = java.time.Clock.fixed(java.time.Instant.ofEpochSecond(1791687600), java.time.ZoneOffset.UTC);
+        var codec = new ApprovalTokens(SECRET, 600, clock);
+        Map<String, Object> payload = new java.util.LinkedHashMap<>(Map.of("u", "u1", "s", "s1", "e", 1791688200L,
+                "a", List.of(Map.of("t", "order_cancel", "p", Map.of("orderId", 12), "o", "original-op"))));
+        String legacy = signPayload(payload);
+        assertThat(codec.verifyGrantForRecovery(legacy, "u1", "s1").orElseThrow().recoverySeconds()).isZero();
+        assertThat(codec.verify(legacy, "u1", "s1")).isPresent();
+        var expired = new ApprovalTokens(SECRET, 600, java.time.Clock.offset(clock, java.time.Duration.ofSeconds(601)));
+        assertThat(expired.verify(legacy, "u1", "s1")).isEmpty();
+        assertThat(expired.verifyGrantForRecovery(legacy, "u1", "s1").orElseThrow().recoverySeconds()).isZero();
+        for (Object invalid : List.of(-1, 86401, 86400.5, "86400", "invalid")) {
+            payload.put("r", invalid);
+            assertThat(codec.verifyGrantForRecovery(signPayload(payload), "u1", "s1")).as(String.valueOf(invalid)).isEmpty();
+        }
+    }
+
     private static final String SECRET = "unit-test-secret";
     private static final List<PendingAction> CANCEL =
             List.of(PendingAction.of("order_cancel", Map.of("orderId", 12)));
@@ -122,5 +148,31 @@ class ApprovalTokensTest {
         assertThat(tokens().verify(token, "u1", "s1"))
                 .as("确认卡片可以在页面上放很久，执行窗口不能跟着一起放")
                 .isEmpty();
+        assertThat(tokens().verifyForRecovery(token, "u1", "s1")).isPresent();
+        assertThat(tokens().verifyForRecovery(token, "u2", "s1")).isEmpty();
+        assertThat(tokens().verifyForRecovery(token, "u1", "s2")).isEmpty();
+    }
+
+    @Test
+    void 每个动作签入独立操作标识且结算不混入批次请求号() {
+        var codec = tokens();
+        String token = codec.issue("u1", "s1", List.of(
+                PendingAction.of("cart_checkout", Map.of("receiverName", "Alice")),
+                PendingAction.of("ticket_create", Map.of("title", "售后咨询"))));
+        var actions = codec.verify(token, "u1", "s1").orElseThrow();
+        assertThat(actions).extracting(PendingAction::operationId).doesNotContainNull().doesNotHaveDuplicates();
+        assertThat(actions.getFirst().arguments()).containsExactlyEntriesOf(Map.of("receiverName", "Alice"));
+        assertThat(actions.getFirst().arguments()).doesNotContainKey("requestId");
+        assertThat(codec.verify(token, "u1", "s1").orElseThrow()).isEqualTo(actions);
+    }
+
+    @Test
+    void 同批重复操作标识拒绝签发且恢复不能放过篡改() {
+        assertThatThrownBy(() -> tokens().issue("u1", "s1", List.of(
+                PendingAction.of("cart_add", Map.of("skuId", 1), "same"),
+                PendingAction.of("order_cancel", Map.of("orderId", 2), "same"))))
+                .isInstanceOf(IllegalArgumentException.class);
+        String token = tokens().issue("u1", "s1", CANCEL);
+        assertThat(tokens().verifyForRecovery("A" + token.substring(1), "u1", "s1")).isEmpty();
     }
 }

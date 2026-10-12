@@ -21,6 +21,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class KnowledgeGraphBuilderParseTest {
 
+    @Test
+    void 组合提示词使用共享类型签名和逐字后果契约() throws Exception {
+        var method = KnowledgeGraphBuilder.class.getDeclaredMethod("instruction", List.class);
+        method.setAccessible(true);
+        String prompt = (String) method.invoke(new KnowledgeGraphBuilder(null, null, null, null), List.of());
+        assertThat(prompt).contains("COMBINED_WITH：组合 -> ", "effect 必须从 quote 逐字截取",
+                        "不要推断两两安全", "钙剂+铁剂+锌")
+                .doesNotContain("同服会增加结石风险", "tailName 填被牵连的药物或人群");
+    }
+
     private static final String GOOD = """
             {"triples":[{"headKind":"INGREDIENT","headName":"深海鱼油","relation":"INTERACTS_WITH",
             "tailKind":"DRUG","tailName":"华法林","effect":"可能增加出血风险","quote":"与华法林合用可能增加出血风险"}]}

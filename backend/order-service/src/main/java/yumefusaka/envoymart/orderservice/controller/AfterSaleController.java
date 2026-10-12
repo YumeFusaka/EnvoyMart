@@ -9,6 +9,11 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.ResponseEntity;
+import yumefusaka.envoymart.common.operation.OperationContext;
+import yumefusaka.envoymart.common.operation.OperationReceiptMetadata;
+import yumefusaka.envoymart.orderservice.service.AgentWriteFacade;
+import yumefusaka.envoymart.orderservice.service.AgentWriteParameters;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.contract.AfterSalePreview;
@@ -34,9 +39,11 @@ import java.util.List;
 public class AfterSaleController {
 
     private final AfterSaleService afterSaleService;
+    private final AgentWriteFacade writes;
 
-    public AfterSaleController(AfterSaleService afterSaleService) {
+    public AfterSaleController(AfterSaleService afterSaleService, AgentWriteFacade writes) {
         this.afterSaleService = afterSaleService;
+        this.writes = writes;
     }
 
     /** 填表前先问「能不能退、最多退多少」，而不是提交完才被拒 */
@@ -50,10 +57,12 @@ public class AfterSaleController {
     }
 
     @PostMapping
-    public Result<AfterSaleResponse> apply(
+    public ResponseEntity<Result<AfterSaleResponse>> apply(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @Valid @RequestBody ApplyAfterSaleRequest request) {
-        return Result.success(afterSaleService.apply(userId, request));
+        if (operationId == null) return ResponseEntity.ok(Result.success(afterSaleService.apply(userId, request)));
+        return writes.afterSale(OperationContext.of(userId, operationId, "after_sale_apply", AgentWriteParameters.afterSale(request)), request).response();
     }
 
     @GetMapping

@@ -46,6 +46,7 @@ public class CheckoutTool implements Tool {
                         + "地址是用户的选择，这次可能就想寄到公司。"
                         + "下单后订单是待支付状态，要提醒用户还需完成支付。")
                 .requiresConfirmation(true)
+                .acceptsOperationId(true)
                 .parameters(Map.of(
                         "receiverName", ToolDefinition.ParameterSpec.builder()
                                 .type("string").description("收货人姓名").required(true).build(),
@@ -67,6 +68,10 @@ public class CheckoutTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, false);
+    }
+    @Override public ToolResult recover(ToolCall call) { return execute(call, true); }
+    private ToolResult execute(ToolCall call, boolean queryOnly) {
         try {
             String userId = call.requireUserId();
             AgentCheckoutRequest request = new AgentCheckoutRequest();
@@ -77,22 +82,26 @@ public class CheckoutTool implements Tool {
             request.setReceiverDistrict(required(call, "receiverDistrict"));
             request.setReceiverDetail(required(call, "receiverDetail"));
             request.setRemark(optional(call, "remark"));
-            // 幂等键来自审批令牌的签名载荷（见 ApprovalTokens.issue），本工具只负责原样透传。
-            // 没有这一行，用户读超时后重试就会变成第二笔订单——
-            // 而这一次「模型重新生成了一个 id」也救不了，因为幂等键的定义就是
-            // 「同一次确认在重试时必须是同一个值」
-            request.setRequestId(optional(call, "requestId"));
+            // 每个签名动作独立派生订单请求号，同一批中的多个结算不共享业务幂等键。
+            request.setRequestId(yumefusaka.envoymart.common.operation.OperationParameters.sha256(userId + ":" + call.getOperationId()));
 
-            // 写操作：下单绝不重发。重发就是两笔订单、两份库存占用，
-            // 而其中一笔用户根本不知道它存在
-            OrderResponse order = Downstream.mutate("订单服务", () -> orderClient.checkout(userId, request));
-            if (order == null) {
-                return ToolResult.builder().success(false)
-                        .output("下单没有成功，请让用户稍后再试。")
-                        .build();
-            }
+            // 首次回执与订单提交共用业务事务，恢复时不回读后来变化的订单快照。
+            Map<String, Object> parameters = new java.util.LinkedHashMap<>();
+            parameters.put("receiverName", request.getReceiverName()); parameters.put("receiverPhone", request.getReceiverPhone());
+            parameters.put("receiverProvince", request.getReceiverProvince()); parameters.put("receiverCity", request.getReceiverCity());
+            parameters.put("receiverDistrict", request.getReceiverDistrict()); parameters.put("receiverDetail", request.getReceiverDetail());
+            parameters.put("remark", request.getRemark()); parameters.put("userCouponId", null);
+            var operation = WriteReceipts.context(call, parameters);
+            var receipt = WriteReceipts.run(operation, queryOnly, OrderResponse.class,
+                    () -> orderClient.operationReceipt(userId, operation.operationId(), operation.toolName(), operation.parametersHash()),
+                    () -> orderClient.checkoutReceipt(userId, operation.operationId(), request));
+            OrderResponse order = receipt.data();
+            WriteReceipts.require(order != null && order.getId() != null && order.getId() > 0
+                    && order.getOrderNo() != null && !order.getOrderNo().isBlank()
+                    && order.getPayAmount() != null && order.getPayAmount() >= 0 && "CREATED".equals(order.getStatus()));
             return ToolResult.builder()
                     .success(true)
+                    .operationState(ToolResult.OperationState.COMMITTED).receiptReplayed(receipt.replayed())
                     .output("订单已创建：单号 " + order.getOrderNo()
                             + "，应付 " + Money.yuan(order.getPayAmount())
                             + "。当前状态是待支付——务必提醒用户还要完成支付，"
@@ -100,7 +109,7 @@ public class CheckoutTool implements Tool {
                     .rawData(order)
                     .build();
         } catch (Exception e) {
-            return Downstream.failure("下单", e);
+            return WriteReceipts.failure(e, "下单");
         }
     }
 

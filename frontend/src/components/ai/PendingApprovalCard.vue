@@ -8,6 +8,11 @@ const props = defineProps<{
   actions: string[]
   active: boolean
   status?: string
+  recoverable?: boolean
+  retryAllowed?: boolean
+  recordError?: string | null
+  recoverySeconds?: number | null
+  recoveryUntil?: number | null
   details?: PendingActionDetail[]
 }>()
 
@@ -98,12 +103,14 @@ const approvalBlocked = computed(() => displayActions.value.some((action) => act
 const emit = defineEmits<{
   approve: []
   dismiss: []
+  recover: []
+  retry: []
 }>()
 </script>
 
 <template>
   <section class="approval" :class="{ 'approval--stale': !actionable }" aria-label="交易操作确认">
-    <p class="approval__title">{{ actionable ? '请确认操作内容' : status === 'CONFIRMED' ? '已提交确认的操作' : status === 'DISMISSED' ? '已取消的操作' : '操作确认记录' }}</p>
+    <p class="approval__title">{{ actionable ? '请确认操作内容' : status === 'IN_FLIGHT' ? '操作正在处理中' : status === 'UNKNOWN' ? '执行结果待确认' : status === 'REJECTED' ? '操作被明确拒绝' : status === 'CONFIRMED' ? '已提交确认的操作' : status === 'DISMISSED' || status === 'CANCELLED' ? '已停止后续操作' : '操作确认记录' }}</p>
 
     <ul v-if="displayActions.length" class="approval__list">
       <li v-for="(action, index) in displayActions" :key="index">
@@ -132,16 +139,25 @@ const emit = defineEmits<{
       </li>
     </ul>
     <p v-else class="approval__notice">暂无可核对的操作信息。</p>
+    <p v-if="recoverySeconds === 86400 && actionable" class="approval__notice">请在10分钟内首次确认；接受后24小时内可按原参数继续操作。</p>
+    <p v-else-if="recoveryUntil" class="approval__notice">原操作继续确认截止：{{ new Date(recoveryUntil).toLocaleString('zh-CN') }}。</p>
 
     <p v-if="actionable && approvalBlocked" class="approval__notice" role="status">
       加购信息不完整或商品暂不可购买，请重新查询商品后再确认。
     </p>
 
     <p v-if="!actionable" class="approval__stale-note">
-      操作确认记录。执行结果请查看后续回复与工具轨迹；此记录不能重复执行。
+      原操作参数保持不变。查询只读取首次执行回执，不生成新操作；未取得回执不代表未执行。
     </p>
+    <p v-if="recordError" class="approval__notice" role="alert">{{ recordError }}</p>
 
-    <div v-else-if="displayActions.length" class="approval__buttons">
+    <div v-if="recoverable && !actionable" class="approval__buttons">
+      <el-button size="small" @click="emit('recover')">查询执行结果</el-button>
+      <el-button v-if="retryAllowed" type="danger" size="small" @click="emit('retry')">继续确认（原参数不变）</el-button>
+      <el-button v-if="status === 'UNKNOWN' || status === 'IN_FLIGHT' || status === 'REJECTED'" size="small" @click="emit('dismiss')">停止后续操作</el-button>
+    </div>
+
+    <div v-if="actionable && displayActions.length" class="approval__buttons">
       <el-button type="danger" size="small" :disabled="approvalBlocked" @click="emit('approve')">确认执行</el-button>
       <el-button size="small" @click="emit('dismiss')">取消</el-button>
     </div>

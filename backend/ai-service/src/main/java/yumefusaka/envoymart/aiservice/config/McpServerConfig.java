@@ -160,12 +160,11 @@ public class McpServerConfig {
      * 令牌可以跨入口使用：用户在页面上确认卡片拿到的令牌，外部 Agent 拿着同一枚令牌
      * 也能走 MCP 执行——这正是「确认卡片是真正发生了的那次确认」的凭据。
      * <p>
-     * 密钥来自与 {@code Agent} 相同的 {@code envoymart.agent.approval-secret}；留空时
-     * {@link ApprovalTokens} 会生成进程级随机密钥（单机开发照常可用，多实例会互相验不过，
-     * 启动日志里有告警）。
+     * 密钥来自与 {@code Agent} 相同的既有配置；生产装配必须配置稳定密钥才能跨重启核验。
      */
     @Bean
     public ApprovalTokens approvalTokens(@Value("${envoymart.agent.approval-secret:}") String approvalSecret) {
+        AiAgentConfig.requireStableApprovalSecret(approvalSecret);
         return new ApprovalTokens(approvalSecret);
     }
 
@@ -300,11 +299,13 @@ public class McpServerConfig {
         };
     }
 
-    /** 由工具参数定义生成 MCP 客户端可读的 JSON Schema。 */
-    private Map<String, Object> toJsonSchema(ToolDefinition definition) {
+    /** 由工具参数元数据生成稳定 JSON Schema；Map 输入顺序不属于 MCP 公共契约。 */
+    Map<String, Object> toJsonSchema(ToolDefinition definition) {
         Map<String, Object> properties = new LinkedHashMap<>();
         List<String> required = new ArrayList<>();
-        definition.getParameters().forEach((name, spec) -> {
+        definition.getParameters().entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+            String name = entry.getKey();
+            ToolDefinition.ParameterSpec spec = entry.getValue();
             String type = spec.getType() == null ? "string" : spec.getType();
             Map<String, Object> property = new LinkedHashMap<>();
             property.put("type", type);

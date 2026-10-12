@@ -409,18 +409,17 @@ class CitationVerifierTest {
     /**
      * 同一份文档切成多片是常态（本项目 47 篇 / 408 片）。
      * <p>
-     * 取最靠前的那条：模型写《文档名》时本来就没指明是哪个切片，指向该文档最相关
-     * ——即排在前面——的那条，不比一个不能点的书名号更错，而它让用户有得点。
+     * 候选正文缺失时没有定位证据，保留标题歧义，不能依据列表顺序猜编号。
      */
     @Test
-    void 同一文档多切片指向最靠前的那一条() {
+    void 同一文档多切片正文缺失时不猜编号() {
         String reply = CitationVerifier.numberTitles(
                 "上限为 2000IU（《维生素D3说明书》）。",
                 List.of(chunk("其他文档", null),
                         chunk("维生素D3说明书", null),
                         chunk("维生素D3说明书", null)));
 
-        assertThat(reply).isEqualTo("上限为 2000IU（[2]）。");
+        assertThat(reply).isEqualTo("上限为 2000IU（《维生素D3说明书》）。");
     }
 
     private static DocumentChunk chunk(String title, String position) {

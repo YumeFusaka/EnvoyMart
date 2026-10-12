@@ -212,6 +212,7 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
                     headers.remove(IdentityHeaderInterceptor.USER_ID_HEADER);
                     headers.remove(IdentityHeaderInterceptor.USER_ROLE_HEADER);
                     headers.remove(InternalAuth.TOKEN_HEADER);
+                    headers.remove(InternalAuth.TRANSACTION_ID_HEADER);
                 });
 
         // 管理接口不是公开资源，一律先要求登录——**这条规则比白名单本身优先级高**。

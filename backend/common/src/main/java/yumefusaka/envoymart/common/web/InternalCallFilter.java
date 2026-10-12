@@ -19,11 +19,11 @@ import java.io.IOException;
  * 但下游服务的端口是直接监听的（本地 9001-9006），<b>绕过网关直连就能伪造任意身份</b>——
  * 实测无 token 直连 9003、带上一个 {@code X-User-Id} 头，就能读到他人订单的收货地址与电话。
  * <p>
- * <b>判定的关键设计：只在请求「声称有身份」时才校验。</b>
+ * <b>身份声明与事务上下文都必须来自受信服务间调用。</b>
  * <ul>
- *   <li>没带 {@code X-User-Id} → 放行。这条请求没有冒充任何人——公开接口，以及 MCP 端点
+ *   <li>没带 {@code X-User-Id} 和 {@code TX_XID} → 放行。公开接口，以及 MCP 端点
  *       （它走自己的 JWT / API Key 认证，不经过网关）都属于这一类；</li>
- *   <li>带了且令牌正确 → 放行，身份可信；</li>
+ *   <li>带了任一上下文且令牌正确 → 放行，保留内部身份和Seata传播；</li>
  *   <li>带了但令牌不对或缺失 → <b>拒绝</b>。声称自己是某个用户却拿不出凭证，这只能是伪造。</li>
  * </ul>
  * 反过来写（"所有请求都必须带令牌"）会把 MCP 端点一起挡掉，还得再维护一份路径白名单；
@@ -57,8 +57,9 @@ public class InternalCallFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         String userId = request.getHeader(IdentityHeaderInterceptor.USER_ID_HEADER);
-        if (userId == null || userId.isBlank()) {
-            // 没有声称身份，无需校验
+        String transactionId = request.getHeader(InternalAuth.TRANSACTION_ID_HEADER);
+        if ((userId == null || userId.isBlank()) && (transactionId == null || transactionId.isBlank())) {
+            // 普通公开请求无需内部凭证；事务上下文和身份声明都属于受信服务间能力。
             chain.doFilter(request, response);
             return;
         }
@@ -67,8 +68,9 @@ public class InternalCallFilter extends OncePerRequestFilter {
             return;
         }
 
-        log.warn("[InternalAuth] 拒绝声称了身份却拿不出服务间令牌的请求 path={} remote={} claimedUserId={}",
-                request.getRequestURI(), request.getRemoteAddr(), userId);
+        log.warn("[InternalAuth] 拒绝不可信服务间上下文 path={} remote={} identityPresent={} transactionPresent={}",
+                request.getRequestURI(), request.getRemoteAddr(), userId != null && !userId.isBlank(),
+                transactionId != null && !transactionId.isBlank());
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"code\":401,\"msg\":\"缺少服务间调用凭证\"}");

@@ -9,6 +9,10 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.ResponseEntity;
+import yumefusaka.envoymart.common.operation.OperationContext;
+import yumefusaka.envoymart.common.operation.OperationReceiptMetadata;
+import yumefusaka.envoymart.promotionservice.service.AgentWriteFacade;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.contract.CouponPreview;
@@ -31,9 +35,11 @@ import java.util.List;
 public class CouponController {
 
     private final CouponService couponService;
+    private final AgentWriteFacade writes;
 
-    public CouponController(CouponService couponService) {
+    public CouponController(CouponService couponService, AgentWriteFacade writes) {
         this.couponService = couponService;
+        this.writes = writes;
     }
 
     @GetMapping("/available")
@@ -43,10 +49,12 @@ public class CouponController {
     }
 
     @PostMapping("/{id}/receive")
-    public Result<UserCouponResponse> receive(
+    public ResponseEntity<Result<UserCouponResponse>> receive(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @PathVariable("id") Long id) {
-        return Result.success(couponService.receive(userId, id));
+        if (operationId == null) return ResponseEntity.ok(Result.success(couponService.receive(userId, id)));
+        return writes.receive(OperationContext.of(userId, operationId, "coupon_receive", java.util.Map.of("couponId", id)), id).response();
     }
 
     /**
@@ -100,8 +108,9 @@ public class CouponController {
     @PostMapping("/internal/unredeem")
     public Result<Void> unredeem(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @RequestParam("userCouponId") Long userCouponId) {
-        couponService.unredeem(userId, userCouponId);
+            @RequestParam("userCouponId") Long userCouponId,
+            @RequestParam("orderNo") String orderNo) {
+        couponService.unredeem(userId, userCouponId, orderNo);
         return Result.success(null);
     }
 }

@@ -527,6 +527,9 @@ export interface DocumentDetail {
 }
 
 export interface ToolCall {
+  operationId?: string
+  operationState?: 'COMMITTED' | 'REJECTED' | 'UNKNOWN' | 'NOT_FOUND'
+  receiptReplayed?: boolean
   tool: string
   input: string
   output: string
@@ -619,7 +622,12 @@ export interface ChatResponse {
    * 那一项是给机器执行的**：卡片文案改得再漂亮也不影响真正执行什么，反过来也一样。
    */
   approvalToken: string | null
-  approvalStatus?: 'PENDING' | 'CONFIRMED' | 'DISMISSED' | 'HISTORY'
+  approvalStatus?: 'PENDING' | 'IN_FLIGHT' | 'UNKNOWN' | 'REJECTED' | 'CONFIRMED' | 'DISMISSED' | 'CANCELLED' | 'HISTORY'
+  approvalRetryAllowed?: boolean
+  approvalRecordAvailable?: boolean | null
+  approvalRecordError?: string | null
+  approvalRecoverySeconds?: number | null
+  approvalRecoveryUntil?: number | null
   /**
    * 本轮任务阶段，由后端的 TaskStage 以枚举名下发的字符串。
    *
@@ -751,7 +759,12 @@ export interface ChatMessage {
   pendingActionDetails?: PendingActionDetail[]
   /** 确认这张卡片要带回服务端的令牌，与 `pendingActions` 同生共死 */
   approvalToken?: string
-  approvalStatus?: 'PENDING' | 'CONFIRMED' | 'DISMISSED' | 'HISTORY'
+  approvalStatus?: 'PENDING' | 'IN_FLIGHT' | 'UNKNOWN' | 'REJECTED' | 'CONFIRMED' | 'DISMISSED' | 'CANCELLED' | 'HISTORY'
+  approvalRetryAllowed?: boolean
+  approvalRecordAvailable?: boolean | null
+  approvalRecordError?: string | null
+  approvalRecoverySeconds?: number | null
+  approvalRecoveryUntil?: number | null
   /** 本轮任务阶段，见 `ChatResponse.stage` 的说明。仅用于展示与状态判定 */
   stage?: string | null
   /** 证据门判定，随 `knowledge` 一起透传给引用区，决定标题措辞 */

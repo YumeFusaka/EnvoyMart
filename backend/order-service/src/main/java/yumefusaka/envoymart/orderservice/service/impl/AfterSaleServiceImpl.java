@@ -53,6 +53,13 @@ import java.util.stream.Collectors;
 @Service
 public class AfterSaleServiceImpl implements AfterSaleService {
 
+    private yumefusaka.envoymart.orderservice.service.SeataOperationReceiptDecisionProbe decisionProbe;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setDecisionProbe(yumefusaka.envoymart.orderservice.service.SeataOperationReceiptDecisionProbe decisionProbe) {
+        this.decisionProbe = decisionProbe;
+    }
+
     private static final String OPERATOR_USER = "USER";
     private static final String OPERATOR_ADMIN = "ADMIN";
 
@@ -109,6 +116,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public AfterSaleResponse apply(String userId, ApplyAfterSaleRequest request) {
         if (!AfterSaleType.isValid(request.getType())) {
@@ -116,7 +124,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
         }
 
         OrderItemEntity item = requireOwnedItem(userId, request.getOrderItemId());
-        OrderEntity order = requireOrder(item.getOrderId());
+        OrderEntity order = requireLockedOrder(item.getOrderId());
 
         // 同一订单行不能同时有两个进行中的售后单。
         // 应用层的先查后插拦不住并发，所以下面还有一道数据库唯一约束兜底 ——
@@ -163,9 +171,10 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public AfterSaleResponse audit(Long afterSaleId, boolean approved, String remark, String operatorId) {
-        AfterSaleEntity entity = requireAfterSale(afterSaleId);
+        AfterSaleEntity entity = requireLockedAfterSale(afterSaleId);
 
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
         if (current != AfterSaleStatus.APPLIED) {
@@ -192,9 +201,10 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public AfterSaleResponse cancel(String userId, Long afterSaleId) {
-        AfterSaleEntity entity = requireOwned(userId, afterSaleId);
+        AfterSaleEntity entity = requireLockedOwned(userId, afterSaleId);
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
 
         // 退款中不可撤：钱已经在路上，撤了钱也会到账，状态和事实对不上。
@@ -209,9 +219,10 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public AfterSaleResponse shipBack(String userId, Long afterSaleId, String carrier, String trackingNo) {
-        AfterSaleEntity entity = requireOwned(userId, afterSaleId);
+        AfterSaleEntity entity = requireLockedOwned(userId, afterSaleId);
 
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
         if (current != AfterSaleStatus.APPROVED) {
@@ -241,9 +252,10 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public AfterSaleResponse confirmReceived(Long afterSaleId, String operatorId) {
-        AfterSaleEntity entity = requireAfterSale(afterSaleId);
+        AfterSaleEntity entity = requireLockedAfterSale(afterSaleId);
 
         AfterSaleStatus current = AfterSaleStatus.parse(entity.getStatus());
         if (current != AfterSaleStatus.RETURNING) {
@@ -260,9 +272,10 @@ public class AfterSaleServiceImpl implements AfterSaleService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public AfterSaleResponse retryRefund(Long afterSaleId, String operatorId) {
-        AfterSaleEntity entity = requireAfterSale(afterSaleId);
+        AfterSaleEntity entity = requireLockedAfterSale(afterSaleId);
 
         if (AfterSaleStatus.parse(entity.getStatus()) != AfterSaleStatus.REFUNDING) {
             throw new IllegalStateException("只有「退款中」的售后单可以重试退款");
@@ -467,7 +480,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
      * 投影丢了有 WARN，钱乱了就找不回来了 —— 两者的严重性不在一个量级。
      */
     private void projectOrderRefunding(AfterSaleEntity entity) {
-        OrderEntity order = orderMapper.selectById(entity.getOrderId());
+        OrderEntity order = orderMapper.lockById(entity.getOrderId());
         if (order == null) {
             return;
         }
@@ -497,7 +510,7 @@ public class AfterSaleServiceImpl implements AfterSaleService {
      * 剩余商品可以继续申请售后，超时任务也会照常把它推进到已完成。
      */
     private void projectOrderAfterFinish(AfterSaleEntity entity) {
-        OrderEntity order = orderMapper.selectById(entity.getOrderId());
+        OrderEntity order = orderMapper.lockById(entity.getOrderId());
         if (order == null) {
             return;
         }
@@ -669,6 +682,29 @@ public class AfterSaleServiceImpl implements AfterSaleService {
             throw new IllegalArgumentException("订单不存在");
         }
         return order;
+    }
+
+    private OrderEntity requireLockedOrder(Long orderId) {
+        OrderEntity order = orderId == null ? null : orderMapper.lockById(orderId);
+        if (order == null) throw new IllegalArgumentException("订单不存在");
+        yumefusaka.envoymart.orderservice.service.OrderGlobalDecision.requireCommitted(order, decisionProbe);
+        return order;
+    }
+
+    private AfterSaleEntity requireLockedAfterSale(Long afterSaleId) {
+        AfterSaleEntity candidate = requireAfterSale(afterSaleId);
+        requireLockedOrder(candidate.getOrderId());
+        // 按订单→售后固定锁顺序，锁后读当前版本，不能沿用等待前的快照。
+        AfterSaleEntity entity = afterSaleMapper.lockById(afterSaleId);
+        if (entity == null) throw new IllegalArgumentException("售后单不存在");
+        return entity;
+    }
+
+    private AfterSaleEntity requireLockedOwned(String userId, Long afterSaleId) {
+        requireOwned(userId, afterSaleId);
+        AfterSaleEntity entity = requireLockedAfterSale(afterSaleId);
+        if (!userId.equals(entity.getUserId())) throw new IllegalArgumentException("售后单不存在");
+        return entity;
     }
 
     /**

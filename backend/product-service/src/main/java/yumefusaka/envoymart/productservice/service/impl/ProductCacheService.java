@@ -1,15 +1,16 @@
 package yumefusaka.envoymart.productservice.service.impl;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.RedisCallback;
+import org.springframework.data.redis.connection.ReturnType;
 import org.springframework.stereotype.Service;
 import yumefusaka.envoymart.productservice.cache.ProductLocalCache;
 import yumefusaka.envoymart.productservice.config.ProductCacheInvalidationConfig;
 import yumefusaka.envoymart.contract.ProductDetail;
-import yumefusaka.envoymart.productservice.mq.CacheEvictConfig;
-import yumefusaka.envoymart.productservice.mq.CacheEvictEvent;
+import yumefusaka.envoymart.productservice.projection.ProductProjectionBarrier;
+import yumefusaka.envoymart.productservice.projection.ProductProjectionCacheScripts;
 
 import java.time.Duration;
 import java.util.concurrent.ThreadLocalRandom;
@@ -85,8 +86,6 @@ public class ProductCacheService {
     private static final ProductDetail NULL_SENTINEL = ProductDetail.builder().id(-1L).build();
 
     private final RedisTemplate<String, Object> redisTemplate;
-    /** 删除失败时的补偿通道；没有它就只能靠 TTL 兜底 */
-    private final RabbitTemplate rabbitTemplate;
 
     /**
      * 缓存是否处于不可用状态 —— 用来把日志从"每条一次"压成"状态变化时一次"。
@@ -115,15 +114,16 @@ public class ProductCacheService {
      * 用 {@code StringRedisTemplate}（key/value 都是原样字符串）发，就不存在这层转换。
      */
     private final StringRedisTemplate pubSubTemplate;
+    private final ProductProjectionBarrier barrier;
 
     public ProductCacheService(RedisTemplate<String, Object> redisTemplate,
-                               RabbitTemplate rabbitTemplate,
                                ProductLocalCache localCache,
-                               StringRedisTemplate pubSubTemplate) {
+                               StringRedisTemplate pubSubTemplate,
+                               ProductProjectionBarrier barrier) {
         this.redisTemplate = redisTemplate;
-        this.rabbitTemplate = rabbitTemplate;
         this.localCache = localCache;
         this.pubSubTemplate = pubSubTemplate;
+        this.barrier = barrier;
     }
 
     /**
@@ -133,8 +133,7 @@ public class ProductCacheService {
      * 它挂了只该让接口变慢，不该让接口变失败——实测 Redis 一停，商品详情直接超时无响应，
      * 而库里的数据完全正常。这是典型的"故障放大"：一个辅助组件的故障被放大成了业务不可用。
      * <p>
-     * <b>注意与写路径的不对称，那是刻意的</b>：删除缓存失败也不抛（见
-     * {@link #evictProductCache}），但**下单链路要拒绝**——Redisson 锁拿不到时必须失败，
+     * <b>写路径由持久投影任务严格重试</b>；下单链路要拒绝——Redisson 锁拿不到时必须失败，
      * 因为下单是资金相关操作，Redis 不可用时放行可能建出重复订单。
      * 一句话：<b>读可以降级，写不能赌</b>。
      */
@@ -203,9 +202,11 @@ public class ProductCacheService {
         }
 
         try {
-            ProductDetail loaded = loader.get();
-            write(id, loaded, epochAtRead);
-            return loaded;
+            return barrier.read(id, version -> {
+                ProductDetail loaded = loader.get();
+                write(id, loaded, epochAtRead, version);
+                return loaded;
+            });
         } finally {
             // **只释放自己拿到的那把锁。**
             // 原先无条件 release，于是没抢到锁的请求（等超时后自己回源）也会去 delete ——
@@ -217,38 +218,11 @@ public class ProductCacheService {
         }
     }
 
-    /**
-     * 商品变更后失效缓存。
-     * <p>
-     * <b>失败不向上抛</b>：这个方法的调用方是库存扣减与回补，而缓存是派生数据——
-     * 它删不掉不该让库存操作跟着失败。原先直接调 {@code delete}，Redis 一抖动
-     * 就是下单失败，代价与"缓存脏一会儿"完全不成比例。
-     * <p>
-     * 失败后落一条补偿消息，由消费者重试删除；连消息都发不出去时只能靠 TTL 兜底，
-     * 但那条路径会留下 ERROR 日志，不是静默的。
-     */
-    public void evictProductCache(Long id) {
-        // 本实例先清本地副本：不等广播回来，自己立刻一致。
-        // 依赖"pub/sub 会回显给发布者"是把正确性押在中间件的行为细节上。
-        localCache.invalidate(id);
-        try {
-            deleteCacheOnly(id);
-        } catch (Exception e) {
-            log.error("[Cache] 删除缓存失败，转补偿队列重试: id={}", id, e);
-            try {
-                rabbitTemplate.convertAndSend(CacheEvictConfig.CACHE_EXCHANGE,
-                        CacheEvictConfig.EVICT_KEY, new CacheEvictEvent(id, e.getMessage()));
-            } catch (Exception mqEx) {
-                log.error("[Cache] 补偿消息也发送失败，该条目只能等 TTL 自然过期: id={}", id, mqEx);
-            }
-        }
-    }
 
     /**
      * 删 Redis 并广播给其他实例清本地副本，失败即抛。
      * <p>
-     * 补偿消费者走这条路径而不是 {@link #evictProductCache}——后者在失败时会再发补偿消息，
-     * 从消费者里调它就成了自我循环：一条删不掉的消息会无限复制自己。
+     * 仅兼容既有补偿消息；新的业务刷新由持久投影任务驱动。
      * <p>
      * <b>广播这一步不能省</b>：补偿消息由 RabbitMQ 分发给<b>某一个</b>实例消费，
      * 它清得掉 Redis 与自己的本地缓存，却清不掉其他实例的。
@@ -260,6 +234,26 @@ public class ProductCacheService {
         // 广播失败不单独兜底：让它抛出去，由补偿队列连同上面的删除一起重试
         // （删除是幂等的，重试一次没有副作用）
         pubSubTemplate.convertAndSend(ProductCacheInvalidationConfig.INVALIDATION_CHANNEL, String.valueOf(id));
+    }
+
+    /** 消费者必须看见失败，持久任务才能自动恢复；失效版本不设TTL。 */
+    public void invalidateProjection(Long id, long version) {
+        localCache.invalidate(id);
+        Long accepted = executeVersionScript(ProductProjectionCacheScripts.INVALIDATE, id,
+                bytes(Long.toString(version)));
+        if (accepted == null) throw new IllegalStateException("Redis投影失效未返回结果");
+        pubSubTemplate.convertAndSend(ProductCacheInvalidationConfig.INVALIDATION_CHANNEL, String.valueOf(id));
+    }
+
+    private byte[] bytes(String value) { return value.getBytes(java.nio.charset.StandardCharsets.UTF_8); }
+
+    private Long executeVersionScript(String script, Long id, byte[]... arguments) {
+        byte[][] values = new byte[arguments.length + 2][];
+        values[0] = bytes(key(id));
+        values[1] = bytes("product:projection:version:" + id);
+        System.arraycopy(arguments, 0, values, 2, arguments.length);
+        return redisTemplate.execute((RedisCallback<Long>) connection ->
+                connection.scriptingCommands().eval(bytes(script), ReturnType.INTEGER, 2, values));
     }
 
     // ==================== 读写 ====================
@@ -297,31 +291,19 @@ public class ProductCacheService {
         }
     }
 
-    private void write(Long id, ProductDetail product, long epochAtRead) {
-        // 回填前先校验纪元：回源读到的是"某一刻的库"，而失效意味着"库变了、缓存已删"。
-        // 期间发生过失效就两级都不写——写回 Redis 同样会把刚被删掉的旧值灌回去。
-        // 代价只是这次不回填，数据本身照常返回
-        if (!localCache.fillIfNoInvalidationSince(id, product, epochAtRead)) {
-            return;
-        }
-        // 一级缓存**不依赖 Redis**：即使 Redis 正熔断着，本地这一层照样填。
-        // 于是 Redis 挂掉期间，热点商品仍然不查库——多级缓存顺带把容灾也补了一截。
-
-        if (!cacheUsable()) {
-            return;
-        }
+    private void write(Long id, ProductDetail product, long epochAtRead, long version) {
+        if (!cacheUsable()) return;
         try {
-            if (product == null) {
-                redisTemplate.opsForValue().set(key(id), NULL_SENTINEL, Duration.ofMinutes(NULL_TTL_MINUTES));
-                return;
-            }
-            // TTL 加抖动：同一批写入的 key 不会在同一秒集体失效
-            long jitterMinutes = ThreadLocalRandom.current().nextLong(JITTER_MAX_MINUTES + 1);
-            redisTemplate.opsForValue().set(key(id), product,
-                    Duration.ofMinutes(PRODUCT_TTL_HOURS * 60 + jitterMinutes));
+            Object value = product == null ? NULL_SENTINEL : product;
+            @SuppressWarnings("unchecked")
+            var serializer = (org.springframework.data.redis.serializer.RedisSerializer<Object>) redisTemplate.getValueSerializer();
+            long ttlMillis = product == null ? Duration.ofMinutes(NULL_TTL_MINUTES).toMillis()
+                    : Duration.ofMinutes(PRODUCT_TTL_HOURS * 60 + ThreadLocalRandom.current().nextLong(JITTER_MAX_MINUTES + 1)).toMillis();
+            Long accepted = executeVersionScript(ProductProjectionCacheScripts.FILL, id,
+                    bytes(Long.toString(version)), serializer.serialize(value), bytes(Long.toString(ttlMillis)));
+            if (Long.valueOf(1).equals(accepted)) localCache.fillIfNoInvalidationSince(id, product, epochAtRead);
             reportCacheRecovered();
         } catch (Exception e) {
-            // 回填失败只意味着"下次还得回源"，数据已经拿到了，不影响本次返回
             reportCacheFailure("write", e);
         }
     }

@@ -12,13 +12,21 @@ import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.tool.Tool;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
+import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -442,5 +450,177 @@ class AgentGraphReplanTest {
                 .as("规划轮次必须被 LoopGuard 收住：空结果只是「该换策略了」，不是无限重试的理由")
                 .isEqualTo(1);
         assertThat(result.getLoops()).contains("planRounds=1/1");
+    }
+
+    @Test
+    void 新计划没有输出时不能借用历史同下标SKU批准写入() {
+        AtomicInteger lookupCalls = new AtomicInteger();
+        AtomicInteger planCalls = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new Tool() {
+            @Override public ToolDefinition getDefinition() {
+                return ToolDefinition.builder().name("lookup").description("检索").build();
+            }
+            @Override public ToolResult execute(ToolCall call) {
+                if (lookupCalls.incrementAndGet() == 1) {
+                    return ToolResult.builder().success(true).noData(true)
+                            .output("旧候选未满足条件").rawData(new Sku(111L)).build();
+                }
+                return ToolResult.builder().success(true).output("未产出SKU字段").build();
+            }
+        });
+        registry.register(new Tool() {
+            @Override public ToolDefinition getDefinition() {
+                return ToolDefinition.builder().name("add").description("加购")
+                        .requiresConfirmation(true).build();
+            }
+            @Override public ToolResult execute(ToolCall call) {
+                throw new AssertionError("无本轮SKU依据不允许写入");
+            }
+        });
+        LLMProvider provider = new LLMProvider() {
+            @Override public LLMResponse chat(List<ChatMessage> messages, LLMConfig config) {
+                return LLMResponse.builder().content("未完成").build();
+            }
+            @Override public List<PlanStep> plan(String message, List<ToolDefinition> tools, String context) {
+                if (planCalls.incrementAndGet() == 1) {
+                    return List.of(PlanStep.builder().tool("lookup").arguments(Map.of("query", "旧条件")).build());
+                }
+                return List.of(PlanStep.builder().tool("lookup").arguments(Map.of("query", "新条件")).build(),
+                        PlanStep.builder().tool("add").arguments(Map.of("skuId", "$0.skuId")).build());
+            }
+        };
+        var result = new AgentGraph(provider, CONFIG, registry, executor).run("u1", "s1", "查后加购", "",
+                List.of(), new LoopGuard(), null, null, AgentGraph.RetrievalResult::empty);
+        assertThat(lookupCalls).hasValue(2);
+        assertThat(planCalls).hasValue(2);
+        assertThat(result.getPendingActions()).isNullOrEmpty();
+        assertThat(result.getAnswer()).contains("已阻止写操作");
+        assertThat(result.getToolExecutions()).extracting(execution -> execution.getOperationId()).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void 超时任务忽略中断晚返回不能发布旧输出轨迹或重复结束进度() {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch lateCompleted = new CountDownLatch(1);
+        AtomicInteger lookupCalls = new AtomicInteger();
+        AtomicInteger lateReturns = new AtomicInteger();
+        AtomicInteger planCalls = new AtomicInteger();
+        AtomicInteger finishes = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new Tool() {
+            @Override public ToolDefinition getDefinition() {
+                return ToolDefinition.builder().name("lookup").description("检索").build();
+            }
+            @Override public ToolResult execute(ToolCall call) {
+                if (lookupCalls.incrementAndGet() == 1) {
+                    started.countDown();
+                    // 模拟无法被 Future.cancel(true) 终止的远程调用。
+                    boolean released = false;
+                    while (!released) {
+                        try {
+                            released = release.await(5, TimeUnit.SECONDS);
+                            if (!released) throw new AssertionError("新轮没有释放超时任务");
+                        }
+                        catch (InterruptedException ignored) { }
+                    }
+                    lateReturns.incrementAndGet();
+                    return ToolResult.builder().success(true).output("旧SKU晚返回")
+                            .rawData(new Sku(111L)).build();
+                }
+                release.countDown();
+                await(lateCompleted);
+                return ToolResult.builder().success(true).output("新轮没有SKU字段").build();
+            }
+        });
+        registry.register(new Tool() {
+            @Override public ToolDefinition getDefinition() {
+                return ToolDefinition.builder().name("add").description("加购")
+                        .requiresConfirmation(true).build();
+            }
+            @Override public ToolResult execute(ToolCall call) {
+                throw new AssertionError("不能执行旧SKU写操作");
+            }
+        });
+        LLMProvider provider = new LLMProvider() {
+            @Override public LLMResponse chat(List<ChatMessage> messages, LLMConfig config) {
+                return LLMResponse.builder().content("未完成").build();
+            }
+            @Override public List<PlanStep> plan(String message, List<ToolDefinition> tools, String context) {
+                if (planCalls.incrementAndGet() == 1) {
+                    return List.of(PlanStep.builder().tool("lookup").arguments(Map.of("query", "旧条件")).build());
+                }
+                return List.of(PlanStep.builder().tool("lookup").arguments(Map.of("query", "新条件")).build(),
+                        PlanStep.builder().tool("add").arguments(Map.of("skuId", "$0.skuId")).build());
+            }
+        };
+        ToolProgressListener progress = new ToolProgressListener() {
+            @Override public void onStart(String tool) { }
+            @Override public void onFinish(String tool, boolean success, boolean noData, long latencyMs) {
+                finishes.incrementAndGet();
+            }
+        };
+        ExecutorService controlled = new FirstTaskTimeoutExecutor(executor, started, lateCompleted);
+        var result = new AgentGraph(provider, CONFIG, registry, controlled).run("u1", "s1", "查后加购", "",
+                List.of(), new LoopGuard(), null, progress, AgentGraph.RetrievalResult::empty);
+        assertThat(lookupCalls).hasValue(2);
+        assertThat(lateReturns).hasValue(1);
+        assertThat(planCalls).hasValue(2);
+        assertThat(result.getPendingActions()).isNullOrEmpty();
+        assertThat(result.getAnswer()).contains("已阻止写操作");
+        assertThat(result.getToolExecutions()).singleElement().satisfies(execution -> {
+            assertThat(execution.getOutput()).isEqualTo("新轮没有SKU字段");
+            assertThat(execution.getRawData()).isNull();
+        });
+        assertThat(finishes).hasValue(2);
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            assertThat(latch.await(5, TimeUnit.SECONDS)).as("受控任务必须按时完成").isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("等待受控任务被中断", e);
+        }
+    }
+
+    /** 仅首次 Future 的等待立即超时，真实任务仍在线程池运行，无需修改生产超时配置。 */
+    private static final class FirstTaskTimeoutExecutor extends AbstractExecutorService {
+        private final ExecutorService delegate;
+        private final CountDownLatch started;
+        private final CountDownLatch completed;
+        private final AtomicInteger submitted = new AtomicInteger();
+
+        private FirstTaskTimeoutExecutor(ExecutorService delegate, CountDownLatch started, CountDownLatch completed) {
+            this.delegate = delegate;
+            this.started = started;
+            this.completed = completed;
+        }
+        @Override public <T> Future<T> submit(Callable<T> task) {
+            if (submitted.incrementAndGet() != 1) return delegate.submit(task);
+            Future<T> first = delegate.submit(() -> {
+                try { return task.call(); }
+                finally { completed.countDown(); }
+            });
+            return new Future<>() {
+                @Override public boolean cancel(boolean interrupt) { return first.cancel(interrupt); }
+                @Override public boolean isCancelled() { return first.isCancelled(); }
+                @Override public boolean isDone() { return first.isDone(); }
+                @Override public T get() throws InterruptedException, ExecutionException { return first.get(); }
+                @Override public T get(long timeout, TimeUnit unit) throws TimeoutException {
+                    await(started);
+                    throw new TimeoutException("受控首次等待超时");
+                }
+            };
+        }
+        @Override public void execute(Runnable command) { delegate.execute(command); }
+        @Override public void shutdown() { delegate.shutdown(); }
+        @Override public List<Runnable> shutdownNow() { return delegate.shutdownNow(); }
+        @Override public boolean isShutdown() { return delegate.isShutdown(); }
+        @Override public boolean isTerminated() { return delegate.isTerminated(); }
+        @Override public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+            return delegate.awaitTermination(timeout, unit);
+        }
     }
 }

@@ -12,6 +12,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AgentCommerceToolContractTest {
 
     @Test
+    void 领券参数来源不依赖未注册的查询工具() {
+        ToolDefinition receive = new CouponReceiveTool(null).getDefinition();
+
+        assertThat(receive.getDescription()).contains("/coupons/available", "用户明确提供")
+                .doesNotContain("coupon_available");
+        assertThat(receive.isRequiresConfirmation()).isTrue();
+    }
+
+    @Test
     void 商品候选保留顺序与每个候选的规格事实() {
         var first = new ProductSearchResult(null, null, null, null, null, null,
                 List.of(new ProductSearchResult.SkuOption(101L, "500mg", 29L, 8, true)));

@@ -184,4 +184,21 @@ class CouponServiceImplTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("优惠券不可用（已使用或已过期）");
     }
+
+    @Test
+    void 退券必须绑定原核销订单号避免退回另一笔订单的券() {
+        when(userCouponMapper.unredeem(1L, "u1001", "YS-EXPECTED")).thenReturn(0);
+
+        service.unredeem("u1001", 1L, "YS-EXPECTED");
+
+        verify(userCouponMapper).unredeem(1L, "u1001", "YS-EXPECTED");
+    }
+
+    @Test
+    void 缺少核销订单号或用户不能退券() {
+        assertThatThrownBy(() -> service.unredeem("u1001", 1L, " ")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.unredeem(null, 1L, "YS-FIRST")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.unredeem("u1001", null, "YS-FIRST")).isInstanceOf(IllegalArgumentException.class);
+        verify(userCouponMapper, never()).unredeem(anyLong(), anyString(), anyString());
+    }
 }

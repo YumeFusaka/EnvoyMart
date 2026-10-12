@@ -3,6 +3,7 @@ package yumefusaka.envoymart.aiservice.knowledge;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
+import yumefusaka.envoymart.agent.graph.EntityAliases;
 import yumefusaka.envoymart.agent.graph.EntityKind;
 import yumefusaka.envoymart.agent.graph.EntityNames;
 import yumefusaka.envoymart.agent.graph.GraphRelation;
@@ -26,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -57,6 +59,16 @@ public class KnowledgeGraphBuilder {
     private static final int MAX_DOC_CHARS = 12000;
     /** 单篇的关系条数上限，防止模型跑飞时灌进几百条 */
     private static final int MAX_TRIPLES = 40;
+    /** 只识别肯定的组成声明；“不含”“与其他含某成分制剂同服”不能证明本品组成。 */
+    private static final Pattern COMPOSITION_DECLARATION = Pattern.compile(
+            "^(?:本品|本产品)(?:主要成分为|成分为|所含|含有?|包含)");
+    private static final Pattern COMPOSITION_FIELD = Pattern.compile(
+            "^(?:主要成分|成分)(?:为|[:：])");
+    private static final Pattern UNIT_COMPOSITION = Pattern.compile(
+            "^(?:(?:本品|本产品)(?:规格(?:为|[:：]))?|规格(?:为|[:：]))?"
+                    + "每(?:一包|片|粒|袋|支|份|瓶|滴)(?:\\d+(?:\\.\\d+)?(?:毫升|毫克|克))?(?:含有?|包含)");
+    private static final Pattern COMPOSITION_CONTINUATION = Pattern.compile(
+            "^(?:主要成分为|成分为|含有?|包含|并添加|添加)");
     /**
      * 抽取输出的 Token 上限。
      * <p>
@@ -433,18 +445,16 @@ public class KnowledgeGraphBuilder {
      * 在图上没有节点，覆盖率永远到不了 100%，而缺失没有任何现象（文档在库里、也进了向量库）。
      * <p>
      * <b>补边的输入来自两处</b>：归属由运营在上传时声明（{@code subjectSpuIds}），
-     * 成分来自模型从正文里抽出的、已经过校验的 {@code CONTAINS} 或 {@code PROVIDES} 边。
-     * 两边都是真的，拼起来的这条边也就是真的。
+     * 候选实体来自抽取结果，组成事实必须另有正文的肯定声明。
+     * 相互作用中提到某营养素只证明它参与了相互作用，不能证明商品含有它。
      * <p>
      * <b>只在文档确实抽出成分时才补</b>：一篇抽不出任何成分的文档，硬造一条
      * {@code SPUx -CONTAINS-> ???} 只会往图上灌一个没有依据的节点。这种情况下
      * 商品在覆盖率里显示为「有节点、无边」——那正是需要运营去补正文的信号，
      * 不该被一条编出来的边掩盖。
      * <p>
-     * <b>为什么用「文档声明的全部商品」× 「文档抽出的全部成分」做笛卡尔积</b>：
-     * 一篇「褪黑素与 GABA 类助眠产品说明书」同时是两个商品的说明书，正文里也同时写了
-     * 两种成分。哪条成分属于哪个商品，模型有时会错标商品端——而正文里既然两个商品都在，
-     * 两个商品都含这两种成分是这个语料里的正确读法。
+     * 多商品说明书必须保留各商品自己的 CONTAINS，不按所有主体与所有成分做笛卡尔积。
+     * PROVIDES 保留为成分到营养素的原关系，不把提供对象直接补成商品组成。
      */
     private List<GraphTriplePayload> augmentSubjectEdges(Document doc, List<GraphTriplePayload> triples,
                                                          List<ProductSummary> catalog) {
@@ -453,33 +463,30 @@ public class KnowledgeGraphBuilder {
             // 领域文档（退货政策、监管规范）本就不属于任何商品，不需要补
             return triples;
         }
+        if (subjects.size() != 1) {
+            log.info("[Graph] 文档 {} 有 {} 个主体，仅保留抽取的各自组成，不跨商品补边",
+                    doc.getId(), subjects.size());
+            return triples;
+        }
         Map<String, ProductSummary> byKey = new LinkedHashMap<>();
         for (ProductSummary p : catalog) {
             byKey.put(key(p.getId()), p);
         }
-        // 收集这篇文档里出现的成分名（已经过 knowledge-service 的引文校验，是正文里真有的）。
-        //
-        // **成分可能出现在任一端，两端都要收。** 原实现只认 `X -CONTAINS-> 成分` 的尾端，
-        // 于是「碳酸钙 D3 咀嚼片」这类文档——模型把成分写在头端（`钙 -INTERACTS_WITH-> 四环素类`）
-        // 而没有产出任何 CONTAINS——就一条主体边都补不出来，商品在图上继续不存在，
-        // 而这正是这次要根治的那 13 个商品里的典型一篇。
-        //
-        // 这样放宽不会放进幻觉：成分本身仍要过 knowledge-service 的端点与引文双锚定，
-        // 这里只是把「文档里确实出现过的成分」这个集合取全。
+        // 抽取结果尚未经过服务端校验；补边必须自己找到独立的组成原句。
         Map<String, String> ingredients = new LinkedHashMap<>();
         Map<String, String> ingredientQuotes = new LinkedHashMap<>();
         for (GraphTriplePayload t : triples) {
-            if (isCompositionPart(t.getHeadKind())) {
+            String headQuote = isCompositionPart(t.getHeadKind())
+                    ? compositionQuote(doc.getContent(), t.getHeadName()) : null;
+            if (headQuote != null) {
                 ingredients.putIfAbsent(t.getHeadName(), t.getHeadLabel());
-                if (t.getQuote() != null && !t.getQuote().isBlank()) {
-                    ingredientQuotes.putIfAbsent(t.getHeadName(), t.getQuote());
-                }
+                ingredientQuotes.putIfAbsent(t.getHeadName(), headQuote);
             }
-            if (isCompositionPart(t.getTailKind())) {
+            String tailQuote = isCompositionPart(t.getTailKind())
+                    ? compositionQuote(doc.getContent(), t.getTailName()) : null;
+            if (tailQuote != null) {
                 ingredients.putIfAbsent(t.getTailName(), t.getTailLabel());
-                if (t.getQuote() != null && !t.getQuote().isBlank()) {
-                    ingredientQuotes.putIfAbsent(t.getTailName(), t.getQuote());
-                }
+                ingredientQuotes.putIfAbsent(t.getTailName(), tailQuote);
             }
         }
         if (ingredients.isEmpty()) {
@@ -490,7 +497,9 @@ public class KnowledgeGraphBuilder {
         // 已经由模型抽出的商品→成分对，避免重复
         java.util.Set<String> existing = new java.util.HashSet<>();
         for (GraphTriplePayload t : triples) {
-            existing.add(t.getHeadName() + "\u0000" + t.getTailName());
+            if (GraphRelation.CONTAINS.name().equals(t.getRelation())) {
+                existing.add(t.getHeadName() + "\u0000" + t.getTailName());
+            }
         }
         List<GraphTriplePayload> out = new ArrayList<>(triples);
         int added = 0;
@@ -516,9 +525,7 @@ public class KnowledgeGraphBuilder {
                         .tailName(e.getKey())
                         .tailLabel(e.getValue())
                         .quote(ingredientQuotes.get(e.getKey()))
-                        // 依据是「文档声明了主体 + 正文里有这个成分」这个组合事实，不是某一句话，
-                        // 所以不带 quote，改为置 declared 标志——knowledge-service 的校验据此免引文
-                        // 校验（见 TripleValidator，豁免范围只到这一种边）。
+                        // 商品端由人工主体绑定证明，组成端保留真实声明原句。
                         .declared(true)
                         .build());
                 existing.add(spuKey + "\u0000" + e.getKey());
@@ -529,6 +536,59 @@ public class KnowledgeGraphBuilder {
             log.info("[Graph] 文档 {} 按声明的归属补出 {} 条商品→成分边", doc.getId(), added);
         }
         return out;
+    }
+
+    /** 候选物质必须位于肯定组成声明的列举部分，后面的共服条件不是组成。 */
+    private static String compositionQuote(String content, String name) {
+        if (content == null || name == null || name.isBlank()) {
+            return null;
+        }
+        EntityAliases.Canonical canonical = EntityAliases.resolve(normalize(name));
+        List<String> variants = canonical == null ? List.of(normalize(name))
+                : EntityAliases.variantsOf(canonical.name());
+        for (String sentence : content.split("[。；;\\r\\n]")) {
+            boolean productSubject = false;
+            String[] clauses = normalize(sentence).split("[，,]");
+            for (int index = 0; index < clauses.length; index++) {
+                String clause = clauses[index].replaceFirst("^\\d+(?:\\.\\d+)*[、.]?", "");
+                var declaration = COMPOSITION_DECLARATION.matcher(clause);
+                boolean explicitProduct = declaration.find();
+                if (!explicitProduct) {
+                    declaration = UNIT_COMPOSITION.matcher(clause);
+                    if (!declaration.find() || (index > 0 && !productSubject
+                            && !clause.startsWith("本品") && !clause.startsWith("本产品"))) {
+                        declaration = COMPOSITION_FIELD.matcher(clause);
+                        if (!declaration.find() || (index > 0 && !productSubject)) {
+                            declaration = COMPOSITION_CONTINUATION.matcher(clause);
+                            if (!productSubject || !declaration.find()) {
+                                // 本品的身份介绍可延续到下一组成子句；共服或其他对象会截断主语。
+                                productSubject = clause.matches("^(?:本品|本产品)为[^与]*$")
+                                        || (productSubject && clause.startsWith("商品名为"));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                String listed = clause.substring(declaration.end());
+                // “含铁制剂应与本品间隔”中的主语是含铁制剂，不能继承本品。
+                if (!explicitProduct && listed.matches(
+                        ".*(?:制剂|药物|药品).*(?:同服|合用|间隔|应|需|建议|不宜|禁用|不得|不能|服用|影响|吸收|竞争|风险).*")) {
+                    productSubject = false;
+                    continue;
+                }
+                productSubject = true;
+                // “本品所含钙与铁剂同服…”只声明了钙，不能把铁剂纳入组成。
+                if (listed.matches(".*(?:同服|合用|相互|竞争|影响|吸收).*")) {
+                    listed = listed.split("与|和", 2)[0];
+                }
+                listed = listed.split("(?:不含|而非|以促进|以改善|可|会|应|需|建议)", 2)[0];
+                String composition = listed;
+                if (variants.stream().map(EntityNames::normalize).anyMatch(composition::contains)) {
+                    return sentence.strip();
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -644,15 +704,18 @@ public class KnowledgeGraphBuilder {
                    但关系与引文仍必须来自文档。
                 5. **不要输出「风险」「不良反应」这类实体。** 后果写在关系的 effect 字段里，
                    不单独建节点——风险是组合导致的，单独一条「维生素D → 高钙血症」是错的。
-                5b. **只有当一句话把要一起服用的所有东西都点名了，才抽 COMBINED_WITH。**
+                5b. **COMBINED_WITH 表示原文明示的组合注意事项，不表示独特三阶风险。**
                    文档写「铁剂与钙剂同服影响吸收」时，那只涉及两样，用
-                   「铁剂 -INTERACTS_WITH-> 钙剂」而不是组合；文档写
-                   「本品含铁，与钙剂、维生素D 同服会增加结石风险」这种一句话里明确列出
-                   三样（及以上）并给出共同后果的，才抽成组合：
+                   「铁剂 -INTERACTS_WITH-> 钙剂」而不是组合。原句明确列出三样及以上
+                   共同服用的物质并说明共同后果时，可以抽成组合；不要推断两两安全。
                    headKind 填 COMBINATION，headName 用「+」连接全部成员
-                   （如 铁剂+钙剂+维生素D），relation 填 COMBINED_WITH，tailName 填被牵连的药物或人群。
-                   **成员必须全部出现在 quote 里**：只提到其中两样、第三样是你补上的，
-                   整条会被系统丢掉。宁可少抽一条组合，也不要把两样东西的风险说成三样的。
+                   （如 钙剂+铁剂+锌），relation 填 COMBINED_WITH。
+                   tailName 填原句明确提到的受影响成分、营养素、药物、药物类别或人群，
+                   可以是组合中的成员。effect 必须从 quote 逐字截取，不得改写或推断。
+                   **成员、tailName 和 effect 必须同时出现在同一段 quote 里**。
+                   原文「钙剂、铁剂、锌三者同时补充时，在肠道吸收阶段会发生竞争并彼此抑制」
+                   可用锌为 tailName、NUTRIENT 为 tailKind，effect 原样填
+                   「在肠道吸收阶段会发生竞争并彼此抑制」。不要由该句生成结石或疾病结论。
                    如果文档只说了「与他药同服需注意」这种没有点名具体药物的，不要抽。
                 6. 文档里的「本品」「本产品」指的就是这篇文档所描述的那个商品。
                 7. 抽取不到任何关系时输出 {"triples":[]}。

@@ -51,5 +51,6 @@ public interface PromotionClient {
      */
     @PostMapping("/coupons/internal/unredeem")
     Result<Void> unredeem(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                          @RequestParam("userCouponId") Long userCouponId);
+                          @RequestParam("userCouponId") Long userCouponId,
+                          @RequestParam("orderNo") String orderNo);
 }

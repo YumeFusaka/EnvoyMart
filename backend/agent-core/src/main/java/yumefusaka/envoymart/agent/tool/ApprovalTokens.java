@@ -44,19 +44,17 @@ import java.util.UUID;
  * <b>载荷是明文不是密文</b>，这是有意的：它只包含用户自己刚在卡片上看到过的东西
  * （要取消哪一单），没有任何服务端秘密。签名保证的是「没被篡改」，不是「没被看见」。
  * <p>
- * <b>不落库、不查表。</b>状态全在令牌里，多实例部署下不需要共享存储——
- * 代价是密钥必须各实例一致（{@code AGENT_APPROVAL_SECRET}），未配置时退化为
- * 进程级随机密钥：单机开发照常可用，多实例下互相验不过，这一点会在启动日志里写明。
- * <p>
- * <b>不是一次性的</b>：同一个令牌在有效期内可以重复提交，执行两次。
- * 这不会造成重复扣款之类的后果——高危工具的语义本身就该是幂等的（取消已取消的订单
- * 会返回状态不允许），而这个代价换来的是不需要任何服务端状态与过期清理。
+ * 令牌只证明授权载荷；Redis 批次账本管理接受、租约与取消，业务数据库回执证明提交。
+ * 多实例和跨重启需要稳定签名密钥。只读恢复可核验过期签名，执行入口仍强制有效期。
  */
 @Slf4j
 public class ApprovalTokens {
 
     /** 确认窗口。取十分钟：够用户读完卡片再点，又短到不该被长期留存 */
     public static final long DEFAULT_TTL_SECONDS = 600;
+    /** 首次确认仍受十分钟签名期限限制；接受后恢复授权的时长也签入原批次。 */
+    public static final long ACCEPTED_RECOVERY_SECONDS = 86400;
+    public record VerifiedGrant(List<PendingAction> actions, long expiresAtSeconds, long recoverySeconds) { }
 
     /**
      * 载荷长度上限（字符）。令牌是<b>客户端原样回传</b>的输入，先按长度挡一道，
@@ -73,6 +71,7 @@ public class ApprovalTokens {
 
     private final byte[] secret;
     private final long ttlSeconds;
+    private final java.time.Clock clock;
 
     /**
      * @param secret 签名密钥。<b>为空时生成一枚进程级随机密钥</b>并告警——
@@ -85,6 +84,10 @@ public class ApprovalTokens {
     }
 
     public ApprovalTokens(String secret, long ttlSeconds) {
+        this(secret, ttlSeconds, java.time.Clock.systemUTC());
+    }
+
+    public ApprovalTokens(String secret, long ttlSeconds, java.time.Clock clock) {
         if (secret == null || secret.isBlank()) {
             byte[] generated = new byte[32];
             new SecureRandom().nextBytes(generated);
@@ -95,65 +98,39 @@ public class ApprovalTokens {
             this.secret = secret.getBytes(StandardCharsets.UTF_8);
         }
         this.ttlSeconds = ttlSeconds > 0 ? ttlSeconds : DEFAULT_TTL_SECONDS;
+        this.clock = clock;
     }
 
     /** 签发：把这一批待确认的操作封成令牌，随响应下发给客户端 */
     public String issue(String userId, String sessionId, List<PendingAction> actions) {
-        if (actions == null || actions.isEmpty()) {
+        if (actions == null || actions.isEmpty() || actions.size() > MAX_ACTIONS) {
             throw new IllegalArgumentException("没有待确认的操作，不该签发确认令牌");
         }
-        // **一次性给出幂等键，签进载荷里。**
-        // 令牌是「用户点了这一次确认」的凭据，所以「同一个令牌执行两次」就是同一笔业务意图——
-        // 正是幂等键该认的那个粒度。键写进签名载荷有两个好处：
-        // ① 客户端改不了（改了签名就不对）；② 重入时服务端从载荷里读回来即可，
-        // 不需要在服务端保存任何状态，也不需要模型重新生成。
-        // 作用域是整个令牌（一班次一个键），而不是每个动作一个：一次确认批次本就是一次用户意图。
-        String requestId = UUID.randomUUID().toString();
+        // 每个动作独立签入操作标识，恢复只使用原值，不能让批次共享键吞掉第二个动作。
         List<Map<String, Object>> encoded = new ArrayList<>(actions.size());
+        java.util.Set<String> operationIds = new java.util.HashSet<>();
         for (PendingAction action : actions) {
+            String operationId = action.operationId() == null || action.operationId().isBlank()
+                    ? UUID.randomUUID().toString() : action.operationId();
+            if (!operationIds.add(operationId)) throw new IllegalArgumentException("审批批次 operationId 不能重复");
             Map<String, Object> item = new java.util.LinkedHashMap<>();
             item.put("t", action.tool());
-            item.put("p", withRequestId(action, requestId));
-            if (action.operationId() != null && !action.operationId().isBlank()) {
-                item.put("o", action.operationId());
-            }
+            item.put("p", action.arguments());
+            item.put("o", operationId);
             encoded.add(item);
         }
         Map<String, Object> payload = Map.of(
                 "u", userId == null ? "" : userId,
                 "s", sessionId == null ? "" : sessionId,
-                "e", System.currentTimeMillis() / 1000 + ttlSeconds,
+                "e", clock.millis() / 1000 + ttlSeconds,
+                "r", ACCEPTED_RECOVERY_SECONDS,
                 "a", encoded);
         String body = Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(MAPPER.writeValueAsBytes(payload));
         return body + "." + sign(body);
     }
 
-    /**
-     * 把幂等键并入这次调用的参数。只对**声明了幂等键**的工具生效。
-     * <p>
-     * <b>为什么不无脑塞进所有工具</b>：幂等键只对写操作有意义，读工具带上它是噪音；
-     * 而且工具的参数会进 {@link ToolCallDescription} 被渲染成确认卡片上的描述，
-     * 塞进去会让用户看到一串没有意义的 UUID。
-     */
-    private static Map<String, Object> withRequestId(PendingAction action, String requestId) {
-        if (!IDEMPOTENT_TOOLS.contains(action.tool())) {
-            return action.arguments();
-        }
-        Map<String, Object> merged = new java.util.LinkedHashMap<>(action.arguments());
-        merged.putIfAbsent(REQUEST_ID_ARG, requestId);
-        return merged;
-    }
-
-    /**
-     * 需要幂等键的写工具。<b>列在白名单里而不是靠「有没有这个参数」推断</b>：
-     * 幂等键是给跨服务写操作用的，而工具有没有接收它的字段是实现细节——
-     * 靠字段推断会让「新增一个写工具时忘了登记」表现为「它没有幂等保护」，且不报错。
-     */
-    private static final java.util.Set<String> IDEMPOTENT_TOOLS = java.util.Set.of(
-            "cart_checkout");
-
-    /** 幂等键在工具参数里的字段名 */
+    /** 旧签名载荷中的内部结算字段，读取时保留兼容；新签发不再追加。 */
     public static final String REQUEST_ID_ARG = "requestId";
 
 /**
@@ -182,6 +159,23 @@ public class ApprovalTokens {
      *                  校验就必须容许「不比较会话」这一档；其余场景仍传真实会话，照旧收紧
      */
     public Optional<List<PendingAction>> verify(String token, String userId, String sessionId) {
+        return verify(token, userId, sessionId, false);
+    }
+
+    /** 仅供权威回执只读恢复使用；签名、身份与动作边界仍严格校验。 */
+    public Optional<List<PendingAction>> verifyForRecovery(String token, String userId, String sessionId) {
+        return verify(token, userId, sessionId, true);
+    }
+
+    public Optional<VerifiedGrant> verifyGrantForRecovery(String token, String userId, String sessionId) {
+        return verifyGrant(token, userId, sessionId, true);
+    }
+
+    private Optional<List<PendingAction>> verify(String token, String userId, String sessionId, boolean queryOnly) {
+        return verifyGrant(token, userId, sessionId, queryOnly).map(VerifiedGrant::actions);
+    }
+
+    private Optional<VerifiedGrant> verifyGrant(String token, String userId, String sessionId, boolean queryOnly) {
         if (token == null || token.isBlank()) {
             return Optional.empty();
         }
@@ -218,8 +212,8 @@ public class ApprovalTokens {
             log.warn("[Approval] 确认令牌缺少有效期，拒绝");
             return Optional.empty();
         }
-        long now = System.currentTimeMillis() / 1000;
-        if (now > expiresAt) {
+        long now = clock.millis() / 1000;
+        if (!queryOnly && now > expiresAt) {
             log.info("[Approval] 确认令牌已过期 {} 秒，拒绝", now - expiresAt);
             return Optional.empty();
         }
@@ -241,7 +235,12 @@ public class ApprovalTokens {
             log.warn("[Approval] 确认令牌里没有可执行的操作，拒绝");
             return Optional.empty();
         }
-        return Optional.of(actions);
+        if (payload.containsKey("r") && !(payload.get("r") instanceof Integer || payload.get("r") instanceof Long)) {
+            return Optional.empty();
+        }
+        long recoverySeconds = payload.containsKey("r") ? asLong(payload.get("r")) : 0;
+        if (recoverySeconds < 0 || recoverySeconds > ACCEPTED_RECOVERY_SECONDS) return Optional.empty();
+        return Optional.of(new VerifiedGrant(List.copyOf(actions), expiresAt, recoverySeconds));
     }
 
     private List<PendingAction> decodeActions(Object raw) {
@@ -249,6 +248,7 @@ public class ApprovalTokens {
             return List.of();
         }
         List<PendingAction> actions = new ArrayList<>(list.size());
+        java.util.Set<String> operations = new java.util.HashSet<>();
         for (Object item : list) {
             if (!(item instanceof Map<?, ?> map)) {
                 return List.of();
@@ -258,6 +258,7 @@ public class ApprovalTokens {
                 return List.of();
             }
             Object operationId = map.get("o");
+            if (operationId != null && !operations.add(String.valueOf(operationId))) return List.of();
             actions.add(PendingAction.of(name, asArguments(map.get("p")),
                     operationId == null ? null : String.valueOf(operationId)));
         }

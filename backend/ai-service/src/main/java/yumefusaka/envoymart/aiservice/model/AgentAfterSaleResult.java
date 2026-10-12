@@ -13,6 +13,7 @@ public class AgentAfterSaleResult {
 
     private Long id;
     private String afterSaleNo;
+    /** 原样读取交易响应 statusText（如“待审核”），不由模型或工具重算。 */
     private String statusText;
     /** 预计退款金额，单位分 */
     private Long refundAmount;

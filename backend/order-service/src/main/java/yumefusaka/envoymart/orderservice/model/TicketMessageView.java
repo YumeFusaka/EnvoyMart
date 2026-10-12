@@ -2,12 +2,16 @@ package yumefusaka.envoymart.orderservice.model;
 
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
 import yumefusaka.envoymart.orderservice.entity.SupportTicketMessageEntity;
 
 import java.time.LocalDateTime;
 
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class TicketMessageView {
 
     private Long id;

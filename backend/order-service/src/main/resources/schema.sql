@@ -9,6 +9,11 @@
 
 -- ==================== 购物车 ====================
 
+create table if not exists order_user_trade_guard (
+    user_id varchar(32) not null primary key,
+    revision bigint not null default 0
+);
+
 create table if not exists cart_item (
     id bigint auto_increment primary key,
     user_id varchar(32) not null,
@@ -31,6 +36,7 @@ create table if not exists shop_order (
     id bigint auto_increment primary key,
     order_no varchar(32) not null unique,
     user_id varchar(32) not null,
+    global_xid varchar(128),
     -- CREATED / PAID / SHIPPED / RECEIVED / COMPLETED / CANCELLED / CLOSED / REFUNDING / REFUNDED
     status varchar(24) not null,
 
@@ -294,4 +300,21 @@ create table if not exists event_outbox (
     last_error varchar(512),
     index idx_outbox_pending (sent_at, id),
     index idx_outbox_aggregate (aggregate_id)
+);
+-- 成功回执与业务行同事务提交；JSON 文本不设置 TTL，重试始终返回首次快照。
+create table if not exists order_operation_receipt (
+    id bigint auto_increment primary key,
+    user_id varchar(32) not null,
+    operation_id varchar(256) not null,
+    tool_name varchar(64) not null,
+    parameters_hash char(64) not null,
+    global_xid varchar(128) character set ascii collate ascii_bin,
+    decision_mark varchar(24) character set ascii collate ascii_bin,
+    hash_version smallint not null,
+    receipt_version smallint not null,
+    response_json json,
+    created_at datetime(3) not null,
+    completed_at datetime(3),
+    constraint uk_order_operation_user unique (user_id, operation_id),
+    index idx_order_operation_completed (completed_at)
 );

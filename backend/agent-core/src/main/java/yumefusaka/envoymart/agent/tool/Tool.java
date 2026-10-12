@@ -10,4 +10,10 @@ public interface Tool {
     ToolDefinition getDefinition();
 
     ToolResult execute(ToolCall call);
+
+    /** 只读查回同一签名操作的持久回执，禁止借恢复入口产生新副作用。 */
+    default ToolResult recover(ToolCall call) {
+        return ToolResult.builder().success(false).operationState(ToolResult.OperationState.NOT_FOUND)
+                .errorMessage("该工具没有可查询的持久操作回执").build();
+    }
 }

@@ -244,8 +244,21 @@ public class HybridRetriever implements Retriever {
             }
         }
 
-        // 重排（未配置时是直接截断）
-        List<DocumentChunk> kept = reranker.rerank(query, fused, topK);
+        // 精确双方关系必须取得同一次重排的真实分数，再在原 topK 内保留；
+        // 没有这类来源的查询维持原重排调用和截断行为。
+        boolean hasMatchedPair = fused.stream().anyMatch(chunk -> Boolean.TRUE.equals(chunk.getGraphQueryMatched()));
+        List<DocumentChunk> reranked = reranker.rerank(query, fused, hasMatchedPair ? fused.size() : topK);
+        Set<String> matchedKeys = fused.stream().filter(chunk -> Boolean.TRUE.equals(chunk.getGraphQueryMatched()))
+                .map(this::keyOf).collect(java.util.stream.Collectors.toSet());
+        reranked = reranked.stream().map(chunk -> withGraphFlag(chunk, graphKeys.contains(keyOf(chunk)),
+                matchedKeys.contains(keyOf(chunk)))).toList();
+        List<DocumentChunk> kept = retainMatchedPairs(reranked, topK);
+        log.info("[Retriever] 阶段=图谱融合选择 graphChunks={} pairChunks={} fusedChunks={} rerankedChunks={} keptChunks={}",
+                graphChunks.stream().map(DocumentChunk::getChunkId).toList(),
+                graphChunks.stream().filter(chunk -> Boolean.TRUE.equals(chunk.getGraphQueryMatched()))
+                        .map(DocumentChunk::getChunkId).toList(),
+                fused.stream().map(DocumentChunk::getChunkId).toList(),
+                reranked.stream().map(DocumentChunk::getChunkId).toList(), kept.stream().map(DocumentChunk::getChunkId).toList());
         // 扩写随结果带出：它决定「这回检索到底用了哪几个查询」，
         // 而这正是回答为什么对/为什么没查到时最先要问的一件事。
         // 不带出去的话，扩写是否生效在链路上完全不可观测——
@@ -569,21 +582,36 @@ public class HybridRetriever implements Retriever {
         // 图谱路的 key 集合。注意按与融合同一把尺子取 key（切片级=chunkId，文档级=docId），
         // 否则「归一到同一把尺子」这件事在打标这一步会断掉
         Set<String> graphKeys = new HashSet<>();
+        Set<String> matchedKeys = new HashSet<>();
         for (DocumentChunk chunk : graphChunks) {
             if (chunk != null) {
                 graphKeys.add(keyOf(chunk));
+                if (Boolean.TRUE.equals(chunk.getGraphQueryMatched())) matchedKeys.add(keyOf(chunk));
             }
         }
 
-        return scores.entrySet().stream()
+        List<DocumentChunk> ordered = scores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
-                .limit(topK)
                 // RRF 分<b>只用来定序，不透传</b>。它的量纲是 1/(60+rank)：第 1 名 1/60、
                 // 第 5 名 1/64，绝对大小不表达「有多相关」，拿它当阈值等于拿名次当置信度。
                 // 下游需要的相关性信号在别处——向量路由 VectorStore 写在 chunk.score 上，
                 // 重排器会再覆盖一次。这里原样带出去。
-                .map(e -> withGraphFlag(copyOf(byKey.get(e.getKey())), graphKeys.contains(e.getKey())))
+                .map(e -> withGraphFlag(copyOf(byKey.get(e.getKey())), graphKeys.contains(e.getKey()),
+                        matchedKeys.contains(e.getKey())))
                 .toList();
+        return retainMatchedPairs(ordered, topK);
+    }
+
+    /** 保留本轮精确关系并替换单侧邻居，返回顺序仍服从该阶段排名，条数不超过原上限。 */
+    private List<DocumentChunk> retainMatchedPairs(List<DocumentChunk> ranked, int topK) {
+        Set<String> selected = new LinkedHashSet<>();
+        ranked.stream().filter(chunk -> Boolean.TRUE.equals(chunk.getGraphQueryMatched())).limit(topK)
+                .map(this::keyOf).forEach(selected::add);
+        for (DocumentChunk chunk : ranked) {
+            if (selected.size() >= topK) break;
+            selected.add(keyOf(chunk));
+        }
+        return ranked.stream().filter(chunk -> selected.contains(keyOf(chunk))).limit(topK).toList();
     }
 
     /** 融合归一用的 key：与 {@link #mergeOnce} 保持同一套规则，两处不一致就是分叉的土壤 */
@@ -597,11 +625,10 @@ public class HybridRetriever implements Retriever {
      * 只写 true，不写 false：{@code null} 表示「这条来自文本路、与图谱无关」，与
      * {@code false} 在语义上没有区别，写 false 只是给每个切片多加一个字段。
      */
-    private static DocumentChunk withGraphFlag(DocumentChunk chunk, boolean graphBacked) {
-        if (chunk == null || !graphBacked) {
-            return chunk;
-        }
-        return chunk.toBuilder().graphBacked(true).build();
+    private static DocumentChunk withGraphFlag(DocumentChunk chunk, boolean graphBacked, boolean queryMatched) {
+        if (chunk == null) return null;
+        return chunk.toBuilder().graphBacked(graphBacked ? Boolean.TRUE : chunk.getGraphBacked())
+                .graphQueryMatched(queryMatched ? Boolean.TRUE : null).build();
     }
 
     /**

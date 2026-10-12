@@ -80,8 +80,10 @@ public class KnowledgeAdminController {
             @RequestParam(required = false) String docNo,
             @RequestParam(required = false) String stage,
             @RequestParam(required = false) String reasonCode,
+            @RequestParam(required = false) String entityKey,
+            @RequestParam(required = false) String relation,
             @RequestParam(defaultValue = "100") int limit) {
-        return Result.success(graphService.failures(batchId, docNo, stage, reasonCode, limit));
+        return Result.success(graphService.failures(batchId, docNo, stage, reasonCode, entityKey, relation, limit));
     }
 
     @GetMapping("/graph/failures/{id}")

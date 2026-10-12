@@ -81,9 +81,10 @@ public class CouponServiceImpl implements CouponService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public UserCouponResponse receive(String userId, Long couponId) {
-        CouponEntity coupon = couponId == null ? null : couponMapper.selectById(couponId);
+        CouponEntity coupon = couponId == null ? null : couponMapper.lockCoupon(couponId);
         if (coupon == null || coupon.getStatus() == null || coupon.getStatus() != COUPON_ENABLED) {
             throw new IllegalArgumentException("优惠券不存在或已下架");
         }
@@ -193,6 +194,7 @@ public class CouponServiceImpl implements CouponService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public long redeem(String userId, RedeemRequest request) {
         Long userCouponId = request.getUserCouponId();
@@ -249,26 +251,24 @@ public class CouponServiceImpl implements CouponService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
-    public void unredeem(String userId, Long userCouponId) {
-        if (userCouponId == null) {
-            return;
+    public void unredeem(String userId, Long userCouponId, String orderNo) {
+        if (userId == null || userId.isBlank() || userCouponId == null || userCouponId <= 0
+                || orderNo == null || orderNo.isBlank() || orderNo.length() > 32) {
+            throw new IllegalArgumentException("退还优惠券必须包含用户、用户券与原核销订单号");
         }
-        // 只退「已使用」的。条件里带上原状态，避免把一张本来就没用过的券改成未使用 ——
-        // 那会让同一张券可以被核销两次
-        int updated = userCouponMapper.update(null, new LambdaUpdateWrapper<UserCouponEntity>()
-                .eq(UserCouponEntity::getId, userCouponId)
-                .eq(UserCouponEntity::getUserId, userId)
-                .eq(UserCouponEntity::getStatus, STATUS_USED)
-                .set(UserCouponEntity::getStatus, STATUS_UNUSED)
-                .set(UserCouponEntity::getOrderNo, null)
-                .set(UserCouponEntity::getUsedAt, null));
+        // 订单号绑定必须落到同一条UPDATE，不用先查后改，也不猜此前核销是否成功返回。
+        int updated = userCouponMapper.unredeem(userCouponId, userId, orderNo);
         if (updated > 0) {
-            log.warn("[Coupon] 下单失败，已退还优惠券 userCouponId={} userId={}", userCouponId, userId);
+            log.info("[Coupon] 退券阶段=已退还 userCouponId={} orderNo={}", userCouponId, orderNo);
+        } else {
+            log.info("[Coupon] 退券阶段=跳过 原因=核销归属不匹配或已退还 userCouponId={} orderNo={}", userCouponId, orderNo);
         }
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public int expireOutdated() {
         return userCouponMapper.update(null, new LambdaUpdateWrapper<UserCouponEntity>()

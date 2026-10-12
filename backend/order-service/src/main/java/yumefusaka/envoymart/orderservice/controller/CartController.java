@@ -10,6 +10,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.ResponseEntity;
+import yumefusaka.envoymart.common.operation.OperationContext;
+import yumefusaka.envoymart.common.operation.OperationReceiptMetadata;
+import yumefusaka.envoymart.orderservice.service.AgentWriteFacade;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 import yumefusaka.envoymart.orderservice.model.AddCartItemRequest;
@@ -31,9 +35,11 @@ import java.util.List;
 public class CartController {
 
     private final CartService cartService;
+    private final AgentWriteFacade writes;
 
-    public CartController(CartService cartService) {
+    public CartController(CartService cartService, AgentWriteFacade writes) {
         this.cartService = cartService;
+        this.writes = writes;
     }
 
     @GetMapping
@@ -43,26 +49,32 @@ public class CartController {
     }
 
     @PostMapping("/items")
-    public Result<CartItemResponse> add(
+    public ResponseEntity<Result<CartItemResponse>> add(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @Valid @RequestBody AddCartItemRequest request) {
-        return Result.success(cartService.add(userId, request));
+        if (operationId == null) return ResponseEntity.ok(Result.success(cartService.add(userId, request)));
+        return writes.addCart(OperationContext.of(userId, operationId, "cart_add", java.util.Map.of("skuId", request.getSkuId(), "quantity", request.getQuantity())), request).response();
     }
 
     @PutMapping("/items/{id}")
-    public Result<CartItemResponse> update(
+    public ResponseEntity<Result<CartItemResponse>> update(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @PathVariable("id") Long id,
             @Valid @RequestBody UpdateCartItemRequest request) {
-        return Result.success(cartService.updateQuantity(userId, id, request));
+        if (operationId == null) return ResponseEntity.ok(Result.success(cartService.updateQuantity(userId, id, request)));
+        return writes.updateCart(OperationContext.of(userId, operationId, "cart_update", java.util.Map.of("cartItemId", id, "quantity", request.getQuantity())), id, request).response();
     }
 
     @DeleteMapping("/items/{id}")
-    public Result<Void> remove(
+    public ResponseEntity<Result<Void>> remove(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @PathVariable("id") Long id) {
+        if (operationId != null) return writes.removeCart(OperationContext.of(userId, operationId, "cart_remove", java.util.Map.of("cartItemId", id)), id).response();
         cartService.remove(userId, id);
-        return Result.success(null);
+        return ResponseEntity.ok(Result.success(null));
     }
 
     /**

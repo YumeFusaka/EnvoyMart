@@ -13,7 +13,7 @@ import yumefusaka.envoymart.orderservice.mapper.EventOutboxMapper;
  * 发件箱写入器 —— <b>业务事务内唯一该调的发布接口</b>。
  * <p>
  * 它做的只有一件事：把「待发布的事件」写进 {@code event_outbox}，与调用方在<b>同一个事务</b>里。
- * 真正的发送交给 {@link OutboxRelay}，在提交之后。
+ * 真正的发送交给 {@link OutboxRelay}，在本地与全局事务均提交之后。
  * <p>
  * <b>{@code REQUIRED} 是刻意的，不是随手写的默认值。</b>传播行为必须是「加入调用方事务」：
  * 换成 {@code REQUIRES_NEW}，发件箱行会先提交、业务行随后回滚，于是产生一条

@@ -15,19 +15,15 @@ import java.util.Set;
 /**
  * 提交售后申请工具 —— 用户说「我要退货」时真正把申请交上去。
  * <p>
- * <b>与 {@code after_sale_preview} 的分工：先算、再交。</b>预览只回答「够不够条件、最多退多少」，
- * 不改任何状态；本工具才落一张工单。两者分开是因为用户在下决心前需要的是条件，
- * 而条件判断有政策引擎兜底——把它和「提交」合成一步，用户就会被一张已提交的工单推着走。
- * <p>
- * <b>类型白名单写在参数说明里，不在这里校验。</b>模型从说明里选一个词，选错了由下游拒绝；
- * 工具层再拦一道只会把下游的原文（「该订单不支持换货」这类）换成一句更笼统的话，
- * 而那句话恰恰是用户最需要看清的。
+ * 售后确定性流程通过已有预览 API 提供资格与金额；本工具在用户确认后提交。
+ * 恢复先读取同一操作的持久回执；首次提交由交易域统一判定资格，
+ * 不能用后来的在途申请状态拒绝一条此前已成功的回执。
  */
 @Slf4j
 public class AfterSaleTool implements Tool {
 
     /** 交易域认的三个类型。列在这里是为了让「说明里写得出、代码里查得到」是同一份 */
-    private static final Set<String> TYPES = Set.of("REFUND", "RETURN", "EXCHANGE");
+    private static final Set<String> TYPES = Set.of("REFUND_ONLY", "RETURN_REFUND", "EXCHANGE");
 
     private final OrderClient orderClient;
 
@@ -41,10 +37,11 @@ public class AfterSaleTool implements Tool {
                 .name("after_sale_apply")
                 .description("为某个订单行提交售后申请（退款 / 退货 / 换货）。"
                         + "用户说「我要退货」「申请退款」「这个坏了要换」时使用。"
-                        + "**调用前先用 after_sale_preview 确认这笔订单行符不符合条件**——"
-                        + "不符合时不要提交，把预览给出的原因告诉用户。"
+                        + "售后确定性流程和订单页面通过资格预览 API 查询条件；"
+                        + "本工具会在执行时预检同一订单行，不符合时不提交并返回原因。"
                         + "orderItemId 是订单条目编号（订单详情里每一行一个），不是订单编号。")
                 .requiresConfirmation(true)
+                .acceptsOperationId(true)
                 .parameters(Map.of(
                         "orderItemId", ToolDefinition.ParameterSpec.builder()
                                 .type("integer")
@@ -52,15 +49,15 @@ public class AfterSaleTool implements Tool {
                                 .required(true).build(),
                         "type", ToolDefinition.ParameterSpec.builder()
                                 .type("string")
-                                .description("售后类型，只能取三个值之一：REFUND（仅退款）、"
-                                        + "RETURN（退货退款）、EXCHANGE（换货）。"
-                                        + "用户说「退了不要了」取 RETURN，说「只退钱」取 REFUND，"
+                                .description("售后类型，只能取交易接口三个值之一：REFUND_ONLY（仅退款）、"
+                                        + "RETURN_REFUND（退货退款）、EXCHANGE（换货）。"
+                                        + "用户说「退了不要了」取 RETURN_REFUND，说「只退钱」取 REFUND_ONLY，"
                                         + "说「换一个」取 EXCHANGE")
                                 .required(true).build(),
                         "reason", ToolDefinition.ParameterSpec.builder()
                                 .type("string")
-                                .description("申请原因，简短一句，例如「不想要了」「收到时已破损」")
-                                .required(false).build(),
+                                .description("必填申请原因，1 至 64 字，例如「不想要了」「收到时已破损」")
+                                .required(true).build(),
                         "qualityIssue", ToolDefinition.ParameterSpec.builder()
                                 .type("boolean")
                                 .description("是否属于质量问题。破损、变质、与描述不符取 true；"
@@ -72,22 +69,41 @@ public class AfterSaleTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, false);
+    }
+    @Override public ToolResult recover(ToolCall call) { return execute(call, true); }
+    private ToolResult execute(ToolCall call, boolean queryOnly) {
         try {
             String userId = call.requireUserId();
             AgentAfterSaleRequest request = new AgentAfterSaleRequest();
-            request.setOrderItemId(Long.valueOf(String.valueOf(call.getArguments().get("orderItemId"))));
+            Object rawId = call.getArguments().get("orderItemId");
+            if (rawId == null || !String.valueOf(rawId).matches("[1-9]\\d*")) {
+                throw new IllegalArgumentException("orderItemId 必须是正整数订单条目编号");
+            }
+            request.setOrderItemId(Long.valueOf(String.valueOf(rawId)));
             request.setType(normalizeType(call));
             Object reason = call.getArguments().get("reason");
-            request.setReason(reason == null ? null : String.valueOf(reason).strip());
+            String reasonText = reason == null ? "" : String.valueOf(reason).strip();
+            if (reasonText.isEmpty() || reasonText.length() > 64) {
+                throw new IllegalArgumentException("申请原因 reason 必填，长度为 1 至 64 字");
+            }
+            request.setReason(reasonText);
             request.setQualityIssue(qualityIssueOf(call));
 
-            AgentAfterSaleResult result =
-                    Downstream.mutate("售后", () -> orderClient.applyAfterSale(userId, request));
-            if (result == null) {
-                return ToolResult.builder().success(false)
-                        .output("售后申请没有提交成功，请让用户稍后再试。")
-                        .build();
-            }
+            Map<String, Object> parameters = new java.util.LinkedHashMap<>();
+            parameters.put("orderItemId", request.getOrderItemId()); parameters.put("type", request.getType());
+            parameters.put("reason", request.getReason()); parameters.put("description", request.getDescription());
+            parameters.put("qualityIssue", Boolean.TRUE.equals(request.getQualityIssue()));
+            var operation = WriteReceipts.context(call, parameters);
+            var receipt = WriteReceipts.run(operation, queryOnly, AgentAfterSaleResult.class,
+                    () -> orderClient.operationReceipt(userId, operation.operationId(), operation.toolName(), operation.parametersHash()),
+                    () -> orderClient.applyAfterSaleReceipt(userId, operation.operationId(), request));
+            AgentAfterSaleResult result = receipt.data();
+            WriteReceipts.require(result != null && result.getId() != null && result.getId() > 0
+                    && result.getAfterSaleNo() != null && !result.getAfterSaleNo().isBlank()
+                    && result.getStatusText() != null && !result.getStatusText().isBlank());
+            log.info("[售后工具] 阶段=提交 itemId={} type={} afterSaleId={} statusText={}",
+                    request.getOrderItemId(), request.getType(), result.getId(), result.getStatusText());
             StringBuilder sb = new StringBuilder("售后申请已提交，单号 ").append(result.getAfterSaleNo());
             if (result.getStatusText() != null) {
                 sb.append("，当前状态：").append(result.getStatusText());
@@ -99,16 +115,17 @@ public class AfterSaleTool implements Tool {
                 sb.append("。判据见 ").append(result.getDocRef());
             }
             return ToolResult.builder()
-                    .success(true).output(sb.toString()).rawData(result).build();
+                    .success(true).operationState(ToolResult.OperationState.COMMITTED).receiptReplayed(receipt.replayed())
+                    .output(sb.toString()).rawData(result).build();
         } catch (Exception e) {
-            return Downstream.failure("售后申请", e);
+            return WriteReceipts.failure(e, "售后申请");
         }
     }
 
     /**
      * 类型统一成大写再比对白名单。
      * <p>
-     * 模型偶尔会把 {@code RETURN} 写成 {@code return}，大小写不该成为一次申请失败的
+     * 模型偶尔会把 {@code RETURN_REFUND} 写成小写，大小写不该成为一次申请失败的
      * 原因；但**白名单本身要拦**——编出来的类型必须当场失败，
      * 否则它会一路走到下游、回来的错误信息里没有「你写错了类型」这层意思。
      */
@@ -116,7 +133,7 @@ public class AfterSaleTool implements Tool {
         Object raw = call.getArguments().get("type");
         String type = raw == null ? "" : String.valueOf(raw).strip().toUpperCase(java.util.Locale.ROOT);
         if (!TYPES.contains(type)) {
-            throw new IllegalArgumentException("售后类型只能是 REFUND / RETURN / EXCHANGE，收到的是「" + raw + "」");
+            throw new IllegalArgumentException("售后类型只能是 REFUND_ONLY / RETURN_REFUND / EXCHANGE，收到的是「" + raw + "」");
         }
         return type;
     }
@@ -129,6 +146,10 @@ public class AfterSaleTool implements Tool {
         if (raw instanceof Boolean value) {
             return value;
         }
-        return Boolean.parseBoolean(String.valueOf(raw).strip());
+        String value = String.valueOf(raw).strip();
+        if (!"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value)) {
+            throw new IllegalArgumentException("qualityIssue 只能为 true 或 false");
+        }
+        return Boolean.parseBoolean(value);
     }
 }

@@ -1,4 +1,5 @@
 import { readFixture, printContractSummary, checkCaseContract } from './lib/verify-util.mjs'
+import { prepareCase } from './lib/complex-agent-live.mjs'
 
 const fixture = await readFixture('complex-agent-dialogues.json')
 let pass = 0; let fail = 0
@@ -16,5 +17,11 @@ ck('至少 20 条多工具', multiTool.length >= 20, `实际 ${multiTool.length}
 ck('至少 12 条确认写操作', writes.length >= 12, `实际 ${writes.length}`)
 ck('至少 10 条失败恢复/重规划', recovery.length >= 10, `实际 ${recovery.length}`)
 ck('至少 8 条重启恢复', restart.length >= 8, `实际 ${restart.length}`)
-ck('写场景工具非空', writes.every((item) => item.tools.length > 0))
+ck('每条写场景具有可执行工具或明确 API 写动作', writes.every((item) =>
+  item.steps.some((step) => step.kind === 'confirm' ||
+    (step.kind === 'chat' && step.actions?.length > 0) ||
+    ((step.kind === 'api' || step.kind === 'feedback') && (step.userAction || step.kind === 'feedback')))))
+ck('48 条执行契约、依赖和参数绑定可解析', cases.every((item) => {
+  try { return Boolean(prepareCase(item)) } catch { return false }
+}))
 printContractSummary('复杂 Agent 场景契约', pass, fail, `caseId=CA-MATRIX requestId=fixture dag=declared finalState=${fail ? 'INVALID' : 'DECLARED'}`)

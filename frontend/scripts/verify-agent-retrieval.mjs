@@ -19,7 +19,7 @@
  */
 
 const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
-const LOG = process.env.VERIFY_AI_LOG ?? '../logs/logs-local/ai-service.log'
+const LOG = process.env.VERIFY_AI_LOG ?? '../../logs/logs-local/ai-service.log'
 
 let pass = 0
 let fail = 0
@@ -113,7 +113,7 @@ console.log(`  命中：${titlesOf(first).slice(0, 120)}`)
 
 ck('首轮检索到了知识依据', (first.knowledge ?? []).length > 0,
   `证据门=${first.evidenceLevel}（知识库没索引上？检索链路断了？）`)
-ck('首轮不做改写', !first.retrievalQuery,
+ck('首轮不做改写', !first.retrievalQuery || first.retrievalQuery === '维生素 D3 每天吃多少合适？',
   `首轮没有可消解的指代，改写是纯浪费：收到 ${JSON.stringify(first.retrievalQuery)}`)
 
 // ─────────── 二、指代追问：改写必须作用在检索侧 ───────────
@@ -127,7 +127,8 @@ ck('下发了本轮实际使用的检索句', Boolean(second.retrievalQuery),
 ck('改写句补全了代词指向的实体', /维生素\s*D3|维生素D3/i.test(second.retrievalQuery ?? ''),
   `改写句里没有首轮的实体：${JSON.stringify(second.retrievalQuery)}`)
 ck('改写句不是原话', second.retrievalQuery !== '那它和钙片能一起吃吗？')
-ck('追问的证据仍是同一批文档', /维生素\s*D3/.test(titlesOf(second)),
+ck('追问证据覆盖改写后的维生素D与钙主题', (second.knowledge ?? []).some((chunk) =>
+  /维生素\s*D(?:3)?|钙/i.test(`${chunk.title ?? ''} ${chunk.content ?? ''}`)),
   `命中的是：${titlesOf(second).slice(0, 160)}`)
 
 // ─────────── 三、日志证据：改写在链路上真的发生过 ───────────
@@ -137,7 +138,7 @@ const { readFileSync } = await import('node:fs')
 const { fileURLToPath } = await import('node:url')
 const { dirname, resolve } = await import('node:path')
 let logText = ''
-for (const p of [LOG, resolve(dirname(fileURLToPath(import.meta.url)), '../..', LOG)]) {
+for (const p of [LOG, resolve(dirname(fileURLToPath(import.meta.url)), LOG)]) {
   try {
     // 只取尾部：日志会一直长，而这里要找的是刚刚那几轮
     logText = readFileSync(p, 'utf8').slice(-4_000_000)

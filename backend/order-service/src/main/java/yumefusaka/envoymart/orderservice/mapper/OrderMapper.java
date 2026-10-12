@@ -13,6 +13,15 @@ import java.util.List;
 @Mapper
 public interface OrderMapper extends BaseMapper<OrderEntity> {
 
+    @Select("select * from shop_order where id=#{id} for update")
+    OrderEntity lockById(@Param("id") Long id);
+
+    @Select("select * from shop_order where id=#{id} and user_id=#{userId} for update")
+    OrderEntity lockOwned(@Param("userId") String userId, @Param("id") Long id);
+
+    @Select("select * from shop_order where order_no=#{orderNo} and user_id=#{userId} for update")
+    OrderEntity lockOwnedByNo(@Param("userId") String userId, @Param("orderNo") String orderNo);
+
     /**
      * 某用户的订单按状态计数。
      * <p>

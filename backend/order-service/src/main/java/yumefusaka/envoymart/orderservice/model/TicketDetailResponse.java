@@ -2,6 +2,8 @@ package yumefusaka.envoymart.orderservice.model;
 
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
 import yumefusaka.envoymart.orderservice.entity.SupportTicketEntity;
 
 import java.util.List;
@@ -17,6 +19,8 @@ import java.util.List;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class TicketDetailResponse {
 
     private TicketResponse ticket;

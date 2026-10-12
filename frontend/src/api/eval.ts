@@ -40,6 +40,9 @@ export interface GroundingCaseOutcome {
   multiHopHit: boolean
   citations: CitationCheck[]
   rootCause: string
+  /** v6起独立核验回答完整性；旧快照没有此判定。 */
+  answerComplete?: boolean
+  missingRequired?: string[]
 }
 
 /** 四项指标。每项都带分母 —— 比例单看时读不出「3 条全对」还是「300 条全对」 */
@@ -109,6 +112,7 @@ export interface GroundingLiveRun {
   runId?: string | null
   snapshotPath?: string | null
   snapshotError?: string | null
+  lastCompleted?: GroundingLiveRun | null
 }
 
 /** 回答质量报告只返回真实链路快照。 */
@@ -210,6 +214,7 @@ export interface ProductionRetrievalReport {
   runId?: string | null
   snapshotPath?: string | null
   snapshotError?: string | null
+  lastCompleted?: ProductionRetrievalReport | null
 }
 
 /** 生产链路检索报告。公开只读。 */

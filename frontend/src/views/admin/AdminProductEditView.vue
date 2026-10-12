@@ -12,7 +12,7 @@
  *
  * 价格输入用「元」，进出这一层就换成分 —— 全项目金额内部一律是分。
  */
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Plus, RefreshRight, Delete } from '@element-plus/icons-vue'
@@ -45,6 +45,10 @@ const isEdit = computed(() => spuId.value !== null)
 const loading = ref(true)
 const saving = ref(false)
 const loadError = ref<string | null>(null)
+let mounted = true
+let loadSequence = 0
+let hydrated = false
+onBeforeUnmount(() => { mounted = false; loadSequence += 1 })
 
 const categoryTree = ref<CategoryNode[]>([])
 const brands = ref<BrandView[]>([])
@@ -102,17 +106,22 @@ const attributeValues = reactive<Record<number, string>>({})
 
 // ==================== 加载 ====================
 
-onMounted(async () => {
+async function load() {
+  const sequence = ++loadSequence
+  loading.value = true
+  loadError.value = null
   try {
     const [tree, brandList] = await Promise.all([
-      listCategoryTree().catch(() => [] as CategoryNode[]),
-      listBrands().catch(() => [] as BrandView[]),
+      listCategoryTree(),
+      listBrands(),
     ])
+    if (!mounted || sequence !== loadSequence) return
     categoryTree.value = tree
     brands.value = brandList
 
-    if (spuId.value !== null) {
+    if (spuId.value !== null && !hydrated) {
       const detail = await getSpu(spuId.value)
+      if (!mounted || sequence !== loadSequence) return
       form.name = detail.name
       form.subtitle = detail.subtitle ?? ''
       form.spuCode = detail.spuCode
@@ -137,12 +146,14 @@ onMounted(async () => {
       }
       await loadAttributeTemplate(detail.categoryId)
     }
+    if (mounted && sequence === loadSequence) hydrated = true
   } catch (e) {
-    loadError.value = e instanceof Error ? e.message : '加载失败'
+    if (mounted && sequence === loadSequence) loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
-    loading.value = false
+    if (mounted && sequence === loadSequence) loading.value = false
   }
-})
+}
+onMounted(load)
 
 function toDraft(sku: AdminSku): SkuDraft {
   return {
@@ -564,7 +575,7 @@ watch(spuId, () => { if (isEdit.value) void loadProductDocs() }, { immediate: tr
       </div>
     </div>
 
-    <ErrorState v-if="loadError" :message="loadError" :on-retry="() => router.go(0)" />
+    <ErrorState v-if="loadError" :message="loadError" :on-retry="load" />
 
     <el-skeleton v-else-if="loading" :rows="8" animated />
 

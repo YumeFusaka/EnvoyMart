@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 
 import java.sql.SQLException;
 import java.util.List;
@@ -20,6 +21,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GlobalExceptionHandlerTest {
 
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+    @Test
+    void 异步连接断开不再写通用错误体() throws Exception {
+        var method = GlobalExceptionHandler.class.getMethod("handleDisconnectedAsyncRequest",
+                AsyncRequestNotUsableException.class);
+        assertThat(method.getReturnType()).isEqualTo(void.class);
+        assertThat(method.getAnnotation(org.springframework.web.bind.annotation.ExceptionHandler.class).value())
+                .containsExactly(AsyncRequestNotUsableException.class);
+        handler.handleDisconnectedAsyncRequest(new AsyncRequestNotUsableException("客户端已停止接收"));
+    }
 
     @Test
     void 缺少必填参数回400而不是500() {

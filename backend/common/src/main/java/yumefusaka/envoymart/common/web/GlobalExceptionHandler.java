@@ -13,6 +13,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import yumefusaka.envoymart.common.result.Result;
 
@@ -32,6 +33,12 @@ import java.sql.SQLException;
 @RestControllerAdvice
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class GlobalExceptionHandler {
+
+    /** 异步连接已关闭时不能再写错误响应，否则正常取消会被二次写入伪装成 500。 */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleDisconnectedAsyncRequest(AsyncRequestNotUsableException exception) {
+        log.info("异步响应连接已关闭，停止写入响应");
+    }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public Result<String> handleValidation(MethodArgumentNotValidException exception) {

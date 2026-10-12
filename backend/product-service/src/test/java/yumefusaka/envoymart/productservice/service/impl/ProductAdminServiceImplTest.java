@@ -66,6 +66,7 @@ class ProductAdminServiceImplTest {
     private CategoryService categoryService;
     private ProductDerivedRefresh derivedRefresh;
     private ProductAdminServiceImpl service;
+    private yumefusaka.envoymart.productservice.projection.ProductProjectionInputs projectionInputs;
 
     /**
      * {@code LambdaQueryWrapper} 按 getter 反查列名，靠的是 MyBatis-Plus 的实体元数据缓存——
@@ -94,9 +95,10 @@ class ProductAdminServiceImplTest {
         stockLogMapper = mock(StockLogMapper.class);
         categoryService = mock(CategoryService.class);
         derivedRefresh = mock(ProductDerivedRefresh.class);
+        projectionInputs = mock(yumefusaka.envoymart.productservice.projection.ProductProjectionInputs.class);
         service = new ProductAdminServiceImpl(spuMapper, skuMapper, specMapper, specValueMapper,
                 skuSpecMapper, attributeMapper, spuAttributeValueMapper, stockLogMapper,
-                mock(ProductAssembler.class), categoryService, derivedRefresh, mock(KnowledgeLifecycleSync.class));
+                mock(ProductAssembler.class), categoryService, derivedRefresh, mock(KnowledgeLifecycleSync.class), projectionInputs);
     }
 
     // ==================== 库存调整 ====================
@@ -115,12 +117,25 @@ class ProductAdminServiceImplTest {
         assertThat(log.getAfterStock()).isEqualTo(8);
         assertThat(log.getBizType()).as("管理端的手工改动与订单扣减要能区分开").isEqualTo("MANUAL");
         assertThat(log.getBizId()).as("没有操作人的流水只能证明库存变了，证明不了谁改的")
-                .isEqualTo(OPERATOR);
+                .startsWith(OPERATOR + ":").hasSize(OPERATOR.length() + 23);
         assertThat(log.getRemark()).isEqualTo("供应商到货");
         // 必须是带旧值条件的原子更新，不能是 updateById：整行覆盖会把期间发生的
         // 下单扣减抹掉，而且从界面上完全看不出来
         verify(skuMapper).updateStockIfUnchanged(1L, 5, 8);
         verify(skuMapper, never()).updateById(any(ProductSkuEntity.class));
+    }
+
+    @Test
+    void 同一管理员连续同方向调整同规格分别保留独立流水身份() {
+        when(skuMapper.selectById(1L)).thenReturn(sku(1L, 10L, 5), sku(1L, 10L, 8));
+        when(skuMapper.updateStockIfUnchanged(1L, 5, 8)).thenReturn(1);
+        when(skuMapper.updateStockIfUnchanged(1L, 8, 10)).thenReturn(1);
+        service.adjustStock(1L, stockRequest(8, "到货一"), OPERATOR);
+        service.adjustStock(1L, stockRequest(10, "到货二"), OPERATOR);
+        var logs = org.mockito.ArgumentCaptor.forClass(StockLogEntity.class);
+        verify(stockLogMapper, org.mockito.Mockito.times(2)).insert(logs.capture());
+        assertThat(logs.getAllValues()).extracting(StockLogEntity::getBizId).doesNotHaveDuplicates();
+        assertThat(logs.getAllValues()).allSatisfy(row -> assertThat(row.getBizId()).startsWith(OPERATOR + ":").hasSize(OPERATOR.length() + 23));
     }
 
     @Test
@@ -205,6 +220,11 @@ class ProductAdminServiceImplTest {
 
         service.delete(10L);
 
+        var lockOrder = org.mockito.Mockito.inOrder(projectionInputs, spuMapper, skuSpecMapper);
+        lockOrder.verify(projectionInputs).lock(10L);
+        lockOrder.verify(spuMapper).selectById(10L);
+        lockOrder.verify(skuSpecMapper).delete(any());
+
         // 先删关联再删主表：反过来的话关联会短暂指向不存在的行，
         // 而 MyBatis-Plus 的 deleteByIds 不报错、只留一堆孤儿
         verify(skuSpecMapper).delete(any());
@@ -214,7 +234,7 @@ class ProductAdminServiceImplTest {
         verify(specMapper).delete(any());
         verify(spuMapper).deleteById(10L);
         // 缓存与索引要一起清：只清缓存的话，搜索结果里会留下一个点不进去的商品
-        verify(derivedRefresh).afterCommit(10L);
+        verify(derivedRefresh).request(10L);
     }
 
     @Test
@@ -236,6 +256,10 @@ class ProductAdminServiceImplTest {
         assertThatThrownBy(() -> service.update(10L, request, OPERATOR))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("订单引用");
+        var lockOrder = org.mockito.Mockito.inOrder(projectionInputs, spuMapper);
+        lockOrder.verify(projectionInputs).lock(10L);
+        lockOrder.verify(spuMapper).selectById(10L);
+        lockOrder.verify(spuMapper).updateById(any(ProductSpuEntity.class));
 
         // 关键同样是「一行都没删」：SKU 的关联、流水、订单引用都还在
         verify(skuMapper, never()).deleteByIds(anyList());

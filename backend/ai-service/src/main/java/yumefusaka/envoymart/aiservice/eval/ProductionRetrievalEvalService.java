@@ -90,17 +90,22 @@ public class ProductionRetrievalEvalService {
         if (inMemory != null) {
             return inMemory;
         }
-        EvalSnapshotStore.ReadResult<EvalSnapshotDto.RetrievalSnapshot> stored =
-                snapshotStore.read(SNAPSHOT_FILE, EvalSnapshotDto.RETRIEVAL_TYPE,
+        EvalSnapshotStore.Recovery<EvalSnapshotDto.RetrievalSnapshot> recovery =
+                snapshotStore.readWithHistory(SNAPSHOT_FILE, EvalSnapshotDto.RETRIEVAL_TYPE,
                         EvalSnapshotDto.RetrievalSnapshot.class);
+        EvalSnapshotStore.ReadResult<EvalSnapshotDto.RetrievalSnapshot> stored = recovery.current();
         if (stored.value() != null) {
-            return stored.value().toDomain();
+            return stored.value().toDomain().withStoredIdentity(stored.runId(), stored.path());
         }
         if (stored.status() == EvalSnapshotDto.Status.SNAPSHOT_CORRUPTED
                 || stored.status() == EvalSnapshotDto.Status.VERSION_INCOMPATIBLE) {
-            log.warn("[Eval] 生产检索快照读取失败 status={} path={} reason={}", stored.status(), stored.path(), stored.error());
+            var history = recovery.lastCompleted();
+            Report previous = history == null ? null : history.value().toDomain()
+                    .withStoredIdentity(history.runId(), history.path());
+            log.warn("[Eval] 生产检索快照读取失败 status={} path={} fallbackRunId={} reason={}",
+                    stored.status(), stored.path(), previous == null ? null : previous.runId(), stored.error());
             return Report.error(stored.status(), stored.path(), stored.runId(), stored.error(),
-                    ProductionRetrievalFixtures.allCases().size(), corpus.documents().size());
+                    ProductionRetrievalFixtures.allCases().size(), corpus.documents().size()).withLastCompleted(previous);
         }
         return Report.never();
     }
@@ -283,7 +288,26 @@ public class ProductionRetrievalEvalService {
                          Corpus corpus, String pipeline, Metrics overall,
                          List<StratumReport> strata, List<CaseReport> cases,
                          GraphPathMetrics graphPath, String error, String runId,
-                         String snapshotPath, String snapshotError) {
+                         String snapshotPath, String snapshotError, Report lastCompleted) {
+
+        public Report(String status, String trigger, String generatedAt, long durationMs,
+                      Corpus corpus, String pipeline, Metrics overall, List<StratumReport> strata,
+                      List<CaseReport> cases, GraphPathMetrics graphPath, String error, String runId,
+                      String snapshotPath, String snapshotError) {
+            this(status, trigger, generatedAt, durationMs, corpus, pipeline, overall, strata, cases,
+                    graphPath, error, runId, snapshotPath, snapshotError, null);
+        }
+
+        Report withLastCompleted(Report previous) {
+            return new Report(status, trigger, generatedAt, durationMs, corpus, pipeline, overall,
+                    strata, cases, graphPath, error, runId, snapshotPath, snapshotError, previous);
+        }
+
+        Report withStoredIdentity(String storedRunId, java.nio.file.Path path) {
+            return new Report(status, trigger, generatedAt, durationMs, corpus, pipeline, overall,
+                    strata, cases, graphPath, error, storedRunId == null ? runId : storedRunId,
+                    path.toString(), snapshotError);
+        }
 
         public boolean available() {
             return "COMPLETED".equals(status);

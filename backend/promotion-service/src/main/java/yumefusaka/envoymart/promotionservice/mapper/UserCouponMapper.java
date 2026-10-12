@@ -20,4 +20,9 @@ public interface UserCouponMapper extends BaseMapper<UserCouponEntity> {
             + "where id = #{id} and user_id = #{userId} "
             + "and status = 'UNUSED' and expire_at > now()")
     int redeem(@Param("id") Long id, @Param("userId") String userId, @Param("orderNo") String orderNo);
+
+    /** 只退还该订单实际核销的券；同用户的另一笔订单不能触碰原核销事实。 */
+    @Update("update user_coupon set status='UNUSED',order_no=null,used_at=null "
+            + "where id=#{id} and user_id=#{userId} and status='USED' and order_no=#{orderNo}")
+    int unredeem(@Param("id") Long id, @Param("userId") String userId, @Param("orderNo") String orderNo);
 }

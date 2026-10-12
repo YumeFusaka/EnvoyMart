@@ -1,247 +1,180 @@
 /**
- * 检索评测页的端到端验收。
- *
- * 为什么单开一个脚本：这页存在的全部意义是「数字可被任何人独立核对」——
- * 匿名能看、数字逐位对得上夹具、失败样本不藏。这三条全是接线问题：
- * pnpm build 只证明模板能编译，页面看着也永远「像是对的」；只有把真实接口
- * 接上去、按真实数字断言，才能证明它不是一页好看的摆设。
- *
- * 分三段：
- *   一、匿名访问 —— 指标、三档、逐条明细按基线数字渲染，筛选真的在筛
- *   二、权限面 —— 匿名没有重跑按钮（且接口层真的拦住），管理员有且能跑
- *   三、反向断言 —— 匿名直接打管理端点必须 401（前端隐藏拦不住改地址栏的人）
- *
- * 数字与 CI 门禁同源（RetrievalFixtures），所以断言写在脚本里是安全的：
- * 夹具变了，这里挂掉，正好提醒「展示口径变了」。
- *
- * 前置条件：后端九个服务 + 前端 dev server 已启动。
- *
- * 用法：
- *   node scripts/verify-eval-ui.mjs
+ * 检索质量只读快照验收：按当次真实接口核对指标、分档、图谱口径和执行链路。
+ * 不触发模型；管理员运行入口只打开确认框后取消。
+ * 前置条件：九服务与前端已启动。用法：node scripts/verify-eval-ui.mjs
  */
 import { chromium } from 'playwright-core'
 
 const BASE = process.env.VERIFY_BASE ?? 'http://localhost:5173'
 const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
-const CHROMIUM =
-  process.env.PLAYWRIGHT_CHROMIUM ??
-  'C:/Users/j/AppData/Local/ms-playwright/chromium-1223/chrome-win64/chrome.exe'
-
-const ADMIN = { username: 'admin', password: '123456' }
-
+const CHROMIUM = process.env.PLAYWRIGHT_CHROMIUM ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+const REPORT = '/ai/eval/retrieval/report'
+const RUN = '/ai/admin/eval/retrieval/run'
 let pass = 0
 let fail = 0
+const blocked = []
+const compact = (text) => (text ?? '').replace(/\s+/g, ' ').trim()
+const pct = (value) => (value * 100).toFixed(1) + '%'
+const fixed3 = (value) => value.toFixed(3)
 function ck(name, condition, detail = '') {
-  if (condition) {
-    console.log(`  \x1b[32mPASS\x1b[0m ${name}`)
-    pass += 1
-  } else {
-    console.log(`  \x1b[31mFAIL\x1b[0m ${name}${detail ? `\n        ${detail}` : ''}`)
-    fail += 1
-  }
+  console.log('  ' + (condition ? '通过' : '失败') + ' ' + name + (condition || !detail ? '' : '：' + detail))
+  if (condition) pass++
+  else fail++
 }
-
-async function poll(fn, predicate, timeoutMs = 15000, stepMs = 400) {
-  let last
-  for (let waited = 0; waited <= timeoutMs; waited += stepMs) {
-    last = await fn()
-    if (predicate(last)) {
-      return last
-    }
-    await new Promise((resolve) => setTimeout(resolve, stepMs))
-  }
-  return last
-}
-
-async function apiLogin(credentials) {
-  const res = await fetch(`${GW}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(credentials),
+async function login(username) {
+  const response = await fetch(GW + '/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password: '123456' }),
   })
-  const body = await res.json()
-  if (body.code !== 200) {
-    throw new Error(`登录 ${credentials.username} 失败：${body.msg}（后端起了吗）`)
-  }
+  const body = await response.json()
+  if (body.code !== 200) throw new Error('登录失败：' + username + '，' + body.msg)
   return body.data
 }
-
 const browser = await chromium.launch({ executablePath: CHROMIUM })
-
 async function newPage(session) {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1200 } })
+  // 页面回归也不能绕过只读验收，真实触发请求在到达服务前被拦住。
+  await context.route(/\/(?:ai|knowledge)\/admin\/eval\/.*\/?run(?:\?|$)/, async (route) => {
+    blocked.push(route.request().method() + ' ' + new URL(route.request().url()).pathname)
+    await route.abort('blockedbyclient')
+  })
+  if (session) await context.addInitScript(
+    (value) => localStorage.setItem('user', JSON.stringify(value)),
+    { token: session.token, profile: session.user },
+  )
   const page = await context.newPage()
-  page.__errors = []
-  page.on('console', (m) => m.type() === 'error' && page.__errors.push(m.text()))
-  page.on('pageerror', (e) => page.__errors.push('pageerror: ' + e.message))
-  if (session) {
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      ['user', JSON.stringify({ token: session.token, profile: session.user })],
-    )
-  }
+  page.errors = []
+  page.on('pageerror', (error) => page.errors.push(error.message))
+  page.on('console', (message) => { if (message.type() === 'error') page.errors.push(message.text()) })
   return page
 }
-
-async function openEval(page) {
-  await page.goto(`${BASE}/#/knowledge/eval`, { waitUntil: 'networkidle' })
-  await page.reload({ waitUntil: 'networkidle' })
-  await page.locator('.case-list').waitFor({ state: 'visible', timeout: 20000 })
+async function openReport(page) {
+  const responsePromise = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === REPORT && response.request().method() === 'GET')
+  await page.goto(BASE + '/#/knowledge/eval', { waitUntil: 'networkidle' })
+  const body = await (await responsePromise).json()
+  if (body.code !== 200 || body.data?.status !== 'COMPLETED') {
+    throw new Error('需要已完成的真实检索快照：' + JSON.stringify(body.data?.status))
+  }
+  await page.locator('.case-list').waitFor({ state: 'visible' })
+  return body.data
+}
+async function filter(page, label, expected, total) {
+  await page.locator('.cases-panel .el-radio-button__inner').getByText(label, { exact: true }).click()
+  await page.waitForFunction((count) => document.querySelectorAll('.case-row').length === count, expected)
+  ck('筛选「' + label + '」与快照一致', await page.locator('.case-row').count() === expected &&
+    compact(await page.locator('.cases-count').textContent()) === '显示 ' + expected + ' / ' + total + ' 条')
 }
 
-// ==================== 一、匿名访问 ====================
-console.log('\n一、匿名访问：数字与明细按基线渲染')
+try {
+  console.log('\n一、匿名公开快照：指标、分母与真实链路')
+  const anon = await newPage()
+  const report = await openReport(anon)
+  const { overall, cases, graphPath, corpus } = report
+  ck('快照样本数、指标分母与明细一致', cases.length > 0 && overall.caseCount === cases.length && corpus.cases === cases.length)
+  const meta = compact(await anon.locator('.snapshot-meta').textContent())
+  ck('元信息标明只读、真实语料和快照标识', meta.includes('只读快照') &&
+    meta.includes('语料 ' + corpus.documents + ' 篇 · ' + corpus.cases + ' 条样本') && meta.includes(report.runId))
+  ck('生产链路逐字来自快照', compact(await anon.locator('.pipeline__value').textContent()) === compact(report.pipeline))
+  const cards = anon.locator('.metric-card')
+  const displayed = (await cards.locator('.metric-card__value').allTextContents()).map(compact)
+  ck('整体三项指标逐位匹配快照', await cards.count() === 3 &&
+    JSON.stringify(displayed) === JSON.stringify([pct(overall.hitRate), fixed3(overall.mrr), fixed3(overall.ndcg)]))
+  ck('Top-K与快照一致', (await cards.first().locator('.metric-card__label').textContent()) === 'Hit Rate@' + overall.topK)
+  const hitRate = cases.filter((item) => item.hit).length / cases.length
+  const mrr = cases.reduce((sum, item) => sum + (item.hit ? 1 / item.hitRank : 0), 0) / cases.length
+  ck('命中率和MRR可由逐条结果核对', Math.abs(overall.hitRate - hitRate) < 1e-9 && Math.abs(overall.mrr - mrr) < 1e-9)
+  const graphRequired = cases.filter((item) => item.graphRequired)
+  const graphCandidates = graphRequired.filter((item) => (item.trace?.graphCandidates ?? 0) > 0)
+  const graphMisses = graphRequired.filter((item) => !item.graphEvidenceHit)
+  const graphHits = graphRequired.filter((item) => item.graphEvidenceHit)
+  ck('图谱保留口径与全部查询分母分开', graphPath.requiredCases === graphRequired.length && graphPath.hitCases === graphHits.length)
+  const graphCards = anon.locator('.graph-summary__card')
+  ck('图谱贡献与候选召回展示正确分母', compact(await graphCards.nth(1).locator('strong').textContent()) ===
+    graphHits.length + ' / ' + graphRequired.length &&
+    compact(await graphCards.nth(2).locator('strong').textContent()) === graphCandidates.length + ' / ' + graphRequired.length)
+  ck('逐条查询原文顺序一致', JSON.stringify(await anon.locator('.case-row__query').allTextContents()) ===
+    JSON.stringify(cases.map((item) => item.query)))
+  ck('未命中与图谱未保留行标记一致', await anon.locator('.case-row.is-miss').count() ===
+    cases.filter((item) => !item.hit || item.graphRequired && !item.graphEvidenceHit).length)
+  ck('图谱路径逐条可核对', await anon.locator('.graph-status').count() === graphRequired.length)
+  ck('分档齐备且样本分母合计一致', await anon.locator('.stratum').count() === report.strata.length &&
+    report.strata.reduce((sum, item) => sum + item.metrics.caseCount, 0) === cases.length)
+  for (let index = 0; index < report.strata.length; index++) {
+    const stratum = report.strata[index]
+    const row = anon.locator('.stratum').nth(index)
+    ck('分档「' + stratum.label + '」指标与分母一致', compact(await row.locator('.stratum__head').textContent()) ===
+      stratum.label + pct(stratum.metrics.hitRate) &&
+      compact(await row.locator('small').textContent()) === stratum.metrics.caseCount + ' 条 · MRR ' +
+      fixed3(stratum.metrics.mrr) + ' · NDCG ' + fixed3(stratum.metrics.ndcg) &&
+      stratum.metrics.caseCount === cases.filter((item) => item.stratum === stratum.key).length)
+  }
 
-const anon = await newPage(null)
-await openEval(anon)
+  const traceIndex = cases.findIndex((item) => item.trace && item.evidence?.length)
+  ck('真实快照包含检索trace与证据切片', traceIndex >= 0)
+  if (traceIndex >= 0) {
+    const item = cases[traceIndex]
+    const row = anon.locator('.case-row').nth(traceIndex)
+    await row.locator('.trace-details summary').click()
+    const trace = compact(await row.locator('.trace-details').textContent())
+    ck('展开链路展示查询、候选、重排和证据', trace.includes(item.trace.query) &&
+      trace.includes('向量 ' + item.trace.vectorCandidates + ' · BM25 ' + item.trace.keywordCandidates +
+        ' · 图谱 ' + item.trace.graphCandidates + ' · 融合 ' + item.trace.fusedCandidates) &&
+      trace.includes(item.trace.rerankApplied ? '已执行（' + item.trace.rerankedCandidates + ' 条）' : '未执行') &&
+      trace.includes(item.evidence.length + ' 条已进入回答上下文'))
+    ck('期望和实际文档链接与快照一致', await row.locator('.case-row__docs a').count() ===
+      item.relevantDocIds.length + item.retrievedDocIds.length)
+    const link = row.locator('.case-row__docs a').first()
+    ck('证据原文链接可到知识文档', (await link.getAttribute('href')).includes('/knowledge/' + item.relevantDocIds[0]))
+  }
+  await filter(anon, '仅未命中', cases.filter((item) => !item.hit).length, cases.length)
+  await filter(anon, '仅图谱未保留', graphMisses.length, cases.length)
+  for (const stratum of report.strata) {
+    await filter(anon, stratum.label, cases.filter((item) => item.stratum === stratum.key).length, cases.length)
+  }
+  await filter(anon, '全部', cases.length, cases.length)
+  ck('公开页没有旧离线扩写对照或重跑按钮', await anon.locator('.expansion-panel').count() === 0 &&
+    await anon.getByRole('button', { name: /重新运行|开始真跑|重新真跑|手动触发/ }).count() === 0)
+  ck('匿名页面无控制台异常', anon.errors.length === 0, anon.errors.join(' | '))
+  await anon.context().close()
 
-ck('页面标题渲染', (await anon.locator('.eval-header h1').textContent())?.includes('评测'))
+  console.log('\n二、管理员仅在运行中心确认并取消')
+  const admin = await newPage(await login('admin'))
+  await openReport(admin)
+  ck('管理员公开检索页仍然只读', await admin.getByRole('button', { name: /重新运行|手动触发/ }).count() === 0)
+  await admin.goto(BASE + '/#/admin/knowledge/evaluations', { waitUntil: 'networkidle' })
+  const card = admin.locator('.run-card', { has: admin.getByRole('heading', { name: '检索质量评测' }) })
+  await card.waitFor()
+  ck('管理员运行中心可见检索评测入口', await card.getByRole('button', { name: '手动触发' }).count() === 1)
+  await card.getByRole('button', { name: '手动触发' }).click()
+  const dialog = admin.getByRole('dialog')
+  await dialog.waitFor()
+  ck('触发前明确确认真实embedding与配额', (await dialog.textContent()).includes('真实 embedding') &&
+    (await dialog.textContent()).includes('模型额度'))
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  ck('管理员取消确认后无页面异常', admin.errors.length === 0, admin.errors.join(' | '))
+  await admin.context().close()
 
-const hero = (await anon.locator('.metric-card--hero').textContent()) ?? ''
-ck('Hit Rate@3 = 69.2%（与夹具基线逐位一致）', hero.includes('69.2'), hero.replace(/\s+/g, ' ').trim())
-
-const metrics = (await anon.locator('.metric-grid').textContent()) ?? ''
-ck('MRR@3 = 0.604', metrics.includes('0.604'))
-ck('NDCG@3 = 0.617', metrics.includes('0.617'))
-ck('Hit Rate@5 = 75.0%', metrics.includes('75.0'))
-
-const meta = (await anon.locator('.eval-meta').textContent()) ?? ''
-ck('语料口径 = 90 篇 × 120 条', meta.includes('90') && meta.includes('120'), meta.replace(/\s+/g, ' ').trim())
-
-const strata = anon.locator('.stratum')
-ck('三档分层齐备', (await strata.count()) === 3, `count=${await strata.count()}`)
-const strataText = (await anon.locator('.strata-panel').textContent()) ?? ''
-ck('字面档 97.5%', strataText.includes('97.5'))
-ck('口语档 75.0%', strataText.includes('75.0'))
-ck('难例档 35.0%', strataText.includes('35.0'))
-
-const bars = anon.locator('.stratum__bar')
-const barLabels = await bars.evaluateAll((nodes) => nodes.map((n) => n.getAttribute('aria-label')))
-ck(
-  '三档进度条带可访问名称',
-  barLabels.every((label) => label?.startsWith('Hit Rate')),
-  JSON.stringify(barLabels),
-)
-
-// ---- 查询扩写对照：这一栏是「扩写到底有没有用」的现场证据，不是装饰 ----
-const expansion = anon.locator('.expansion-panel')
-ck('扩写对照栏存在', (await expansion.count()) === 1)
-
-const expansionRows = anon.locator('.expansion-row')
-ck('扩写对照三档齐备', (await expansionRows.count()) === 3, `count=${await expansionRows.count()}`)
-
-const expansionText = (await expansion.textContent()) ?? ''
-console.log('    [诊断] 扩写对照栏原文 =', JSON.stringify(expansionText.replace(/\s+/g, ' ').trim()))
-ck('全量扩写前 69.2%', expansionText.includes('69.2'))
-ck('全量扩写后 79.2%', expansionText.includes('79.2'))
-ck('口语档扩写前 75.0%', expansionText.includes('75.0'))
-ck('口语档扩写后 90.0%', expansionText.includes('90.0'))
-ck('语义档扩写前 35.0%', expansionText.includes('35.0'))
-ck('语义档扩写后 47.5%', expansionText.includes('47.5'))
-
-const expansionBars = anon.locator('.expansion-row__bar')
-const expansionLabels = await expansionBars.evaluateAll((nodes) =>
-  nodes.map((n) => n.getAttribute('aria-label')),
-)
-ck(
-  '扩写对照的双条都带可访问名称',
-  expansionLabels.length === 6 && expansionLabels.every((label) => label?.includes('%')),
-  JSON.stringify(expansionLabels),
-)
-
-// 夹具元信息必须在页面上：这栏数字是预录的，不标出来就会被读成实时结果
-ck(
-  '标注了扩写的采集时间与模型',
-  (expansionText.includes('采集') || expansionText.includes('预录')) &&
-    /qwen|deepseek|gpt|glm/i.test(expansionText),
-)
-ck(
-  '写明该栏只体现角度改写、不含 HyDE',
-  expansionText.includes('HyDE'),
-  expansionText.replace(/\s+/g, ' ').slice(0, 160),
-)
-
-const deltas = await anon
-  .locator('.expansion-delta')
-  .evaluateAll((nodes) => nodes.map((n) => n.textContent?.trim()))
-// 零增益那个徽标刻意写成 `0.0pp` 而不是 `+0.0pp`——若某一档扩写前后不变，
-// 给它加个加号会让「没有变化」读起来像「涨了一点」。本轮检索改进后字面档也涨了
-// （97.5 → 100.0），四档全是正增益，所以断言收紧成「每个都带 +」：
-// 一旦将来某档回落到零增益，这条会红，提醒人回去把徽标的符号语义补齐。
-const deltaPattern = /^\+\d+\.\d+pp$/
-ck(
-  '增益徽标：四档均为正增益且带 + 号',
-  deltas.length === 4 && deltas.every((text) => deltaPattern.test(text ?? '')),
-  JSON.stringify(deltas),
-)
-
-const rows = anon.locator('.case-row')
-ck('逐条明细 120 条全列', (await rows.count()) === 120, `count=${await rows.count()}`)
-const missRows = anon.locator('.case-row.is-miss')
-ck('未命中 37 条且已标注', (await missRows.count()) === 37, `count=${await missRows.count()}`)
-
-await anon.locator('.cases-filter').getByText('仅未命中', { exact: true }).click()
-await poll(() => anon.locator('.case-row').count(), (n) => n === 37, 8000)
-ck('筛选「仅未命中」后只剩未命中行', (await anon.locator('.case-row').count()) === 37)
-ck(
-  '计数文案跟随筛选',
-  ((await anon.locator('.cases-count').textContent()) ?? '').includes('37 / 120'),
-  (await anon.locator('.cases-count').textContent()) ?? '',
-)
-
-await anon.locator('.cases-filter').getByText('字面重合', { exact: true }).click()
-await poll(() => anon.locator('.case-row').count(), (n) => n === 40, 8000)
-ck('按档筛选「字面重合」后 40 条', (await anon.locator('.case-row').count()) === 40)
-
-ck(
-  '匿名没有「重新运行」按钮',
-  (await anon.getByRole('button', { name: '重新运行' }).count()) === 0,
-)
-ck('匿名访问无控制台报错', anon.__errors.length === 0, anon.__errors.slice(0, 3).join(' | '))
-await anon.context().close()
-
-// ==================== 二、管理员 ====================
-console.log('\n二、管理员：可现场重跑')
-
-const adminSession = await apiLogin(ADMIN)
-const asAdmin = await newPage(adminSession)
-await openEval(asAdmin)
-
-const rerunBtn = asAdmin.getByRole('button', { name: '重新运行' })
-ck('管理员可见「重新运行」', (await rerunBtn.count()) === 1)
-
-await rerunBtn.click()
-const message = asAdmin.locator('.el-message')
-await poll(() => message.count(), (n) => n > 0, 20000)
-ck('重跑给出成功提示', ((await message.first().textContent()) ?? '').includes('重跑完成'))
-
-const metaAfter = await poll(
-  () => asAdmin.locator('.eval-meta').textContent(),
-  (text) => (text ?? '').includes('手动重跑'),
-  10000,
-)
-ck('快照来源变为「手动重跑」', (metaAfter ?? '').includes('手动重跑'), (metaAfter ?? '').replace(/\s+/g, ' ').trim())
-ck('管理员访问无控制台报错', asAdmin.__errors.length === 0, asAdmin.__errors.slice(0, 3).join(' | '))
-
-// ==================== 三、反向断言 ====================
-console.log('\n三、反向断言：接口层真的拦得住')
-
-const anonymousRerun = await fetch(`${GW}/knowledge/admin/eval/run`, { method: 'POST' })
-ck('匿名直接 POST 管理端点 → 401', anonymousRerun.status === 401, `HTTP ${anonymousRerun.status}`)
-
-const normalSession = await apiLogin({ username: 'alice', password: '123456' })
-const normalRerun = await fetch(`${GW}/knowledge/admin/eval/run`, {
-  method: 'POST',
-  headers: { Authorization: `Bearer ${normalSession.token}` },
-})
-const normalBody = await normalRerun.json()
-ck(
-  '普通用户 POST 管理端点被拒（403）',
-  normalBody.code === 403,
-  `HTTP ${normalRerun.status} body=${JSON.stringify(normalBody)}`,
-)
-
-await browser.close()
-
-console.log(`\n结果：${pass} 通过，${fail} 失败`)
-process.exit(fail === 0 ? 0 : 1)
+  console.log('\n三、权限与无模型触发')
+  const anonymous = await fetch(GW + RUN, { method: 'POST' })
+  ck('匿名触发端点被网关拒绝401', anonymous.status === 401)
+  const session = await login('alice')
+  const denied = await fetch(GW + RUN, { method: 'POST', headers: { Authorization: 'Bearer ' + session.token } })
+  const deniedBody = await denied.json()
+  ck('普通用户触发端点被拒绝403', denied.status === 403 || deniedBody.code === 403)
+  const normal = await newPage(session)
+  await openReport(normal)
+  await normal.goto(BASE + '/#/admin/knowledge/evaluations', { waitUntil: 'networkidle' })
+  await normal.waitForURL('**/#/shop')
+  ck('普通用户无法进入运行中心', !normal.url().includes('/admin/knowledge/evaluations') && await normal.locator('.run-card').count() === 0)
+  await normal.context().close()
+  ck('浏览器未尝试任何评测触发请求', blocked.length === 0, blocked.join(' | '))
+  console.log('  快照 runId=' + report.runId + '；样本分母=' + cases.length + '；图谱分母=' + graphRequired.length + '；管理员触发请求=0')
+} catch (error) {
+  ck('脚本执行完成', false, error.stack)
+} finally {
+  await browser.close()
+}
+console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败')
+process.exitCode = fail ? 1 : 0

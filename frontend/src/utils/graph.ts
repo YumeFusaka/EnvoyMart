@@ -34,7 +34,7 @@ const RELATION_LABELS: Record<string, string> = {
   PROVIDES: '提供',
   INTERACTS_WITH: '相互作用',
   CAUTION_FOR: '禁忌人群',
-  COMBINED_WITH: '组合禁忌',
+  COMBINED_WITH: '组合注意事项',
 }
 
 /**

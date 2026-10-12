@@ -50,13 +50,37 @@ public class ChatSessionController {
     private final ShortTermMemoryStore shortTermMemory;
     private final CommerceCardAssembler commerceCards;
     private final BadCaseStore badCases;
+    private final yumefusaka.envoymart.aiservice.service.AiAssistantService assistant;
 
     public ChatSessionController(ChatHistoryStore history, ShortTermMemoryStore shortTermMemory,
                                  CommerceCardAssembler commerceCards, BadCaseStore badCases) {
+        this(history, shortTermMemory, commerceCards, badCases, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ChatSessionController(ChatHistoryStore history, ShortTermMemoryStore shortTermMemory,
+                                 CommerceCardAssembler commerceCards, BadCaseStore badCases,
+                                 yumefusaka.envoymart.aiservice.service.AiAssistantService assistant) {
         this.history = history;
         this.shortTermMemory = shortTermMemory;
         this.commerceCards = commerceCards;
         this.badCases = badCases;
+        this.assistant = assistant;
+    }
+
+    public record ApprovalRecoveryRequest(@jakarta.validation.constraints.NotBlank
+                                          @jakarta.validation.constraints.Size(max = 8192) String approvalToken,
+                                          boolean retry) {
+    }
+
+    @PostMapping("/{sessionId}/approvals/recover")
+    public Result<yumefusaka.envoymart.aiservice.model.ChatResponse> recoverApproval(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("sessionId") String sessionId,
+            @jakarta.validation.Valid @org.springframework.web.bind.annotation.RequestBody ApprovalRecoveryRequest request) {
+        if (!SESSION_ID.matcher(sessionId).matches()) return Result.error(400, "会话标识不合法");
+        // 账本/历史丢失时仍允许验签后的只读回执查询；写恢复由服务校验原 acceptedAt。
+        return Result.success(assistant.recoverApproval(userId, sessionId, request.approvalToken(), request.retry()));
     }
 
     @GetMapping

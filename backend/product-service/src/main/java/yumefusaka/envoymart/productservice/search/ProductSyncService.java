@@ -1,7 +1,6 @@
 package yumefusaka.envoymart.productservice.search;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -14,6 +13,9 @@ import yumefusaka.envoymart.productservice.mapper.ProductSkuMapper;
 import yumefusaka.envoymart.productservice.mapper.ProductSpuMapper;
 import yumefusaka.envoymart.productservice.mapper.SpuAttributeValueMapper;
 import yumefusaka.envoymart.productservice.service.CategoryService;
+import yumefusaka.envoymart.productservice.projection.ProductProjectionRequests;
+import yumefusaka.envoymart.productservice.projection.ProductProjectionStore;
+import yumefusaka.envoymart.productservice.projection.ProjectionPublicationScope;
 
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -25,13 +27,8 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * 商品数据 ES 索引同步：启动时全量、库存或商品变更时单条。
- * <p>
- * 开关默认 <b>开</b>：本地 H2 每次启动都是空的、而 ES 是持久的，不同步的话索引里什么都没有，
- * 搜索会一直报 "index not found" —— 功能静默不可用，不实际搜一次发现不了。
- * 想关掉显式配 {@code product.search.sync-on-startup=false}。
- * <p>
- * 重复同步是安全的：{@code save} 走 upsert 语义，主键相同即覆盖。
+ * 商品索引的稳定快照构建与有版本发布。所有同步入口仅登记持久任务。
+ * 已有同步开关关闭时，消费者仍须完成缓存刷新，且记录CACHE_ONLY模式。
  */
 @Slf4j
 @Service
@@ -39,6 +36,11 @@ import java.util.stream.Collectors;
 public class ProductSyncService {
 
     private static final int STATUS_ON = 1;
+    private static final int TOMBSTONE_STATUS = -1;
+    public static final class PreparedProjection {
+        private final ProductIndex value;
+        private PreparedProjection(ProductIndex value) { this.value = value; }
+    }
 
     /** 详情正文是 HTML，入索引前要剥掉标签 */
     private static final Pattern HTML_TAG = Pattern.compile("<[^>]+>");
@@ -50,59 +52,53 @@ public class ProductSyncService {
     private final ProductAttributeMapper attributeMapper;
     private final CategoryService categoryService;
     private final ProductSearchRepository searchRepository;
+    private final ProductProjectionRequests requests;
+    private final ProductProjectionStore projectionStore;
 
     public ProductSyncService(ProductSpuMapper spuMapper,
                               ProductSkuMapper skuMapper,
                               SpuAttributeValueMapper spuAttributeValueMapper,
                               ProductAttributeMapper attributeMapper,
                               CategoryService categoryService,
-                              ProductSearchRepository searchRepository) {
+                              ProductSearchRepository searchRepository,
+                              ProductProjectionRequests requests,
+                              ProductProjectionStore projectionStore) {
         this.spuMapper = spuMapper;
         this.skuMapper = skuMapper;
         this.spuAttributeValueMapper = spuAttributeValueMapper;
         this.attributeMapper = attributeMapper;
         this.categoryService = categoryService;
         this.searchRepository = searchRepository;
+        this.requests = requests;
+        this.projectionStore = projectionStore;
     }
 
-    /**
-     * 启动时全量同步。
-     * <p>
-     * <b>失败不能拖垮启动。</b>ES 只是派生存储：索引没同步的代价是「搜不到新商品」，
-     * 而商品服务起不来的代价是「整个下单链路不可用」—— 后者严重得多。
-     * 此前这里没有 try/catch，ES 一挂，服务直接起不来。
-     */
-    @PostConstruct
+    /** 全量同步也通过持久任务，覆盖已删除商品的永久墓碑。 */
     public void syncAll() {
-        try {
-            List<ProductSpuEntity> spus = spuMapper.selectList(null);
-            if (spus.isEmpty()) {
-                log.info("商品库为空，跳过 ES 全量同步");
-                return;
-            }
-            List<ProductIndex> indices = buildIndices(spus);
-            searchRepository.saveAll(indices);
-            log.info("ES 商品索引同步完成，共 {} 条", indices.size());
-        } catch (Exception e) {
-            // 留 ERROR 而不是静默：索引为空时搜索会一直返回空结果，那很容易被当成业务问题
-            log.error("[ES] 启动全量同步失败，搜索功能将不可用直到下次商品变更触发单条同步", e);
-        }
+        requests.rebuild(projectionStore.startupTargets());
     }
 
-    /**
-     * 同步单个商品。库存变更、商品上下架后调用。
-     * <p>
-     * 只靠启动时的全量同步不够：索引里的库存与销量会停在「服务启动那一刻」，
-     * 而这两者一直在变。
-     */
+    /** 公共同步入口不能直接读取阶段一源或绕过消费者屏障。 */
     public void syncOne(Long spuId) {
+        if (spuId != null) requests.request(List.of(spuId));
+    }
+
+    public long currentVersion(Long spuId) {
+        return searchRepository.findById(spuId).map(value -> value.getProjectionVersion() == null ? 0L : value.getProjectionVersion()).orElse(0L);
+    }
+
+    /** 仅由锁住全部源的消费者调用；删除标记保留外部版本闸。 */
+    public PreparedProjection prepareCurrent(Long spuId, long version) {
+        ProjectionPublicationScope.require(spuId);
         ProductSpuEntity spu = spuId == null ? null : spuMapper.selectById(spuId);
-        if (spu == null) {
-            // 商品被删了，索引里的那条也要清掉，否则搜索结果里会出现点不进去的条目
-            searchRepository.deleteById(spuId);
-            return;
-        }
-        searchRepository.save(buildIndices(List.of(spu)).get(0));
+        ProductIndex projection = spu == null ? ProductIndex.builder().id(spuId).name("").status(TOMBSTONE_STATUS).totalStock(0).build()
+                : buildIndices(List.of(spu)).get(0);
+        projection.setProjectionVersion(version);
+        return new PreparedProjection(projection);
+    }
+
+    public void publishPrepared(PreparedProjection projection) {
+        searchRepository.save(projection.value);
     }
 
     private List<ProductIndex> buildIndices(List<ProductSpuEntity> spus) {

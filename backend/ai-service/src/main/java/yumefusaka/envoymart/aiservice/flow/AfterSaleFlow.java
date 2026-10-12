@@ -44,10 +44,14 @@ public class AfterSaleFlow implements DeterministicFlow {
      * 然后答非所问地返回某个订单的退货步骤。
      */
     private static final Pattern ORDER_REFERENCE =
-            Pattern.compile("(?:订单|单号|编号|order)\\D{0,3}(\\d{1,19})", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("(?:订单(?!行|项)|单号|编号|order)\\D{0,3}(\\d{1,19})", Pattern.CASE_INSENSITIVE);
 
     private static final Set<String> INTENT_KEYWORDS =
             Set.of("退货", "换货", "退款", "售后", "退掉", "退了");
+
+    /** 只接明确咨询；其余售后意图交给执行图，不能靠一个“退货”词抢走写操作。 */
+    private static final Set<String> ELIGIBILITY_WORDS =
+            Set.of("能否", "能不能", "是否", "可以吗", "资格", "条件", "规则", "怎么", "能申请");
 
     private static final String STATUS_CREATED = "CREATED";
     private static final String STATUS_CANCELLED = "CANCELLED";
@@ -73,8 +77,10 @@ public class AfterSaleFlow implements DeterministicFlow {
 
     @Override
     public String getDescription() {
-        return "用户想对**某个具体订单**申请退货、换货、退款或咨询该订单的售后处理时使用。"
+        return "用户咨询某个具体订单的售后资格、条件或处理指引时使用。"
                 + "前提是用户消息里明确给出了订单号（如「订单 3」「单号 12」）。"
+                + "明确要求申请、提交退货退款或换货时不要匹配，交给 Agent 生成待确认操作。"
+                + "要求查知识库、引用原文或联合查询时不要匹配，交给 Agent 编排所需工具。"
                 + "如果用户只是在问售后政策本身（如「退货政策是什么」「七天无理由怎么算」），"
                 + "或者没有给出任何订单号，都不要匹配这条流程。";
     }
@@ -91,7 +97,18 @@ public class AfterSaleFlow implements DeterministicFlow {
             return false;
         }
         boolean hasIntent = INTENT_KEYWORDS.stream().anyMatch(userMessage::contains);
-        return hasIntent && extractOrderId(userMessage) != null;
+        if (!hasIntent || extractOrderId(userMessage) == null) {
+            return false;
+        }
+        if (userMessage.contains("知识库") || userMessage.contains("原文")
+                || userMessage.contains("引用") || userMessage.contains("依据文档")) {
+            return false;
+        }
+        // 明确申请/提交必须走 AgentGraph，由 after_sale_apply 的预检、审批和幂等链路负责；
+        // 资格咨询仍由本确定性流程读取同一政策引擎后回答。
+        boolean eligibilityQuestion = ELIGIBILITY_WORDS.stream().anyMatch(userMessage::contains);
+        boolean explicitCommand = userMessage.matches(".*(?:我要|我想|提交|办理|发起|直接).*(?:退货|换货|退款|售后|退掉|退了).*" );
+        return eligibilityQuestion && !explicitCommand;
     }
 
     @Override

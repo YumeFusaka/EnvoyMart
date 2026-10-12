@@ -2,6 +2,11 @@ package yumefusaka.envoymart.orderservice.controller;
 
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import yumefusaka.envoymart.common.operation.OperationContext;
+import yumefusaka.envoymart.common.operation.OperationReceiptMetadata;
+import yumefusaka.envoymart.orderservice.service.AgentWriteFacade;
+import yumefusaka.envoymart.orderservice.service.AgentWriteParameters;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -48,6 +53,7 @@ public class SupportTicketController {
     private final SupportTicketService ticketService;
     private final TicketStreamHub streamHub;
     private final TicketNotifier notifier;
+    private final AgentWriteFacade writes;
 
     /**
      * 心跳跑在虚拟线程上：一个用户一条连接，给每条连接排一个真线程是浪费，
@@ -58,17 +64,20 @@ public class SupportTicketController {
 
     public SupportTicketController(SupportTicketService ticketService,
                                    TicketStreamHub streamHub,
-                                   TicketNotifier notifier) {
+                                   TicketNotifier notifier, AgentWriteFacade writes) {
         this.ticketService = ticketService;
         this.streamHub = streamHub;
         this.notifier = notifier;
+        this.writes = writes;
     }
 
     @PostMapping
-    public Result<TicketDetailResponse> create(
+    public ResponseEntity<Result<TicketDetailResponse>> create(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @Valid @RequestBody CreateTicketRequest request) {
-        return Result.success(ticketService.create(userId, request));
+        if (operationId == null) return ResponseEntity.ok(Result.success(ticketService.create(userId, request)));
+        return writes.ticket(OperationContext.of(userId, operationId, "ticket_create", AgentWriteParameters.ticket(request)), request).response();
     }
 
     /** 我的工单：默认按最近活跃排序，可按状态筛选（取值非法 400） */

@@ -40,6 +40,31 @@ class GraphEvidenceRetrieverTest {
     }
 
     @Test
+    void KG03原问题的双方关系标记包含商品到铁的可达链() {
+        String quote = "2.4 铁剂与左旋多巴、甲状腺素合用会降低后者吸收，应间隔至少 2 小时。";
+        var target = new GraphEdge(new GraphNode("铁", "铁", "INGREDIENT"), "INTERACTS_WITH", "降低吸收",
+                new GraphNode("左旋多巴", "左旋多巴", "DRUG"), "KB-0010", "膳食补充剂摄入上限与常见药物相互作用",
+                "KB-0010_5", 0, quote.length(), quote, null, List.of("铁叶酸片", "铁"));
+        var retriever = over(Result.success(List.of(target)));
+        var mapper = new tools.jackson.databind.ObjectMapper();
+        var matched = mapper.convertValue(retriever.retrieve("铁叶酸片中的铁会影响左旋多巴吸收吗？", 3).getFirst(),
+                new tools.jackson.core.type.TypeReference<java.util.Map<String, Object>>() { });
+        assertThat(matched).containsEntry("graphQueryMatched", true);
+        for (String query : List.of("铁叶酸片与钙会相互影响吗？", "铁叶酸片与陌生药会相互影响吗？",
+                "铁叶酸片有哪些注意事项？")) {
+            var row = mapper.convertValue(retriever.retrieve(query, 3).getFirst(),
+                    new tools.jackson.core.type.TypeReference<java.util.Map<String, Object>>() { });
+            assertThat(row.get("graphQueryMatched")).as(query).isNotEqualTo(true);
+        }
+        var sourceMissing = new GraphEdge(target.head(), target.relation(), target.effect(), target.tail(),
+                null, target.docTitle(), null, null, null, null, null, target.chain());
+        var row = mapper.convertValue(over(Result.success(List.of(sourceMissing)))
+                .retrieve("铁与左旋多巴", 3).getFirst(),
+                new tools.jackson.core.type.TypeReference<java.util.Map<String, Object>>() { });
+        assertThat(row.get("graphQueryMatched")).isNotEqualTo(true);
+    }
+
+    @Test
     void 一条边要翻译成带出处的依据而不是一句渲染好的结论() {
         List<DocumentChunk> chunks = over(Result.success(List.of(riskEdge("c12"))))
                 .retrieve("SPU5 和华法林冲突吗", 5);

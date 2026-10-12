@@ -82,6 +82,14 @@ public class ToolRegistry {
         }
         ToolDefinition definition = tool.getDefinition();
         String operationId = call.getOperationId();
+        // 公共写操作的权威结果在下游事务回执；进程缓存不能绕过参数冲突或跨重启核验。
+        if (definition.isRequiresConfirmation()) {
+            if (call.isConfirmed() && (operationId == null || operationId.isBlank())) {
+                return ToolResult.builder().success(false).operationState(ToolResult.OperationState.REJECTED)
+                        .errorMessage("缺少原签名操作编号，不能执行写操作").build();
+            }
+            return executeOnce(call, tool);
+        }
         if (operationId != null && !operationId.isBlank()
                 && definition.getIdempotencyPolicy() != ToolDefinition.IdempotencyPolicy.NONE) {
             String idempotencyKey = idempotencyKey(call);
@@ -107,6 +115,25 @@ public class ToolRegistry {
             }
         }
         return executeOnce(call, tool);
+    }
+
+    public ToolResult recover(ToolCall call) {
+        Tool tool = call == null ? null : tools.get(call.getToolName());
+        if (tool == null || !tool.getDefinition().isRequiresConfirmation() || call.getUserId() == null
+                || call.getUserId().isBlank() || call.getOperationId() == null || call.getOperationId().isBlank()) {
+            return ToolResult.builder().success(false).operationState(ToolResult.OperationState.REJECTED)
+                    .errorMessage("没有可恢复的写工具").build();
+        }
+        long started = System.nanoTime();
+        ToolResult result;
+        try { result = tool.recover(call); }
+        catch (Exception error) {
+            log.warn("[Tool] 持久回执查询失败 tool={} operationId={}", call.getToolName(), call.getOperationId());
+            result = ToolResult.builder().success(false).transientFailure(true)
+                    .operationState(ToolResult.OperationState.UNKNOWN).errorMessage("执行结果暂时无法核对，请查询原操作结果").build();
+        }
+        log.info("[Tool] 回执恢复 tool={} operationId={} state={}", call.getToolName(), call.getOperationId(), result.getOperationState());
+        return result.toBuilder().latencyMs((System.nanoTime() - started) / 1_000_000).build();
     }
 
     private ToolResult executeOnce(ToolCall call, Tool tool) {
@@ -139,9 +166,10 @@ public class ToolRegistry {
         // transient= 单列一个字段而不是并进 error 文案里：失败事后要靠日志分清
         // 「下游当时不可用」（重试/稍后再试有意义）和「这件事本身做不成」（重试无用），
         // 而两者的 errorMessage 都是一句人话，从文案上分不出来
-        log.info("[Tool] {} success={} noData={} transient={} latencyMs={}{}", call.getToolName(),
+        log.info("[Tool] {} success={} noData={} transient={} latencyMs={}{} operationId={} tool={}", call.getToolName(),
                 raw.isSuccess(), raw.isNoData(), raw.isTransientFailure(), latencyMs,
-                raw.isSuccess() || raw.getErrorMessage() == null ? "" : " error=" + raw.getErrorMessage());
+                raw.isSuccess() || raw.getErrorMessage() == null ? "" : " error=" + raw.getErrorMessage(),
+                call.getOperationId(), call.getToolName());
         try {
             listener.onToolCall(call.getToolName(),
                     raw.isSuccess() ? ToolCallListener.Outcome.SUCCESS : ToolCallListener.Outcome.ERROR,

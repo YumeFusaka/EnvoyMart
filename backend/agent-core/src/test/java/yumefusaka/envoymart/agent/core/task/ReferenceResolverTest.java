@@ -123,4 +123,27 @@ class ReferenceResolverTest {
         assertThat(ReferenceResolver.candidatesOf(null)).isEmpty();
         assertThat(ReferenceResolver.candidatesOf("")).isEmpty();
     }
+
+    @Test
+    void 结构化多商品指代全部绑定真实编号而规格序号不绑定商品() {
+        var candidates = java.util.List.of(new ProductCandidateList.Item("SPU3", "乳清蛋白粉", java.util.List.of()),
+                new ProductCandidateList.Item("SPU4", "植物蛋白粉", java.util.List.of()));
+
+        String resolved = ReferenceResolver.resolveCandidates("第一个商品第二个规格加购1件，第二个商品加购2件", candidates);
+        assertThat(resolved).contains("乳清蛋白粉，商品编号 SPU3", "植物蛋白粉，商品编号 SPU4")
+                .contains("第二个规格").doesNotContain("第二个（植物蛋白粉，商品编号 SPU4）规格");
+        assertThat(ReferenceResolver.resolveCandidates("将原列表第2款“乳清蛋白粉”第二种规格加购1件", candidates))
+                .isEqualTo("将原列表第2款“乳清蛋白粉”第二种规格加购1件");
+        assertThat(ReferenceResolver.resolveCandidates("原列表第2个商品“鱼油软胶囊”加购1件", candidates))
+                .isEqualTo("原列表第2个商品“鱼油软胶囊”加购1件");
+    }
+
+    @Test
+    void 订单购物车行和最初批次序号不能绑定最近商品候选() {
+        var candidates = java.util.List.of(new ProductCandidateList.Item("SPU3", "乳清蛋白粉", java.util.List.of()),
+                new ProductCandidateList.Item("SPU4", "植物蛋白粉", java.util.List.of()));
+        for (String message : java.util.List.of("查询订单第二条物流", "购物车第二件删除", "最初那批第二个加购")) {
+            assertThat(ReferenceResolver.resolveCandidates(message, candidates)).isEqualTo(message);
+        }
+    }
 }

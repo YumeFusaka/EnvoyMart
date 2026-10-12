@@ -39,6 +39,10 @@ public final class EvalSnapshotDto {
                            String writtenAt, Object payload) {
     }
 
+    interface SnapshotPayload {
+        void validate();
+    }
+
     public record Evidence(String chunkId, String docId, String content, int chunkIndex,
                            String type, Long timestamp, String title, String source,
                            String scope, String version, String position, Integer charOffset,
@@ -178,7 +182,14 @@ public final class EvalSnapshotDto {
                                     RetrievalCorpus corpus, String pipeline, RetrievalMetrics overall,
                                     List<RetrievalStratum> strata, List<RetrievalCase> cases,
                                     GraphPathMetrics graphPath, String error, String runId,
-                                    String snapshotPath, String snapshotError) {
+                                    String snapshotPath, String snapshotError) implements SnapshotPayload {
+        public void validate() {
+            toDomain();
+            if ("COMPLETED".equals(status) && (overall == null || corpus == null || graphPath == null
+                    || cases == null || cases.isEmpty() || !validDate(generatedAt))) {
+                throw new IllegalArgumentException("已完成检索快照缺少结果或生成时间");
+            }
+        }
         public static RetrievalSnapshot from(ProductionRetrievalEvalService.Report report) {
             return new RetrievalSnapshot(report.status(), report.trigger(), report.generatedAt(), report.durationMs(),
                     RetrievalCorpus.from(report.corpus()), report.pipeline(), RetrievalMetrics.from(report.overall()),
@@ -312,7 +323,18 @@ public final class EvalSnapshotDto {
                                     int completedCases, int failedCases, String currentQuestion, String userId,
                                     GroundingMetrics metrics, List<GroundingCase> cases, String promptVersion,
                                     String pipelineVersion, String runId, String snapshotPath,
-                                    String snapshotError) {
+                                    String snapshotError) implements SnapshotPayload {
+        boolean hasUsableAnswer() {
+            return cases != null && cases.stream().anyMatch(item -> item != null && item.answer() != null
+                    && !item.answer().isBlank() && !yumefusaka.envoymart.agent.core.AgentGraph.GENERATION_FAILED_REPLY.equals(item.answer()));
+        }
+        public void validate() {
+            toDomain();
+            if ("COMPLETED".equals(status) && (metrics == null || cases == null || cases.isEmpty()
+                    || !validDate(finishedAt))) {
+                throw new IllegalArgumentException("已完成回答快照缺少结果或完成时间");
+            }
+        }
         static GroundingSnapshot from(GroundingLiveEvalService.LiveRun run) {
             return new GroundingSnapshot(run.status(), run.startedAt(), run.finishedAt(), run.totalCases(),
                     run.completedCases(), run.failedCases(), run.currentQuestion(), run.userId(),
@@ -339,6 +361,12 @@ public final class EvalSnapshotDto {
 
     static <T> List<T> safeList(List<T> value) {
         return value == null ? List.of() : List.copyOf(value);
+    }
+
+    private static boolean validDate(String value) {
+        if (value == null || value.isBlank()) return false;
+        try { java.time.OffsetDateTime.parse(value); return true; }
+        catch (java.time.format.DateTimeParseException ignored) { return false; }
     }
 
     private static String compatStatus(String status) {

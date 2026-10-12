@@ -53,6 +53,7 @@ public final class GroundingEvalRunner {
     private static GroundingEvaluator.Sample toSample(GroundingFixtures.Case fixtureCase) {
         return new GroundingEvaluator.Sample(fixtureCase.id(), fixtureCase.kind(),
                 fixtureCase.expectRefuse(), fixtureCase.mustMention(), fixtureCase.evidence(),
-                fixtureCase.answer(), fixtureCase.evidenceLevel(), fixtureCase.toolEvidence());
+                fixtureCase.answer(), fixtureCase.evidenceLevel(), fixtureCase.toolEvidence(),
+                List.of(), false, fixtureCase.question());
     }
 }

@@ -2,12 +2,16 @@ package yumefusaka.envoymart.promotionservice.model;
 
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
 
 import java.time.LocalDateTime;
 
 /** 用户持有的券 */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class UserCouponResponse {
 
     private Long id;

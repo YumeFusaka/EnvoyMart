@@ -2,18 +2,15 @@ package yumefusaka.envoymart.productservice.service.impl;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import yumefusaka.envoymart.common.util.Times;
 import yumefusaka.envoymart.productservice.entity.ProductSkuEntity;
 import yumefusaka.envoymart.productservice.entity.StockLogEntity;
 import yumefusaka.envoymart.productservice.mapper.ProductSkuMapper;
 import yumefusaka.envoymart.productservice.mapper.StockLogMapper;
 import yumefusaka.envoymart.contract.StockChangeRequest;
-import yumefusaka.envoymart.productservice.search.ProductSyncService;
+import yumefusaka.envoymart.productservice.projection.ProductProjectionRequests;
 import yumefusaka.envoymart.productservice.service.StockService;
 
 @Slf4j
@@ -25,18 +22,18 @@ public class StockServiceImpl implements StockService {
 
     private final ProductSkuMapper skuMapper;
     private final StockLogMapper stockLogMapper;
-    /** 索引用 {@link ObjectProvider} 拿：同步开关可以关掉，那时这个 bean 不存在，注入会直接失败 */
-    private final ObjectProvider<ProductSyncService> syncServiceProvider;
+    private final ProductProjectionRequests projections;
 
     public StockServiceImpl(ProductSkuMapper skuMapper,
                             StockLogMapper stockLogMapper,
-                            ObjectProvider<ProductSyncService> syncServiceProvider) {
+                            ProductProjectionRequests projections) {
         this.skuMapper = skuMapper;
         this.stockLogMapper = stockLogMapper;
-        this.syncServiceProvider = syncServiceProvider;
+        this.projections = projections;
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void deduct(StockChangeRequest request) {
         Long skuId = request.getSkuId();
@@ -53,10 +50,11 @@ public class StockServiceImpl implements StockService {
             throw new IllegalStateException("库存不足，当前仅剩 " + sku.getStock() + " 件");
         }
         writeLog(skuId, DEDUCT, quantity, request);
-        syncIndexAfterCommit(skuId);
+        requestProjection(skuId);
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void restore(StockChangeRequest request) {
         Long skuId = request.getSkuId();
@@ -83,7 +81,7 @@ public class StockServiceImpl implements StockService {
             throw new IllegalArgumentException("商品规格不存在，库存回补失败：skuId=" + skuId);
         }
         updateLogAfterStock(skuId, RESTORE, quantity, request);
-        syncIndexAfterCommit(skuId);
+        requestProjection(skuId);
     }
 
     /**
@@ -150,43 +148,10 @@ public class StockServiceImpl implements StockService {
         stockLogMapper.insert(log);
     }
 
-    /**
-     * 库存变了，ES 索引里的汇总库存与「有货/缺货」标签也要跟着变。
-     * <p>
-     * <b>注册在事务提交之后执行。</b>直接在方法里同步的话，事务一旦回滚，
-     * 索引已经被改成了「库存减过」的样子，而库里没有 —— 这种不一致不会报错，
-     * 只会在某天有人对着搜索结果和实际库存发懵时暴露。
-     */
-    private void syncIndexAfterCommit(Long skuId) {
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    syncIndexQuietly(skuId);
-                }
-            });
-        } else {
-            syncIndexQuietly(skuId);
-        }
-    }
-
-    /**
-     * ES 是派生数据：同步失败不该让库存操作跟着失败 —— 那一笔库存已经扣了，
-     * 因为索引没更新就回滚，代价与「索引里的库存旧一会儿」完全不成比例。
-     * 下一次该商品的任何变更都会把索引覆盖回正确值。
-     */
-    private void syncIndexQuietly(Long skuId) {
-        try {
-            ProductSyncService syncService = syncServiceProvider.getIfAvailable();
-            if (syncService == null) {
-                return;
-            }
-            ProductSkuEntity sku = skuMapper.selectById(skuId);
-            if (sku != null) {
-                syncService.syncOne(sku.getSpuId());
-            }
-        } catch (Exception e) {
-            log.warn("[Stock] ES 索引同步失败，不影响库存本身: skuId={}", skuId, e);
-        }
+    /** 刷新任务与库存一起进入AT后像，回滚时一起撤销。 */
+    private void requestProjection(Long skuId) {
+        ProductSkuEntity sku = skuMapper.selectById(skuId);
+        if (sku == null) throw new IllegalStateException("已修改库存的规格丢失");
+        projections.request(java.util.List.of(sku.getSpuId()));
     }
 }

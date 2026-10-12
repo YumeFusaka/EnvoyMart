@@ -1,53 +1,6426 @@
 {
-  "version": "t1-2026-10-10",
+  "version": "t1-complex-executable-2026-10-11",
   "cases": [
-    {"caseId":"CA-001","turns":["搜乳清蛋白粉","把第一个加入购物车","确认"],"tools":["product_search","cart_add"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-002","turns":["搜维生素C和鱼油","把第一个和第二个都加入购物车","确认"],"tools":["product_search","cart_add","cart_add"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-003","turns":["查看购物车","把第一行改成2件","确认"],"tools":["cart_query","cart_update"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-004","turns":["查看购物车","删除第二行","确认"],"tools":["cart_query","cart_remove"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-005","turns":["列出地址","用张江路地址结算","确认"],"tools":["address_list","cart_checkout"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-006","turns":["查我的订单","取消刚才那单","确认"],"tools":["order_query","order_cancel"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-007","turns":["查订单物流","告诉我现在到哪了"],"tools":["order_query","logistics_query"],"write":false,"recovery":false,"restart":false},
-    {"caseId":"CA-008","turns":["查可领优惠券","领取满减券","确认"],"tools":["coupon_receive"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-009","turns":["我想申请售后","确认申请"],"tools":["after_sale_apply"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-010","turns":["提交退货工单","确认"],"tools":["ticket_create"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-011","turns":["搜钙片","第一个不是我要的，换第二个","确认加购"],"tools":["product_search","cart_add"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-012","turns":["搜两个商品","先加第一个","确认","再加第二个","确认"],"tools":["product_search","cart_add","cart_add"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-013","turns":["查购物车","改第一件数量","确认","重复确认"],"tools":["cart_query","cart_update"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-014","turns":["结算购物车","确认","支付状态如何"],"tools":["cart_checkout","order_query"],"write":true,"recovery":true,"restart":true},
-    {"caseId":"CA-015","turns":["查知识库退货规则","结合我的订单说明"],"tools":["knowledge_search","order_query"],"write":false,"recovery":false,"restart":false},
-    {"caseId":"CA-016","turns":["鱼油和华法林能一起吃吗","再查一下图谱依据"],"tools":["interaction_check","knowledge_search"],"write":false,"recovery":false,"restart":false},
-    {"caseId":"CA-017","turns":["查订单","服务重启后继续查物流"],"tools":["order_query","logistics_query"],"write":false,"recovery":false,"restart":true},
-    {"caseId":"CA-018","turns":["搜商品","服务重启后把第一个加入购物车","确认"],"tools":["product_search","cart_add"],"write":true,"recovery":true,"restart":true},
-    {"caseId":"CA-019","turns":["查看我的券","结算时使用第一张","确认"],"tools":["cart_query","cart_checkout"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-020","turns":["查询售后进度","申请补充材料工单","确认"],"tools":["order_query","ticket_create"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-021","turns":["搜乳清蛋白粉","把第二个加入购物车","确认"],"tools":["product_search","cart_add"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-022","turns":["搜益生菌","把第一个加入购物车","取消确认"],"tools":["product_search","cart_add"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-023","turns":["查看购物车","把第一行删除","下游超时后重试","确认"],"tools":["cart_query","cart_remove"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-024","turns":["查看订单","取消订单时下游业务失败","重试取消","确认"],"tools":["order_query","order_cancel"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-025","turns":["查询优惠券","领取第二张","确认"],"tools":["coupon_receive"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-026","turns":["提交售后","确认","再提交一次"],"tools":["after_sale_apply"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-027","turns":["创建工单","确认","刷新后查看状态"],"tools":["ticket_create"],"write":true,"recovery":true,"restart":true},
-    {"caseId":"CA-028","turns":["查图谱","问没有证据的成分"],"tools":["interaction_check","knowledge_search"],"write":false,"recovery":false,"restart":false},
-    {"caseId":"CA-029","turns":["搜两个不同规格","把第二个加购2件","确认"],"tools":["product_search","cart_add"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-030","turns":["查购物车","修改第一行","修改第二行","分别确认"],"tools":["cart_query","cart_update","cart_update"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-031","turns":["看物流轨迹","补充一个派送失败轨迹","确认"],"tools":["logistics_query"],"write":false,"recovery":false,"restart":false},
-    {"caseId":"CA-032","turns":["查订单售后资格","申请售后","确认"],"tools":["order_query","after_sale_apply"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-033","turns":["查询退货规则","没有证据就拒答"],"tools":["knowledge_search"],"write":false,"recovery":false,"restart":false},
-    {"caseId":"CA-034","turns":["搜商品","选第一个","用户纠正为第二个","确认加购"],"tools":["product_search","cart_add"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-035","turns":["查看购物车","删除第一行","确认","再查购物车"],"tools":["cart_query","cart_remove","cart_query"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-036","turns":["结算","地址不明确","读取地址簿","确认地址","确认订单"],"tools":["address_list","cart_checkout"],"write":true,"recovery":true,"restart":true},
-    {"caseId":"CA-037","turns":["查订单","查询物流","服务连接失败","恢复后继续"],"tools":["order_query","logistics_query"],"write":false,"recovery":true,"restart":false},
-    {"caseId":"CA-038","turns":["领取优惠券","重复点击领取","刷新券包"],"tools":["coupon_receive"],"write":true,"recovery":true,"restart":true},
-    {"caseId":"CA-039","turns":["提交工单","客服回复后关闭","确认关闭"],"tools":["ticket_create"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-040","turns":["查知识库","查图谱","合并带引用回答"],"tools":["knowledge_search","interaction_check"],"write":false,"recovery":false,"restart":false},
-    {"caseId":"CA-041","turns":["搜乳清蛋白粉","把第一个和第二个各加1件","确认"],"tools":["product_search","cart_add","cart_add"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-042","turns":["搜商品","列表没有结果","换关键词重搜","确认"],"tools":["product_search"],"write":false,"recovery":true,"restart":false},
-    {"caseId":"CA-043","turns":["查订单","取消已发货订单","解释拒绝原因"],"tools":["order_query","order_cancel"],"write":false,"recovery":true,"restart":false},
-    {"caseId":"CA-044","turns":["查售后","申请退款","审批状态变化"],"tools":["after_sale_apply"],"write":true,"recovery":false,"restart":true},
-    {"caseId":"CA-045","turns":["购物车两行","先删第一行再改第二行","分别确认"],"tools":["cart_query","cart_remove","cart_update"],"write":true,"recovery":false,"restart":false},
-    {"caseId":"CA-046","turns":["问组合禁忌","补充另一种成分","重新规划回答"],"tools":["interaction_check"],"write":false,"recovery":true,"restart":false},
-    {"caseId":"CA-047","turns":["管理员审核工单","普通用户尝试审核","拒绝越权"],"tools":["ticket_create"],"write":true,"recovery":true,"restart":false},
-    {"caseId":"CA-048","turns":["点踩当前回答","选择完整会话消息","刷新后撤销"],"tools":[],"write":false,"feedback":true,"recovery":true,"restart":true}
+    {
+      "caseId": "CA-001",
+      "turns": [
+        "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+        "将原列表第1个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "搜乳清蛋白粉",
+        "把第一个加入购物车",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 0,
+              "quantity": 1
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "将原列表第1个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[0].skuId}}",
+            "quantity": 1
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-002",
+      "turns": [
+        "搜索维生素C和鱼油，至少展示3个候选并给出各规格",
+        "我明确要一款维生素C和一款鱼油各1件：选刚才展示列表第{{products[0].ordinal}}款“{{products[0].name}}”，规格“{{products[0].specText}}”；以及第{{products[1].ordinal}}款“{{products[1].name}}”，规格“{{products[1].specText}}”。不是两个维生素C，等我确认再加购。",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "搜维生素C和鱼油",
+        "把第一个和第二个都加入购物车",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索维生素C和鱼油，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 0,
+              "nameIncludes": "维生素C",
+              "quantity": 1
+            },
+            {
+              "index": 0,
+              "nameIncludes": "鱼油",
+              "quantity": 1
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "我明确要一款维生素C和一款鱼油各1件：选刚才展示列表第{{products[0].ordinal}}款“{{products[0].name}}”，规格“{{products[0].specText}}”；以及第{{products[1].ordinal}}款“{{products[1].name}}”，规格“{{products[1].specText}}”。不是两个维生素C，等我确认再加购。",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            },
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            },
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[0].skuId}}",
+            "quantity": 1
+          },
+          {
+            "op": "add",
+            "skuId": "{{products[1].skuId}}",
+            "quantity": 1
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [],
+      "evaluationRevision": {
+        "classification": "前提失败修正",
+        "originalGoal": "维生素C与鱼油各选一款加购",
+        "reason": "多查询商品卡片合并不保证前两张分属两个品类；旧评测前提错误地把全局第1/2张当成各查询第1张。保留原目标，按真实商品名称选各品类第一匹配并让用户明确澄清名称/规格与实际列表序数；不向模型输入SKU。",
+        "selectionEvidence": "recommendedProducts实际index+公开/products/{id}名称、规格；两份来源均含对应品类才允许审批"
+      }
+    },
+    {
+      "caseId": "CA-003",
+      "turns": [
+        "查看购物车，按返回列表展示每行编号、规格、数量",
+        "把第一行改成2件",
+        "确认"
+      ],
+      "tools": [
+        "cart_query",
+        "cart_update"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查看购物车",
+        "把第一行改成2件",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          },
+          {
+            "skuId": 11,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "把第一行改成2件",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": 2
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": 2
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "update",
+            "cartItemId": "{{cart[0].id}}",
+            "quantity": 2
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_query",
+        "cart_update"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-004",
+      "turns": [
+        "查看购物车，按返回列表展示每行编号、规格、数量",
+        "删除原列表第二行",
+        "确认"
+      ],
+      "tools": [
+        "cart_query",
+        "cart_remove"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查看购物车",
+        "删除第二行",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          },
+          {
+            "skuId": 11,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "删除原列表第二行",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[1].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[1].id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[1].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[1].id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "remove",
+            "cartItemId": "{{cart[1].id}}"
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_query",
+        "cart_remove"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-005",
+      "turns": [
+        "列出我的收货地址",
+        "选择张江路 100 号 T1 验收室这条地址结算；收货人验收用户，手机号13800000001，上海市上海市浦东新区",
+        "确认"
+      ],
+      "tools": [
+        "address_list",
+        "cart_checkout"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "列出地址",
+        "用张江路地址结算",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "列出我的收货地址",
+          "dag": [
+            {
+              "tool": "address_list",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "选择张江路 100 号 T1 验收室这条地址结算；收货人验收用户，手机号13800000001，上海市上海市浦东新区",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_checkout",
+              "arguments": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              },
+              "parameterSources": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_checkout",
+              "arguments": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              },
+              "parameterSources": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              }
+            }
+          ],
+          "capture": "order",
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "checkout"
+          }
+        ],
+        "orders": {
+          "added": 1,
+          "status": "CREATED"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "address_list",
+        "cart_checkout"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-006",
+      "turns": [
+        "查询订单ID {{order.id}} 的状态和明细",
+        "取消刚才查询的订单 {{order.id}}",
+        "确认"
+      ],
+      "tools": [
+        "order_query",
+        "order_cancel"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查我的订单",
+        "取消刚才那单",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "CREATED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询订单ID {{order.id}} 的状态和明细",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "取消刚才查询的订单 {{order.id}}",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "orders": {
+          "added": 0,
+          "id": "{{order.id}}",
+          "targetStatus": "CANCELLED"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "order_query",
+        "order_cancel"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-007",
+      "turns": [
+        "查询订单ID {{order.id}} 的状态和明细",
+        "查询刚才订单 {{order.id}} 的物流，现在到哪里了？"
+      ],
+      "tools": [
+        "order_query",
+        "logistics_query"
+      ],
+      "write": false,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查订单物流",
+        "告诉我现在到哪了"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "SHIPPED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询订单ID {{order.id}} 的状态和明细",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "查询刚才订单 {{order.id}} 的物流，现在到哪里了？",
+          "dag": [
+            {
+              "tool": "logistics_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "order_query",
+        "logistics_query"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-008",
+      "turns": [
+        "领取可领满减券：模板ID {{coupon.id}}，名称 {{coupon.name}}；只领取这张",
+        "确认"
+      ],
+      "tools": [
+        "coupon_receive"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查可领优惠券",
+        "领取满减券",
+        "确认"
+      ],
+      "setup": {
+        "coupon": true,
+        "couponType": "FIXED"
+      },
+      "steps": [
+        {
+          "kind": "api",
+          "path": "/coupons/available",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "available",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "领取可领满减券：模板ID {{coupon.id}}，名称 {{coupon.name}}；只领取这张",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "coupon_receive",
+              "arguments": {
+                "couponId": "{{coupon.id}}"
+              },
+              "parameterSources": {
+                "couponId": "{{coupon.id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "coupon_receive",
+              "arguments": {
+                "couponId": "{{coupon.id}}"
+              },
+              "parameterSources": {
+                "couponId": "{{coupon.id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "coupons": {
+          "added": 1,
+          "status": "UNUSED",
+          "fields": {
+            "couponId": "{{coupon.id}}"
+          }
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + API_ONLY(券列表)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "coupon_receive"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-009",
+      "turns": [
+        "订单 {{order.id}} 的订单行 {{orderItem.id}} 包装破损，属于质量问题，我要退货退款，原因：包装破损",
+        "确认"
+      ],
+      "tools": [
+        "after_sale_apply"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "我想申请售后",
+        "确认申请"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "RECEIVED"
+      },
+      "steps": [
+        {
+          "kind": "api",
+          "path": "/after-sales/preview?orderItemId={{orderItem.id}}&type=RETURN_REFUND&qualityIssue=true",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "preview",
+          "id": "s1",
+          "dependsOn": [],
+          "assert": {
+            "eligible": true
+          }
+        },
+        {
+          "kind": "chat",
+          "message": "订单 {{order.id}} 的订单行 {{orderItem.id}} 包装破损，属于质量问题，我要退货退款，原因：包装破损",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "after_sale_apply",
+              "arguments": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "RETURN_REFUND",
+                "reason": "包装破损",
+                "qualityIssue": true
+              },
+              "parameterSources": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "当前用户明确消息中的type",
+                "reason": "当前用户明确消息中的reason",
+                "qualityIssue": "当前用户明确消息中的qualityIssue"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "after_sale_apply",
+              "arguments": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "RETURN_REFUND",
+                "reason": "包装破损",
+                "qualityIssue": true
+              },
+              "parameterSources": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "当前用户明确消息中的type",
+                "reason": "当前用户明确消息中的reason",
+                "qualityIssue": "当前用户明确消息中的qualityIssue"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "afterSales": {
+          "added": 1,
+          "status": "APPLIED",
+          "fields": {
+            "orderItemId": "{{orderItem.id}}",
+            "type": "RETURN_REFUND",
+            "reason": "包装破损"
+          }
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + API_ONLY(售后预览)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "after_sale_apply"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-010",
+      "turns": [
+        "提交退货工单，分类REFUND，标题“退货咨询”，内容“包装破损，需要退货处理”",
+        "确认"
+      ],
+      "tools": [
+        "ticket_create"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "提交退货工单",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "提交退货工单，分类REFUND，标题“退货咨询”，内容“包装破损，需要退货处理”",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "ticket_create",
+              "arguments": {
+                "category": "REFUND",
+                "title": "退货咨询",
+                "content": "包装破损，需要退货处理"
+              },
+              "parameterSources": {
+                "category": "当前用户明确消息中的category",
+                "title": "当前用户明确消息中的title",
+                "content": "当前用户明确消息中的content"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "ticket_create",
+              "arguments": {
+                "category": "REFUND",
+                "title": "退货咨询",
+                "content": "包装破损，需要退货处理"
+              },
+              "parameterSources": {
+                "category": "当前用户明确消息中的category",
+                "title": "当前用户明确消息中的title",
+                "content": "当前用户明确消息中的content"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "tickets": {
+          "added": 1,
+          "status": "OPEN",
+          "fields": {
+            "category": "REFUND",
+            "title": "退货咨询"
+          },
+          "content": "包装破损，需要退货处理"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "ticket_create"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-011",
+      "turns": [
+        "搜索钙片，至少展示3个候选并给出各规格",
+        "第一个不是我要的，改选原列表第二个，先不加购",
+        "将原列表第2个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "搜钙片",
+        "第一个不是我要的，换第二个",
+        "确认加购"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索钙片，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 1,
+              "quantity": 1
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "第一个不是我要的，改选原列表第二个，先不加购",
+          "dag": [],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "将原列表第2个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[0].skuId}}",
+            "quantity": 1
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-012",
+      "turns": [
+        "搜索维生素C和鱼油，至少展示两个候选",
+        "{{products[0].clarification}}先把该商品规格“{{products[0].specText}}”加入1件，等我确认。",
+        "确认",
+        "{{products[1].clarification}}第一款已经加购；现在只把这个鱼油规格“{{products[1].specText}}”加购1件，等我确认，不要重复第一款。",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "搜两个商品",
+        "先加第一个",
+        "确认",
+        "再加第二个",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索维生素C和鱼油，至少展示两个候选",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 0,
+              "quantity": 1,
+              "nameIncludes": "维生素C",
+              "matchAtOriginalIndex": true,
+              "allowNameClarification": true
+            },
+            {
+              "index": 1,
+              "quantity": 1,
+              "nameIncludes": "鱼油",
+              "matchAtOriginalIndex": true,
+              "allowNameClarification": true
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "{{products[0].clarification}}先把该商品规格“{{products[0].specText}}”加入1件，等我确认。",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "{{products[1].clarification}}第一款已经加购；现在只把这个鱼油规格“{{products[1].specText}}”加购1件，等我确认，不要重复第一款。",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[0].skuId}}",
+            "quantity": 1
+          },
+          {
+            "op": "add",
+            "skuId": "{{products[1].skuId}}",
+            "quantity": 1
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [],
+      "evaluationRevision": {
+        "classification": "前提失败经真实用户澄清完成",
+        "originalGoal": "维生素C和鱼油分两轮各加购1件",
+        "reason": "两次检索合并的原列表第2未必鱼油；若原序号与目标品类冲突，先保存原序号/实际name，再由用户主动澄清实际原列表第N鱼油名称与规格；只从同一真实候选表选目标，不自动批准AD/另一维C，不向模型喂SKU。缺目标品类仍BLOCKED。",
+        "evidenceRunId": "abc7cc7d-5039-42ec-bd2c-84367fa8c340"
+      }
+    },
+    {
+      "caseId": "CA-013",
+      "turns": [
+        "查看购物车，按返回列表展示每行编号、规格、数量",
+        "把第一行数量改成3件",
+        "确认"
+      ],
+      "tools": [
+        "cart_query",
+        "cart_update"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "查购物车",
+        "改第一件数量",
+        "确认",
+        "重复确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          },
+          {
+            "skuId": 11,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "把第一行数量改成3件",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": 3
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": 3
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "repeat-confirm",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "update",
+            "cartItemId": "{{cart[0].id}}",
+            "quantity": 3
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_query",
+        "cart_update"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "repeat-confirm"
+      ]
+    },
+    {
+      "caseId": "CA-014",
+      "turns": [
+        "结算购物车，先读取地址让我选择",
+        "选张江路地址，完整收货信息是验收用户、13800000001、上海市、上海市、浦东新区、张江路 100 号 T1 验收室",
+        "确认",
+        "查刚刚创建的订单 {{createdOrder.id}}，支付状态如何"
+      ],
+      "tools": [
+        "address_list",
+        "cart_checkout",
+        "order_query"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": true,
+      "originalTurns": [
+        "结算购物车",
+        "确认",
+        "支付状态如何"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "结算购物车，先读取地址让我选择",
+          "dag": [
+            {
+              "tool": "address_list",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "选张江路地址，完整收货信息是验收用户、13800000001、上海市、上海市、浦东新区、张江路 100 号 T1 验收室",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_checkout",
+              "arguments": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              },
+              "parameterSources": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_checkout",
+              "arguments": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              },
+              "parameterSources": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              }
+            }
+          ],
+          "capture": "order",
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "restart",
+          "services": [
+            "ai-service"
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "查刚刚创建的订单 {{createdOrder.id}}，支付状态如何",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{createdOrder.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{createdOrder.id}}"
+              }
+            }
+          ],
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "checkout"
+          }
+        ],
+        "orders": {
+          "added": 1,
+          "status": "CREATED"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + CONTROL_RESTART",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_checkout",
+        "order_query"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "restart",
+        "refresh"
+      ]
+    },
+    {
+      "caseId": "CA-015",
+      "turns": [
+        "查知识库：质量问题退货期限与条件",
+        "结合我的订单ID {{order.id}} 的状态、商品和收货时间，说明能否申请质量问题退货；依据知识库原文回答"
+      ],
+      "tools": [
+        "knowledge_search",
+        "order_query"
+      ],
+      "write": false,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查知识库退货规则",
+        "结合我的订单说明"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "RECEIVED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查知识库：质量问题退货期限与条件",
+          "dag": [
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "citation",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "结合我的订单ID {{order.id}} 的状态、商品和收货时间，说明能否申请质量问题退货；依据知识库原文回答",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            },
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "citation",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "knowledge_search",
+        "order_query"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-016",
+      "turns": [
+        "鱼油和华法林能一起吃吗，查图谱依据",
+        "再查知识库原文依据，带引用说明鱼油和华法林的相互作用"
+      ],
+      "tools": [
+        "interaction_check",
+        "knowledge_search"
+      ],
+      "write": false,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "鱼油和华法林能一起吃吗",
+        "再查一下图谱依据"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "鱼油和华法林能一起吃吗，查图谱依据",
+          "dag": [
+            {
+              "tool": "interaction_check",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "再查知识库原文依据，带引用说明鱼油和华法林的相互作用",
+          "dag": [
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "citation",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "interaction_check",
+        "knowledge_search"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-017",
+      "turns": [
+        "查询订单ID {{order.id}} 的状态和明细",
+        "查询刚才订单 {{order.id}} 的物流，现在到哪里了？"
+      ],
+      "tools": [
+        "order_query",
+        "logistics_query"
+      ],
+      "write": false,
+      "recovery": false,
+      "restart": true,
+      "originalTurns": [
+        "查订单",
+        "服务重启后继续查物流"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "SHIPPED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询订单ID {{order.id}} 的状态和明细",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "restart",
+          "services": [
+            "ai-service"
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "查询刚才订单 {{order.id}} 的物流，现在到哪里了？",
+          "dag": [
+            {
+              "tool": "logistics_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ + CONTROL_RESTART",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "order_query",
+        "logistics_query"
+      ],
+      "originalWrite": false,
+      "recoveryProof": [
+        "restart",
+        "refresh"
+      ]
+    },
+    {
+      "caseId": "CA-018",
+      "turns": [
+        "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+        "将原列表第1个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": true,
+      "originalTurns": [
+        "搜商品",
+        "服务重启后把第一个加入购物车",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 0,
+              "quantity": 1
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "restart",
+          "services": [
+            "ai-service"
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "将原列表第1个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[0].skuId}}",
+            "quantity": 1
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM + CONTROL_RESTART",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "restart",
+        "refresh"
+      ]
+    },
+    {
+      "caseId": "CA-019",
+      "turns": [
+        "查看购物车，按返回列表展示每行编号、规格、数量",
+        "我要结算时用券包第一张券，用户券ID {{userCoupon.id}}；你的工具不支持用券，请说明，我会通过结算接口确认，不要替我无券下单"
+      ],
+      "tools": [
+        "cart_query"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查看我的券",
+        "结算时使用第一张",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 4,
+            "quantity": 2
+          }
+        ],
+        "coupon": true,
+        "couponType": "FIXED",
+        "receiveCoupon": true
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "api",
+          "path": "/coupons/mine",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "mine",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "我要结算时用券包第一张券，用户券ID {{userCoupon.id}}；你的工具不支持用券，请说明，我会通过结算接口确认，不要替我无券下单",
+          "dag": [],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/orders/preview",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "method": "POST",
+          "body": {
+            "userCouponId": "{{userCoupon.id}}"
+          },
+          "store": "couponPreview",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ],
+          "userAction": "当前买家明确确认POST /orders/preview；参数来自本case fixture与已展示的权威返回，非Agent自动决策"
+        },
+        {
+          "kind": "api",
+          "path": "/orders/checkout",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "method": "POST",
+          "body": {
+            "receiverName": "{{address.receiverName}}",
+            "receiverPhone": "{{address.receiverPhone}}",
+            "receiverProvince": "{{address.receiverProvince}}",
+            "receiverCity": "{{address.receiverCity}}",
+            "receiverDistrict": "{{address.receiverDistrict}}",
+            "receiverDetail": "{{address.receiverDetail}}",
+            "userCouponId": "{{userCoupon.id}}",
+            "requestId": "{{sessionId}}"
+          },
+          "store": "createdOrder",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ],
+          "userAction": "当前买家明确确认POST /orders/checkout；参数来自本case fixture与已展示的权威返回，非Agent自动决策"
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "checkout"
+          }
+        ],
+        "orders": {
+          "added": 1,
+          "status": "CREATED",
+          "usedCoupon": "{{userCoupon.id}}"
+        },
+        "coupons": {
+          "added": 0,
+          "id": "{{userCoupon.id}}",
+          "targetStatus": "USED"
+        }
+      },
+      "scope": "API_ONLY(券列表/用券结算) + AGENT_READ（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_query",
+        "cart_checkout"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-020",
+      "turns": [
+        "查询订单ID {{order.id}} 的状态和明细",
+        "为订单 {{order.id}} 的售后 {{afterSale.id}} 创建补充材料工单：分类REFUND，标题“补充材料”，内容“售后包装破损，补充外包装照片说明”",
+        "确认"
+      ],
+      "tools": [
+        "order_query",
+        "ticket_create"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查询售后进度",
+        "申请补充材料工单",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "RECEIVED",
+        "afterSale": true
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询订单ID {{order.id}} 的状态和明细",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "api",
+          "path": "/after-sales/{{afterSale.id}}",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "progress",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "为订单 {{order.id}} 的售后 {{afterSale.id}} 创建补充材料工单：分类REFUND，标题“补充材料”，内容“售后包装破损，补充外包装照片说明”",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "ticket_create",
+              "arguments": {
+                "category": "REFUND",
+                "title": "补充材料",
+                "content": "售后包装破损，补充外包装照片说明",
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "category": "当前用户明确消息中的category",
+                "title": "当前用户明确消息中的title",
+                "content": "当前用户明确消息中的content",
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "ticket_create",
+              "arguments": {
+                "category": "REFUND",
+                "title": "补充材料",
+                "content": "售后包装破损，补充外包装照片说明",
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "category": "当前用户明确消息中的category",
+                "title": "当前用户明确消息中的title",
+                "content": "当前用户明确消息中的content",
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "tickets": {
+          "added": 1,
+          "status": "OPEN",
+          "fields": {
+            "orderId": "{{order.id}}",
+            "category": "REFUND",
+            "title": "补充材料"
+          },
+          "content": "售后包装破损，补充外包装照片说明"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + API_ONLY(售后进度)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "order_query",
+        "ticket_create"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-021",
+      "turns": [
+        "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+        "将原列表第2个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "搜乳清蛋白粉",
+        "把第二个加入购物车",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 1,
+              "quantity": 1
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "将原列表第2个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[0].skuId}}",
+            "quantity": 1
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-022",
+      "turns": [
+        "搜索益生菌，至少展示3个候选并给出各规格",
+        "将原列表第1个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+        "取消确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "搜益生菌",
+        "把第一个加入购物车",
+        "取消确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索益生菌，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 0,
+              "quantity": 1
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "将原列表第1个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件，等我确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "cancel",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "cancel"
+      ]
+    },
+    {
+      "caseId": "CA-023",
+      "turns": [
+        "查看购物车，按返回列表展示每行编号、规格、数量",
+        "删除第一行",
+        "确认",
+        "刚才删除失败，请重新删除同一行ID {{cart[0].id}}",
+        "确认"
+      ],
+      "tools": [
+        "cart_query",
+        "cart_remove",
+        "cart_remove"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "查看购物车",
+        "把第一行删除",
+        "下游超时后重试",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          },
+          {
+            "skuId": 11,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "fault",
+          "mode": "enable",
+          "failure": "READ_TIMEOUT",
+          "target": "order-service",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "删除第一行",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "dag": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "outcome": "failure",
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "fault",
+          "mode": "disable",
+          "failure": "READ_TIMEOUT",
+          "target": "order-service",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "刚才删除失败，请重新删除同一行ID {{cart[0].id}}",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "id": "s7",
+          "dependsOn": [
+            "s6"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "remove",
+            "cartItemId": "{{cart[0].id}}"
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM + CONTROL_FAULT",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_query",
+        "cart_remove"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "fault",
+        "fault"
+      ]
+    },
+    {
+      "caseId": "CA-024",
+      "turns": [
+        "查询订单ID {{order.id}} 的状态和明细",
+        "取消订单 {{order.id}}",
+        "确认",
+        "重新取消同一订单 {{order.id}}",
+        "确认"
+      ],
+      "tools": [
+        "order_query",
+        "order_cancel",
+        "order_cancel"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "查看订单",
+        "取消订单时下游业务失败",
+        "重试取消",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "CREATED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询订单ID {{order.id}} 的状态和明细",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "fault",
+          "mode": "enable",
+          "failure": "BUSINESS_FAILURE",
+          "target": "order-service",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "取消订单 {{order.id}}",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "dag": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "outcome": "failure",
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "fault",
+          "mode": "disable",
+          "failure": "BUSINESS_FAILURE",
+          "target": "order-service",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "重新取消同一订单 {{order.id}}",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s7",
+          "dependsOn": [
+            "s6"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "orders": {
+          "added": 0,
+          "id": "{{order.id}}",
+          "targetStatus": "CANCELLED"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + CONTROL_FAULT",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "order_query",
+        "order_cancel"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "fault",
+        "fault"
+      ]
+    },
+    {
+      "caseId": "CA-025",
+      "turns": [
+        "领取可领列表第二张，模板ID {{coupon.id}}，名称 {{coupon.name}}，不要领取第一张",
+        "确认"
+      ],
+      "tools": [
+        "coupon_receive"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查询优惠券",
+        "领取第二张",
+        "确认"
+      ],
+      "setup": {
+        "coupon": true,
+        "couponIndex": 1
+      },
+      "steps": [
+        {
+          "kind": "api",
+          "path": "/coupons/available",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "available",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "领取可领列表第二张，模板ID {{coupon.id}}，名称 {{coupon.name}}，不要领取第一张",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "coupon_receive",
+              "arguments": {
+                "couponId": "{{coupon.id}}"
+              },
+              "parameterSources": {
+                "couponId": "{{coupon.id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "coupon_receive",
+              "arguments": {
+                "couponId": "{{coupon.id}}"
+              },
+              "parameterSources": {
+                "couponId": "{{coupon.id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "coupons": {
+          "added": 1,
+          "status": "UNUSED",
+          "fields": {
+            "couponId": "{{coupon.id}}"
+          }
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + API_ONLY(券列表)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "coupon_receive"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-026",
+      "turns": [
+        "给订单行 {{orderItem.id}} 申请退货退款，质量问题，原因包装破损",
+        "确认"
+      ],
+      "tools": [
+        "after_sale_apply"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "提交售后",
+        "确认",
+        "再提交一次"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "RECEIVED"
+      },
+      "steps": [
+        {
+          "kind": "api",
+          "path": "/after-sales/preview?orderItemId={{orderItem.id}}&type=RETURN_REFUND&qualityIssue=true",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "preview",
+          "id": "s1",
+          "dependsOn": [],
+          "assert": {
+            "eligible": true
+          }
+        },
+        {
+          "kind": "chat",
+          "message": "给订单行 {{orderItem.id}} 申请退货退款，质量问题，原因包装破损",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "after_sale_apply",
+              "arguments": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "RETURN_REFUND",
+                "reason": "包装破损",
+                "qualityIssue": true
+              },
+              "parameterSources": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "当前用户明确消息中的type",
+                "reason": "当前用户明确消息中的reason",
+                "qualityIssue": "当前用户明确消息中的qualityIssue"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "after_sale_apply",
+              "arguments": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "RETURN_REFUND",
+                "reason": "包装破损",
+                "qualityIssue": true
+              },
+              "parameterSources": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "当前用户明确消息中的type",
+                "reason": "当前用户明确消息中的reason",
+                "qualityIssue": "当前用户明确消息中的qualityIssue"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "repeat-confirm",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "api",
+          "scope": "API_ONLY：重复提交同一订单行售后，核对交易侧冲突边界",
+          "path": "/after-sales",
+          "method": "POST",
+          "body": {
+            "orderItemId": "{{orderItem.id}}",
+            "type": "RETURN_REFUND",
+            "reason": "包装破损",
+            "qualityIssue": true
+          },
+          "codes": [
+            409
+          ],
+          "userAction": "买家明确再次提交同一订单行售后；不能产生第二张售后单",
+          "store": "duplicateApply",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/after-sales",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "afterSaleList",
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "afterSales": {
+          "added": 1,
+          "status": "APPLIED",
+          "fields": {
+            "orderItemId": "{{orderItem.id}}",
+            "type": "RETURN_REFUND"
+          }
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + API_ONLY(售后预览/复查)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "after_sale_apply"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "repeat-confirm"
+      ]
+    },
+    {
+      "caseId": "CA-027",
+      "turns": [
+        "创建工单，分类OTHER，标题“状态查询”，内容“请说明售后流程”",
+        "确认"
+      ],
+      "tools": [
+        "ticket_create"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": true,
+      "originalTurns": [
+        "创建工单",
+        "确认",
+        "刷新后查看状态"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "创建工单，分类OTHER，标题“状态查询”，内容“请说明售后流程”",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "ticket_create",
+              "arguments": {
+                "category": "OTHER",
+                "title": "状态查询",
+                "content": "请说明售后流程"
+              },
+              "parameterSources": {
+                "category": "当前用户明确消息中的category",
+                "title": "当前用户明确消息中的title",
+                "content": "当前用户明确消息中的content"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "ticket_create",
+              "arguments": {
+                "category": "OTHER",
+                "title": "状态查询",
+                "content": "请说明售后流程"
+              },
+              "parameterSources": {
+                "category": "当前用户明确消息中的category",
+                "title": "当前用户明确消息中的title",
+                "content": "当前用户明确消息中的content"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "restart",
+          "services": [
+            "ai-service"
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/tickets?page=0&size=100",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "ticketPage",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "tickets": {
+          "added": 1,
+          "status": "OPEN",
+          "fields": {
+            "title": "状态查询"
+          },
+          "content": "请说明售后流程"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + CONTROL_RESTART + API_ONLY(工单状态)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "ticket_create"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "restart",
+        "refresh"
+      ]
+    },
+    {
+      "caseId": "CA-028",
+      "turns": [
+        "查鱼油和华法林的图谱相互作用",
+        "T1不存在成分甲和T1不存在成分乙能一起吃吗？没有原文证据就明确无法判断，不要用常识补齐"
+      ],
+      "tools": [
+        "interaction_check"
+      ],
+      "write": false,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查图谱",
+        "问没有证据的成分"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查鱼油和华法林的图谱相互作用",
+          "dag": [
+            {
+              "tool": "interaction_check",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "T1不存在成分甲和T1不存在成分乙能一起吃吗？没有原文证据就明确无法判断，不要用常识补齐",
+          "dag": [
+            {
+              "tool": "interaction_check",
+              "arguments": {
+                "items": "T1不存在成分甲,T1不存在成分乙"
+              },
+              "parameterSources": {
+                "items": "当前用户明确两种不存在成分的名称"
+              }
+            }
+          ],
+          "evidence": "refusal",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ],
+          "retrievalEvidence": {
+            "source": "入口RAG同requestId日志与本轮响应",
+            "queryIncludes": [
+              "T1不存在成分甲",
+              "T1不存在成分乙"
+            ],
+            "levels": [
+              "WEAK",
+              "NONE"
+            ],
+            "requires": [
+              "QueryExpand原查询",
+              "Rerank实际candidates/kept",
+              "Agent已执行证据门且片段数与响应knowledge一致"
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "interaction_check",
+        "knowledge_search"
+      ],
+      "originalWrite": false,
+      "recoveryProof": [],
+      "evaluationRevision": {
+        "classification": "验证失败修正",
+        "originalGoal": "不存在成分缺原文证据时无法判断，不编造安全结论",
+        "reason": "真实入口RAG已经完成本轮原文检索，用户没有要求二次knowledge_search。旧契约强制重复调用具体工具造成假红；改为interaction_check真实参数与入口RAG同requestId/原query/重排/证据门三阶段证明，保留拒答及无副作用断言。",
+        "evidenceRunId": "b8a3d0c3-019f-4959-bc57-3658e1cef2b4",
+        "requestId": "1fb87c48-8747-48b5-932d-c2bf760b535b",
+        "actual": "interaction_check成功；QueryExpand原query、Rerank候选9保留3、证据门WEAK切片3；回答明确无法判断。旧失败报告不改写。"
+      }
+    },
+    {
+      "caseId": "CA-029",
+      "turns": [
+        "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+        "刚才展示列表第{{products[0].ordinal}}款“{{products[0].name}}”有多个规格，我要该商品第二个规格“{{products[0].specText}}”加购2件，不是原商品列表的第二款。等我确认。",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "搜两个不同规格",
+        "把第二个加购2件",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 0,
+              "nameIncludes": "乳清蛋白粉",
+              "skuIndex": 1,
+              "requiredSkuCount": 2,
+              "quantity": 2
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "刚才展示列表第{{products[0].ordinal}}款“{{products[0].name}}”有多个规格，我要该商品第二个规格“{{products[0].specText}}”加购2件，不是原商品列表的第二款。等我确认。",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 2
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 2
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[0].skuId}}",
+            "quantity": 2
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [],
+      "evaluationRevision": {
+        "classification": "前提失败修正",
+        "originalGoal": "展示多个不同规格，选择第二个规格加购2件",
+        "reason": "旧fixture把第二规格错误绑定为第二商品的第二SKU；真实植物蛋白仅SKU8一个规格。公开详情乳清蛋白SPU3有SKU5/6/7，按真实名称选乳清商品第二规格，保留商品->规格嵌套索引，不向模型输入SKU。",
+        "evidence": "GET /products/3：香草1kg/巧克力1kg/香草2.27kg；GET /products/4：单一SKU8"
+      }
+    },
+    {
+      "caseId": "CA-030",
+      "turns": [
+        "查看购物车，按返回列表展示每行编号、规格、数量",
+        "将原第一行数量改成2件，等我确认",
+        "确认",
+        "将原第二行数量改成3件，单独确认",
+        "确认"
+      ],
+      "tools": [
+        "cart_query",
+        "cart_update",
+        "cart_update"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查购物车",
+        "修改第一行",
+        "修改第二行",
+        "分别确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          },
+          {
+            "skuId": 11,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "将原第一行数量改成2件，等我确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": 2
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": 2
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "将原第二行数量改成3件，单独确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[1].id}}",
+                "quantity": 3
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[1].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[1].id}}",
+                "quantity": 3
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[1].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "update",
+            "cartItemId": "{{cart[0].id}}",
+            "quantity": 2
+          },
+          {
+            "op": "update",
+            "cartItemId": "{{cart[1].id}}",
+            "quantity": 3
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_query",
+        "cart_update",
+        "cart_update"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-031",
+      "turns": [
+        "查询刚才订单 {{order.id}} 的物流，现在到哪里了？",
+        "我需要补录一条派送失败：所在地浦东配送站，说明“派送失败，收件人不在，等待重新派送”。你没有补录工具，不能宣称已写入；由管理员接口确认",
+        "查询刚才订单 {{order.id}} 的物流，现在到哪里了？"
+      ],
+      "tools": [
+        "logistics_query"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "看物流轨迹",
+        "补充一个派送失败轨迹",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "SHIPPED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询刚才订单 {{order.id}} 的物流，现在到哪里了？",
+          "dag": [
+            {
+              "tool": "logistics_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "我需要补录一条派送失败：所在地浦东配送站，说明“派送失败，收件人不在，等待重新派送”。你没有补录工具，不能宣称已写入；由管理员接口确认",
+          "dag": [],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/orders/admin/orders/{{order.id}}/traces",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "method": "POST",
+          "actor": "admin",
+          "body": {
+            "status": "DELIVERING",
+            "description": "派送失败，收件人不在，等待重新派送",
+            "location": "浦东配送站"
+          },
+          "store": "trace",
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ],
+          "userAction": "管理员明确确认POST /orders/admin/orders/{{order.id}}/traces；参数来自本case fixture与已展示的权威返回，非Agent自动决策"
+        },
+        {
+          "kind": "chat",
+          "message": "查询刚才订单 {{order.id}} 的物流，现在到哪里了？",
+          "dag": [
+            {
+              "tool": "logistics_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "logistics": {
+          "description": "派送失败，收件人不在，等待重新派送"
+        }
+      },
+      "scope": "API_ONLY(管理员物流补录) + AGENT_READ（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "logistics_query"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-032",
+      "turns": [
+        "查询订单ID {{order.id}} 的状态和明细",
+        "订单行 {{orderItem.id}} 已通过预览，质量问题包装破损，申请退货退款",
+        "确认"
+      ],
+      "tools": [
+        "order_query",
+        "after_sale_apply"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查订单售后资格",
+        "申请售后",
+        "确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "RECEIVED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询订单ID {{order.id}} 的状态和明细",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "api",
+          "path": "/after-sales/preview?orderItemId={{orderItem.id}}&type=RETURN_REFUND&qualityIssue=true",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "preview",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ],
+          "assert": {
+            "eligible": true
+          }
+        },
+        {
+          "kind": "chat",
+          "message": "订单行 {{orderItem.id}} 已通过预览，质量问题包装破损，申请退货退款",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "after_sale_apply",
+              "arguments": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "RETURN_REFUND",
+                "reason": "包装破损",
+                "qualityIssue": true
+              },
+              "parameterSources": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "当前用户明确消息中的type",
+                "reason": "当前用户明确消息中的reason",
+                "qualityIssue": "当前用户明确消息中的qualityIssue"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "after_sale_apply",
+              "arguments": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "RETURN_REFUND",
+                "reason": "包装破损",
+                "qualityIssue": true
+              },
+              "parameterSources": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "当前用户明确消息中的type",
+                "reason": "当前用户明确消息中的reason",
+                "qualityIssue": "当前用户明确消息中的qualityIssue"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "afterSales": {
+          "added": 1,
+          "status": "APPLIED",
+          "fields": {
+            "orderItemId": "{{orderItem.id}}",
+            "type": "RETURN_REFUND"
+          }
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + API_ONLY(售后资格)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "order_query",
+        "after_sale_apply"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-033",
+      "turns": [
+        "查询退货规则，给出原文引用",
+        "查询知识库是否存在“T1不存在政策甲”的退货规则，没有证据就拒答，不要套用其他政策"
+      ],
+      "tools": [
+        "knowledge_search"
+      ],
+      "write": false,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查询退货规则",
+        "没有证据就拒答"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询退货规则，给出原文引用",
+          "dag": [
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "citation",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "查询知识库是否存在“T1不存在政策甲”的退货规则，没有证据就拒答，不要套用其他政策",
+          "dag": [
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "refusal",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "knowledge_search"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-034",
+      "turns": [
+        "搜索钙片，至少展示3个候选并给出各规格",
+        "选原列表第一个商品“{{products[0].name}}”，规格“{{products[0].specText}}”加购1件，等待确认",
+        "我纠正为原列表第二个商品“{{products[1].name}}”，规格“{{products[1].specText}}”，只加第二个1件，取消第一件待确认操作",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "搜商品",
+        "选第一个",
+        "用户纠正为第二个",
+        "确认加购"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索钙片，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 0,
+              "quantity": 1
+            },
+            {
+              "index": 1,
+              "quantity": 1
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "选原列表第一个商品“{{products[0].name}}”，规格“{{products[0].specText}}”加购1件，等待确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "我纠正为原列表第二个商品“{{products[1].name}}”，规格“{{products[1].specText}}”，只加第二个1件，取消第一件待确认操作",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[1].skuId}}",
+            "quantity": 1
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-035",
+      "turns": [
+        "查看购物车，按返回列表展示每行编号、规格、数量",
+        "删除第一行",
+        "确认",
+        "查看购物车，按返回列表展示每行编号、规格、数量"
+      ],
+      "tools": [
+        "cart_query",
+        "cart_remove"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查看购物车",
+        "删除第一行",
+        "确认",
+        "再查购物车"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          },
+          {
+            "skuId": 11,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "删除第一行",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "remove",
+            "cartItemId": "{{cart[0].id}}"
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_query",
+        "cart_remove",
+        "cart_query"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-036",
+      "turns": [
+        "结算购物车，先不要用默认地址，我还没确定寄哪里",
+        "我要寄公司，不是家里，请展示地址让我确认",
+        "确认公司张江路地址：验收用户，13800000001，上海市上海市浦东新区张江路 100 号 T1 验收室",
+        "确认"
+      ],
+      "tools": [
+        "address_list",
+        "cart_checkout"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": true,
+      "originalTurns": [
+        "结算",
+        "地址不明确",
+        "读取地址簿",
+        "确认地址",
+        "确认订单"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "addressCount": 2
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "结算购物车，先不要用默认地址，我还没确定寄哪里",
+          "dag": [
+            {
+              "tool": "address_list",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "clarification": "required",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "我要寄公司，不是家里，请展示地址让我确认",
+          "dag": [
+            {
+              "tool": "address_list",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "确认公司张江路地址：验收用户，13800000001，上海市上海市浦东新区张江路 100 号 T1 验收室",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_checkout",
+              "arguments": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              },
+              "parameterSources": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "restart",
+          "services": [
+            "ai-service"
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_checkout",
+              "arguments": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              },
+              "parameterSources": {
+                "receiverName": "{{address.receiverName}}",
+                "receiverPhone": "{{address.receiverPhone}}",
+                "receiverProvince": "{{address.receiverProvince}}",
+                "receiverCity": "{{address.receiverCity}}",
+                "receiverDistrict": "{{address.receiverDistrict}}",
+                "receiverDetail": "{{address.receiverDetail}}"
+              }
+            }
+          ],
+          "capture": "order",
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "checkout"
+          }
+        ],
+        "orders": {
+          "added": 1,
+          "status": "CREATED"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + CONTROL_RESTART",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "address_list",
+        "cart_checkout"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "restart",
+        "refresh"
+      ]
+    },
+    {
+      "caseId": "CA-037",
+      "turns": [
+        "查询订单ID {{order.id}} 的状态和明细",
+        "查同一订单 {{order.id}} 的物流",
+        "查询刚才订单 {{order.id}} 的物流，现在到哪里了？"
+      ],
+      "tools": [
+        "order_query",
+        "logistics_query"
+      ],
+      "write": false,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "查订单",
+        "查询物流",
+        "服务连接失败",
+        "恢复后继续"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "SHIPPED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询订单ID {{order.id}} 的状态和明细",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "fault",
+          "mode": "enable",
+          "failure": "CONNECTION_FAILURE",
+          "target": "order-service",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "查同一订单 {{order.id}} 的物流",
+          "dag": [
+            {
+              "tool": "logistics_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "outcome": "failure",
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "fault",
+          "mode": "disable",
+          "failure": "CONNECTION_FAILURE",
+          "target": "order-service",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "查询刚才订单 {{order.id}} 的物流，现在到哪里了？",
+          "dag": [
+            {
+              "tool": "logistics_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ + CONTROL_FAULT",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "order_query",
+        "logistics_query"
+      ],
+      "originalWrite": false,
+      "recoveryProof": [
+        "fault",
+        "fault"
+      ]
+    },
+    {
+      "caseId": "CA-038",
+      "turns": [
+        "领取模板 {{coupon.id}} {{coupon.name}}",
+        "确认"
+      ],
+      "tools": [
+        "coupon_receive"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": true,
+      "originalTurns": [
+        "领取优惠券",
+        "重复点击领取",
+        "刷新券包"
+      ],
+      "setup": {
+        "coupon": true
+      },
+      "steps": [
+        {
+          "kind": "api",
+          "path": "/coupons/available",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "available",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "领取模板 {{coupon.id}} {{coupon.name}}",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "coupon_receive",
+              "arguments": {
+                "couponId": "{{coupon.id}}"
+              },
+              "parameterSources": {
+                "couponId": "{{coupon.id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "coupon_receive",
+              "arguments": {
+                "couponId": "{{coupon.id}}"
+              },
+              "parameterSources": {
+                "couponId": "{{coupon.id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "repeat-confirm",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "restart",
+          "services": [
+            "ai-service"
+          ],
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/coupons/mine",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "mine",
+          "id": "s7",
+          "dependsOn": [
+            "s6"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "coupons": {
+          "added": 1,
+          "status": "UNUSED",
+          "fields": {
+            "couponId": "{{coupon.id}}"
+          }
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + CONTROL_RESTART + API_ONLY(券包刷新)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "coupon_receive"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "repeat-confirm",
+        "restart",
+        "refresh"
+      ]
+    },
+    {
+      "caseId": "CA-039",
+      "turns": [
+        "提交工单：分类OTHER，标题“售后流程”，内容“请客服说明售后材料”",
+        "确认"
+      ],
+      "tools": [
+        "ticket_create"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "提交工单",
+        "客服回复后关闭",
+        "确认关闭"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "提交工单：分类OTHER，标题“售后流程”，内容“请客服说明售后材料”",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "ticket_create",
+              "arguments": {
+                "category": "OTHER",
+                "title": "售后流程",
+                "content": "请客服说明售后材料"
+              },
+              "parameterSources": {
+                "category": "当前用户明确消息中的category",
+                "title": "当前用户明确消息中的title",
+                "content": "当前用户明确消息中的content"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "ticket_create",
+              "arguments": {
+                "category": "OTHER",
+                "title": "售后流程",
+                "content": "请客服说明售后材料"
+              },
+              "parameterSources": {
+                "category": "当前用户明确消息中的category",
+                "title": "当前用户明确消息中的title",
+                "content": "当前用户明确消息中的content"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/tickets?page=0&size=100",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "ticketPage",
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/tickets/admin/tickets/{{ticketPage.records[0].id}}/reply",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "actor": "admin",
+          "method": "POST",
+          "body": {
+            "content": "材料已核验，处理完成"
+          },
+          "store": "reply",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ],
+          "userAction": "管理员明确确认POST /tickets/admin/tickets/{{ticketPage.records[0].id}}/reply；参数来自本case fixture与已展示的权威返回，非Agent自动决策"
+        },
+        {
+          "kind": "api",
+          "path": "/tickets/{{ticketPage.records[0].id}}/close",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "method": "POST",
+          "store": "closed",
+          "assert": {
+            "ticket.status": "CLOSED"
+          },
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ],
+          "userAction": "当前买家明确确认POST /tickets/{{ticketPage.records[0].id}}/close；参数来自本case fixture与已展示的权威返回，非Agent自动决策"
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "tickets": {
+          "added": 1,
+          "status": "CLOSED",
+          "fields": {
+            "title": "售后流程"
+          },
+          "content": "请客服说明售后材料"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + API_ONLY(客服回复/买家关闭)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "ticket_create"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-040",
+      "turns": [
+        "查询知识库鱼油与华法林的相互作用原文",
+        "再查图谱鱼油与华法林的关系",
+        "合并知识库和图谱依据回答鱼油与华法林能否同服，给出可追溯引用"
+      ],
+      "tools": [
+        "knowledge_search",
+        "interaction_check"
+      ],
+      "write": false,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "查知识库",
+        "查图谱",
+        "合并带引用回答"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询知识库鱼油与华法林的相互作用原文",
+          "dag": [
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "citation",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "再查图谱鱼油与华法林的关系",
+          "dag": [
+            {
+              "tool": "interaction_check",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "合并知识库和图谱依据回答鱼油与华法林能否同服，给出可追溯引用",
+          "dag": [
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            },
+            {
+              "tool": "interaction_check",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "citation",
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "knowledge_search",
+        "interaction_check"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-041",
+      "turns": [
+        "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+        "将原列表第1个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件；将原列表第2个商品的商品“{{products[1].name}}”，规格“{{products[1].specText}}”加入1件，等我确认",
+        "确认"
+      ],
+      "tools": [
+        "product_search",
+        "cart_add",
+        "cart_add"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "搜乳清蛋白粉",
+        "把第一个和第二个各加1件",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索乳清蛋白粉，至少展示3个候选并给出各规格",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "bind-products",
+          "from": "search",
+          "selections": [
+            {
+              "index": 0,
+              "quantity": 1
+            },
+            {
+              "index": 1,
+              "quantity": 1
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "将原列表第1个商品的商品“{{products[0].name}}”，规格“{{products[0].specText}}”加入1件；将原列表第2个商品的商品“{{products[1].name}}”，规格“{{products[1].specText}}”加入1件，等我确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            },
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[0].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            },
+            {
+              "tool": "cart_add",
+              "arguments": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": 1
+              },
+              "parameterSources": {
+                "skuId": "{{products[1].skuId}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "add",
+            "skuId": "{{products[0].skuId}}",
+            "quantity": 1
+          },
+          {
+            "op": "add",
+            "skuId": "{{products[1].skuId}}",
+            "quantity": 1
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search",
+        "cart_add",
+        "cart_add"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-042",
+      "turns": [
+        "搜索不存在商品T1ZXQ000000",
+        "刚才列表没有结果；改搜乳清蛋白粉，至少展示两个",
+        "确认改用乳清蛋白粉检索，仅展示商品，不加购"
+      ],
+      "tools": [
+        "product_search"
+      ],
+      "write": false,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "搜商品",
+        "列表没有结果",
+        "换关键词重搜",
+        "确认"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "搜索不存在商品T1ZXQ000000",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "outcome": "empty",
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "刚才列表没有结果；改搜乳清蛋白粉，至少展示两个",
+          "dag": [
+            {
+              "tool": "product_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "store": "search",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "确认改用乳清蛋白粉检索，仅展示商品，不加购",
+          "dag": [],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "product_search"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-043",
+      "turns": [
+        "查询订单ID {{order.id}} 的状态和明细",
+        "取消这个已发货订单 {{order.id}}，如果需要确认先让我确认",
+        "确认",
+        "解释为什么不能取消已发货订单，不要再次执行取消"
+      ],
+      "tools": [
+        "order_query",
+        "order_cancel"
+      ],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "查订单",
+        "取消已发货订单",
+        "解释拒绝原因"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "SHIPPED"
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询订单ID {{order.id}} 的状态和明细",
+          "dag": [
+            {
+              "tool": "order_query",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "取消这个已发货订单 {{order.id}}，如果需要确认先让我确认",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "dag": [
+            {
+              "tool": "order_cancel",
+              "arguments": {
+                "orderId": "{{order.id}}"
+              },
+              "outcome": "failure",
+              "parameterSources": {
+                "orderId": "{{order.id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "解释为什么不能取消已发货订单，不要再次执行取消",
+          "dag": [],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "orders": {
+          "added": 0,
+          "id": "{{order.id}}",
+          "targetStatus": "SHIPPED"
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM(拒绝也必须审批)",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "order_query",
+        "order_cancel"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-044",
+      "turns": [
+        "申请订单行 {{orderItem.id}} 退货退款，质量问题，原因包装破损",
+        "确认"
+      ],
+      "tools": [
+        "after_sale_apply"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": true,
+      "originalTurns": [
+        "查售后",
+        "申请退款",
+        "审批状态变化"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          }
+        ],
+        "orderStatus": "RECEIVED"
+      },
+      "steps": [
+        {
+          "kind": "api",
+          "path": "/after-sales",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "existingAfterSales",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "api",
+          "path": "/after-sales/preview?orderItemId={{orderItem.id}}&type=RETURN_REFUND&qualityIssue=true",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "preview",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ],
+          "assert": {
+            "eligible": true
+          }
+        },
+        {
+          "kind": "chat",
+          "message": "申请订单行 {{orderItem.id}} 退货退款，质量问题，原因包装破损",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "after_sale_apply",
+              "arguments": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "RETURN_REFUND",
+                "reason": "包装破损",
+                "qualityIssue": true
+              },
+              "parameterSources": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "当前用户明确消息中的type",
+                "reason": "当前用户明确消息中的reason",
+                "qualityIssue": "当前用户明确消息中的qualityIssue"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "after_sale_apply",
+              "arguments": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "RETURN_REFUND",
+                "reason": "包装破损",
+                "qualityIssue": true
+              },
+              "parameterSources": {
+                "orderItemId": "{{orderItem.id}}",
+                "type": "当前用户明确消息中的type",
+                "reason": "当前用户明确消息中的reason",
+                "qualityIssue": "当前用户明确消息中的qualityIssue"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/after-sales",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "afterSaleList",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/after-sales/admin/after-sales/{{afterSaleList[0].id}}/audit?approved=false&remark=材料不完整",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "actor": "admin",
+          "method": "POST",
+          "store": "audit",
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ],
+          "userAction": "管理员明确确认POST /after-sales/admin/after-sales/{{afterSaleList[0].id}}/audit?approved=false&remark=材料不完整；参数来自本case fixture与已展示的权威返回，非Agent自动决策"
+        },
+        {
+          "kind": "restart",
+          "services": [
+            "ai-service"
+          ],
+          "id": "s7",
+          "dependsOn": [
+            "s6"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s8",
+          "dependsOn": [
+            "s7"
+          ]
+        },
+        {
+          "kind": "api",
+          "path": "/after-sales/{{afterSaleList[0].id}}",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "detail",
+          "id": "s9",
+          "dependsOn": [
+            "s8"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "afterSales": {
+          "added": 1,
+          "status": "REJECTED",
+          "fields": {
+            "orderItemId": "{{orderItem.id}}"
+          }
+        }
+      },
+      "scope": "AGENT_WRITE_CONFIRM + API_ONLY(审核/状态) + CONTROL_RESTART（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "after_sale_apply"
+      ],
+      "originalWrite": true,
+      "recoveryProof": [
+        "restart",
+        "refresh"
+      ]
+    },
+    {
+      "caseId": "CA-045",
+      "turns": [
+        "查看购物车，按返回列表展示每行编号、规格、数量",
+        "先删除原第一行",
+        "确认",
+        "再把原列表第二行改成4件；第一行已删除，但我要修改的是最初第二行的那个商品，不是重查后的第二行",
+        "确认"
+      ],
+      "tools": [
+        "cart_query",
+        "cart_remove",
+        "cart_update"
+      ],
+      "write": true,
+      "recovery": false,
+      "restart": false,
+      "originalTurns": [
+        "购物车两行",
+        "先删第一行再改第二行",
+        "分别确认"
+      ],
+      "setup": {
+        "cart": [
+          {
+            "skuId": 16,
+            "quantity": 1
+          },
+          {
+            "skuId": 11,
+            "quantity": 1
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查看购物车，按返回列表展示每行编号、规格、数量",
+          "dag": [
+            {
+              "tool": "cart_query",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "先删除原第一行",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_remove",
+              "arguments": {
+                "cartItemId": "{{cart[0].id}}"
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[0].id}}"
+              }
+            }
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "chat",
+          "message": "再把原列表第二行改成4件；第一行已删除，但我要修改的是最初第二行的那个商品，不是重查后的第二行",
+          "dag": [],
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[1].id}}",
+                "quantity": 4
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[1].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "confirm",
+          "actions": [
+            {
+              "tool": "cart_update",
+              "arguments": {
+                "cartItemId": "{{cart[1].id}}",
+                "quantity": 4
+              },
+              "parameterSources": {
+                "cartItemId": "{{cart[1].id}}",
+                "quantity": "当前用户明确消息中的quantity"
+              }
+            }
+          ],
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "cart": [
+          {
+            "op": "remove",
+            "cartItemId": "{{cart[0].id}}"
+          },
+          {
+            "op": "update",
+            "cartItemId": "{{cart[1].id}}",
+            "quantity": 4
+          }
+        ]
+      },
+      "scope": "AGENT_WRITE_CONFIRM",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "cart_query",
+        "cart_remove",
+        "cart_update"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-046",
+      "turns": [
+        "检查鱼油、华法林组合相互作用",
+        "再补充阿司匹林；重新检查鱼油、华法林、阿司匹林三者组合，只按图谱证据回答"
+      ],
+      "tools": [
+        "interaction_check"
+      ],
+      "write": false,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "问组合禁忌",
+        "补充另一种成分",
+        "重新规划回答"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "检查鱼油、华法林组合相互作用",
+          "dag": [
+            {
+              "tool": "interaction_check",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "再补充阿司匹林；重新检查鱼油、华法林、阿司匹林三者组合，只按图谱证据回答",
+          "dag": [
+            {
+              "tool": "interaction_check",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "AGENT_READ",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "interaction_check"
+      ],
+      "originalWrite": false,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-047",
+      "turns": [],
+      "tools": [],
+      "write": true,
+      "recovery": true,
+      "restart": false,
+      "originalTurns": [
+        "管理员审核工单",
+        "普通用户尝试审核",
+        "拒绝越权"
+      ],
+      "setup": {
+        "ticket": true
+      },
+      "steps": [
+        {
+          "kind": "api",
+          "path": "/tickets/admin/tickets/{{ticket.id}}/reply",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "actor": "admin",
+          "method": "POST",
+          "body": {
+            "content": "管理员审核处理"
+          },
+          "store": "adminReview",
+          "assert": {
+            "ticket.status": "PROCESSING"
+          },
+          "id": "s1",
+          "dependsOn": [],
+          "userAction": "管理员明确确认POST /tickets/admin/tickets/{{ticket.id}}/reply；参数来自本case fixture与已展示的权威返回，非Agent自动决策"
+        },
+        {
+          "kind": "api",
+          "path": "/tickets/admin/tickets/{{ticket.id}}/resolve",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "method": "POST",
+          "body": {
+            "content": "普通用户越权审核"
+          },
+          "codes": [
+            403
+          ],
+          "store": "denied",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ],
+          "userAction": "当前买家明确确认POST /tickets/admin/tickets/{{ticket.id}}/resolve；参数来自本case fixture与已展示的权威返回，非Agent自动决策"
+        },
+        {
+          "kind": "api",
+          "path": "/tickets/{{ticket.id}}",
+          "scope": "API_ONLY：当前15工具不提供此能力",
+          "store": "ownDetail",
+          "assert": {
+            "ticket.status": "PROCESSING"
+          },
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ],
+        "tickets": {
+          "added": 0,
+          "id": "{{ticket.id}}",
+          "targetStatus": "PROCESSING"
+        },
+        "ticketDetail": {
+          "content": "管理员审核处理"
+        }
+      },
+      "scope": "API_ONLY(管理员审核与普通用户权限边界，非Agent工具)（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [
+        "ticket_create"
+      ],
+      "originalWrite": true,
+      "recoveryProof": []
+    },
+    {
+      "caseId": "CA-048",
+      "turns": [
+        "查询退货规则",
+        "再说明退货需要的材料"
+      ],
+      "tools": [
+        "knowledge_search"
+      ],
+      "write": true,
+      "feedback": true,
+      "recovery": true,
+      "restart": true,
+      "originalTurns": [
+        "点踩当前回答",
+        "选择完整会话消息",
+        "刷新后撤销"
+      ],
+      "setup": {},
+      "steps": [
+        {
+          "kind": "chat",
+          "message": "查询退货规则",
+          "dag": [
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "citation-or-refusal",
+          "id": "s1",
+          "dependsOn": []
+        },
+        {
+          "kind": "chat",
+          "message": "再说明退货需要的材料",
+          "dag": [
+            {
+              "tool": "knowledge_search",
+              "arguments": {},
+              "parameterSources": {}
+            }
+          ],
+          "evidence": "citation-or-refusal",
+          "id": "s2",
+          "dependsOn": [
+            "s1"
+          ]
+        },
+        {
+          "kind": "restart",
+          "services": [
+            "ai-service"
+          ],
+          "id": "s3",
+          "dependsOn": [
+            "s2"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s4",
+          "dependsOn": [
+            "s3"
+          ]
+        },
+        {
+          "kind": "feedback",
+          "id": "s5",
+          "dependsOn": [
+            "s4"
+          ]
+        },
+        {
+          "kind": "refresh",
+          "id": "s6",
+          "dependsOn": [
+            "s5"
+          ]
+        }
+      ],
+      "expected": {
+        "authority": [
+          "GET /cart",
+          "GET /orders",
+          "GET /coupons/mine",
+          "GET /tickets",
+          "GET /after-sales"
+        ]
+      },
+      "scope": "API_ONLY(完整消息反馈/刷新撤销) + AGENT_READ + CONTROL_RESTART（API贡献独立报告）",
+      "contract": "t1-complex-executable-v2",
+      "parameterPolicy": "列表下标指原始展示列表；SKU规格由公开商品详情绑定后明确由用户选择；不得隐式选第一个SKU。operationId来自服务端审批卡。",
+      "confirmationPolicy": "核对用户、会话、动作和参数后携带原approvalToken；重复确认重放原令牌。operationId须按每轮requestId另查服务端日志（响应未暴露），不能声称仅凭卡片已验证。API写入是公开接口显式用户动作。",
+      "failurePolicy": "环境/fixture不足 BLOCKED；已开始执行后契约或产品错误 FAIL；故障控制finally恢复且保存控制证据。",
+      "logAssertions": [
+        "每次网络调用含X-Request-Id与返回requestId",
+        "工具轨迹记录stepId/input/success/noData/latencyMs",
+        "审批记录动作参数与operationId，令牌脱敏",
+        "真实重启记录各服务前后PID和ready",
+        "故障注入记录target/failure/mode/verified"
+      ],
+      "originalTools": [],
+      "originalWrite": false,
+      "recoveryProof": [
+        "restart",
+        "refresh",
+        "refresh"
+      ]
+    }
+  ],
+  "executionScope": "全部48有执行器。无Agent工具的步骤用公开API完成并显式标scope；真实故障/重启需受信控制适配器，没有适配器记环境BLOCKED，不接受自然语言注入。独立新用户隔离数据，运行不会自动删除账号或业务记录。",
+  "evaluationRevisions": [
+    {
+      "caseId": "CA-048",
+      "classification": "验证失败修正",
+      "evidenceRunId": "9a772921-eb5e-425b-9a79-1fd02d177a49",
+      "originalGoal": "点踩当前回答、选择完整会话、刷新后撤销",
+      "reason": "BadCaseStore.revoke保留同一badCaseId、sessionId、原消息选择并变更为REVOKED，GET应为200而非404；两次知识问答属于反馈前置，旧citation过约束。仅CA048采用citation-or-refusal：SUFFICIENT必须有效引用，NONE/WEAK必须明确无法确认且无未支撑政策事实。",
+      "qualityBoundary": "合规拒答不代表知识覆盖充分或没有过拒；答案质量与证据不足另按质量评测报告，不降低证据门阈值、不修改旧失败报告。"
+    },
+    {
+      "caseId": "CA-002",
+      "classification": "前提失败修正",
+      "originalGoal": "维生素C与鱼油各选一款加购",
+      "reason": "多查询商品卡片合并不保证前两张分属两个品类；旧评测前提错误地把全局第1/2张当成各查询第1张。保留原目标，按真实商品名称选各品类第一匹配并让用户明确澄清名称/规格与实际列表序数；不向模型输入SKU。",
+      "selectionEvidence": "recommendedProducts实际index+公开/products/{id}名称、规格；两份来源均含对应品类才允许审批"
+    },
+    {
+      "classification": "验证输入修正",
+      "caseIds": [
+        "CA-011",
+        "CA-034",
+        "CA-041"
+      ],
+      "reason": "公开详情只有一个SKU且specText为空时明确显示单一规格/未标注文字；保留原对象，不编造规格值，不向模型喂SKU。多SKU所选文字缺失必须BLOCKED。"
+    },
+    {
+      "caseId": "CA-029",
+      "classification": "前提失败修正",
+      "originalGoal": "展示多个不同规格，选择第二个规格加购2件",
+      "reason": "旧fixture把第二规格错误绑定为第二商品的第二SKU；真实植物蛋白仅SKU8一个规格。公开详情乳清蛋白SPU3有SKU5/6/7，按真实名称选乳清商品第二规格，保留商品->规格嵌套索引，不向模型输入SKU。",
+      "evidence": "GET /products/3：香草1kg/巧克力1kg/香草2.27kg；GET /products/4：单一SKU8"
+    },
+    {
+      "caseId": "CA-012",
+      "classification": "前提失败经真实用户澄清完成",
+      "originalGoal": "维生素C和鱼油分两轮各加购1件",
+      "reason": "两次检索合并的原列表第2未必鱼油；若原序号与目标品类冲突，先保存原序号/实际name，再由用户主动澄清实际原列表第N鱼油名称与规格；只从同一真实候选表选目标，不自动批准AD/另一维C，不向模型喂SKU。缺目标品类仍BLOCKED。",
+      "evidenceRunId": "abc7cc7d-5039-42ec-bd2c-84367fa8c340"
+    },
+    {
+      "caseId": "CA-028",
+      "classification": "验证失败修正",
+      "originalGoal": "不存在成分缺原文证据时无法判断，不编造安全结论",
+      "reason": "真实入口RAG已经完成本轮原文检索，用户没有要求二次knowledge_search。旧契约强制重复调用具体工具造成假红；改为interaction_check真实参数与入口RAG同requestId/原query/重排/证据门三阶段证明，保留拒答及无副作用断言。",
+      "evidenceRunId": "b8a3d0c3-019f-4959-bc57-3658e1cef2b4",
+      "requestId": "1fb87c48-8747-48b5-932d-c2bf760b535b",
+      "actual": "interaction_check成功；QueryExpand原query、Rerank候选9保留3、证据门WEAK切片3；回答明确无法判断。旧失败报告不改写。"
+    }
   ]
 }

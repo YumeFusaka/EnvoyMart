@@ -133,7 +133,8 @@ class AgentConflictIsolationTest {
         RecordingChecker checker = new RecordingChecker(
                 "【冲突】条目 1 与条目 2 对成年女性每日铁推荐量给出了不同的数字："
                         + "条目 1 为 20 毫克，条目 2 为 18 毫克，需人工确认以哪一份为准。");
-        Agent agent = agent(checker, "成年女性每日铁推荐摄入量为 20 毫克 [1]，也可以参考 18 毫克 [2]。");
+        String answer = "成年女性每日铁推荐摄入量为 20 毫克 [1]。另一份资料的成年女性每日铁推荐摄入量为 18 毫克 [2]。";
+        Agent agent = agent(checker, answer);
 
         Agent.AgentResponse response = agent.chat("u1", "s1", "成年女性每天应该摄入多少铁？", null);
 
@@ -143,7 +144,7 @@ class AgentConflictIsolationTest {
         assertThat(response.getConflicts().getFirst().refs()).containsExactly(1, 2);
         assertThat(response.getReply())
                 .as("核对的产物是结论，不是对答案正文的改写——正文必须保持主回答那一版")
-                .isEqualTo("成年女性每日铁推荐摄入量为 20 毫克 [1]，也可以参考 18 毫克 [2]。");
+                .isEqualTo(answer);
     }
 
     /**

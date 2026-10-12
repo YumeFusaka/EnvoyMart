@@ -40,7 +40,7 @@ public class GroundingLiveEvalService {
     private static final String SNAPSHOT_FILE = "production-grounding.json";
     private static final int LIVE_CASE_COUNT = GroundingFixtures.CASES.size() + GraphMultiHopFixtures.CASES.size();
     private static final String PROMPT_VERSION = "grounding-prompt-v4";
-    private static final String PIPELINE_VERSION = "agent-live-v3-evidence-gate-boundary";
+    private static final String PIPELINE_VERSION = "agent-live-v9-medical-context";
 
     /**
      * 一条用例的真跑结果。
@@ -76,7 +76,28 @@ public class GroundingLiveEvalService {
                           int completedCases, int failedCases, String currentQuestion, String userId,
                           GroundingEvaluator.Metrics metrics, List<CaseResult> cases,
                           String promptVersion, String pipelineVersion, String runId,
-                          String snapshotPath, String snapshotError) {
+                          String snapshotPath, String snapshotError, LiveRun lastCompleted) {
+
+        public LiveRun(String status, String startedAt, String finishedAt, int totalCases,
+                       int completedCases, int failedCases, String currentQuestion, String userId,
+                       GroundingEvaluator.Metrics metrics, List<CaseResult> cases,
+                       String promptVersion, String pipelineVersion, String runId,
+                       String snapshotPath, String snapshotError) {
+            this(status, startedAt, finishedAt, totalCases, completedCases, failedCases, currentQuestion,
+                    userId, metrics, cases, promptVersion, pipelineVersion, runId, snapshotPath, snapshotError, null);
+        }
+
+        LiveRun withStoredIdentity(String storedRunId, java.nio.file.Path path) {
+            return new LiveRun(status, startedAt, finishedAt, totalCases, completedCases, failedCases,
+                    currentQuestion, userId, metrics, cases, promptVersion, pipelineVersion,
+                    storedRunId == null ? runId : storedRunId, path.toString(), snapshotError);
+        }
+
+        public LiveRun withLastCompleted(LiveRun previous) {
+            return new LiveRun(status, startedAt, finishedAt, totalCases, completedCases, failedCases,
+                    currentQuestion, userId, metrics, cases, promptVersion, pipelineVersion, runId,
+                    snapshotPath, snapshotError, previous);
+        }
 
         static LiveRun idle(int totalCases) {
             return new LiveRun(EvalSnapshotDto.Status.NEVER_RUN.name(), null, null, totalCases, 0, 0,
@@ -117,18 +138,23 @@ public class GroundingLiveEvalService {
         if (current != null) {
             return current;
         }
-        EvalSnapshotStore.ReadResult<EvalSnapshotDto.GroundingSnapshot> stored =
-                snapshotStore.read(SNAPSHOT_FILE, EvalSnapshotDto.GROUNDING_TYPE,
+        EvalSnapshotStore.Recovery<EvalSnapshotDto.GroundingSnapshot> recovery =
+                snapshotStore.readWithHistory(SNAPSHOT_FILE, EvalSnapshotDto.GROUNDING_TYPE,
                         EvalSnapshotDto.GroundingSnapshot.class);
+        EvalSnapshotStore.ReadResult<EvalSnapshotDto.GroundingSnapshot> stored = recovery.current();
         if (stored.value() != null) {
-            LiveRun migrated = withVersion(stored.value().toDomain());
-            latest = migrated;
+            LiveRun migrated = withVersion(stored.value().toDomain()).withStoredIdentity(stored.runId(), stored.path());
             return migrated;
         }
         if (stored.status() == EvalSnapshotDto.Status.SNAPSHOT_CORRUPTED
                 || stored.status() == EvalSnapshotDto.Status.VERSION_INCOMPATIBLE) {
-            log.warn("[AI] 回答质量真实快照读取失败 status={} path={} reason={}", stored.status(), stored.path(), stored.error());
-            return LiveRun.error(stored.status(), stored.path(), stored.runId(), stored.error());
+            var history = recovery.lastCompleted();
+            LiveRun previous = history == null ? null : withVersion(history.value().toDomain())
+                    .withStoredIdentity(history.runId(), history.path());
+            if (previous != null && !"COMPLETED".equals(previous.status())) previous = null;
+            log.warn("[AI] 回答质量真实快照读取失败 status={} path={} fallbackRunId={} reason={}",
+                    stored.status(), stored.path(), previous == null ? null : previous.runId(), stored.error());
+            return LiveRun.error(stored.status(), stored.path(), stored.runId(), stored.error()).withLastCompleted(previous);
         }
         return LiveRun.idle(LIVE_CASE_COUNT);
     }
@@ -160,10 +186,10 @@ public class GroundingLiveEvalService {
             List<LiveCase> cases = new ArrayList<>();
             GroundingFixtures.CASES.forEach(fixtureCase -> cases.add(new LiveCase(
                     fixtureCase.id(), fixtureCase.question(), fixtureCase.kind(),
-                    fixtureCase.expectRefuse(), fixtureCase.mustMention())));
+                    fixtureCase.expectRefuse(), fixtureCase.mustMention(), List.of())));
             GraphMultiHopFixtures.CASES.forEach(fixtureCase -> cases.add(new LiveCase(
                     fixtureCase.id(), fixtureCase.question(), GroundingFixtures.Kind.MULTI_HOP,
-                    fixtureCase.expectRefuse(), fixtureCase.mustMention())));
+                    fixtureCase.expectRefuse(), fixtureCase.mustMention(), fixtureCase.interactionInputs())));
             for (LiveCase fixtureCase : cases) {
                 publishRunning(userId, results, fixtureCase);
                 CaseResult result = runCase(userId, fixtureCase);
@@ -254,7 +280,7 @@ public class GroundingLiveEvalService {
                 outcome.id(), outcome.kind(), outcome.mode(), outcome.answerable(), outcome.sentences(),
                 outcome.factSentences(), outcome.unsupported(), outcome.checks(), outcome.wrongCitations(),
                 outcome.outOfRange(), outcome.gateRefused(), outcome.refusalCorrect(), outcome.multiHopHit(),
-                outcome.citations(), rootCause);
+                outcome.citations(), rootCause, outcome.answerComplete(), outcome.missingRequired());
         return new CaseResult(result.question(), migrated, result.answer(), result.evidenceCount(),
                 result.latencyMs(), result.error(), result.evidence(), result.retrievalQuery(), result.expansion(),
                 result.toolExecutions(), result.retrievalTrace(), result.requestId());
@@ -272,7 +298,9 @@ public class GroundingLiveEvalService {
         long started = System.currentTimeMillis();
         String requestId = RequestId.generate();
         String previousRequestId = MDC.get(RequestId.MDC_KEY);
+        String previousCaseId = MDC.get("groundingCaseId");
         MDC.put(RequestId.MDC_KEY, requestId);
+        MDC.put("groundingCaseId", fixtureCase.id());
         try {
             // 无确认令牌：评测问的都是知识与检索类问题，不碰高危操作
             Agent.AgentResponse response = agent.chat(userId, sessionId, fixtureCase.question(), null);
@@ -287,25 +315,20 @@ public class GroundingLiveEvalService {
                     response.getKnowledge() == null ? List.of() : response.getKnowledge();
             boolean toolEvidence = response.getToolExecutions() != null
                     && !response.getToolExecutions().isEmpty();
-            EvidenceGate.Level level = response.getEvidenceLevel() == null
-                    ? EvidenceGate.Level.NONE : response.getEvidenceLevel();
-            // 入口门可能先判 WEAK/NONE，但 Agent 随后通过 knowledge_search 或
-            // interaction_check 补回了真实依据。评测最终回答时应使用最终证据状态，
-            // 否则“成功补检索后答对”会被错误计为过拒。
-            boolean knowledgeToolEvidence = response.getToolExecutions() != null
-                    && response.getToolExecutions().stream()
-                    .anyMatch(execution -> execution.isSuccess() && !execution.isNoData()
-                            && ("knowledge_search".equals(execution.getTool())
-                            || "interaction_check".equals(execution.getTool())));
-            level = finalEvidenceLevel(level, knowledgeToolEvidence);
+            // Agent已按入口与工具合并后的真实证据统一计算；工具成功本身不证明有依据。
+            EvidenceGate.Level level = finalEvidenceLevel(response);
 
             GroundingEvaluator.Sample sample = new GroundingEvaluator.Sample(fixtureCase.id(),
                     fixtureCase.kind(), fixtureCase.expectRefuse(), fixtureCase.mustMention(),
                     evidence, response.getReply(), level, toolEvidence,
                     response.getSemanticExemptions(),
-                    response.getRetrieval() != null && response.getRetrieval().hasGraphEvidence());
+                    response.getRetrieval() != null && response.getRetrieval().hasGraphEvidence(),
+                    fixtureCase.question(), verifiedInteractionBoundary(response, fixtureCase.interactionInputs()), response.getToolExecutions());
             GroundingEvaluator.CaseOutcome outcome =
                     GroundingEvaluator.evaluate(List.of(sample)).cases().getFirst();
+            log.info("[AI] 医学评测完整性 caseId={} requestId={} complete={} missingRequired={} facts={} unsupported={}",
+                    fixtureCase.id(), requestId, outcome.answerComplete(), outcome.missingRequired(),
+                    outcome.factSentences(), outcome.unsupported());
             return new CaseResult(fixtureCase.question(), outcome, response.getReply(),
                     evidence.size(), latency, null, evidence.stream()
                     .map(chunk -> chunk.toBuilder().embedding(null).indexText(null).build()).toList(),
@@ -317,6 +340,7 @@ public class GroundingLiveEvalService {
                     System.currentTimeMillis() - started,
                     e.getClass().getSimpleName() + ": " + e.getMessage(), List.of(), null, null, List.of(), null, requestId);
         } finally {
+            if (previousCaseId == null) MDC.remove("groundingCaseId"); else MDC.put("groundingCaseId", previousCaseId);
             if (previousRequestId == null) {
                 MDC.remove(RequestId.MDC_KEY);
             } else {
@@ -337,13 +361,45 @@ public class GroundingLiveEvalService {
         return null;
     }
 
-    private record LiveCase(String id, String question, GroundingFixtures.Kind kind,
-                            boolean expectRefuse, List<String> mustMention) {
+    /** 召回过图谱片段不等于完成本场景检查；只采信最近一次结构化检查的对象与状态。 */
+    private boolean verifiedInteractionBoundary(Agent.AgentResponse response, List<String> expectedInputs) {
+        if (expectedInputs.isEmpty() || response.getToolExecutions() == null) return false;
+        for (int index = response.getToolExecutions().size() - 1; index >= 0; index--) {
+            var tool = response.getToolExecutions().get(index);
+            if (!"interaction_check".equals(tool.getTool())) continue;
+            if (!tool.isSuccess() || tool.isNoData() || tool.getRawData() == null) return false;
+            Object decoded;
+            try {
+                decoded = objectMapper.convertValue(tool.getRawData(), Object.class);
+            } catch (RuntimeException invalid) {
+                log.warn("[AI] 图谱边界验收 proof=INVALID_REPORT errorType={}", invalid.getClass().getSimpleName());
+                return false;
+            }
+            if (!(decoded instanceof java.util.Map<?, ?> report)
+                    || !Boolean.TRUE.equals(report.get("available"))
+                    || !(report.get("items") instanceof List<?> items) || items.isEmpty()) return false;
+            java.util.Map<String, Boolean> found = new java.util.HashMap<>();
+            for (Object raw : items) {
+                if (!(raw instanceof java.util.Map<?, ?> item) || !(item.get("input") instanceof String name)
+                        || name.isBlank() || !(item.get("found") instanceof Boolean present)
+                        || found.putIfAbsent(interactionInput(name), present) != null) return false;
+            }
+            List<String> expected = expectedInputs.stream().map(GroundingLiveEvalService::interactionInput).toList();
+            return found.keySet().equals(new java.util.HashSet<>(expected))
+                    && expected.stream().anyMatch(name -> Boolean.FALSE.equals(found.get(name)));
+        }
+        return false;
     }
 
-    static EvidenceGate.Level finalEvidenceLevel(EvidenceGate.Level initial,
-                                                 boolean knowledgeToolEvidence) {
-        return initial == EvidenceGate.Level.NONE && knowledgeToolEvidence
-                ? EvidenceGate.Level.SUFFICIENT : initial;
+    private static String interactionInput(String input) {
+        return input.replaceAll("\\s+", "").toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private record LiveCase(String id, String question, GroundingFixtures.Kind kind,
+                            boolean expectRefuse, List<String> mustMention, List<String> interactionInputs) {
+    }
+
+    static EvidenceGate.Level finalEvidenceLevel(Agent.AgentResponse response) {
+        return response.getEvidenceLevel() == null ? EvidenceGate.Level.NONE : response.getEvidenceLevel();
     }
 }

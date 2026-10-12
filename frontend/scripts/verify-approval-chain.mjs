@@ -21,6 +21,7 @@
  *   node scripts/verify-approval-chain.mjs
  */
 import { chromium } from 'playwright-core'
+import { randomUUID } from 'node:crypto'
 
 const BASE = process.env.VERIFY_BASE ?? 'http://localhost:5173'
 const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
@@ -28,7 +29,8 @@ const CHROMIUM =
   process.env.PLAYWRIGHT_CHROMIUM ??
   'C:/Users/j/AppData/Local/ms-playwright/chromium-1223/chrome-win64/chrome.exe'
 
-const ALICE = { username: 'alice', password: '123456' }
+const buyerCredentials = { username: 't1approval_' + randomUUID().slice(0, 8), password: 'T1' + randomUUID().replaceAll('-', '').slice(0, 24), nickname: '审批链路独立验收' }
+const APPROVAL_REJECTED = '原审批签名或用户会话不匹配'
 
 let pass = 0
 let fail = 0
@@ -55,28 +57,33 @@ async function poll(fn, predicate, timeoutMs = 15000, stepMs = 500) {
   return last
 }
 
-const login = await (await fetch(`${GW}/auth/login`, {
+const login = await (await fetch(`${GW}/auth/register`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(ALICE),
+  body: JSON.stringify(buyerCredentials),
 })).json()
 if (login.code !== 200) {
-  console.error(`登录 alice 失败：${login.msg}（后端起了吗）`)
+  console.error(`独立验收账号注册失败：${login.msg}`)
   process.exit(1)
 }
 const auth = { Authorization: `Bearer ${login.data.token}` }
 
-async function api(path, { method = 'GET', body } = {}) {
+async function api(path, { method = 'GET', body, token, expectedCode = 200, expectedMessage } = {}) {
   const res = await fetch(`${GW}${path}`, {
     method,
-    headers: body === undefined ? auth : { ...auth, 'Content-Type': 'application/json' },
+    headers: {
+      ...auth,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
   const payload = await res.json()
-  if (payload.code !== 200) {
-    throw new Error(`${method} ${path} 失败：${payload.msg}`)
+  if (res.status !== 200 || payload.code !== expectedCode
+      || (expectedMessage !== undefined && payload.msg !== expectedMessage)) {
+    throw new Error(`${method} ${path} 契约不符：HTTP=${res.status} code=${payload.code} msg=${payload.msg}，期望 HTTP=200 code=${expectedCode}${expectedMessage === undefined ? '' : ` msg=${expectedMessage}`}`)
   }
-  return payload.data
+  return expectedCode === 200 ? payload.data : payload
 }
 
 /**
@@ -144,6 +151,8 @@ ck(
 // 顺序不能反，正常路径会把订单真的取消掉
 const tampered = await api('/ai/chat', {
   method: 'POST',
+  expectedCode: 400,
+  expectedMessage: APPROVAL_REJECTED,
   body: {
     sessionId,
     message: '确认执行',
@@ -154,20 +163,22 @@ const tampered = await api('/ai/chat', {
 ck(
   '被改过一字的令牌一条都不执行',
   (await orderStatus(apiOrderId)) === 'CREATED' &&
-    (tampered.reply ?? '').includes('没有执行任何操作'),
-  `reply=${(tampered.reply ?? '').slice(0, 80)}，status=${await orderStatus(apiOrderId)}`,
+    tampered.code === 400,
+  `code=${tampered.code}，status=${await orderStatus(apiOrderId)}`,
 )
 
 // 换一个会话交回同一张令牌：令牌里签着签发它的会话，此处必须被拒
 const crossSession = await api('/ai/chat', {
   method: 'POST',
+  expectedCode: 400,
+  expectedMessage: APPROVAL_REJECTED,
   body: { sessionId: `${sessionId}-other`, message: '确认执行', approvalToken: first.approvalToken },
 })
 ck(
   '换个会话交回同一张令牌也不执行',
   (await orderStatus(apiOrderId)) === 'CREATED' &&
-    (crossSession.reply ?? '').includes('没有执行任何操作'),
-  `reply=${(crossSession.reply ?? '').slice(0, 80)}，status=${await orderStatus(apiOrderId)}`,
+    crossSession.code === 400,
+  `code=${crossSession.code}，status=${await orderStatus(apiOrderId)}`,
 )
 
 const confirmed = await api('/ai/chat', {
@@ -182,6 +193,29 @@ ck(
 
 const afterConfirm = await poll(() => orderStatus(apiOrderId), (s) => s === 'CANCELLED', 20000)
 ck('确认之后订单真的被取消', afterConfirm === 'CANCELLED', `status=${afterConfirm}`)
+
+// 订单终态相同不足以证明没有重复执行，管理端流水同时核对实际取消次数。
+const admin = await api('/auth/login', {
+  method: 'POST', body: { username: 'admin', password: '123456' },
+})
+if (!admin?.token) throw new Error('管理员登录未返回令牌，无法核对取消流水')
+const beforeRepeat = await api(`/orders/admin/orders/${apiOrderId}`, { token: admin.token })
+ck('首次确认只产生一条取消流水',
+  Array.isArray(beforeRepeat.statusLogs)
+    && beforeRepeat.statusLogs.filter((entry) => entry.toStatus === 'CANCELLED').length === 1)
+const repeated = await api('/ai/chat', {
+  method: 'POST',
+  body: { sessionId, message: '确认执行', approvalToken: first.approvalToken },
+})
+ck('重复确认返回原操作已提交回执且不调用模型', repeated.approvalStatus === 'CONFIRMED'
+  && repeated.usage == null && repeated.toolCalls?.length === 1
+  && repeated.toolCalls[0].operationState === 'COMMITTED' && repeated.toolCalls[0].receiptReplayed === true)
+const afterRepeat = await api(`/orders/admin/orders/${apiOrderId}`, { token: admin.token })
+ck('重复确认后权威订单状态仍为已取消',
+  (await orderStatus(apiOrderId)) === 'CANCELLED' && afterRepeat.order?.status === 'CANCELLED')
+ck('重复确认未新增流水或改动订单',
+  JSON.stringify(afterRepeat.statusLogs) === JSON.stringify(beforeRepeat.statusLogs)
+    && JSON.stringify(afterRepeat.order) === JSON.stringify(beforeRepeat.order))
 
 // ==================== 二、UI 链路 ====================
 console.log('\n二、UI 链路：确认卡片渲染与点击执行')
@@ -201,7 +235,9 @@ await page.addInitScript(
 )
 
 await page.goto(`${BASE}/#/assistant`, { waitUntil: 'networkidle' })
-await page.reload({ waitUntil: 'networkidle' })
+// 首屏会恢复最近会话；本轮必须独立，不能把 API 段的历史审批卡当成 UI 结果。
+await page.getByRole('button', { name: '新对话' }).click()
+await page.locator('.chat-empty').waitFor()
 
 // 定位必须是聊天输入框本身：顶栏改造后页面上多了一个排在前面的全局搜索框
 // （`input.search-box__input`），`'textarea, input[type="text"]'` 的 `.first()` 会稳定地
@@ -210,12 +246,14 @@ await page.locator('.composer textarea').fill(`帮我取消订单 ${uiOrderId}`)
 await page.getByRole('button', { name: '发送消息' }).click()
 
 // 流式回答 + 两次真实模型调用，给足时间；等的是确认卡片出现
-const card = page.locator('section[aria-label="高危操作确认"]')
-await poll(() => card.count(), (n) => n > 0, 120000, 1000)
-ck('确认卡片出现', (await card.count()) > 0)
+const card = page.getByRole('region', { name: '交易操作确认', exact: true })
+const confirmButton = card.getByRole('button', { name: '确认执行', exact: true })
+await confirmButton.waitFor({ state: 'visible', timeout: 120000 })
+ck('唯一确认卡片出现且可以确认', (await card.count()) === 1 && await confirmButton.isEnabled())
+const orderIdRow = card.locator('dt').filter({ hasText: /^订单内部 ID$/ }).locator('+ dd')
 ck(
   '卡片显示的是要取消的那一单',
-  ((await card.first().textContent()) ?? '').includes(`orderId=${uiOrderId}`),
+  (await orderIdRow.count()) === 1 && (await orderIdRow.textContent()) === String(uiOrderId),
   `卡片文本=${((await card.first().textContent()) ?? '').slice(0, 200)}`,
 )
 ck(
@@ -224,12 +262,17 @@ ck(
   `status=${await orderStatus(uiOrderId)}`,
 )
 
-await card.getByRole('button', { name: '确认执行' }).click()
+await confirmButton.click()
 const uiAfter = await poll(() => orderStatus(uiOrderId), (s) => s === 'CANCELLED', 30000)
 ck('点「确认执行」后订单真的被取消', uiAfter === 'CANCELLED', `status=${uiAfter}`)
 
-const staleCard = await poll(() => page.locator('section[aria-label="高危操作确认"]').count(), (n) => n === 0, 15000)
-ck('确认之后卡片收起（不能留一张还能再点的旧卡）', staleCard === 0)
+const remainingWriteButtons = await poll(() => card.getByRole('button', { name: /^(确认执行|继续确认|停止后续操作|取消)/ }).count(), (n) => n === 0, 15000)
+ck('确认后保留只读查询的原历史卡且没有继续写入口', remainingWriteButtons === 0
+  && (await card.count()) === 1
+  && (await card.getAttribute('class')).includes('approval--stale')
+  && (await card.locator('.approval__title').textContent()) === '已提交确认的操作'
+  && (await orderIdRow.textContent()) === String(uiOrderId)
+  && (await card.getByRole('button', { name: '查询执行结果', exact: true }).count()) === 1)
 
 ck('全程没有控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 

@@ -10,7 +10,7 @@
  * 会把「永远显示」的实现判成通过：
  *   一、知识型（维生素 D）—— 引用卡片不是空壳，且**不该**出现无依据横幅
  *   二、冲突型（铁）—— 卡片渲染出双方数值，且**不该**出现在知识型问句上
- *   三、库外问题（蓝牙耳机）—— 无依据横幅出现，且**不该**在知识型问句上出现
+ *   三、库外问题（蓝牙耳机）—— 横幅严格与本轮 done.ungrounded 一致；明确true/false渲染另由确定性回归覆盖
  * 二、五两段验的是「点得动」：点 `[n]` 点亮对应卡片，点「查看原文」跳到原文并高亮出那一段。
  *
  * 前置条件：后端九个服务 + 前端 dev server 已启动。AI 回答要调模型，整轮约 40 秒。
@@ -78,6 +78,16 @@ await page.addInitScript(
 )
 
 let turn = 0
+let lastDoneResponse
+
+function donePayload(stream) {
+  for (const event of stream.replaceAll('\r\n', '\n').split('\n\n')) {
+    if (!/^event:\s*done$/m.test(event)) continue
+    const data = event.split('\n').filter(line=>line.startsWith('data:')).map(line=>line.slice(5).trimStart()).join('\n')
+    return JSON.parse(data)
+  }
+  throw new Error('本轮SSE缺少权威done响应，不能仅凭UI推测ungrounded')
+}
 
 /**
  * 等这一轮生成结束。
@@ -99,11 +109,14 @@ async function settle() {
 /** 发一问，等这一问的回答落定，返回那张助手卡片 */
 async function ask(text) {
   const before = await page.locator('.message-card.assistant').count()
+  const response = page.waitForResponse(value=>new URL(value.url()).pathname==='/ai/chat/stream'
+    && value.request().method()==='POST' && value.request().postDataJSON()?.message===text, { timeout: 180000 })
   await page.locator('.composer textarea').fill(text)
   await page.getByRole('button', { name: /发送消息/ }).click()
   const card = page.locator('.message-card.assistant').nth(before)
   await card.waitFor({ state: 'visible', timeout: 20000 })
   await settle()
+  lastDoneResponse = donePayload(await (await response).text())
   turn += 1
   await page.screenshot({ path: resolve(OUT_DIR, `grounding-${turn}.png`), fullPage: true })
   return card
@@ -111,6 +124,8 @@ async function ask(text) {
 
 mkdirSync(OUT_DIR, { recursive: true })
 await page.goto(`${BASE}/#/assistant`, { waitUntil: 'networkidle', timeout: 30000 })
+await page.getByRole('button', { name: '新对话', exact: true }).click()
+await page.locator('.chat-empty').waitFor({ state: 'visible' })
 
 // ─────────── 一、知识型：引用卡片要真的是卡片 ───────────
 console.log('\n一、知识型问句（维生素 D）')
@@ -173,9 +188,9 @@ if ((await conflictCard.count()) >= 1) {
 console.log('\n四、库外问题（蓝牙耳机）')
 const outside = await ask('蓝牙耳机连接不上手机怎么办？')
 ck(
-  '整篇无依据的横幅出现了',
-  (await outside.locator('.ungrounded').count()) === 1,
-  '模型会先声明「不在服务范围」再补一段通用知识——那段没有平台依据，必须标出来',
+  '库外轮横幅与本轮权威ungrounded状态一致',
+  typeof lastDoneResponse?.ungrounded === 'boolean' && (await outside.locator('.ungrounded').count()) === (lastDoneResponse.ungrounded ? 1 : 0),
+  `requestId=${lastDoneResponse?.requestId ?? '未返回'} ungrounded=${lastDoneResponse?.ungrounded}；不按模型是否补充通用知识推测横幅`,
 )
 ck(
   '冲突卡片没有跟过来',

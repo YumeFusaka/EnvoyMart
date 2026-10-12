@@ -12,9 +12,8 @@ import yumefusaka.envoymart.productservice.service.impl.ProductCacheService;
  * nack 并投进死信队列——重试耗尽仍删不掉的消息留在那里等人看，
  * 而不是当成功吞掉。这个项目里最危险的失败模式一直是"看起来成功了"。
  * <p>
- * <b>刻意调用 {@code deleteCacheOnly} 而不是 {@code evictProductCache}</b>：
- * 后者在失败时会再发一条补偿消息，从消费者里调它就成了自我循环——
- * 一条删不掉的消息会无限复制自己。
+ * 兼容既有补偿消息，只调用严格删除入口，不重新生产补偿消息。
+ * 新的业务刷新由商品持久投影任务恢复。
  */
 @Slf4j
 @Component

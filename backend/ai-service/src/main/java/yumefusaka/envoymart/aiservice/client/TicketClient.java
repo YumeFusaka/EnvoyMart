@@ -15,11 +15,17 @@ import java.util.Map;
 @FeignClient(name = "order-service", contextId = "ticketClient",
         url = "${services.order-service-url:http://127.0.0.1:9003}")
 public interface TicketClient {
-
     @PostMapping("/tickets")
-    Result<Map<String, Object>> create(
+    org.springframework.http.ResponseEntity<Result<Map<String, Object>>> createReceipt(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-            @RequestBody AgentCreateTicketRequest request);
+            @RequestHeader("X-Operation-Id") String operationId, @RequestBody AgentCreateTicketRequest request);
+
+    @GetMapping("/orders/internal/operation-receipts/{operationId}")
+    org.springframework.http.ResponseEntity<Result<Object>> operationReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("operationId") String operationId,
+            @org.springframework.web.bind.annotation.RequestParam("toolName") String toolName,
+            @org.springframework.web.bind.annotation.RequestParam("parametersHash") String parametersHash);
 
     @GetMapping("/tickets/{id}")
     Result<Map<String, Object>> detail(

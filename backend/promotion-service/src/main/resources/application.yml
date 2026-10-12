@@ -26,6 +26,21 @@ spring:
         enabled: ${NACOS_ENABLED:false}
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
 
+# 公开高级部署配置；核销参与订单现有AT，普通领券不主动创建全局事务。
+seata:
+  enabled: ${SEATA_ENABLED:true}
+  application-id: ${spring.application.name}
+  tx-service-group: envoymart_tx_group
+  service:
+    vgroup-mapping:
+      envoymart_tx_group: default
+    grouplist:
+      default: ${SEATA_SERVER:127.0.0.1:8091}
+  registry:
+    type: file
+  config:
+    type: file
+
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true

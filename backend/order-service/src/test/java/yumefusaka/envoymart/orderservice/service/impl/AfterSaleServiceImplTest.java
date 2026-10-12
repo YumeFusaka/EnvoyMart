@@ -62,6 +62,7 @@ class AfterSaleServiceImplTest {
     private AfterSaleMapper afterSaleMapper;
     private AfterSaleLogMapper afterSaleLogMapper;
     private PaymentClient paymentClient;
+    private OrderMapper orderMapper;
     private AfterSaleServiceImpl service;
 
     /**
@@ -83,8 +84,14 @@ class AfterSaleServiceImplTest {
         afterSaleMapper = mock(AfterSaleMapper.class);
         afterSaleLogMapper = mock(AfterSaleLogMapper.class);
         paymentClient = mock(PaymentClient.class);
+        orderMapper = mock(OrderMapper.class);
+        OrderEntity order = new OrderEntity();
+        order.setId(10L);
+        order.setStatus("RECEIVED");
+        when(orderMapper.lockById(10L)).thenReturn(order);
+        when(afterSaleMapper.lockById(any())).thenAnswer(invocation -> afterSaleMapper.selectById((Long) invocation.getArgument(0)));
         service = new AfterSaleServiceImpl(afterSaleMapper, afterSaleLogMapper,
-                mock(OrderMapper.class), mock(OrderItemMapper.class),
+                orderMapper, mock(OrderItemMapper.class),
                 mock(OrderStatusLogMapper.class),
                 mock(AfterSalePolicyEngine.class), paymentClient,
                 mock(ProductClient.class));

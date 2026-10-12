@@ -44,6 +44,13 @@ import java.util.stream.Collectors;
 @Service
 public class OrderAdminServiceImpl implements OrderAdminService {
 
+    private yumefusaka.envoymart.orderservice.service.SeataOperationReceiptDecisionProbe decisionProbe;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setDecisionProbe(yumefusaka.envoymart.orderservice.service.SeataOperationReceiptDecisionProbe decisionProbe) {
+        this.decisionProbe = decisionProbe;
+    }
+
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
     private final OrderStatusLogMapper statusLogMapper;
@@ -128,6 +135,7 @@ public class OrderAdminServiceImpl implements OrderAdminService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public LogisticsResponse addTrace(Long orderId, AdminTraceRequest request, String operatorId) {
         // 状态在这里就译成枚举，非法取值当场 400 —— 不能让一个拼错的字符串
@@ -139,12 +147,14 @@ public class OrderAdminServiceImpl implements OrderAdminService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public AdminOrderSummary remark(Long orderId, String remark) {
-        OrderEntity order = orderId == null ? null : orderMapper.selectById(orderId);
+        OrderEntity order = orderId == null ? null : orderMapper.lockById(orderId);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
+        yumefusaka.envoymart.orderservice.service.OrderGlobalDecision.requireCommitted(order, decisionProbe);
 
         // 空串归一成 null：库里「没备注」只该有一种表示，两种会让
         // 「哪些单子有备注」这个问题有两个答案

@@ -5,7 +5,9 @@ import ErrorState from '@/components/ui/ErrorState.vue'
 import { formatDateTime } from '@/utils/format'
 import { computed, onMounted, ref } from 'vue'
 
-const production = ref<ProductionRetrievalReport | null>(null)
+const currentProduction = ref<ProductionRetrievalReport | null>(null)
+const production = computed(() => currentProduction.value?.status === 'COMPLETED'
+  ? currentProduction.value : currentProduction.value?.lastCompleted ?? currentProduction.value)
 const loading = ref(true)
 const failed = ref(false)
 const caseFilter = ref('')
@@ -13,7 +15,7 @@ const caseFilter = ref('')
 async function load() {
   loading.value = true
   failed.value = false
-  try { production.value = await getProductionRetrievalReport() } catch { failed.value = true } finally { loading.value = false }
+  try { currentProduction.value = await getProductionRetrievalReport() } catch { failed.value = true } finally { loading.value = false }
 }
 onMounted(load)
 
@@ -47,7 +49,7 @@ const graphNotRetainedReason = (item: ProductionRetrievalCase) => {
   return `图谱路返回 ${candidates} 个候选，但最终 top-${production.value?.overall.topK ?? 3} 没有保留标注相关的图谱证据；文档仍可能由其他检索路命中。`
 }
 const snapshotError = computed(() => {
-  const item = production.value
+  const item = currentProduction.value
   if (!item || (item.status !== 'SNAPSHOT_CORRUPTED' && item.status !== 'VERSION_INCOMPATIBLE')) return ''
   return item.snapshotError || item.error || '快照读取失败，无法展示历史评测结果。'
 })
@@ -62,12 +64,14 @@ const snapshotError = computed(() => {
     </header>
     <ErrorState v-if="failed" message="真实链路评测快照加载失败，请重试" :on-retry="load" />
     <el-skeleton v-else-if="loading" :rows="8" animated />
-    <section v-if="production?.status === 'SNAPSHOT_CORRUPTED' || production?.status === 'VERSION_INCOMPATIBLE'" class="empty-state empty-state--error">
-      <h2>{{ production.status === 'SNAPSHOT_CORRUPTED' ? '评测快照已损坏' : '评测快照版本不兼容' }}</h2>
+    <section v-if="!loading && !failed && snapshotError" class="empty-state empty-state--error" role="alert">
+      <h2>{{ currentProduction?.status === 'SNAPSHOT_CORRUPTED' ? '评测快照已损坏' : '评测快照版本不兼容' }}</h2>
       <p>{{ snapshotError }}</p>
-      <small v-if="production.snapshotPath">文件：{{ production.snapshotPath }}<span v-if="production.runId"> · runId：{{ production.runId }}</span></small>
+      <small v-if="currentProduction?.snapshotPath">文件：{{ currentProduction.snapshotPath }}<span v-if="currentProduction.runId"> · runId：{{ currentProduction.runId }}</span></small>
+      <p>{{ currentProduction?.lastCompleted ? '以下保留最后可用历史快照，当前错误仍未恢复。' : '没有可用的已完成历史快照。' }}</p>
     </section>
-    <template v-else-if="production?.status === 'COMPLETED'">
+    <template v-if="!loading && !failed && production?.status === 'COMPLETED'">
+      <p v-if="currentProduction?.lastCompleted" class="snapshot-meta__readonly">最后可用快照 · runId {{ production.runId }} · 生成于 {{ formatDateTime(production.generatedAt!) }}</p>
       <section class="snapshot-meta" aria-label="实测快照信息">
         <span>生成于 <b>{{ formatDateTime(production.generatedAt!) }}</b></span>
         <span>语料 {{ production.corpus.documents }} 篇 · {{ production.corpus.cases }} 条样本</span>
@@ -100,8 +104,8 @@ const snapshotError = computed(() => {
         <ol class="case-list"><li v-for="(item, index) in filteredCases" :key="`${item.stratum}-${index}`" class="case-row" :class="{ 'is-miss': !item.hit || (item.graphRequired && !item.graphEvidenceHit) }"><span class="case-row__rank">{{ item.hit ? `第 ${item.hitRank} 位` : '未命中' }}</span><div class="case-row__body"><p class="case-row__query">{{ item.query }}</p><p class="case-row__docs"><b>期望：</b><RouterLink v-for="id in item.relevantDocIds" :key="id" :to="{ name: 'knowledge-doc', params: { docNo: id } }">{{ item.retrievedTitles[id] ?? id }} </RouterLink></p><p class="case-row__docs"><b>实际：</b><RouterLink v-for="(id, rank) in item.retrievedDocIds" :key="id" :to="{ name: 'knowledge-doc', params: { docNo: id } }">[{{ rank + 1 }}] {{ item.retrievedTitles[id] ?? id }} </RouterLink></p><div v-if="item.graphRequired" class="graph-status"><b>图谱路径：</b><span :class="item.graphEvidenceHit ? 'status-ok' : 'status-miss'">{{ item.graphEvidenceHit ? '最终结果保留相关图谱证据' : '最终结果未保留相关图谱证据' }}</span><span class="graph-status__meta">候选 {{ item.trace?.graphCandidates ?? '未记录' }} 条</span><small>{{ item.graphEvidenceHit ? '图谱证据与标注相关文档同时进入最终结果。' : graphNotRetainedReason(item) }}</small></div><p v-if="!item.hit" class="case-row__docs case-row__warning"><b>整体命中说明：</b>最终 Top-K 未包含任何标注相关文档，不能仅凭旧快照断言是哪一路失效。</p><details class="trace-details"><summary>查看完整检索链路</summary><dl><dt>最终查询</dt><dd>{{ item.trace?.query ?? '该快照未记录' }}</dd><dt>候选阶段</dt><dd v-if="item.trace">向量 {{ item.trace.vectorCandidates }} · BM25 {{ item.trace.keywordCandidates }} · 图谱 {{ item.trace.graphCandidates }} · 融合 {{ item.trace.fusedCandidates }}</dd><dd v-else>该快照未记录中间候选</dd><dt>重排</dt><dd v-if="item.trace">{{ item.trace.rerankApplied ? `已执行（${item.trace.rerankedCandidates} 条）` : '未执行' }} · 查询：{{ item.trace.rerankQuery || '—' }}</dd><dd v-else>该快照未记录</dd><dt>扩写</dt><dd v-if="item.expansions">HyDE：{{ item.expansions.hypothetical || '无' }}；角度：{{ item.expansions.angles?.join(' / ') || '无' }}</dd><dd v-else>该快照未记录</dd><dt>证据切片</dt><dd>{{ item.evidence?.length ? `${item.evidence.length} 条已进入回答上下文` : '执行后无结果或历史快照未记录' }}</dd></dl></details></div></li></ol>
       </section>
     </template>
-    <section v-else-if="production?.status === 'NEVER_RUN' || !production" class="empty-state"><h2>暂无真实链路快照</h2><p>当前服务还没有生成可展示的实测结果。页面不会用离线夹具或伪向量数据填充。</p></section>
-    <section v-else class="empty-state"><h2>评测尚未完成</h2><p>当前状态：{{ production?.status }}，页面不会把未完成数据当作最终成绩。</p></section>
+    <section v-else-if="!loading && !failed && !snapshotError && (production?.status === 'NEVER_RUN' || !production)" class="empty-state"><h2>暂无真实链路快照</h2><p>当前服务还没有生成可展示的实测结果。页面不会用离线夹具或伪向量数据填充。</p></section>
+    <section v-else-if="!loading && !failed && !snapshotError" class="empty-state"><h2>评测尚未完成</h2><p>当前状态：{{ currentProduction?.status }}，页面不会把未完成数据当作最终成绩。</p></section>
   </div>
 </template>
 

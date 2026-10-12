@@ -3,6 +3,7 @@ import {
   chatStream,
   deleteSession,
   dismissApproval,
+  recoverApproval,
   fetchSessionMessages,
   fetchSessions,
   type ChatSessionSummary,
@@ -15,7 +16,7 @@ import { useUserStore } from '@/stores'
 import type { ChatMessage, ProductSummary } from '@/types/models'
 import { ChatLineRound, Discount, Goods, Van } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
@@ -25,6 +26,7 @@ const userStore = useUserStore()
 
 const sessions = ref<ChatSessionSummary[]>([])
 const sessionsLoading = ref(true)
+const sessionsError = ref('')
 /** null 表示"新对话还没落号"：会话号在第一条消息发出时才生成，空会话不进侧栏 */
 const activeSessionId = ref<string | null>(null)
 const messages = ref<ChatMessage[]>([])
@@ -42,6 +44,11 @@ const liveTools = ref<ToolProgressEvent[]>([])
 const bootstrapping = ref(false)
 const input = ref('')
 const drawerOpen = ref(false)
+const dismissing = ref<{ sessionId: string; messageId: string; sequence: number } | null>(null)
+let dismissSequence = 0
+let assistantMounted = true
+const approvalBusyMessageId = computed(() => dismissing.value?.sessionId === activeSessionId.value ? dismissing.value.messageId : undefined)
+watch(activeSessionId, () => { dismissing.value = null }, { flush: 'sync' })
 
 /**
  * 输入框随内容长高（封顶交给 CSS 的 max-height，这里只负责量）。
@@ -94,16 +101,22 @@ let refreshToken = 0
 async function refreshSessions() {
   const token = ++refreshToken
   try {
+    sessionsError.value = ''
     const list = await fetchSessions()
-    if (token !== refreshToken) return
+    if (!assistantMounted || token !== refreshToken) return
     sessions.value = list
-  } catch {
-    // 拦截器已提示；侧栏保持原样比清空好 —— 清空看起来像"会话被删了"
+  } catch (error) {
+    if (assistantMounted && token === refreshToken) sessionsError.value = error instanceof Error ? error.message : '历史会话加载失败'
   } finally {
-    if (token === refreshToken) {
+    if (assistantMounted && token === refreshToken) {
       sessionsLoading.value = false
     }
   }
+}
+
+async function retrySessions() {
+  sessionsLoading.value = true
+  await refreshSessions()
 }
 
 /**
@@ -129,6 +142,11 @@ function toChatMessage(stored: Awaited<ReturnType<typeof fetchSessionMessages>>[
     pendingActionDetails: response?.pendingActionDetails ?? undefined,
     approvalToken: response?.approvalToken ?? undefined,
     approvalStatus: response?.approvalStatus ?? (response?.approvalToken ? 'PENDING' : 'HISTORY'),
+    approvalRetryAllowed: response?.approvalRetryAllowed,
+    approvalRecordAvailable: response?.approvalRecordAvailable,
+    approvalRecordError: response?.approvalRecordError,
+    approvalRecoverySeconds: response?.approvalRecoverySeconds,
+    approvalRecoveryUntil: response?.approvalRecoveryUntil,
     stage: response?.stage,
     evidenceLevel: response?.evidenceLevel ?? undefined,
     retrievalQuery: response?.retrievalQuery ?? undefined,
@@ -162,12 +180,6 @@ async function selectSession(sessionId: string) {
     const stored = await fetchSessionMessages(sessionId)
     if (token !== loadToken) return
     messages.value = stored.map(toChatMessage)
-    for (let index = 0; index < messages.value.length; index++) {
-      const current = messages.value[index]
-      if (!current?.pendingActions?.length) continue
-      const following = messages.value.slice(index + 1).find((item) => item.role === 'user')
-      if (current.approvalStatus !== 'DISMISSED' && following && CONFIRM_PATTERN.test(following.content.trim())) current.approvalStatus = 'CONFIRMED'
-    }
     await scrollToBottom()
   } catch {
     if (token !== loadToken) return
@@ -306,6 +318,8 @@ let abortController: AbortController | null = null
 let streamSeq = 0
 
 function abortStream() {
+  const current = messages.value.at(-1)
+  if (loading.value && current?.role === 'assistant') current.stopped = true
   abortController?.abort()
   abortController = null
   streamSeq++
@@ -323,6 +337,7 @@ async function sendMessage(message = input.value, approvalToken?: string) {
   // 历史还在加载时也不接：`selectSession` 拿到历史后会整体替换消息列表，
   // 此刻发出去的消息会连同回复一起被覆盖掉——界面上凭空消失，服务端却照常生成
   if (bootstrapping.value) return
+  if (approvalBusyMessageId.value) return
 
   // 手打确认词等价于点那张卡片：把最新一条助手消息挂着的令牌取来带上。
   // 拿不到令牌（卡片已经收起、或用户只是碰巧说了声「好」）就只是一次普通提问，
@@ -348,6 +363,7 @@ async function sendMessage(message = input.value, approvalToken?: string) {
     content,
     at: now,
   })
+  const confirmationMessage = token ? messages.value.at(-1) : undefined
   input.value = ''
   await nextTick(autosize)
   loading.value = true
@@ -366,6 +382,16 @@ async function sendMessage(message = input.value, approvalToken?: string) {
   messages.value.push(assistantMessage)
 
   await runStream(sessionId!, content, assistantMessage, seq, { approvalToken: token })
+  if (token && activeSessionId.value === sessionId && seq === streamSeq) {
+    const original = messages.value.find((item) => item !== assistantMessage && item.approvalToken === token)
+    if (original && assistantMessage.id === original.id) {
+      const originalAt = original.at
+      const actions = original.pendingActions
+      const details = original.pendingActionDetails
+      Object.assign(original, assistantMessage, { at: originalAt, approvalToken: token, pendingActions: actions, pendingActionDetails: details })
+      messages.value = messages.value.filter((item) => item !== assistantMessage && item !== confirmationMessage)
+    }
+  }
 }
 
 /**
@@ -379,7 +405,7 @@ async function sendMessage(message = input.value, approvalToken?: string) {
  * 后面的回答全部对不上它，那是一次分叉，不是一次重试。
  */
 async function regenerate(assistantId: string) {
-  if (loading.value || bootstrapping.value) return
+  if (loading.value || bootstrapping.value || approvalBusyMessageId.value === assistantId) return
   const index = messages.value.findIndex((item) => item.id === assistantId)
   const target = messages.value[index]
   if (!target || target.role !== 'assistant') return
@@ -435,10 +461,12 @@ async function runStream(
       },
       {
         onDelta: (text) => {
+          if (seq !== streamSeq) return
           assistantMessage.content += text
           followIfPinned()
         },
         onTool: (event) => {
+          if (seq !== streamSeq) return
           if (event.phase === 'start') {
             liveTools.value.push({ phase: 'start', tool: event.tool })
           } else {
@@ -457,6 +485,7 @@ async function runStream(
           followIfPinned()
         },
         onDone: (response) => {
+          if (seq !== streamSeq) return
           // done 事件里的身份是服务端唯一真相：替换本地占位 ID，后续点踩、撤销和刷新都用同一值。
           const assistantIndex = messages.value.findIndex((item) => item === assistantMessage)
           if (response.assistantMessageId) {
@@ -473,7 +502,9 @@ async function runStream(
               userMessage.turnId = response.turnId ?? undefined
             }
           }
-          assistantMessage.content = response.reply || assistantMessage.content
+          // 空字符串是后置证据闸门明确剔除正文后的合法结果，不能回退到流式 delta，
+          // 否则浏览器会重新显示未经审核的医学回答。
+          assistantMessage.content = response.reply ?? ''
           assistantMessage.knowledge = response.knowledge
           assistantMessage.toolCalls = response.toolCalls
           assistantMessage.recommendedProducts = response.recommendedProducts
@@ -485,6 +516,19 @@ async function runStream(
           assistantMessage.pendingActionDetails = response.pendingActionDetails ?? undefined
           // 卡片与令牌同生共死：只留卡片不留令牌，用户点确认时无从证明自己批的是哪一次
           assistantMessage.approvalToken = response.approvalToken ?? undefined
+          assistantMessage.approvalStatus = response.approvalStatus ?? (response.approvalToken ? 'PENDING' : undefined)
+          assistantMessage.approvalRetryAllowed = response.approvalRetryAllowed
+          assistantMessage.approvalRecordAvailable = response.approvalRecordAvailable
+          assistantMessage.approvalRecordError = response.approvalRecordError
+          assistantMessage.approvalRecoverySeconds = response.approvalRecoverySeconds
+          assistantMessage.approvalRecoveryUntil = response.approvalRecoveryUntil
+          if (options.approvalToken) {
+            const original = messages.value.find((item) => item !== assistantMessage && item.approvalToken === options.approvalToken)
+            if (original) {
+              original.approvalStatus = response.approvalToken && response.approvalToken !== options.approvalToken ? 'CONFIRMED' : response.approvalStatus ?? 'UNKNOWN'
+              original.approvalRetryAllowed = response.approvalRetryAllowed
+            }
+          }
           // 任务阶段。它与 pendingActions 表达同一件事的两个层次：阶段说「停在哪里」，
           // 载荷说「停下的是哪几次调用」。两者都留一份，是为了将来新增
           // 「正在核对」这类没有卡片的中间态时，前端不必再改一次数据流
@@ -505,6 +549,7 @@ async function runStream(
           followIfPinned()
         },
         onError: (msg) => {
+          if (seq !== streamSeq) return
           // 断的是连接，不是已经流出来的正文：半截回答照留，错误另挂一条，
           // 用户读到一半的内容不会因为一次网络抖动整段消失
           assistantMessage.error = msg
@@ -513,6 +558,7 @@ async function runStream(
       abortController!.signal,
     )
   } catch (e) {
+    if (seq !== streamSeq) return
     if (e instanceof Error && e.name === 'AbortError') {
       // 用户主动停止不是故障：半截回答照留，但必须标出来 ——
       // 不标的话它看起来像一段说完了的完整回答。标记单独存，不拼进正文：
@@ -549,6 +595,8 @@ function handleStop() {
 
 // 离开页面就取消在飞的流：不取消的话它会继续读，写进一个已经不在屏幕上的消息里
 onBeforeUnmount(() => {
+  assistantMounted = false
+  dismissing.value = null
   abortStream()
   contentObserver?.disconnect()
   contentObserver = null
@@ -582,31 +630,93 @@ function openProduct(product: ProductSummary) {
 
 /** 先收起卡片再重发：新消息一入列，这张卡就不是「最新一条」，会立刻变成过期的灰态 */
 function handleApprove() {
+  if (loading.value || bootstrapping.value || approvalBusyMessageId.value) return
   const latest = messages.value[messages.value.length - 1]
   if (!latest?.approvalToken) return
   const token = latest.approvalToken
-  latest.approvalToken = undefined
-  latest.approvalStatus = 'CONFIRMED'
+  latest.approvalStatus = 'IN_FLIGHT'
   void sendMessage('确认执行', token)
 }
 
-/**
- * 取消只是本地收起卡片，<b>不发任何请求</b>——服务端那次计划已经丢弃，没有副作用要撤销，
- * 也没有「拒绝」这个接口可调。
- * <p>
- * 但要把这条回复的正文改掉：它还写着「确认无误请点击确认执行」，
- * 而按钮已经没了。留着那句话，用户会以为是自己看漏了一个按钮。
- */
-async function handleDismiss() {
-  const latest = messages.value[messages.value.length - 1]
-  if (latest && activeSessionId.value) {
-    const records = await fetchSessionMessages(activeSessionId.value)
-    const record = records.at(-1)
-    if (!record?.response?.pendingActions?.length) return
-    await dismissApproval(activeSessionId.value, record.id)
-    latest.approvalToken = undefined
+async function handleRecover(message: ChatMessage, retry: boolean) {
+  const sessionId = activeSessionId.value
+  const token = message.approvalToken
+  if (!sessionId || !token || loading.value || bootstrapping.value || approvalBusyMessageId.value) return
+  if (retry) {
+    try { await ElMessageBox.confirm('继续执行原签名批次：工具、参数和操作标识均保持不变，已提交步骤只取回原回执。', '继续确认原操作', { type: 'warning', confirmButtonText: '继续确认', cancelButtonText: '取消' }) }
+    catch (reason) { if (reason === 'cancel' || reason === 'close') return; throw reason }
+  }
+  if (!assistantMounted || activeSessionId.value !== sessionId || !messages.value.includes(message) || message.approvalToken !== token) return
+  const scope = loadToken
+  const operation = { sessionId, messageId: message.id, sequence: ++dismissSequence }
+  dismissing.value = operation
+  const current = () => assistantMounted && scope === loadToken && activeSessionId.value === sessionId
+    && messages.value.includes(message) && message.approvalToken === token
+  try {
+    const response = await recoverApproval(sessionId, token, retry)
+    if (!current()) return
+    message.content = response.reply
+    message.toolCalls = response.toolCalls
+    message.pendingPayments = response.pendingPayments
+    message.approvalStatus = response.approvalStatus ?? 'UNKNOWN'
+    message.approvalRetryAllowed = response.approvalRetryAllowed
+    message.approvalRecordAvailable = response.approvalRecordAvailable
+    message.approvalRecordError = response.approvalRecordError
+    message.approvalRecoverySeconds = response.approvalRecoverySeconds
+    message.approvalRecoveryUntil = response.approvalRecoveryUntil
+    message.error = undefined
+  } catch (error) {
+    if (current()) {
+      message.error = `执行结果仍待确认，请保留原操作查询。${error instanceof Error ? error.message : ''}`
+      if (message.approvalStatus === 'IN_FLIGHT') message.approvalStatus = 'UNKNOWN'
+    }
+  } finally { if (dismissing.value?.sequence === operation.sequence) dismissing.value = null }
+}
+
+/** 原审批消息的取消必须落服务端；异步期间换会话或换审批后，旧请求不能操作新对象。 */
+async function handleDismiss(message?: ChatMessage) {
+  const latest = message ?? messages.value[messages.value.length - 1]
+  const sessionId = activeSessionId.value
+  const messageId = latest?.id
+  const approvalToken = latest?.approvalToken
+  if (!latest || !sessionId || !messageId || !approvalToken || loading.value || bootstrapping.value || approvalBusyMessageId.value) return
+  const scope = loadToken
+  const operation = { sessionId, messageId, sequence: ++dismissSequence }
+  dismissing.value = operation
+  const current = () => assistantMounted && scope === loadToken && activeSessionId.value === sessionId
+    && messages.value.includes(latest) && latest.id === messageId && latest.approvalToken === approvalToken
+  try {
+    const records = await fetchSessionMessages(sessionId, { quietError: true })
+    if (!current()) return
+    const record = records.find((item) => item.id === messageId)
+    if (!record?.response?.pendingActions?.length || record.response.approvalToken !== approvalToken
+      || (record.response.approvalStatus && !['PENDING', 'UNKNOWN', 'IN_FLIGHT', 'REJECTED'].includes(record.response.approvalStatus))) {
+      if (record) Object.assign(latest, toChatMessage(record))
+      latest.error = '该确认状态已变化，请核对当前记录。'
+      return
+    }
+    await dismissApproval(sessionId, messageId, { quietError: true })
+    if (!current()) return
     latest.approvalStatus = 'DISMISSED'
-    latest.content = '已取消，本次没有执行任何操作。'
+    latest.content = '已停止后续操作；已开始操作的结果可查询原回执。'
+    latest.error = undefined
+  } catch (error) {
+    if (!current()) return
+    try {
+      const records = await fetchSessionMessages(sessionId, { quietError: true })
+      if (!current()) return
+      const record = records.find((item) => item.id === messageId)
+      if (!record) throw new Error('原确认消息不存在')
+      Object.assign(latest, toChatMessage(record))
+      latest.error = record.response?.approvalStatus === 'DISMISSED' ? undefined : '取消失败，已按服务端状态恢复，请重试。'
+    } catch {
+      if (!current()) return
+      latest.approvalStatus = 'UNKNOWN'
+      latest.approvalRetryAllowed = false
+      latest.error = `取消状态无法核对，请切换会话重新读取后再操作。${error instanceof Error ? error.message : ''}`
+    }
+  } finally {
+    if (dismissing.value?.sequence === operation.sequence) dismissing.value = null
   }
 }
 
@@ -634,6 +744,8 @@ function handleComposerKeydown(event: KeyboardEvent) {
         :sessions="sessions"
         :active-id="activeSessionId"
         :loading="sessionsLoading"
+        :error="sessionsError"
+        :on-retry="retrySessions"
         @create="startNewSession"
         @select="selectSession"
         @remove="handleDelete"
@@ -684,9 +796,12 @@ function handleComposerKeydown(event: KeyboardEvent) {
             :streaming-index="loading ? messages.length - 1 : -1"
             :live-tools="liveTools"
             :live-tools-index="liveTools.length ? messages.length - 1 : -1"
+            :approval-busy-message-id="approvalBusyMessageId"
             @open-product="openProduct"
             @approve="handleApprove"
             @dismiss="handleDismiss"
+            @dismiss-message="handleDismiss"
+            @recover="handleRecover"
             @regenerate="regenerate"
           />
         </div>
@@ -749,6 +864,8 @@ function handleComposerKeydown(event: KeyboardEvent) {
           :sessions="sessions"
           :active-id="activeSessionId"
           :loading="sessionsLoading"
+        :error="sessionsError"
+        :on-retry="retrySessions"
           @create="startNewSession"
           @select="selectSession"
           @remove="handleDelete"

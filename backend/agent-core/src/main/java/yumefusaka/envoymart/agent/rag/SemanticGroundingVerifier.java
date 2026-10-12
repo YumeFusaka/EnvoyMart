@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 用一次独立模型调用判断未带角标句子的语义状态。
@@ -26,9 +27,14 @@ public final class SemanticGroundingVerifier {
 
             判定规则：
             - SUPPORTED：证据或工具事实直接支持，即使句子没有角标也保留。
-            - CONVERSATIONAL：正常承接、总结、比较、单位换算或解释上下文，不需要独立引用，保留。
+            - CONVERSATIONAL：纯承接或解释对话上下文，不需要独立引用，保留。
+              总结、比较或单位说明若包含吸收、生物利用度、药效、疗效、剂量、间隔、禁忌等临床事实，
+              仍须逐句直接证据与有效 refs，不能因“也就是说”等话语前缀豁免。
               仅作安全边界说明的「请遵医嘱」「不能代替医嘱」「处方药需由医生判断」也属于承接，
               除非其中新增了具体剂量、期限、禁忌或平台政策事实。
+              「某具体药物是处方药/非处方药」、监测凝血/血糖/血压要求，以及「知识库没有收录某内容」
+              均是需证据的事实，不能因为同时写了遵医嘱而标为承接；本次未检得只能限定本次查询范围。
+              「本品」须声明对应的来源商品；监测和相互作用须对应当前标题与句中药物，不能借另一产品或另一药物的出处。
             - UNSUPPORTED：是具体事实或建议，但给出的证据和工具事实都无法支持。
             - CONFLICTED：与工具事实明确矛盾；必须阻断，不得保留原句。
             - SUPPORTED 时 refs 必须填写支持该句的证据编号；没有直接证据时不要猜编号。
@@ -89,6 +95,17 @@ public final class SemanticGroundingVerifier {
                         ? list.stream().map(value -> Integer.parseInt(String.valueOf(value)))
                         .filter(ref -> ref >= 1 && ref <= evidence.size()).toList()
                         : List.of();
+                if ("CONVERSATIONAL".equals(decision)
+                        && !MedicalEvidenceVerifier.factSentences(candidates.get(index)).isEmpty()) {
+                    decision = refs.isEmpty() ? "UNSUPPORTED" : "SUPPORTED";
+                }
+                if ("UNSUPPORTED".equals(decision)) {
+                    List<Integer> quotedRefs = literalQuotationRefs(candidates.get(index), evidence);
+                    if (!quotedRefs.isEmpty()) {
+                        decision = "SUPPORTED";
+                        refs = quotedRefs;
+                    }
+                }
                 if (index >= 0 && index < candidates.size()
                         && ("UNSUPPORTED".equals(decision) || "CONFLICTED".equals(decision))) {
                     unsupported.add(candidates.get(index));
@@ -111,4 +128,29 @@ public final class SemanticGroundingVerifier {
         }
     }
 
+    /** 原文引述只证明资料确实这样写；实体、商品作用域与医学结论仍由后续确定性审核负责。 */
+    private static List<Integer> literalQuotationRefs(String sentence, List<DocumentChunk> evidence) {
+        String visible = MedicalText.visible(MedicalText.references(sentence)).trim();
+        var quote = Pattern.compile("^(?:(?:另外[，,])?平台知识库中另有一条资料提到([^：:]+)的关系[：:])?\\[(\\d+)](?:第[一二三四五六七八九十0-9]+章)?写明「([^「」]+)」[。]?$")
+                .matcher(visible);
+        if (!quote.matches()) return List.of();
+        int ref;
+        try { ref = Integer.parseInt(quote.group(2)); }
+        catch (NumberFormatException invalid) { return List.of(); }
+        if (ref < 1 || ref > evidence.size()) return List.of();
+        DocumentChunk chunk = evidence.get(ref - 1);
+        if (chunk == null || chunk.getContent() == null) return List.of();
+        String body = quotationText(quote.group(3));
+        if (body.isEmpty() || !quotationText(chunk.getContent()).contains(body)) return List.of();
+        if (quote.group(1) != null) {
+            for (String subject : quote.group(1).split("与|和|及|、")) {
+                if (subject.isBlank() || !body.contains(quotationText(subject))) return List.of();
+            }
+        }
+        return List.of(ref);
+    }
+
+    private static String quotationText(String text) {
+        return MedicalText.visible(text).replaceAll("\\s+", "");
+    }
 }

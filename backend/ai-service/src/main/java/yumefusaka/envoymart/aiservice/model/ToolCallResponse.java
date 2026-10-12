@@ -8,6 +8,9 @@ import lombok.Data;
 public class ToolCallResponse {
 
     private String tool;
+    private String operationId;
+    private yumefusaka.envoymart.agent.tool.ToolResult.OperationState operationState;
+    private boolean receiptReplayed;
     private String input;
     private String output;
     /**

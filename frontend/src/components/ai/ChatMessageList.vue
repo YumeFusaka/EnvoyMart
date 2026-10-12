@@ -20,11 +20,12 @@ import {
   traceSummary,
   usageSummary,
 } from '@/utils/tools'
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 const props = defineProps<{
   messages: ChatMessage[]
   sessionId?: string | null
+  approvalBusyMessageId?: string
   /** 正在生成的那条消息的下标；-1 表示没有在飞的流 */
   streamingIndex?: number
   /**
@@ -59,6 +60,8 @@ function liveToolStateLabel(item: ToolProgressEvent): string {
 }
 
 const emit = defineEmits<{
+  recover: [message: ChatMessage, retry: boolean]
+  dismissMessage: [message: ChatMessage]
   openProduct: [product: ProductSummary]
   approve: []
   dismiss: []
@@ -70,8 +73,27 @@ const feedbackReasons = ref<BadCaseReason[]>([])
 const feedbackComment = ref('')
 const feedbackSelected = ref<string[]>([])
 const feedbackSaving = ref(false)
+const feedbackUndoing = ref<string | null>(null)
 const feedbackDone = ref<Record<string, boolean>>({})
+const feedbackLoading = ref(false)
+const feedbackError = ref<string | null>(null)
 let feedbackRestoreSeq = 0
+let feedbackScope = 0
+let feedbackMounted = true
+// 本地占位身份不会落库；旧历史可能没有 turnId，仍以其已有稳定 ID 为准。
+function persistedMessage(message: ChatMessage) {
+  return !!message.id && !/^(user|assistant)-\d+$/.test(message.id)
+}
+const feedbackIdentity = computed(() => JSON.stringify(props.messages
+  .filter((message, index) => message.role === 'assistant' && persistedMessage(message) && index !== props.streamingIndex)
+  .map((message) => message.id)))
+function currentFeedbackScope(scope: number, sessionId: string) {
+  return feedbackMounted && feedbackScope === scope && props.sessionId === sessionId
+}
+function restoreMissingFeedback() {
+  const ids: string[] = JSON.parse(feedbackIdentity.value)
+  if (!feedbackError.value && ids.some((id) => !(id in feedbackDone.value))) void restoreFeedback()
+}
 const feedbackOptions: Array<{ code: BadCaseReason; label: string }> = [
   { code: 'FACT_ERROR', label: '事实错误' }, { code: 'NO_ANSWER', label: '没有回答问题' },
   { code: 'IRRELEVANT_EVIDENCE', label: '依据不相关' }, { code: 'TOOL_ERROR', label: '工具执行错误' },
@@ -79,6 +101,8 @@ const feedbackOptions: Array<{ code: BadCaseReason; label: string }> = [
 ]
 
 function openFeedback(messageId: string) {
+  if (feedbackLoading.value || feedbackSaving.value || feedbackUndoing.value || !(messageId in feedbackDone.value)) return
+  feedbackError.value = null
   feedbackMessage.value = messageId
   feedbackReasons.value = []
   feedbackComment.value = ''
@@ -89,34 +113,93 @@ function openFeedback(messageId: string) {
   feedbackSelected.value = question ? [question.id, messageId] : [messageId]
 }
 async function submitFeedback(messageId: string) {
-  if (!props.sessionId || !feedbackReasons.value.length) return
+  const sessionId = props.sessionId
+  if (!sessionId || !feedbackReasons.value.length || feedbackSaving.value || feedbackUndoing.value || feedbackLoading.value || !(messageId in feedbackDone.value)) return
+  const scope = feedbackScope
+  ++feedbackRestoreSeq
   feedbackSaving.value = true
   try {
-    await saveBadCase(props.sessionId, messageId, { reasonCodes: feedbackReasons.value, selectedMessageIds: feedbackSelected.value, comment: feedbackComment.value })
+    await saveBadCase(sessionId, messageId, { reasonCodes: [...feedbackReasons.value], selectedMessageIds: [...feedbackSelected.value], comment: feedbackComment.value })
+    if (!currentFeedbackScope(scope, sessionId)) return
     feedbackDone.value = { ...feedbackDone.value, [messageId]: true }
     feedbackMessage.value = null
-  } finally { feedbackSaving.value = false }
+    feedbackError.value = null
+  } catch {
+    if (!currentFeedbackScope(scope, sessionId)) return
+    feedbackError.value = '提交反馈失败，请核对当前状态后重试。'
+    await restoreFeedback(true)
+  } finally {
+    if (currentFeedbackScope(scope, sessionId)) {
+      feedbackSaving.value = false
+      restoreMissingFeedback()
+    }
+  }
 }
 
-async function restoreFeedback() {
+async function restoreFeedback(reconcile = false) {
+  if (!reconcile && (feedbackSaving.value || feedbackUndoing.value)) return
   const sessionId = props.sessionId
   const seq = ++feedbackRestoreSeq
-  if (!sessionId) {
-    feedbackDone.value = {}
+  const ids: string[] = JSON.parse(feedbackIdentity.value)
+  if (!sessionId || !ids.length) {
+    feedbackLoading.value = false
     return
   }
-  const loaded = await fetchSessionBadCases(sessionId)
-  if (seq !== feedbackRestoreSeq || props.sessionId !== sessionId) return
-  const next: Record<string, boolean> = {}
-  for (const value of loaded) if (value.status !== 'REVOKED') next[value.assistantMessageId] = true
-  feedbackDone.value = next
+  const scope = feedbackScope
+  feedbackLoading.value = true
+  try {
+    const loaded = await fetchSessionBadCases(sessionId)
+    if (seq !== feedbackRestoreSeq || !currentFeedbackScope(scope, sessionId)) return
+    const next: Record<string, boolean> = Object.fromEntries(ids.map((id) => [id, false]))
+    for (const value of loaded) if (value.status !== 'REVOKED' && ids.includes(value.assistantMessageId)) next[value.assistantMessageId] = true
+    feedbackDone.value = next
+    if (feedbackMessage.value && next[feedbackMessage.value]) feedbackMessage.value = null
+  } catch {
+    if (seq !== feedbackRestoreSeq || !currentFeedbackScope(scope, sessionId)) return
+    // 请求失败不能被解释成“未点踩”，包括写请求结果未知后的核对失败。
+    feedbackDone.value = {}
+    feedbackError.value = '反馈状态读取失败，请重试后再操作。'
+  } finally {
+    if (seq === feedbackRestoreSeq && currentFeedbackScope(scope, sessionId)) feedbackLoading.value = false
+  }
 }
-onMounted(() => void restoreFeedback())
-watch(() => [props.sessionId, props.messages.length], () => void restoreFeedback())
+watch(() => props.sessionId, () => {
+  feedbackScope++
+  feedbackRestoreSeq++
+  feedbackDone.value = {}
+  feedbackMessage.value = null
+  feedbackError.value = null
+  feedbackLoading.value = false
+  feedbackSaving.value = false
+  feedbackUndoing.value = null
+}, { flush: 'sync' })
+watch(() => [props.sessionId, feedbackIdentity.value], () => void restoreFeedback(), { immediate: true })
+onBeforeUnmount(() => {
+  feedbackMounted = false
+  feedbackScope++
+  feedbackRestoreSeq++
+})
 async function undoFeedback(messageId: string) {
-  if (!props.sessionId) return
-  await revokeBadCase(props.sessionId, messageId)
-  feedbackDone.value = { ...feedbackDone.value, [messageId]: false }
+  const sessionId = props.sessionId
+  if (!sessionId || feedbackSaving.value || feedbackUndoing.value || feedbackLoading.value) return
+  const scope = feedbackScope
+  ++feedbackRestoreSeq
+  feedbackUndoing.value = messageId
+  try {
+    await revokeBadCase(sessionId, messageId)
+    if (!currentFeedbackScope(scope, sessionId)) return
+    feedbackDone.value = { ...feedbackDone.value, [messageId]: false }
+    feedbackError.value = null
+  } catch {
+    if (!currentFeedbackScope(scope, sessionId)) return
+    feedbackError.value = '撤销反馈失败，请核对当前状态后重试。'
+    await restoreFeedback(true)
+  } finally {
+    if (currentFeedbackScope(scope, sessionId)) {
+      feedbackUndoing.value = null
+      restoreMissingFeedback()
+    }
+  }
 }
 
 /**
@@ -202,6 +285,10 @@ async function handleCopy(message: ChatMessage) {
     而不是需要手动导航进消息区才知道有新内容（它隐含 aria-live="polite"）
   -->
   <div class="message-list" role="log" aria-label="对话记录">
+    <p v-if="feedbackError" class="message-notice is-error" role="status">
+      {{ feedbackError }}
+      <button type="button" class="message-action" :disabled="feedbackLoading || feedbackSaving || !!feedbackUndoing" @click="feedbackError = null; restoreFeedback()">重新读取反馈</button>
+    </p>
     <article
       v-for="(message, position) in messages"
       :key="message.id"
@@ -303,33 +390,35 @@ async function handleCopy(message: ChatMessage) {
           v-if="regenerable(message, position, messages.length, streamingIndex ?? -1)"
           type="button"
           class="message-action"
+          :disabled="props.approvalBusyMessageId === message.id"
           @click="emit('regenerate', message.id)"
         >
           重新生成
         </button>
         <button
-          v-if="message.role === 'assistant' && props.sessionId"
+          v-if="message.role === 'assistant' && props.sessionId && persistedMessage(message)"
           type="button"
           class="message-action"
-          :aria-label="feedbackDone[message.id] ? '已提交点踩，可撤销' : '反馈这条回答'"
+          :disabled="feedbackLoading || feedbackSaving || !!feedbackUndoing || !(message.id in feedbackDone)"
+          :aria-label="!(message.id in feedbackDone) ? '反馈状态尚未确认' : feedbackDone[message.id] ? '已提交点踩，可撤销' : '反馈这条回答'"
           @click="feedbackDone[message.id] ? undoFeedback(message.id) : openFeedback(message.id)"
-        >{{ feedbackDone[message.id] ? '已点踩（撤销）' : '点踩' }}</button>
+        >{{ feedbackUndoing === message.id ? '撤销中…' : feedbackLoading ? '读取反馈中…' : !(message.id in feedbackDone) ? '反馈状态未知' : feedbackDone[message.id] ? '已点踩（撤销）' : '点踩' }}</button>
       </div>
 
       <form v-if="feedbackMessage === message.id" class="bad-case-panel" @submit.prevent="submitFeedback(message.id)">
         <strong>这条回答哪里需要改进？</strong>
         <div class="bad-case-reasons">
-          <label v-for="item in feedbackOptions" :key="item.code"><input v-model="feedbackReasons" type="checkbox" :value="item.code" />{{ item.label }}</label>
+          <label v-for="item in feedbackOptions" :key="item.code"><input v-model="feedbackReasons" type="checkbox" :value="item.code" :disabled="feedbackSaving" />{{ item.label }}</label>
         </div>
         <fieldset class="bad-case-messages" aria-label="当前会话关联消息">
           <legend>当前会话消息（可多选）</legend>
           <label v-for="candidate in messages" :key="candidate.id">
-            <input v-model="feedbackSelected" type="checkbox" :value="candidate.id" />
+            <input v-model="feedbackSelected" type="checkbox" :value="candidate.id" :disabled="feedbackSaving || !persistedMessage(candidate)" />
             {{ candidate.role === 'assistant' ? 'AI' : '你' }}：{{ candidate.content.slice(0, 80) || '（生成中）' }}
           </label>
         </fieldset>
-        <textarea v-model="feedbackComment" maxlength="1000" rows="2" placeholder="补充说明（可选）" />
-        <div class="bad-case-actions"><button type="button" class="message-action" @click="feedbackMessage = null">取消</button><button type="submit" class="message-action" :disabled="feedbackSaving || !feedbackReasons.length">{{ feedbackSaving ? '提交中…' : '提交反馈' }}</button></div>
+        <textarea v-model="feedbackComment" maxlength="1000" rows="2" placeholder="补充说明（可选）" :disabled="feedbackSaving" />
+        <div class="bad-case-actions"><button type="button" class="message-action" :disabled="feedbackSaving" @click="feedbackMessage = null">取消</button><button type="submit" class="message-action" :disabled="feedbackSaving || feedbackLoading || !(message.id in feedbackDone) || !feedbackReasons.length">{{ feedbackSaving ? '提交中…' : '提交反馈' }}</button></div>
       </form>
 
       <!--
@@ -399,10 +488,20 @@ async function handleCopy(message: ChatMessage) {
         :actions="message.pendingActions"
         :details="message.pendingActionDetails"
         :status="message.approvalStatus"
+        :recoverable="!!message.approvalToken && (streamingIndex ?? -1) < 0"
+        :retry-allowed="message.approvalRetryAllowed"
+        :record-error="message.approvalRecordError"
+        :recovery-seconds="message.approvalRecoverySeconds"
+        :recovery-until="message.approvalRecoveryUntil"
         :active="position === messages.length - 1 && !!message.approvalToken && (streamingIndex ?? -1) < 0 && (!message.at || Date.now() - Date.parse(message.at) < 600000)"
+        :inert="props.approvalBusyMessageId === message.id"
+        :aria-busy="props.approvalBusyMessageId === message.id"
         @approve="emit('approve')"
-        @dismiss="emit('dismiss')"
+        @dismiss="position === messages.length - 1 ? emit('dismiss') : emit('dismissMessage', message)"
+        @recover="emit('recover', message, false)"
+        @retry="emit('recover', message, true)"
       />
+      <p v-if="props.approvalBusyMessageId === message.id" class="message-notice" role="status">正在取消确认…</p>
 
       <!--
         工具轨迹用原生 details：它自带键盘可达与展开态语义，
@@ -417,8 +516,9 @@ async function handleCopy(message: ChatMessage) {
           <p class="trace__name">
             <span>{{ toolLabel(call.tool) }}</span>
             <span :class="['trace__badge', `is-${traceOutcome(call)}`]">
-              {{ outcomeLabel(traceOutcome(call)) }}
+              {{ call.operationState === 'UNKNOWN' ? '结果未知' : call.operationState === 'NOT_FOUND' ? '尚无权威回执' : call.operationState === 'REJECTED' ? '明确拒绝' : call.operationState === 'COMMITTED' ? '已提交' : outcomeLabel(traceOutcome(call)) }}
             </span>
+            <span v-if="call.receiptReplayed" class="trace__ms">首次回执重放</span>
             <span class="trace__ms">{{ formatMs(call.latencyMs) }}</span>
           </p>
           <p class="trace__io"><span>入参</span>{{ call.input }}</p>

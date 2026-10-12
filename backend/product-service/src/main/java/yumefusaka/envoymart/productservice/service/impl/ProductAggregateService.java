@@ -28,9 +28,8 @@ import java.util.Set;
  * 同步调用会把商品服务的可用性绑到这两条链路上——它抖一下，用户要么白写一条评价、
  * 要么这笔支付的成功回调被重试。消息让发送方只管把事实说出去，这边什么时候跟上都行。
  * <p>
- * 三个写入方法都跑在事务里，且把「刷新缓存与索引」注册到提交之后
- * （{@link ProductDerivedRefresh#afterCommit}）。在事务里刷新的话，一旦回滚，
- * 搜索页上会留下一个库里并不存在的商品状态。
+ * 写入与刷新任务在同一事务中持久提交（{@link ProductDerivedRefresh#request}），
+ * 消费者核验全局决议与全部源锁后刷新缓存和索引。
  */
 @Slf4j
 @Service
@@ -61,6 +60,7 @@ public class ProductAggregateService {
      * 裁决，旧快照自然被丢弃。写成「先 select 比一下版本、再 update」在并发下两个线程都会
      * 读到同一个旧版本、都判定自己更新，等于没有判据。
      */
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void applyReviewAggregate(ReviewAggregateEvent event) {
         if (event == null || event.spuId() == null) {
@@ -83,7 +83,7 @@ public class ProductAggregateService {
         }
         log.info("[MQ] 商品评分聚合已更新: spuId={} avg={} count={} version={}",
                 spuId, incomingAvg, incomingCount, incomingVersion);
-        derivedRefresh.afterCommit(spuId);
+        derivedRefresh.request(spuId);
     }
 
     /**
@@ -96,6 +96,7 @@ public class ProductAggregateService {
      * <b>去重键必须是订单行而不是 (订单, 商品)</b>：一笔订单里同一个商品买两个规格是
      * 再普通不过的事，按 (订单, 商品) 去重会把第 2、3 行判成重投丢掉——销量少算且毫无动静。
      */
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void applyPaidOrder(OrderPaidEvent event) {
         if (event == null || event.orderId() == null || event.items() == null || event.items().isEmpty()) {
@@ -126,7 +127,7 @@ public class ProductAggregateService {
             return;
         }
         log.info("[MQ] 订单 {} 已计入销量: {} 个商品", event.orderNo(), changed.size());
-        derivedRefresh.afterCommit(changed);
+        derivedRefresh.request(changed);
     }
 
     /**

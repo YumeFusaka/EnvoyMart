@@ -77,6 +77,17 @@ import java.util.stream.Collectors;
 @Service
 public class OrderDomainServiceImpl implements OrderDomainService {
 
+    private final yumefusaka.envoymart.orderservice.service.UserTradeGuard userTradeGuard;
+    private final org.springframework.beans.factory.ObjectProvider<OrderDomainServiceImpl> selfProvider;
+    private final yumefusaka.envoymart.orderservice.service.SeataOperationReceiptDecisionProbe decisionProbe;
+
+    private yumefusaka.envoymart.orderservice.service.OperationReceiptService operationReceipts;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setOperationReceipts(yumefusaka.envoymart.orderservice.service.OperationReceiptService operationReceipts) {
+        this.operationReceipts = operationReceipts;
+    }
+
     /** 下单后多久未支付就关单。前端据此显示倒计时，定时任务据此扫描 */
     private static final int PAYMENT_WINDOW_MINUTES = 30;
     /** 收货后多久自动完成。与售后政策的最长时限呼应：交易正式结束，售后入口随政策窗关闭 */
@@ -112,7 +123,10 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                                   PromotionClient promotionClient,
                                   StockLockService stockLockService,
                                   OrderEventPublisher eventPublisher,
-                                  OutboxWriter outboxWriter) {
+                                  OutboxWriter outboxWriter,
+                                  yumefusaka.envoymart.orderservice.service.UserTradeGuard userTradeGuard,
+                                  org.springframework.beans.factory.ObjectProvider<OrderDomainServiceImpl> selfProvider,
+                                  yumefusaka.envoymart.orderservice.service.SeataOperationReceiptDecisionProbe decisionProbe) {
         this.cartItemMapper = cartItemMapper;
         this.orderMapper = orderMapper;
         this.orderItemMapper = orderItemMapper;
@@ -126,12 +140,31 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         this.stockLockService = stockLockService;
         this.eventPublisher = eventPublisher;
         this.outboxWriter = outboxWriter;
+        this.userTradeGuard = userTradeGuard;
+        this.selfProvider = selfProvider;
+        this.decisionProbe = decisionProbe;
     }
 
     @Override
     @GlobalTransactional(name = "envoymart-checkout", rollbackFor = Exception.class)
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public OrderResponse checkout(String userId, CheckoutRequest request) {
+        return checkoutBusiness(userId, request);
+    }
+
+    @Override
+    @GlobalTransactional(name = "envoymart-checkout", rollbackFor = Exception.class)
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
+    public yumefusaka.envoymart.common.operation.OperationReceiptReply<OrderResponse> checkoutWithOperation(
+            String userId, CheckoutRequest request, yumefusaka.envoymart.common.operation.OperationContext operation) {
+        if (!userId.equals(operation.userId())) throw new IllegalArgumentException("下单操作用户不匹配");
+        return operationReceipts.commit(operation, OrderResponse.class, () -> checkoutBusiness(userId, request));
+    }
+
+    private OrderResponse checkoutBusiness(String userId, CheckoutRequest request) {
+        userTradeGuard.acquire(userId);
         // **幂等第一关：先认这次意图是不是已经成过单**。
         // 放在最前面是因为它必须挡在「扣库存、清购物车」之前——用户读超时后重试的那一次，
         // 若走到下面就会再建一单、再清一次车、再扣一次库存。
@@ -196,6 +229,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             order = new OrderEntity();
             order.setOrderNo(generateOrderNo());
             order.setUserId(userId);
+            order.setGlobalXid(org.apache.seata.core.context.RootContext.getXID());
             order.setStatus(OrderStatus.CREATED.name());
             order.setReceiverName(request.getReceiverName());
             order.setReceiverPhone(request.getReceiverPhone());
@@ -294,7 +328,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
             } catch (RuntimeException e) {
                 // **先退券再回补库存**：退券是本地状态改回，代价极小；
                 // 而库存在远端，回补失败只能留日志。顺序上先做便宜且可保证的那件
-                unrederemCouponQuietly(userId, request.getUserCouponId());
+                unredeemCouponQuietly(userId, request.getUserCouponId(), order.getOrderNo());
                 compensateStock(deducted);
                 throw e;
             }
@@ -315,7 +349,13 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         // 事件发布挪到**锁外**：它是"可以重来的副作用"，没有理由占着库存锁。
         // 一次 MQ 发布是一次网络往返，留在锁里就直接计入临界区时长 ——
         // 而「临界区时长 × 并发数」正是队尾请求要等的时间
-        publishOrderCreatedQuietly(order, userId, total, eventItems);
+        try {
+            publishOrderCreated(order, userId, total, eventItems);
+        } catch (RuntimeException e) {
+            unredeemCouponQuietly(userId, request.getUserCouponId(), order.getOrderNo());
+            compensateStock(deducted);
+            throw e;
+        }
 
         return getOrder(userId, order.getId());
     }
@@ -351,15 +391,17 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     /** 退券。失败只记日志 —— 它发生在异常路径上，再抛会把原始异常盖掉 */
-    private void unrederemCouponQuietly(String userId, Long userCouponId) {
+    private void unredeemCouponQuietly(String userId, Long userCouponId, String orderNo) {
         if (userCouponId == null) {
             return;
         }
         try {
-            promotionClient.unredeem(userId, userCouponId);
+            Result<Void> result = promotionClient.unredeem(userId, userCouponId, orderNo);
+            if (result == null || !Integer.valueOf(200).equals(result.getCode())) {
+                throw new IllegalStateException("退券调用未取得成功确认");
+            }
         } catch (Exception e) {
-            log.error("[Order] 下单失败但优惠券退还失败，需要人工介入 userId={} userCouponId={}: {}",
-                    userId, userCouponId, e.getMessage());
+            log.error("[Order] 优惠券退还失败 userCouponId={} orderNo={} errorType={}", userCouponId, orderNo, e.getClass().getSimpleName(), e);
         }
     }
 
@@ -402,16 +444,8 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
     }
 
-    /**
-     * 发布订单创建事件，失败只记日志。
-     * <p>
-     * <b>不能让它影响主流程</b>：订单已经建好，本地事务也已经提交，事件丢了只该留一条 ERROR。
-     * 这个异常如果抛出去，本地事务会回滚、订单不建，**而 product-service 那边扣掉的库存
-     * 已经提交、没有任何人回补** —— 实测并发下单时整仓库存被这样刷空过。
-     * <p>
-     * 调用点刻意放在加锁的 try/finally 之外，所以这里不需要考虑锁的释放。
-     */
-    private void publishOrderCreatedQuietly(OrderEntity order, String userId,
+    /** 发件箱是本地事务的一部分；失败必须回滚，调用方补偿已发生的远端变更。 */
+    private void publishOrderCreated(OrderEntity order, String userId,
                                             Long total, List<OrderItemEvent> items) {
         try {
             eventPublisher.publishOrderCreated(OrderCreatedEvent.builder()
@@ -422,9 +456,9 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                     .items(items)
                     .createdAt(order.getCreatedAt())
                     .build());
-        } catch (Exception e) {
-            log.error("[Order] 事件发布失败，订单已创建但下游不会收到通知: orderNo={}",
-                    order.getOrderNo(), e);
+        } catch (RuntimeException e) {
+            log.error("[Order] 创建事件登记失败，订单事务将回滚: orderNo={}", order.getOrderNo(), e);
+            throw e;
         }
     }
 
@@ -547,10 +581,10 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
     public OrderResponse getOrder(String userId, Long orderId) {
-        OrderEntity order = orderMapper.selectOne(new LambdaQueryWrapper<OrderEntity>()
-                .eq(OrderEntity::getUserId, userId)
-                .eq(OrderEntity::getId, orderId));
+        OrderEntity order = orderId == null ? null : orderMapper.lockOwned(userId, orderId);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
@@ -566,6 +600,8 @@ public class OrderDomainServiceImpl implements OrderDomainService {
      * 用户会照着它去催件。
      */
     @Override
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
     public LogisticsResponse getLogistics(String userId, Long orderId) {
         // 先过归属：这一句是用户侧唯一的防线，去掉它这个方法就成了「凭订单号看别人物流」
         getOrder(userId, orderId);
@@ -573,8 +609,10 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
     public OrderResponse orderById(Long orderId) {
-        OrderEntity order = orderId == null ? null : orderMapper.selectById(orderId);
+        OrderEntity order = orderId == null ? null : orderMapper.lockById(orderId);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
@@ -587,11 +625,14 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional
     public LogisticsResponse logisticsOf(Long orderId) {
-        OrderEntity order = orderId == null ? null : orderMapper.selectById(orderId);
+        OrderEntity order = orderId == null ? null : orderMapper.lockById(orderId);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
+        requireCommittedOrder(order);
 
         OrderDeliveryEntity delivery = deliveryMapper.selectOne(
                 new LambdaQueryWrapper<OrderDeliveryEntity>()
@@ -635,15 +676,15 @@ public class OrderDomainServiceImpl implements OrderDomainService {
      * 已发货之后不从这里走 —— 要退就走进售后，那条路上有政策判定与商家审核。
      */
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public OrderResponse cancelOrder(String userId, Long orderId) {
-        OrderEntity order = orderMapper.selectOne(new LambdaQueryWrapper<OrderEntity>()
-                .eq(OrderEntity::getId, orderId)
-                .eq(OrderEntity::getUserId, userId));
+        OrderEntity order = orderId == null ? null : orderMapper.lockOwned(userId, orderId);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
 
+        requireCommittedOrder(order);
         OrderStatus current = OrderStatus.parse(order.getStatus());
         if (current == OrderStatus.CREATED) {
             return cancelUnpaidOrder(order, userId);
@@ -660,14 +701,13 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public OrderResponse cancelOrderByNo(String userId, String orderNo) {
         if (orderNo == null || orderNo.isBlank()) {
             throw new IllegalArgumentException("订单号不能为空");
         }
-        OrderEntity order = orderMapper.selectOne(new LambdaQueryWrapper<OrderEntity>()
-                .eq(OrderEntity::getOrderNo, orderNo)
-                .eq(OrderEntity::getUserId, userId));
+        OrderEntity order = orderMapper.lockOwnedByNo(userId, orderNo);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
@@ -695,7 +735,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
         restoreStockQuietly(order);
         // 券在下单时就核销了，订单既然没成交，券要还给用户 ——
         // 不退的话「用了券又取消」等于券被静默吃掉
-        unrederemCouponQuietly(order.getUserId(), order.getUserCouponId());
+        unredeemCouponQuietly(order.getUserId(), order.getUserCouponId(), order.getOrderNo());
         log.info("用户 {} 取消订单 {}", userId, order.getOrderNo());
         return toOrderResponse(order);
     }
@@ -770,7 +810,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
         // 退款已完成，货不可能再发，库存还回去；券同理
         restoreStockQuietly(order);
-        unrederemCouponQuietly(order.getUserId(), order.getUserCouponId());
+        unredeemCouponQuietly(order.getUserId(), order.getUserCouponId(), order.getOrderNo());
         log.info("用户 {} 取消已支付订单 {}，已全额退款 refundNo={}", userId, order.getOrderNo(), refundNo);
         return toOrderResponse(order);
     }
@@ -785,36 +825,50 @@ public class OrderDomainServiceImpl implements OrderDomainService {
      *
      * @return 本次真正关掉的订单数
      */
-    @Transactional
     public int closeExpiredOrders(int batchSize) {
+        if (batchSize < 1 || batchSize > 1000) throw new IllegalArgumentException("关单批量必须在1到1000之间");
         List<OrderEntity> expired = orderMapper.selectList(new LambdaQueryWrapper<OrderEntity>()
                 .eq(OrderEntity::getStatus, OrderStatus.CREATED.name())
                 .lt(OrderEntity::getExpireAt, Times.now())
                 .last("limit " + batchSize));
         int closed = 0;
         for (OrderEntity order : expired) {
-            int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
-                    .eq(OrderEntity::getId, order.getId())
-                    .eq(OrderEntity::getStatus, OrderStatus.CREATED.name())
-                    .set(OrderEntity::getStatus, OrderStatus.CLOSED.name())
-                    .set(OrderEntity::getClosedAt, Times.now())
-                    .set(OrderEntity::getCancelReason, "超时未支付"));
-            if (updated == 0) {
-                continue;
+            try {
+                if (selfProvider.getObject().closeExpiredOrder(order.getId())) closed++;
+            } catch (RuntimeException failure) {
+                log.warn("[Order] 单笔超时关单未执行 orderId={} errorType={}",
+                        order.getId(), failure.getClass().getSimpleName(), failure);
             }
-            order.setStatus(OrderStatus.CLOSED.name());
-            writeStatusLog(order.getId(), OrderStatus.CREATED, OrderStatus.CLOSED,
-                    "SYSTEM", null, "超时未支付，自动关闭");
-            restoreStockQuietly(order);
-            // 券在下单时就核销了 —— 关单同样要把券还回去，否则用户「忘了付款」
-            // 的代价是静默丢一张券，而没有任何地方提示过他
-            unrederemCouponQuietly(order.getUserId(), order.getUserCouponId());
-            closed++;
         }
         if (closed > 0) {
             log.info("[Order] 超时关单 {} 笔，库存与优惠券已归还", closed);
         }
         return closed;
+    }
+
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public boolean closeExpiredOrder(Long orderId) {
+        OrderEntity order = orderMapper.lockById(orderId);
+        if (order == null) return false;
+        requireCommittedOrder(order);
+        LocalDateTime now = Times.now();
+        if (!OrderStatus.CREATED.name().equals(order.getStatus()) || order.getExpireAt() == null
+                || !order.getExpireAt().isBefore(now)) return false;
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getStatus, OrderStatus.CREATED.name())
+                .lt(OrderEntity::getExpireAt, now)
+                .set(OrderEntity::getStatus, OrderStatus.CLOSED.name())
+                .set(OrderEntity::getClosedAt, now)
+                .set(OrderEntity::getCancelReason, "超时未支付"));
+        if (updated == 0) return false;
+        order.setStatus(OrderStatus.CLOSED.name());
+        writeStatusLog(orderId, OrderStatus.CREATED, OrderStatus.CLOSED,
+                "SYSTEM", null, "超时未支付，自动关闭");
+        restoreStockQuietly(order);
+        unredeemCouponQuietly(order.getUserId(), order.getUserCouponId(), order.getOrderNo());
+        return true;
     }
 
     /**
@@ -828,8 +882,8 @@ public class OrderDomainServiceImpl implements OrderDomainService {
      *
      * @return 本次真正完成的订单数
      */
-    @Transactional
     public int completeExpiredReceipts(int batchSize) {
+        if (batchSize < 1 || batchSize > 1000) throw new IllegalArgumentException("完成批量必须在1到1000之间");
         LocalDateTime deadline = Times.now().minusDays(AUTO_COMPLETE_DAYS);
         List<OrderEntity> due = orderMapper.selectList(new LambdaQueryWrapper<OrderEntity>()
                 .eq(OrderEntity::getStatus, OrderStatus.RECEIVED.name())
@@ -837,23 +891,38 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 .last("limit " + batchSize));
         int completed = 0;
         for (OrderEntity order : due) {
-            int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
-                    .eq(OrderEntity::getId, order.getId())
-                    .eq(OrderEntity::getStatus, OrderStatus.RECEIVED.name())
-                    .set(OrderEntity::getStatus, OrderStatus.COMPLETED.name())
-                    .set(OrderEntity::getFinishedAt, Times.now()));
-            if (updated == 0) {
-                continue;
+            try {
+                if (selfProvider.getObject().completeExpiredReceipt(order.getId())) completed++;
+            } catch (RuntimeException failure) {
+                log.warn("[Order] 单笔自动完成未执行 orderId={} errorType={}",
+                        order.getId(), failure.getClass().getSimpleName(), failure);
             }
-            order.setStatus(OrderStatus.COMPLETED.name());
-            writeStatusLog(order.getId(), OrderStatus.RECEIVED, OrderStatus.COMPLETED,
-                    "SYSTEM", null, "收货 " + AUTO_COMPLETE_DAYS + " 天期满，交易自动完成");
-            completed++;
         }
         if (completed > 0) {
             log.info("[Order] 收货期满自动完成 {} 笔", completed);
         }
         return completed;
+    }
+
+    @io.seata.spring.annotation.GlobalLock
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public boolean completeExpiredReceipt(Long orderId) {
+        OrderEntity order = orderMapper.lockById(orderId);
+        if (order == null) return false;
+        requireCommittedOrder(order);
+        LocalDateTime deadline = Times.now().minusDays(AUTO_COMPLETE_DAYS);
+        if (!OrderStatus.RECEIVED.name().equals(order.getStatus()) || order.getReceivedAt() == null
+                || !order.getReceivedAt().isBefore(deadline)) return false;
+        int updated = orderMapper.update(null, new LambdaUpdateWrapper<OrderEntity>()
+                .eq(OrderEntity::getId, orderId)
+                .eq(OrderEntity::getStatus, OrderStatus.RECEIVED.name())
+                .lt(OrderEntity::getReceivedAt, deadline)
+                .set(OrderEntity::getStatus, OrderStatus.COMPLETED.name())
+                .set(OrderEntity::getFinishedAt, Times.now()));
+        if (updated == 0) return false;
+        writeStatusLog(orderId, OrderStatus.RECEIVED, OrderStatus.COMPLETED,
+                "SYSTEM", null, "收货 " + AUTO_COMPLETE_DAYS + " 天期满，交易自动完成");
+        return true;
     }
 
     /**
@@ -908,13 +977,15 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public OrderResponse shipOrder(Long orderId, String carrierCode, String carrierName,
                                    String trackingNo, String operatorId) {
-        OrderEntity order = orderId == null ? null : orderMapper.selectById(orderId);
+        OrderEntity order = orderId == null ? null : orderMapper.lockById(orderId);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
+        requireCommittedOrder(order);
         OrderStatus current = OrderStatus.parse(order.getStatus());
         if (current != OrderStatus.PAID) {
             throw new IllegalStateException("只有已支付的订单可以发货，当前状态：" + current.text());
@@ -962,14 +1033,14 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public OrderResponse confirmReceipt(String userId, Long orderId) {
-        OrderEntity order = orderMapper.selectOne(new LambdaQueryWrapper<OrderEntity>()
-                .eq(OrderEntity::getId, orderId)
-                .eq(OrderEntity::getUserId, userId));
+        OrderEntity order = orderId == null ? null : orderMapper.lockOwned(userId, orderId);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
+        requireCommittedOrder(order);
         OrderStatus current = OrderStatus.parse(order.getStatus());
         if (current != OrderStatus.SHIPPED) {
             throw new IllegalStateException("只有已发货的订单可以确认收货，当前状态：" + current.text());
@@ -1043,13 +1114,15 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void addDeliveryTrace(Long orderId, DeliveryStatus status, String description,
                                  String location, LocalDateTime happenAt, String operatorId) {
-        OrderEntity order = orderId == null ? null : orderMapper.selectById(orderId);
+        OrderEntity order = orderId == null ? null : orderMapper.lockById(orderId);
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
+        requireCommittedOrder(order);
 
         OrderDeliveryEntity delivery = deliveryMapper.selectOne(
                 new LambdaQueryWrapper<OrderDeliveryEntity>()
@@ -1098,13 +1171,15 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void markPaid(Long orderId) {
-        OrderEntity order = orderMapper.selectById(orderId);
+        OrderEntity order = orderId == null ? null : orderMapper.lockById(orderId);
         if (order == null) {
             log.error("[Order] 收到支付完成事件但订单不存在 orderId={}", orderId);
             return;
         }
+        requireCommittedOrder(order);
         OrderStatus current = OrderStatus.parse(order.getStatus());
         if (current == OrderStatus.PAID) {
             return;  // 重复投递，幂等吞掉
@@ -1301,6 +1376,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
 
     /** 单笔订单（详情、下单返回）—— 订单行现查 */
     private OrderResponse toOrderResponse(OrderEntity order) {
+        requireCommittedOrder(order);
         return toOrderResponse(order, orderItemMapper.selectList(
                 new LambdaQueryWrapper<OrderItemEntity>().eq(OrderItemEntity::getOrderId, order.getId())));
     }
@@ -1313,6 +1389,7 @@ public class OrderDomainServiceImpl implements OrderDomainService {
      * 分页之后就是「每页 10 笔 = 多 10 次查询」。
      */
     private OrderResponse toOrderResponse(OrderEntity order, List<OrderItemEntity> orderItems) {
+        requireCommittedOrder(order);
         List<OrderItemResponse> items = orderItems.stream()
                 .map(item -> OrderItemResponse.builder()
                         .id(item.getId())
@@ -1353,5 +1430,9 @@ public class OrderDomainServiceImpl implements OrderDomainService {
                 .cancelReason(order.getCancelReason())
                 .items(items)
                 .build();
+    }
+
+    private void requireCommittedOrder(OrderEntity order) {
+        yumefusaka.envoymart.orderservice.service.OrderGlobalDecision.requireCommitted(order, decisionProbe);
     }
 }

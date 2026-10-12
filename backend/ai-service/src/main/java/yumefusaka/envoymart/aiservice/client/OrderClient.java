@@ -23,6 +23,47 @@ import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
 
 @FeignClient(name = "order-service", url = "${services.order-service-url:http://127.0.0.1:9003}")
 public interface OrderClient {
+    @GetMapping("/orders/internal/operation-receipts/{operationId}")
+    org.springframework.http.ResponseEntity<Result<Object>> operationReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("operationId") String operationId,
+            @RequestParam("toolName") String toolName, @RequestParam("parametersHash") String parametersHash);
+
+    @PostMapping("/cart/items")
+    org.springframework.http.ResponseEntity<Result<AgentCartItem>> addCartItemReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader("X-Operation-Id") String operationId, @RequestBody AgentAddCartRequest request);
+
+    @PutMapping("/cart/items/{id}")
+    org.springframework.http.ResponseEntity<Result<AgentCartItem>> updateCartItemReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader("X-Operation-Id") String operationId, @PathVariable("id") Long id,
+            @RequestBody AgentUpdateCartRequest request);
+
+    @DeleteMapping("/cart/items/{id}")
+    org.springframework.http.ResponseEntity<Result<Void>> removeCartItemReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader("X-Operation-Id") String operationId, @PathVariable("id") Long id);
+
+    @PostMapping("/orders/checkout")
+    org.springframework.http.ResponseEntity<Result<OrderResponse>> checkoutReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader("X-Operation-Id") String operationId, @RequestBody AgentCheckoutRequest request);
+
+    @PostMapping("/orders/{id}/cancel")
+    org.springframework.http.ResponseEntity<Result<OrderResponse>> cancelOrderReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader("X-Operation-Id") String operationId, @PathVariable("id") Long id);
+
+    @PostMapping("/orders/by-no/{orderNo}/cancel")
+    org.springframework.http.ResponseEntity<Result<OrderResponse>> cancelOrderByNoReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader("X-Operation-Id") String operationId, @PathVariable("orderNo") String orderNo);
+
+    @PostMapping("/after-sales")
+    org.springframework.http.ResponseEntity<Result<AgentAfterSaleResult>> applyAfterSaleReceipt(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader("X-Operation-Id") String operationId, @RequestBody AgentAfterSaleRequest request);
 
     @GetMapping("/orders/{id}")
     Result<OrderResponse> getOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
@@ -32,38 +73,10 @@ public interface OrderClient {
     Result<LogisticsResponse> getLogistics(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                            @PathVariable("id") Long id);
 
-    @PostMapping("/orders/{id}/cancel")
-    Result<OrderResponse> cancelOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                                      @PathVariable("id") Long id);
-
-    @PostMapping("/orders/by-no/{orderNo}/cancel")
-    Result<OrderResponse> cancelOrderByNo(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                                          @PathVariable("orderNo") String orderNo);
-
-    /**
-     * 售后资格预览 —— 判定在 order-service 的政策引擎里，这里只取结论。
-     * <p>
-     * 为什么 ai-service 不自己判：退货期限、类目政策、可退比例都是随业务变的规则，
-     * 而「用户先在页面看到一套说法、再问 Agent 得到另一套」是这类功能最伤人的失败模式。
-     * 结论只有一个来源，Agent 只负责把它说成人话。
-     */
     // ==================== 购物车 ====================
 
     @GetMapping("/cart")
     Result<java.util.List<AgentCartItem>> listCart(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId);
-
-    @PostMapping("/cart/items")
-    Result<AgentCartItem> addCartItem(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                              @RequestBody AgentAddCartRequest request);
-
-    @PutMapping("/cart/items/{id}")
-    Result<AgentCartItem> updateCartItem(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                                         @PathVariable("id") Long id,
-                                         @RequestBody AgentUpdateCartRequest request);
-
-    @DeleteMapping("/cart/items/{id}")
-    Result<Void> removeCartItem(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                                @PathVariable("id") Long id);
 
     /**
      * 结算预览 —— 与 checkout 共用同一段装配代码，只算不改。
@@ -74,16 +87,9 @@ public interface OrderClient {
     @PostMapping("/orders/preview")
     Result<java.util.Map<String, Object>> previewOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId);
 
-    @PostMapping("/orders/checkout")
-    Result<OrderResponse> checkout(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                           @RequestBody AgentCheckoutRequest request);
-
     // ==================== 售后 ====================
 
-    @PostMapping("/after-sales")
-    Result<AgentAfterSaleResult> applyAfterSale(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
-                                        @RequestBody AgentAfterSaleRequest request);
-
+    /** 售后流程与提交工具共用交易域资格预览；type 使用 REFUND_ONLY / RETURN_REFUND / EXCHANGE。 */
     @GetMapping("/after-sales/preview")
     Result<AfterSalePreview> previewAfterSale(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                               @RequestParam("orderItemId") Long orderItemId,

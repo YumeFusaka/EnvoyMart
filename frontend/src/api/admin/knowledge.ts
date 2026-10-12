@@ -192,12 +192,21 @@ export interface GraphFailureRecord {
   occurredAt: string
 }
 
-export async function fetchGraphFailures(params?: { batchId?: string; docNo?: string; stage?: string; reasonCode?: string; limit?: number }) {
+/** 六项筛选均精确匹配；实体匹配 entityKey 或规范化后的任一端点。 */
+export async function fetchGraphFailures(params?: { batchId?: string; docNo?: string; stage?: string; reasonCode?: string; entityKey?: string; relation?: string; limit?: number }) {
   const response = await request.get('/knowledge/admin/graph/failures', { params })
   return (response.data.data ?? []) as GraphFailureRecord[]
 }
 
+export interface GraphFailureStats {
+  failed: number
+  retryable: number
+  batches: number
+  byStage: Record<string, number>
+  byReason: Record<string, number>
+}
+
 export async function fetchGraphFailureStats(batchId?: string) {
   const response = await request.get('/knowledge/admin/graph/failures/stats', { params: batchId ? { batchId } : undefined })
-  return response.data.data as Record<string, unknown>
+  return response.data.data as GraphFailureStats
 }

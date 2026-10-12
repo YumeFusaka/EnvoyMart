@@ -63,6 +63,20 @@ class InteractionCheckToolTest {
     // ==================== 三种「空」必须分得开 ====================
 
     @Test
+    void 共同服用提醒按原文展示为注意事项不能夸成独特三阶禁忌() {
+        String quote = "钙剂、铁剂、锌三者同时补充时，在肠道吸收阶段会发生竞争并彼此抑制，建议不要同时服用，至少错开两小时。";
+        GraphEdge edge = new GraphEdge(new GraphNode("combo:钙|铁剂|锌", "钙 + 铁剂 + 锌", "COMBINATION"),
+                "COMBINED_WITH", "在肠道吸收阶段会发生竞争并彼此抑制", new GraphNode("锌", "锌", "NUTRIENT"),
+                "KB-0053", "钙铁锌三者同补注意事项（专项证据）", "KB-0053_0", 18, 80,
+                quote, null, List.of("钙", "铁剂", "锌"));
+        var report = new InteractionReport(true, null, List.of(new InteractionReport.Item(
+                "锌", "锌", true, List.of(), List.of(edge), null)));
+        assertThat(run(report, "钙,铁剂,锌").getOutput())
+                .contains("组合注意事项（钙 + 铁剂 + 锌 同服）", quote)
+                .doesNotContain("组合禁忌", "两两没事", "三者才");
+    }
+
+    @Test
     void 图谱不可用时必须说没查成而不是没有冲突() {
         ToolResult result = run(new InteractionReport(false, "Neo4j 连不上", List.of()), "SPU5,华法林");
 
@@ -85,20 +99,55 @@ class InteractionCheckToolTest {
 
         assertThat(result.getOutput())
                 .as("「没收录」与「没风险」在界面上长得一样，但在用药场景里意思相反")
-                .contains("图谱中没有收录")
+                .contains("本次图谱检查未收录该称呼")
                 .contains("没有收录不等于安全")
                 .doesNotContain("未发现已知的相互作用");
     }
 
     @Test
-    void 已收录且无风险才说未发现已知风险() {
+    void 已收录且空风险仅声明本次图谱未返回风险() {
         ToolResult result = run(new InteractionReport(true, null, List.of(
                 new InteractionReport.Item("维生素D3", "维生素D3", true, List.of(), List.of(), null)
         )), "维生素D3");
 
         assertThat(result.getOutput())
                 .contains("已收录")
-                .contains("未发现已知的相互作用或人群禁忌");
+                .contains("本次图谱检查未返回已知的相互作用或人群禁忌");
+    }
+
+    @Test
+    void KG04图谱未返回关系不得否定或屏蔽本轮已核验的强文本条款() {
+        var risk = new GraphEdge(FISH_OIL, "INTERACTS_WITH", "可能增加出血风险", WARFARIN,
+                "KB-0010", "膳食补充剂摄入上限与常见药物相互作用", "KB-0010_4", 305, 365,
+                "鱼油中的EPA与DHA与华法林等药物合用可能增加出血风险。", FISH_OIL, List.of("华法林"));
+        var report = new InteractionReport(true, null, List.of(
+                new InteractionReport.Item("维生素K2", "维生素 K2", true, List.of(), List.of(), null),
+                new InteractionReport.Item("华法林", "华法林", true, List.of(), List.of(risk), null)));
+        var result = run(report, "维生素K2,华法林");
+        assertThat(result.getOutput())
+                .contains("本次图谱检查未返回已知的相互作用或人群禁忌")
+                .contains("不能据此断言知识库或全部平台资料未收录")
+                .contains("本轮已经检索且通过证据核验的强文本条款")
+                .contains("分别说明图谱检查范围与文本原文事实")
+                .contains("不得取消已有文本出处")
+                .contains("不得补写未检索到的知识或常识")
+                .doesNotContain("只引用上面出现的出处，不要补充图谱之外的知识");
+        assertThat(result.getRawData()).isSameAs(report);
+        assertThat(result.getEvidence()).extracting(chunk -> chunk.getDocId()).containsExactly("KB-0010");
+        assertThat(result.getOutput()).doesNotContain("K2等同于维生素K", "维生素K2可拮抗华法林");
+    }
+
+    @Test
+    void 未收录与空风险的限制都只声明本次图谱范围而非全知识库否定() {
+        for (boolean found : List.of(true, false)) {
+            var report = new InteractionReport(true, null, List.of(
+                    new InteractionReport.Item("维生素K2", "维生素 K2", found, List.of(), List.of(), null)));
+            assertThat(run(report, "维生素K2").getOutput())
+                    .contains("本次图谱检查")
+                    .contains("不能据此断言知识库或全部平台资料未收录")
+                    .contains("不得补写未检索到的知识或常识")
+                    .doesNotContain("只是平台查不到这样东西");
+        }
     }
 
     // ==================== 有风险时溯源要能给出来 ====================

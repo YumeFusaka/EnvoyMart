@@ -14,6 +14,9 @@ public final class InternalAuth {
     /** 凭证头名称 —— 由网关在转发时注入，下游据此判断身份声明是否可信 */
     public static final String TOKEN_HEADER = "X-Internal-Token";
 
+    /** Seata只允许受信服务间调用传播事务上下文，客户端不能指定参与的全局事务。 */
+    public static final String TRANSACTION_ID_HEADER = "TX_XID";
+
     /** 至少 32 字节：与 JWT_SECRET 同级，太短的共享密钥可以被暴力枚举 */
     private static final int MIN_BYTES = 32;
 

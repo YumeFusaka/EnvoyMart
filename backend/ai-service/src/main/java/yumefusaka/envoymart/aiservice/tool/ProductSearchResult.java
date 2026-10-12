@@ -31,7 +31,22 @@ import yumefusaka.envoymart.contract.ProductSummary;
  */
 public record ProductSearchResult(ProductSummary summary, Long skuId,
                                   String specText, Long price, Integer stock,
-                                  Boolean purchasable, List<SkuOption> skus) {
+                                  Boolean purchasable, List<SkuOption> skus)
+        implements yumefusaka.envoymart.agent.tool.ProductCandidate {
+
+    @Override public String candidateKey() {
+        return summary == null || summary.getId() == null ? null : "SPU" + summary.getId();
+    }
+
+    @Override public String candidateName() {
+        return summary == null ? null : summary.getName();
+    }
+
+    @Override public List<String> candidateSpecs() {
+        return skus == null ? List.of() : skus.stream().filter(java.util.Objects::nonNull)
+                .map(sku -> (sku.specText() == null || sku.specText().isBlank() ? "未标注规格文字" : sku.specText())
+                        + "（SKU" + sku.skuId() + "）").toList();
+    }
 
     public ProductSearchResult(ProductSummary summary, Long skuId) {
         this(summary, skuId, null, null, null, null, List.of());

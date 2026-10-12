@@ -56,7 +56,7 @@ public interface CouponService {
      * 用于「券已核销、订单却没建成」的情形：库存不足、建单失败都会走到这里。
      * 不带这个补偿的话，一次失败的下单就会把用户的券白白吃掉。
      */
-    void unredeem(String userId, Long userCouponId);
+    void unredeem(String userId, Long userCouponId, String orderNo);
 
     /**
      * 把过期的券置为 EXPIRED。

@@ -27,6 +27,16 @@ class AgentEvidenceRefreshTest {
         assertThat(response.getEvidenceLevel()).isEqualTo(EvidenceGate.Level.SUFFICIENT);
     }
 
+    @Test
+    void 没有入口检索对象的工具轮次也按真实强弱切片更新门() {
+        for (double score : List.of(0.19, 0.29)) {
+            var response = Agent.AgentResponse.builder().evidenceLevel(EvidenceGate.Level.NONE).build();
+            Agent.refreshEvidenceLevel(response, List.of(chunk("工具证据", score)), EvidenceGate.Thresholds.defaults());
+            assertThat(response.getEvidenceLevel()).isEqualTo(score < 0.2
+                    ? EvidenceGate.Level.WEAK : EvidenceGate.Level.SUFFICIENT);
+        }
+    }
+
     private DocumentChunk chunk(String id, double score) {
         return DocumentChunk.builder()
                 .chunkId(id).docId(id).content("证据")

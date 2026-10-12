@@ -73,6 +73,17 @@ class JwtGatewayFilterTest {
     }
 
     @Test
+    void 公开与认证请求均剥离客户端事务上下文() {
+        for (String path : new String[]{"/products", "/coupons/1/receive"}) {
+            var request = MockServerHttpRequest.get(path)
+                    .header("tX_XiD", "172.18.0.5:8091:123456")
+                    .header("Authorization", "Bearer " + token("u1001", "USER"));
+            filter.filter(MockServerWebExchange.from(request.build()), chain).block();
+            assertThat(downstreamHeaders().getFirst("TX_XID")).isNull();
+        }
+    }
+
+    @Test
     void 认证请求应剥掉客户端身份头并注入token里的身份() {
         MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/orders/1")
                 .header("Authorization", "Bearer " + token("u1001", "USER"))

@@ -19,15 +19,20 @@
  *   node scripts/verify-knowledge-ui.mjs
  */
 import { chromium } from 'playwright-core'
+import { loadCombinationEvidence } from './lib/combination-evidence.mjs'
+import { verifyGraphDiagnosticsUi } from './lib/graph-diagnostics-ui.mjs'
+
+// 诊断与原文定位契约先跑；只跑此段无需后端、认证或模型，保持总入口脚本数量不变。
+const diagnosticsPass = await verifyGraphDiagnosticsUi()
+if (process.argv.includes('--diagnostics-only')) process.exit(0)
 
 const BASE = process.env.VERIFY_BASE ?? 'http://localhost:5173'
 const GW = process.env.VERIFY_GW ?? 'http://localhost:8080'
-const NEO4J_HTTP = process.env.VERIFY_NEO4J ?? 'http://localhost:7474'
 const CHROMIUM =
   process.env.PLAYWRIGHT_CHROMIUM ??
   'C:/Users/j/AppData/Local/ms-playwright/chromium-1223/chrome-win64/chrome.exe'
 
-let pass = 0
+let pass = diagnosticsPass
 let fail = 0
 function ck(name, condition, detail = '') {
   if (condition) {
@@ -258,12 +263,11 @@ ck(
     Math.abs(base.root.y - (base.box.t + base.box.h / 2)) < 3,
   `根节点 ${Math.round(base.root.x)},${Math.round(base.root.y)} / 画布中心 ${Math.round(base.box.l + base.box.w / 2)},${Math.round(base.box.t + base.box.h / 2)}`,
 )
-// 裁剪必须按内容范围做：曾经 clipPath 写在镜头层自己的用户空间里，
-// 结果画面有一大半被当越界裁掉，只剩右下角一块
+// 默认取景为大图保留节点可读尺寸，比例不由节点总数决定；全图档在下方独立验证。
 ck(
-  `内容铺满可视区（可见 ${base.visible}/${base.total} 个节点）`,
-  base.visible >= base.total * 0.6,
-  `只有 ${base.visible} 个节点落在画布里，裁剪范围可能又算错了`,
+  `默认取景节点可读且中心邻域可见（${base.visible}/${base.total}）`,
+  base.minH >= 9.5 && base.visible >= Math.min(3, base.total),
+  `最小节点高 ${base.minH.toFixed(1)}px，可见 ${base.visible} 个节点`,
 )
 
 // 裁剪区必须严丝合缝地覆盖整块画布。
@@ -669,46 +673,22 @@ ck(
   selectText.includes('鱼油软胶囊') && !selectText.includes('spu7'),
   '下拉露出的仍是键，与画布/右栏的展示名对不上',
 )
-// ---- 七、组合禁忌（方案 B）：图上有、清单里有、出处点得回原文 ----
-//
-// 背景：`COMBINED_WITH` 是「三样一起才有事」的结构，线上语料里没有这类原句，
-// 所以**这一段自己造一条边**，验完再删。测的是四件事：组合节点长什么样、
-// 关系名翻译对不对、右栏能不能读、点开能不能看到逐字引文。
-// 不这么做的话，这条链路直到有真实语料之前都没有任何一处会跑到。
-const COMBO_KEY = 'combo:verify|组合|样本'
-async function cypher(script) {
-  const res = await fetch(`${NEO4J_HTTP}/db/neo4j/tx/commit`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: 'Basic ' + Buffer.from('neo4j:envoymart123').toString('base64'),
-    },
-    body: JSON.stringify({ statements: [{ statement: script }] }),
-  })
-  return res.json()
-}
-
+// ---- 七、组合注意事项：只读真实边，同一出处必须能跳到原文高亮 ----
 let comboErr = null
 try {
-  await cypher(
-    `MERGE (h:Entity {name:'${COMBO_KEY}'}) ` +
-      `SET h.label='样本A + 样本B + 样本C', h.kind='COMBINATION' ` +
-      `MERGE (t:Entity {name:'验收样本人群'}) ` +
-      `SET t.label='验收样本人群', t.kind='POPULATION' ` +
-      `MERGE (h)-[r:REL {relation:'COMBINED_WITH', docId:'KB-0005', chunkId:'KB-0005_0', ` +
-      `quoteStart:0, quoteEnd:10, quote:'组合验收样本逐字引文', effect:'样本后果'}]->(t)`,
-  )
-  await page.goto(`${BASE}/#/knowledge/graph?root=${encodeURIComponent(COMBO_KEY)}&depth=1`, {
+  const { combinations } = await loadCombinationEvidence(GW)
+  const edge = combinations[0]
+  ck('生产组合边的成员、尾端、后果及偏移均由同一切片支撑', combinations.length > 0)
+  await page.goto(`${BASE}/#/knowledge/graph?root=${encodeURIComponent(edge.head.name)}&depth=1`, {
     waitUntil: 'networkidle',
   })
   await page.reload({ waitUntil: 'networkidle' })
   await page.locator('.evidence__row').first().waitFor({ state: 'visible', timeout: 25000 })
-  await page.waitForTimeout(1200)
 
   const comboLegend = await page.locator('.legend__item').allTextContents()
   ck(
-    '组合禁忌在关系图例里（翻译过，不是 COMBINED_WITH）',
-    comboLegend.some((t) => t.includes('组合禁忌')),
+    '组合注意事项在关系图例里（翻译过，不是 COMBINED_WITH）',
+    comboLegend.some((t) => t.includes('组合注意事项')),
     `图例=${JSON.stringify(comboLegend)}`,
   )
   const kindLegend = await page.locator('.kind-legend__item').allTextContents()
@@ -720,32 +700,38 @@ try {
   const nodeLabels = await page.locator('.node__label').allTextContents()
   ck(
     '画布上组合节点显示成员名（不是 combo: 键）',
-    nodeLabels.some((t) => t.includes('样本A')) && !nodeLabels.some((t) => t.includes('combo:')),
+    nodeLabels.some((text) => text === edge.head.label) && !nodeLabels.some((t) => t.includes('combo:')),
     `节点=${JSON.stringify(nodeLabels)}`,
   )
   const railText = await page.locator('.graph-rail').innerText()
-  ck('右栏把组合关系读成「组合禁忌」', railText.includes('组合禁忌'), railText.slice(0, 120))
+  ck('右栏把组合关系读成「组合注意事项」', railText.includes('组合注意事项'), railText.slice(0, 120))
 
-  await page.locator('.evidence__head').first().click()
-  await page.locator('.evidence__detail').first().waitFor({ state: 'visible', timeout: 8000 })
-  const detail = await page.locator('.evidence__detail').first().innerText()
+  const comboRow = page.locator('.evidence__row').filter({ hasText: '组合注意事项' })
+    .filter({ hasText: edge.head.label }).filter({ hasText: edge.tail.label }).first()
+  await comboRow.locator('.evidence__head').click()
+  const source = comboRow.locator('.evidence__source-item')
+    .filter({ hasText: edge.quote }).filter({ hasText: edge.docTitle }).first()
+  await source.waitFor({ state: 'visible', timeout: 8000 })
   ck(
-    '组合关系的出处是逐字引文（溯源链完整）',
-    detail.includes('组合验收样本逐字引文'),
-    detail.slice(0, 160),
+    '组合关系展示同一条真实引文与后果',
+    (await source.locator('.evidence__quote').textContent()) === edge.quote
+      && (await source.locator('.evidence__effect').textContent()) === edge.effect,
+    await source.innerText(),
   )
+  const link = source.getByRole('link', { name: `《${edge.docTitle}》· 查看原文`, exact: true })
+  const href = await link.getAttribute('href')
+  ck('组合原文链接使用真实文档和切片身份',
+    Boolean(href) && new URL(href, BASE).hash === `#/knowledge/${edge.docId}?chunk=${edge.chunkId}`, href ?? '')
+  await link.click()
+  await page.locator('mark.doc__mark').waitFor({ state: 'visible', timeout: 15000 })
+  const markedText = await page.locator('mark.doc__mark').allTextContents()
+  ck('组合引用跳到真实原文并高亮同一句',
+    hashOf() === `/knowledge/${edge.docId}?chunk=${edge.chunkId}`
+      && markedText.some((text) => text.includes(edge.quote)), markedText.join(' | '))
 } catch (e) {
   comboErr = e
-} finally {
-  // 造出来的边必须删掉：留在图上会让下一次「图谱规模」断言与演示都对不上
-  await cypher(
-    `MATCH (h:Entity {name:'${COMBO_KEY}'})-[r:REL]->() DELETE r ` +
-      `WITH h MATCH (h)-[r2:REL]-() DELETE r2 ` +
-      `WITH DISTINCT h DETACH DELETE h`,
-  )
-  await cypher(`MATCH (t:Entity {name:'验收样本人群'}) WHERE NOT (t)--() DELETE t`)
 }
-ck('组合禁忌验收未抛异常', comboErr === null, comboErr === null ? '' : String(comboErr))
+ck('组合注意事项真实只读验收未抛异常', comboErr === null, comboErr === null ? '' : String(comboErr))
 ck('全程无控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 
 await browser.close()

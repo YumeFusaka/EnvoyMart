@@ -98,7 +98,7 @@ class ProductAggregateServiceTest {
         verify(spuMapper, times(3)).increaseSales(1L, 1);
         assertThat(ledgerKeys).containsExactlyInAnyOrder(168L, 169L, 170L);
         // 派生刷新按商品去重：同一个 SPU 的三行只刷一次缓存与索引
-        verify(derivedRefresh, times(1)).afterCommit(ArgumentMatchers.<Collection<Long>>any());
+        verify(derivedRefresh, times(1)).request(ArgumentMatchers.<Collection<Long>>any());
     }
 
     @Test
@@ -165,7 +165,7 @@ class ProductAggregateServiceTest {
         // 第二条命中 where 不成立、影响行数 0，被丢弃
         assertThat(storedVersion).isEqualTo(100L);
         // 缓存/索引只刷新一次 —— 被丢弃的旧快照不该触发下游重算
-        verify(derivedRefresh, times(1)).afterCommit(1L);
+        verify(derivedRefresh, times(1)).request(1L);
     }
 
     /** 同一条消息重投：版本相等也不该再写一次，更不该刷新缓存 */
@@ -174,7 +174,7 @@ class ProductAggregateServiceTest {
         service.applyReviewAggregate(new ReviewAggregateEvent(1L, new BigDecimal("4.80"), 10, 100L));
         service.applyReviewAggregate(new ReviewAggregateEvent(1L, new BigDecimal("4.80"), 10, 100L));
 
-        verify(derivedRefresh, times(1)).afterCommit(1L);
+        verify(derivedRefresh, times(1)).request(1L);
     }
 
     /** 版本更高的新快照正常写入 */

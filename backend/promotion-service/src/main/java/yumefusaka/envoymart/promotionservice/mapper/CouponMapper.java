@@ -4,10 +4,13 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Select;
 import yumefusaka.envoymart.promotionservice.entity.CouponEntity;
 
 @Mapper
 public interface CouponMapper extends BaseMapper<CouponEntity> {
+    @Select("select * from coupon where id=#{couponId} for update")
+    CouponEntity lockCoupon(@Param("couponId") Long couponId);
 
     /**
      * 原子领取计数 +1。

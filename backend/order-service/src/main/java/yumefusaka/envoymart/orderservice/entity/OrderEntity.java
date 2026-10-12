@@ -74,4 +74,7 @@ public class OrderEntity {
      */
     private String requestId;
 
+    /** 本单创建事务的权威决议依据；NULL 兼容既有本地订单。 */
+    private String globalXid;
+
 }

@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import yumefusaka.envoymart.productservice.projection.ProductProjectionInputs;
 import org.springframework.util.StringUtils;
 import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.util.Times;
@@ -101,6 +102,7 @@ public class ProductAdminServiceImpl implements ProductAdminService {
     /** 写完之后必然要刷新的两份派生副本（缓存、ES 索引） */
     private final ProductDerivedRefresh derivedRefresh;
     private final KnowledgeLifecycleSync knowledgeLifecycleSync;
+    private final ProductProjectionInputs projectionInputs;
 
     public ProductAdminServiceImpl(ProductSpuMapper spuMapper,
                                    ProductSkuMapper skuMapper,
@@ -113,7 +115,8 @@ public class ProductAdminServiceImpl implements ProductAdminService {
                                    ProductAssembler assembler,
                                    CategoryService categoryService,
                                    ProductDerivedRefresh derivedRefresh,
-                                        KnowledgeLifecycleSync knowledgeLifecycleSync) {
+                                   KnowledgeLifecycleSync knowledgeLifecycleSync,
+                                   ProductProjectionInputs projectionInputs) {
         this.spuMapper = spuMapper;
         this.skuMapper = skuMapper;
         this.specMapper = specMapper;
@@ -126,6 +129,7 @@ public class ProductAdminServiceImpl implements ProductAdminService {
         this.categoryService = categoryService;
         this.derivedRefresh = derivedRefresh;
         this.knowledgeLifecycleSync = knowledgeLifecycleSync;
+        this.projectionInputs = projectionInputs;
     }
 
     // ==================== 读 ====================
@@ -191,6 +195,7 @@ public class ProductAdminServiceImpl implements ProductAdminService {
     // ==================== 写 ====================
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public Long create(SpuUpsertRequest request, String operatorId) {
         validateCategory(request.getCategoryId());
@@ -210,14 +215,18 @@ public class ProductAdminServiceImpl implements ProductAdminService {
         reconcileSkus(spuId, request.getSkus(), specIndex, operatorId);
         reconcileAttributes(spuId, request.getAttributes());
 
-        derivedRefresh.afterCommit(spuId);
+        derivedRefresh.request(spuId);
         log.info("[管理] 新建商品 spuId={} code={} operator={}", spuId, spu.getSpuCode(), operatorId);
         return spuId;
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void update(Long spuId, SpuUpsertRequest request, String operatorId) {
+        if (spuId == null) throw new IllegalArgumentException("商品不存在");
+        // 多表写入按消费者同一源锁顺序，避免规格/SKU/SPU之间逆序死锁。
+        projectionInputs.lock(spuId);
         ProductSpuEntity spu = requireSpu(spuId);
         validateCategory(request.getCategoryId());
         validateBrand(request.getBrandId());
@@ -234,11 +243,12 @@ public class ProductAdminServiceImpl implements ProductAdminService {
         reconcileSkus(spuId, request.getSkus(), specIndex, operatorId);
         reconcileAttributes(spuId, request.getAttributes());
 
-        derivedRefresh.afterCommit(spuId);
+        derivedRefresh.request(spuId);
         log.info("[管理] 编辑商品 spuId={} operator={}", spuId, operatorId);
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void changeStatus(Long spuId, Integer status) {
         if (status == null || (status != STATUS_ON && status != STATUS_OFF)) {
@@ -252,7 +262,7 @@ public class ProductAdminServiceImpl implements ProductAdminService {
         spu.setStatus(status);
         spu.setUpdatedAt(Times.now());
         updateSpu(spu);
-        derivedRefresh.afterCommit(spuId);
+        derivedRefresh.request(spuId);
         // 商品下架 → 它名下的说明书同步退出检索；上架 → 只恢复「因它下架而停用」的那些。
         // 与 derivedRefresh 一样放在提交之后：事务回滚了就不该有知识层的改动。
         knowledgeLifecycleSync.afterCommit(spuId, status == STATUS_ON);
@@ -260,6 +270,7 @@ public class ProductAdminServiceImpl implements ProductAdminService {
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void adjustStock(Long skuId, StockAdjustRequest request, String operatorId) {
         ProductSkuEntity sku = skuMapper.selectById(skuId);
@@ -286,13 +297,16 @@ public class ProductAdminServiceImpl implements ProductAdminService {
         }
         writeStockLog(skuId, after > before ? CHANGE_INBOUND : CHANGE_DEDUCT,
                 Math.abs(after - before), before, after, operatorId, request.getRemark());
-        derivedRefresh.afterCommit(sku.getSpuId());
+        derivedRefresh.request(sku.getSpuId());
         log.info("[管理] 调整库存 skuId={} {}→{} operator={}", skuId, before, after, operatorId);
     }
 
     @Override
+    @io.seata.spring.annotation.GlobalLock
     @Transactional
     public void delete(Long spuId) {
+        if (spuId == null) throw new IllegalArgumentException("商品不存在");
+        projectionInputs.lock(spuId);
         ProductSpuEntity spu = requireSpu(spuId);
         List<ProductSkuEntity> skus = skuMapper.selectList(new LambdaQueryWrapper<ProductSkuEntity>()
                 .eq(ProductSkuEntity::getSpuId, spuId));
@@ -324,7 +338,7 @@ public class ProductAdminServiceImpl implements ProductAdminService {
                 .eq(ProductSpecEntity::getSpuId, spuId));
         spuMapper.deleteById(spuId);
 
-        derivedRefresh.afterCommit(spuId);
+        derivedRefresh.request(spuId);
         log.info("[管理] 删除商品 spuId={} code={}", spuId, spu.getSpuCode());
     }
 
@@ -698,8 +712,11 @@ public class ProductAdminServiceImpl implements ProductAdminService {
         entity.setBeforeStock(before);
         entity.setAfterStock(after);
         entity.setBizType(BIZ_MANUAL);
-        // 操作人写进 biz_id：没有它，流水只能证明「库存变了」，证明不了「谁改的」
-        entity.setBizId(operatorId);
+        // 操作人不是一次库存调整的身份；同一人可多次调整同一规格，不能被订单幂等键误判。
+        var actionId = java.util.UUID.randomUUID();
+        String compactId = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                java.nio.ByteBuffer.allocate(16).putLong(actionId.getMostSignificantBits()).putLong(actionId.getLeastSignificantBits()).array());
+        entity.setBizId(operatorId + ":" + compactId);
         entity.setRemark(remark);
         entity.setCreatedAt(Times.now());
         stockLogMapper.insert(entity);

@@ -30,6 +30,7 @@ public class CancelOrderTool implements Tool {
                 .description("取消未支付的订单。不可撤销，需要用户确认。"
                         + "orderId 可以是订单查询结果里的数字 id，也兼容用户看到的 YS 开头订单号。")
                 .requiresConfirmation(true)
+                .acceptsOperationId(true)
                 .parameters(Map.of(
                         "orderId", ToolDefinition.ParameterSpec.builder()
                                 .type("integer").description("订单 ID").required(true).build()
@@ -39,27 +40,38 @@ public class CancelOrderTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call) {
+        return execute(call, false);
+    }
+    @Override public ToolResult recover(ToolCall call) { return execute(call, true); }
+    private ToolResult execute(ToolCall call, boolean queryOnly) {
         try {
             String userId = call.requireUserId();
             Object rawOrderId = call.getArguments().get("orderId");
             if (rawOrderId == null || rawOrderId.toString().isBlank()) {
                 throw new IllegalArgumentException("缺少订单 ID 或订单号，请先查询订单");
             }
-            // 写操作：下游说「没做成」时绝不重发——应答丢了不代表业务没生效，
-            // 重发就是第二次取消。见 Downstream#mutate
+            // 用户给定的编号形态参与参数指纹，恢复不能悄悄改变目标。
             String raw = rawOrderId.toString().trim();
-            var order = raw.matches("\\d+")
-                    ? Downstream.mutate("订单服务", () -> orderClient.cancelOrder(userId, Long.valueOf(raw)))
-                    : Downstream.mutate("订单服务", () -> orderClient.cancelOrderByNo(userId, raw));
+            String normalized = raw.matches("\\d+") ? String.valueOf(Long.valueOf(raw)) : raw;
+            var operation = WriteReceipts.context(call, Map.of("orderId", normalized));
+            var receipt = WriteReceipts.run(operation, queryOnly, yumefusaka.envoymart.contract.OrderResponse.class,
+                    () -> orderClient.operationReceipt(userId, operation.operationId(), operation.toolName(), operation.parametersHash()),
+                    () -> raw.matches("\\d+") ? orderClient.cancelOrderReceipt(userId, operation.operationId(), Long.valueOf(raw))
+                            : orderClient.cancelOrderByNoReceipt(userId, operation.operationId(), raw));
+            var order = receipt.data();
+            WriteReceipts.require(order != null && order.getId() != null && order.getId() > 0
+                    && order.getOrderNo() != null && (raw.matches("\\d+") ? Long.valueOf(raw).equals(order.getId()) : raw.equals(order.getOrderNo()))
+                    && order.getStatus() != null && java.util.Set.of("CANCELLED", "REFUNDING", "REFUNDED").contains(order.getStatus()));
             return ToolResult.builder()
                     .success(true)
-                    .output("订单 " + order.getOrderNo() + " 已取消，库存已回补。")
+                    .operationState(ToolResult.OperationState.COMMITTED).receiptReplayed(receipt.replayed())
+                    .output("订单 " + order.getOrderNo() + " 取消请求已处理，当前状态：" + order.getStatus() + "。")
                     .rawData(order)
                     .build();
         } catch (Exception e) {
             // 「订单已取消，不能重复取消」这类拒绝原先会变成一句 NPE（order 为 null），
             // 现在原样是下游给用户的那句话
-            return Downstream.failure("订单取消", e);
+            return WriteReceipts.failure(e, "订单取消");
         }
     }
 }

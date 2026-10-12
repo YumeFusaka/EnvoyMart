@@ -7,7 +7,9 @@ import CitationList from '@/components/ai/CitationList.vue'
 import { formatDateTime } from '@/utils/format'
 import { computed, onMounted, ref } from 'vue'
 
-const run = ref<GroundingLiveRun | null>(null)
+const currentRun = ref<GroundingLiveRun | null>(null)
+const run = computed(() => currentRun.value?.status === 'COMPLETED'
+  ? currentRun.value : currentRun.value?.lastCompleted ?? currentRun.value)
 const loading = ref(true)
 const failed = ref(false)
 const caseFilter = ref('')
@@ -18,21 +20,24 @@ const causeLabels: Record<string, string> = {
   GRAPH_PATH_OR_GROUNDING: '多跳回答存在证据覆盖问题',
   OVER_REFUSAL: '标注可回答，但证据门判为不足',
   MISSED_REFUSAL: '标注应拒答，但证据门未拦截',
+  INCOMPLETE_ANSWER: '核验后回答缺少必要要点',
+  MISSING_RETRIEVAL_CONTEXT: '必要要点的检索上下文缺失',
 }
 async function load() {
   loading.value = true
   failed.value = false
-  try { run.value = (await getGroundingReport()).live } catch { failed.value = true } finally { loading.value = false }
+  try { currentRun.value = (await getGroundingReport()).live } catch { failed.value = true } finally { loading.value = false }
 }
 onMounted(load)
 const snapshotError = computed(() => {
-  const value = run.value
+  const value = currentRun.value
   if (!value || (value.status !== 'SNAPSHOT_CORRUPTED' && value.status !== 'VERSION_INCOMPATIBLE')) return ''
   return value.snapshotError || '快照读取失败，不能用当前运行数据替代历史评测结果。'
 })
 const pct = (value: number) => (value * 100).toFixed(1)
 const metrics = computed<GroundingMetrics | null>(() => run.value?.metrics ?? null)
-const issue = (item: GroundingLiveCase) => !item.outcome || item.outcome.unsupported > 0 || item.outcome.wrongCitations > 0 || item.outcome.outOfRange > 0 || !item.outcome.refusalCorrect || (item.outcome.kind === 'MULTI_HOP' && !item.outcome.multiHopHit)
+const completenessRecorded = (item: GroundingLiveCase) => ['agent-live-v6-medical-completeness', 'agent-live-v7-medical-scope', 'agent-live-v8-medical-publication', 'agent-live-v9-medical-context'].includes(run.value?.pipelineVersion ?? '') && typeof item.outcome?.answerComplete === 'boolean' && Array.isArray(item.outcome.missingRequired)
+const issue = (item: GroundingLiveCase) => !item.outcome || item.outcome.unsupported > 0 || item.outcome.wrongCitations > 0 || item.outcome.outOfRange > 0 || !item.outcome.refusalCorrect || (item.outcome.kind === 'MULTI_HOP' && !item.outcome.multiHopHit) || (completenessRecorded(item) && item.outcome.answerComplete === false)
 const filteredCases = computed(() => {
   const cases = run.value?.cases ?? []
   return cases.filter((item) => {
@@ -61,6 +66,7 @@ function summary(item: GroundingLiveCase) {
   if (outcome.outOfRange > 0) parts.push(`越界引用 ${outcome.outOfRange} 次`)
   if (outcome.kind === 'UNANSWERABLE') parts.push(outcome.refusalCorrect ? '证据门判定正确' : '证据门判定错误')
   if (outcome.kind === 'MULTI_HOP') parts.push(outcome.multiHopHit ? '多跳命中' : '多跳未完整命中')
+  if (completenessRecorded(item)) parts.push(outcome.answerComplete ? '必要要点完整' : '必要要点缺失')
   if (outcome.rootCause && outcome.rootCause !== 'NONE') parts.push(causeLabels[outcome.rootCause] ?? outcome.rootCause)
   return parts.join(' · ') || '无异常'
 }
@@ -96,12 +102,14 @@ function jumpToEvidence(item: GroundingLiveCase, refs: number[]) {
     <header class="quality-header"><p class="eyebrow">Production Answer Quality</p><h1>回答质量评测</h1><p class="subcopy">这份报告展示真实 Agent 在当前知识库、向量库和线上知识图谱上的生成效果。所有指标和逐条回答都来自管理员手动触发后生成的实测快照。</p></header>
     <ErrorState v-if="failed" message="真实链路回答评测快照加载失败，请重试" :on-retry="load" />
     <el-skeleton v-else-if="loading" :rows="8" animated />
-    <section v-else-if="run?.status === 'SNAPSHOT_CORRUPTED' || run?.status === 'VERSION_INCOMPATIBLE'" class="empty-state empty-state--error">
-      <h2>{{ run.status === 'SNAPSHOT_CORRUPTED' ? '回答质量快照已损坏' : '回答质量快照版本不兼容' }}</h2>
+    <section v-if="!loading && !failed && snapshotError" class="empty-state empty-state--error" role="alert">
+      <h2>{{ currentRun?.status === 'SNAPSHOT_CORRUPTED' ? '回答质量快照已损坏' : '回答质量快照版本不兼容' }}</h2>
       <p>{{ snapshotError }}</p>
-      <small v-if="run.snapshotPath">文件：{{ run.snapshotPath }}<span v-if="run.runId"> · runId：{{ run.runId }}</span></small>
+      <small v-if="currentRun?.snapshotPath">文件：{{ currentRun.snapshotPath }}<span v-if="currentRun.runId"> · runId：{{ currentRun.runId }}</span></small>
+      <p>{{ currentRun?.lastCompleted ? '以下保留最后可用历史快照，当前错误仍未恢复。' : '没有可用的已完成历史快照。' }}</p>
     </section>
-    <template v-else-if="run?.status === 'COMPLETED' && metrics">
+    <template v-if="!loading && !failed && run?.status === 'COMPLETED' && metrics">
+      <p v-if="currentRun?.lastCompleted" class="readonly">最后可用快照 · runId {{ run.runId }} · 生成于 {{ formatDateTime(run.finishedAt) }}</p>
       <section class="snapshot-meta"><span>完成于 <b>{{ formatDateTime(run.finishedAt) }}</b></span><span>完成 {{ run.completedCases }} / {{ run.totalCases }} 条</span><span v-if="run.failedCases">调用失败 {{ run.failedCases }} 条</span><span>Prompt {{ run.promptVersion ?? '—' }}</span><span>Pipeline {{ run.pipelineVersion ?? '—' }}</span><span v-if="run.runId">runId {{ run.runId }}</span><span class="readonly">只读快照</span></section>
       <section class="metric-grid">
         <article class="metric-card metric-card--hero"><p>幻觉率</p><strong>{{ pct(metrics.hallucinationRate) }}%</strong><small>{{ metrics.unsupportedSentences }} / {{ metrics.factSentences }} 句未被证据支撑</small></article>
@@ -128,6 +136,13 @@ function jumpToEvidence(item: GroundingLiveCase, refs: number[]) {
             <p class="question">{{ item.question }}</p>
             <p v-if="item.error" class="error">{{ summary(item) }}</p>
             <MessageContent v-else :content="item.answer ?? ''" :citation-count="item.evidence?.length ?? 0" @cite="(number) => showEvidence(item, number)" />
+            <div class="answer-completeness">
+              <p v-if="!completenessRecorded(item)" class="verdict">答案完整性：本次快照未记录。</p>
+              <template v-else>
+                <p class="verdict">答案完整性：{{ item.outcome?.answerComplete ? '必要要点完整' : '必要要点缺失' }}。此项与未支撑事实句分别核验。</p>
+                <ul v-if="item.outcome?.missingRequired?.length" class="angles"><li v-for="point in item.outcome.missingRequired" :key="point">缺失要点：{{ point }}</li></ul>
+              </template>
+            </div>
             <CitationList v-if="item.evidence?.length" :items="item.evidence" :list-id="`eval-${item.outcome?.id}`" />
             <p v-else class="verdict">本次快照没有可展示的证据切片，引用编号无法追溯；不能用当前语料替代当次依据。</p>
             <details class="trace-details">
@@ -162,10 +177,10 @@ function jumpToEvidence(item: GroundingLiveCase, refs: number[]) {
         </ol>
       </section>
     </template>
-    <section v-else-if="run?.status === 'RUNNING'" class="empty-state"><h2>真实评测正在运行</h2><p>已完成 {{ run.completedCases }} / {{ run.totalCases }} 条；页面只读取进度，不会重复触发模型。</p></section>
-    <section v-else-if="run?.status === 'FAILED'" class="empty-state"><h2>真实评测未获得有效回答</h2><p>{{ run.failedCases }} 条模型调用失败或返回降级回复，本次没有可展示的质量指标。需要恢复模型服务后采集真实快照。</p></section>
-    <section v-else-if="run?.status === 'NEVER_RUN' || !run" class="empty-state"><h2>暂无真实链路快照</h2><p>当前服务还没有生成可展示的实测结果。页面不会用离线重放数据填充。</p></section>
-    <section v-else class="empty-state"><h2>评测尚未完成</h2><p>当前状态：{{ run?.status }}，页面不会把未完成数据当作最终成绩。</p></section>
+    <section v-else-if="!loading && !failed && !snapshotError && run?.status === 'RUNNING'" class="empty-state"><h2>真实评测正在运行</h2><p>已完成 {{ run.completedCases }} / {{ run.totalCases }} 条；页面只读取进度，不会重复触发模型。</p></section>
+    <section v-else-if="!loading && !failed && !snapshotError && run?.status === 'FAILED'" class="empty-state"><h2>真实评测未获得有效回答</h2><p>{{ run.failedCases }} 条模型调用失败或返回降级回复，本次没有可展示的质量指标。需要恢复模型服务后采集真实快照。</p></section>
+    <section v-else-if="!loading && !failed && !snapshotError && (run?.status === 'NEVER_RUN' || !run)" class="empty-state"><h2>暂无真实链路快照</h2><p>当前服务还没有生成可展示的实测结果。页面不会用离线重放数据填充。</p></section>
+    <section v-else-if="!loading && !failed && !snapshotError" class="empty-state"><h2>评测尚未完成</h2><p>当前状态：{{ run?.status }}，页面不会把未完成数据当作最终成绩。</p></section>
   </div>
 </template>
 

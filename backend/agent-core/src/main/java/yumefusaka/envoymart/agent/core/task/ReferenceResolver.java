@@ -50,6 +50,7 @@ public final class ReferenceResolver {
         if (message == null || message.isBlank() || lastItems == null || lastItems.isEmpty()) {
             return message;
         }
+        if (!productReference(message)) return message;
         Matcher matcher = ORDINAL.matcher(message);
         if (!matcher.find()) {
             return message;
@@ -76,6 +77,37 @@ public final class ReferenceResolver {
                 + "第" + matcher.group(1) + matcher.group(2) + "（" + coreName(item) + "）"
                 + message.substring(matcher.end());
         return replaced;
+    }
+
+    /** 结构化权威候选逐处绑定；明确写出的商品名优先，避免把用户纠正的名称改成旧序号目标。 */
+    public static String resolveCandidates(String message, List<ProductCandidateList.Item> candidates) {
+        if (message == null || message.isBlank() || candidates == null || candidates.isEmpty()) return message;
+        if (message.contains("最初") || message.contains("最早")) return message;
+        if (!productReference(message)) return message;
+        Matcher matcher = ORDINAL.matcher(message);
+        StringBuilder resolved = new StringBuilder();
+        while (matcher.find()) {
+            Integer ordinal = ordinalOf(matcher.group(1));
+            String replacement = matcher.group();
+            // “第2款「鱼油」”已由用户明确给名；不要用旧序号给它塞进另一个商品。
+            String after = message.substring(matcher.end()).stripLeading()
+                    .replaceFirst("^(?:商品|产品|款商品|种商品)\\s*", "");
+            boolean explicitlyNamed = after.startsWith("“") || after.startsWith("\"")
+                    || after.startsWith("「") || after.startsWith("‘");
+            boolean optionOrdinal = after.matches("(?s)^(规格|型号|口味|选项|参数|购物车行|行).*" );
+            if (!explicitlyNamed && !optionOrdinal && ordinal != null && ordinal >= 1 && ordinal <= candidates.size()) {
+                ProductCandidateList.Item candidate = candidates.get(ordinal - 1);
+                replacement += "（" + candidate.name() + "，商品编号 " + candidate.key() + "）";
+            }
+            matcher.appendReplacement(resolved, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(resolved);
+        return resolved.toString();
+    }
+
+    private static boolean productReference(String message) {
+        if (message.matches("(?s).*(订单|物流|工单|售后|评价).*")) return false;
+        return !message.contains("购物车") || message.matches("(?s).*(加入|加进|加购|放进).*");
     }
 
     /**

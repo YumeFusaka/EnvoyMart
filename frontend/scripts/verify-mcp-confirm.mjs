@@ -179,7 +179,11 @@ const forged = await rpc({
   params: { name: 'order_cancel', arguments: { orderId, confirmed: true, approvalToken: 'eyJ4IjoxfQ.deadbeef' } },
 })
 ck('伪造签名被拒', forged.json?.result?.isError === true, JSON.stringify(forged.json))
-ck('文案说明需要服务端签发的令牌', toolText(forged).includes('服务端'), toolText(forged))
+ck(
+  '文案明确拒绝令牌与工具参数不匹配并要求重新确认',
+  /^确认令牌与本次工具参数不匹配，拒绝执行；请重新由对话链路发起并确认该操作$/.test(toolText(forged)),
+  toolText(forged),
+)
 ck('订单仍是待支付', (await orderStatus()) === 'CREATED')
 
 // 令牌与用户绑定：拿别人的令牌不能被接受。这里用「换一个用户拿 alice 的会话」近似——
@@ -226,7 +230,7 @@ if (approvalToken) {
   })
   const doneText = toolText(done)
   ck('isError 非 true', done.json?.result?.isError !== true, JSON.stringify(done.json))
-  ck('输出为取消成功文案', doneText.includes('已取消'), doneText)
+  ck('输出包含权威取消终态', doneText.includes('CANCELLED'), doneText)
   ck('订单已取消', (await orderStatus()) === 'CANCELLED')
   ck('确认与令牌参数没有漏进业务参数', !doneText.includes('confirmed') && !doneText.includes('approvalToken'), doneText)
 } else {

@@ -3,7 +3,13 @@ package yumefusaka.envoymart.aiservice.flow;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import yumefusaka.envoymart.agent.flow.FlowContext;
+import yumefusaka.envoymart.agent.flow.FlowRegistry;
 import yumefusaka.envoymart.agent.flow.FlowResult;
+import yumefusaka.envoymart.agent.flow.IntentRouter;
+import yumefusaka.envoymart.agent.llm.LLMConfig;
+import yumefusaka.envoymart.agent.llm.LLMProvider;
+import yumefusaka.envoymart.agent.llm.LLMResponse;
+import yumefusaka.envoymart.agent.llm.MockLLMProvider;
 import yumefusaka.envoymart.agent.tool.Tool;
 import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolDefinition;
@@ -92,9 +98,45 @@ class AfterSaleFlowTest {
 
     @Test
     void 售后意图加明确订单引用才命中() {
-        assertThat(flow.matches("订单 3 我要退货")).isTrue();
-        assertThat(flow.matches("帮我给订单12申请退款")).isTrue();
-        assertThat(flow.matches("单号 7 的货我想退掉")).isTrue();
+        assertThat(flow.matches("订单 3 售后怎么处理")).isTrue();
+        assertThat(flow.matches("帮我看看订单12的售后资格")).isTrue();
+        assertThat(flow.matches("单号 7 的货退货条件是什么")).isTrue();
+    }
+
+    @Test
+    void 明确申请必须交给执行图而不是只返回步骤文案() {
+        assertThat(flow.matches("订单 3 我要退货")).isFalse();
+        assertThat(flow.matches("帮我给订单12申请退款")).isFalse();
+        assertThat(flow.matches("单号 7 的货我想退掉")).isFalse();
+        assertThat(flow.matches("订单 3 能不能申请质量问题退货")).isTrue();
+        assertThat(flow.matches("订单 3 的订单行 77 包装破损，属于质量问题，我要退货退款，原因：包装破损")).isFalse();
+        assertThat(flow.matches("给订单行 77 申请退货退款，质量问题，原因包装破损")).isFalse();
+        assertThat(flow.matches("订单行 77 已通过预览，质量问题包装破损，申请退货退款")).isFalse();
+        assertThat(flow.matches("订单 3 的退货条件已满足，我要申请退货退款")).isFalse();
+        assertThat(flow.matches("订单 3 退货退款")).isFalse();
+        assertThat(flow.matches("订单行 77 能不能退货")).isFalse();
+    }
+
+    @Test
+    void 订单和知识库联合查询必须交给执行图() {
+        assertThat(flow.matches("结合我的订单ID 3 的状态、商品和收货时间，说明能否申请质量问题退货；依据知识库原文回答")).isFalse();
+        assertThat(flow.matches("订单 3 的退货资格请引用原文说明")).isFalse();
+    }
+
+    @Test
+    void 模型强选和规则降级均不能抢走售后写操作或知识联合请求() {
+        FlowRegistry flows = new FlowRegistry();
+        flows.register(flow);
+        LLMProvider llm = mock(LLMProvider.class);
+        when(llm.supportsReasoning()).thenReturn(true);
+        when(llm.chat(any(), any())).thenReturn(LLMResponse.builder()
+                .content("{\"flow\":\"after_sale\"}").build());
+        for (LLMProvider provider : List.of(llm, new MockLLMProvider())) {
+            IntentRouter router = new IntentRouter(provider, LLMConfig.builder().model("stub").build(), flows);
+            assertThat(router.route("订单 3 的订单行 77 包装破损，属于质量问题，我要退货退款，原因：包装破损")).isEmpty();
+            assertThat(router.route("结合订单ID 3 的状态说明能否申请质量问题退货，依据知识库原文回答")).isEmpty();
+            assertThat(router.route("订单 3 售后条件是什么")).contains(flow);
+        }
     }
 
     // ==================== 不该命中（误判防线）====================

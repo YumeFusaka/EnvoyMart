@@ -9,6 +9,12 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.ResponseEntity;
+import yumefusaka.envoymart.common.operation.OperationContext;
+import yumefusaka.envoymart.common.operation.OperationParameters;
+import yumefusaka.envoymart.common.operation.OperationReceiptMetadata;
+import yumefusaka.envoymart.orderservice.service.AgentWriteFacade;
+import yumefusaka.envoymart.orderservice.service.AgentWriteParameters;
 import yumefusaka.envoymart.common.result.PageResult;
 import yumefusaka.envoymart.common.result.Result;
 import yumefusaka.envoymart.common.web.IdentityHeaderInterceptor;
@@ -37,16 +43,24 @@ import java.util.List;
 public class OrderController {
 
     private final OrderDomainService orderDomainService;
+    private final AgentWriteFacade writes;
 
-    public OrderController(OrderDomainService orderDomainService) {
+    public OrderController(OrderDomainService orderDomainService, AgentWriteFacade writes) {
         this.orderDomainService = orderDomainService;
+        this.writes = writes;
     }
 
     @PostMapping("/checkout")
-    public Result<OrderResponse> checkout(
+    public ResponseEntity<Result<OrderResponse>> checkout(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @Valid @RequestBody CheckoutRequest request) {
-        return Result.success(orderDomainService.checkout(userId, request));
+        if (operationId == null) {
+            OrderResponse draft = orderDomainService.checkout(userId, request);
+            return ResponseEntity.ok(Result.success(orderDomainService.getOrder(userId, draft.getId())));
+        }
+        request.setRequestId(OperationParameters.sha256(userId + ":" + operationId));
+        return writes.checkout(OperationContext.of(userId, operationId, "cart_checkout", AgentWriteParameters.checkout(request)), request).response();
     }
 
     /**
@@ -93,17 +107,21 @@ public class OrderController {
     }
 
     @PostMapping("/{id}/cancel")
-    public Result<OrderResponse> cancelOrder(
+    public ResponseEntity<Result<OrderResponse>> cancelOrder(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @PathVariable("id") Long id) {
-        return Result.success(orderDomainService.cancelOrder(userId, id));
+        if (operationId == null) return ResponseEntity.ok(Result.success(orderDomainService.cancelOrder(userId, id)));
+        return writes.cancel(OperationContext.of(userId, operationId, "order_cancel", java.util.Map.of("orderId", String.valueOf(id))), String.valueOf(id)).response();
     }
 
     @PostMapping("/by-no/{orderNo}/cancel")
-    public Result<OrderResponse> cancelOrderByNo(
+    public ResponseEntity<Result<OrderResponse>> cancelOrderByNo(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @RequestHeader(value = OperationReceiptMetadata.OPERATION_ID_HEADER, required = false) String operationId,
             @PathVariable("orderNo") String orderNo) {
-        return Result.success(orderDomainService.cancelOrderByNo(userId, orderNo));
+        if (operationId == null) return ResponseEntity.ok(Result.success(orderDomainService.cancelOrderByNo(userId, orderNo)));
+        return writes.cancel(OperationContext.of(userId, operationId, "order_cancel", java.util.Map.of("orderId", orderNo.strip())), orderNo.strip()).response();
     }
 
     /**

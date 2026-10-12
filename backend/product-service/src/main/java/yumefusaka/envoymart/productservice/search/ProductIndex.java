@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.Version;
 import org.springframework.data.elasticsearch.annotations.Document;
 import org.springframework.data.elasticsearch.annotations.Field;
 import org.springframework.data.elasticsearch.annotations.FieldType;
@@ -45,11 +46,14 @@ import java.util.List;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Document(indexName = "envoymart_spu_v3", createIndex = true)
+@Document(indexName = "envoymart_spu_v3", createIndex = true, versionType = Document.VersionType.EXTERNAL_GTE)
 public class ProductIndex {
 
     @Id
     private Long id;
+
+    @Version
+    private Long projectionVersion;
 
     @Field(type = FieldType.Text, analyzer = "cjk", searchAnalyzer = "cjk")
     private String name;
