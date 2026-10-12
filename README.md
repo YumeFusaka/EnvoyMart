@@ -17,16 +17,6 @@
 
 ---
 
-## 当前交付状态（2026-10-12）
-
-本仓库是个人求职与工程实践项目，当前提交保存T1阶段成果，T1仍未完成最终验收。平台覆盖38个页面路由、15个Agent工具、48条复杂场景契约；场景契约数量不代表全部真实执行通过。
-
-已取得公开API149/149、页面主写28/28、八写首次回执、四项事务、营销内部UNKNOWN跨重启和商品ES持久任务恢复的真实证据。订单、商品、营销共同参与Seata，商品派生数据通过持久任务更新缓存与ES；故障时保留待办，恢复后继续处理。
-
-最新正式医学评测完成36题，原18条多跳为13/18（72.2%），未达严格超过85%的硬门槛；原报告记录0/65未支撑事实，但独立复核发现症状处置、版本优先判断漏审，因此不能视为医学通过。规则零命中也不能证明总体医学风险低于0.001。已完成的结构与来源框架专项修复随本次提交保存，尚未部署真实复验。
-
-后续按“专项全部通过，再做最后全量”执行，复用未受改动影响的已有证据。待完成医学漏审与定向集成、Redis故障恢复、复杂全集、最终全站和持久化验收。当前状态、验证命令和剩余门禁统一维护在 [T1实施计划](docs/待办/T1-平台全功能与复杂Agent一次性收口实施计划.md)。以下历史实验仅证明对应版本与数据集的结果。
-
 ## 项目简介
 
 EnvoyMart 是基于 Spring Cloud Alibaba + LangChain4j + Vue 3 的智能电商平台，覆盖用户、商品、订单、支付、物流、评价等核心业务，并在其上构建 Agent 能力：RAG 知识问答、多步工具编排、长期记忆、MCP 工具发布。
@@ -305,7 +295,7 @@ mkdir -p skywalking-agent && docker create --name sw-tmp apache/skywalking-java-
 
 `run-local.sh` 会把 agent 同步到 `$HOME/.envoymart/skywalking-agent` 再启动——
 **不能直接用仓库里的路径**：`-javaagent` 走完 Maven 的参数拼接后非 ASCII 字符会变成乱码，
-而上级目录「面试训练」拿不到 8.3 短名，只能用纯 ASCII 的落地路径绕开。
+而仓库路径含非 ASCII 字符时拿不到 8.3 短名，只能用纯 ASCII 的落地路径绕开。
 
 **压测时可以关掉**：`ENVOYMART_SKYWALKING=off ./run-local.sh`。
 javaagent 逐方法插桩，关掉才能拿到"除掉观测之后还剩多少"的干净数字。
@@ -413,9 +403,7 @@ push 到 main
 
 ## 项目结构
 
-公开高级部署项 `SEATA_ENABLED`（默认true）和 `SEATA_SERVER`（默认 `127.0.0.1:8091`）由order/product/promotion共同消费，三服务须使用同一真实TC与 `envoymart_tx_group`。营销MySQL首次启用前需创建兼容 `undo_log`；启动只读检查实际AT代理、七列、联合唯一键及InnoDB，不自动修旧表。关闭Seata属于明确的本地事务降级，不能宣称跨服务原子回滚或通过迟到核销验收。真实事务收口证据见 `docs/specs/T1营销核销参与既有Seata事务.md`。
-
-真实 Seata 和商品投影故障验收的高级运行参数为 `VERIFY_MYSQL`（默认从 PATH 查找 `mysql`）、`VERIFY_MYSQL_USER`（必填）及 `VERIFY_MYSQL_PASSWORD`（可选，仅通过子进程 `MYSQL_PWD` 传入，不放命令行或证据）。取证固定连接本机 3306，不读取 `.env`。Windows 控制验收可用 `GIT_BASH` 指定 Git Bash 路径；仅比较已保存 JSON 的 `--compare` 不需要数据库配置，也不会触发业务、模型或服务重启。
+**Seata 部署开关**：`SEATA_ENABLED`（默认 `true`）与 `SEATA_SERVER`（默认 `127.0.0.1:8091`）由 order / product / promotion 三个服务共同消费，须指向同一个 TC 与 `envoymart_tx_group`。营销库首次启用前需建好兼容 `undo_log`；服务启动时只读检查 AT 代理、七列、联合唯一键与 InnoDB，不自动修旧表。`SEATA_ENABLED=false` 是明确的本地事务降级，此时没有跨服务原子回滚。
 
 ```
 EnvoyMart/
@@ -450,11 +438,11 @@ EnvoyMart/
 ├── frontend/
 │   ├── src/                    # 页面 / 组件 / API / 状态管理
 │   └── scripts/
-│       ├── verify-all.mjs      # 全链路端到端验收总入口（一条命令跑完 25 个脚本）
+│       ├── verify-all.mjs      # 全链路端到端验收总入口（一条命令跑完全部脚本）
 │       └── verify-*.mjs        # 各链路验收脚本（真浏览器 + 纯 HTTP 两类）
 └── docs/
     ├── 项目总览.md              # 技术栈 · 结构 · 设计 · 亮点 · 踩坑
-    └── 平台改造规划.md          # 分批改造计划与每批的验收证据
+    └── 平台改造规划.md          # 分批改造计划与实施记录
 ```
 
 ## License

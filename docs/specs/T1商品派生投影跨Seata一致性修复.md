@@ -44,7 +44,7 @@ TC/undo查询仍经 `OperationReceiptDecisionProbe` 通用端口。将原订单/
 2. 公共有界决议实现与三个薄适配器，保持订单/营销既有probe测试入口；单独common及两旧probe回归。
 3. 新entity/mapper、永久屏障、任务请求者、独立消费事务与定时扫描、启动登记；MySQL/H2 schema及只读核验。失败日志含task/spu/xid、模式、阶段、耗时、待办状态，不含用户令牌或业务JSON。
 4. `StockServiceImpl`、`ProductDerivedRefresh`、`ProductAdminServiceImpl`、`CatalogAdminServiceImpl`、`ProductAggregateService` 全部改事务内登记；库存重复回补不生成新任务。`ProductSyncService.syncOne/syncAll`只登记，受保护发布器承担构建/版本写；移除旧本地afterCommit刷新。缓存严格失效与miss发布同屏障，补外部失败版本保护。
-5. 本地Java21定向门禁及真JDBC/Seata解析代理证明；根代理统一协调迁移、冻结、product部署与新真实三组capture。每条验收兑现后再同步README/项目总览/T1主计划/面试材料。
+5. 本地Java21定向门禁及真JDBC/Seata解析代理证明；根代理统一协调迁移、冻结、product部署与新真实三组capture。每条验收兑现后再同步README/项目总览/T1主计划。
 
 ## 验收与证据
 

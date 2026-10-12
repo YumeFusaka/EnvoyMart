@@ -43,7 +43,7 @@
 1. 修改 `backend/promotion-service/pom.xml`，加入现有 Seata starter；修改该服务 `application.yml`，公开高级配置与已有两服务对齐。
 2. 修改 `backend/promotion-service/src/main/resources/schema.sql` 或 MySQL 平台初始化文件，新增兼容建表与启动只读结构核验。MySQL 已执行 DDL 后启动不得覆盖、自动删除或修改结构；同名不兼容表明确阻断。
 3. 修改营销 `service/OperationReceiptService.java` 的回执重放事务读门；核销/退券的原 orderNo 条件不撤销。
-4. 补注册 XID、分支失败、本地回滚关键回归；Java 21 离线门禁覆盖 promotion/order/product 与公共模块。同步 README、项目总览、T1 计划与面试材料的事实口径，简历仅项目经历。
+4. 补注册 XID、分支失败、本地回滚关键回归；Java 21 离线门禁覆盖 promotion/order/product 与公共模块。同步 README、项目总览、T1 计划的事实口径。
 
 ## 验收标准与证据
 

@@ -56,7 +56,7 @@ LOG_DIR=../logs/logs-local
 # 过一遍 Maven 的 JVM 参数拼接后，非 ASCII 字符变成乱码，JVM 报
 # "Error opening zip file or JAR manifest missing"——用相对路径也不行，因为
 # spring-boot:run fork 出的 JVM 工作目录并不是脚本目录；cygpath 的 8.3 短名也救不了，
-# 上级目录「面试训练」没有生成短名。所以启动前把 agent 同步到用户目录（纯 ASCII）。
+# 上级目录没有生成短名。所以启动前把 agent 同步到用户目录（纯 ASCII）。
 AGENT_SRC="$(cd .. && pwd)/skywalking-agent"
 AGENT_HOME="$HOME/.envoymart/skywalking-agent"
 # 用 ENVOYMART_SKYWALKING=off 可以关掉追踪——它给每个方法插桩，压测时要量的
@@ -527,7 +527,7 @@ wait_healthy() { # [服务名...]，不传则检查全部；未全就绪返回 1
 
 # ———————————————————— 演示环境一键启动 ————————————————————
 #
-# 面向「二面要现场演示」：一条命令把中间件、九个服务、前端全部拉起到就绪，
+# 面向现场演示：一条命令把中间件、九个服务、前端全部拉起到就绪，
 # 最后打印演示入口。幂等——已经在跑的部分全部跳过，重复执行不会起两份。
 
 port_listening() {
@@ -810,7 +810,7 @@ EOF
 # （见 AiAgentConfig.newMilvusStore）。
 #
 # 补启轮是最终承诺：2026-10-02 三轮冷启动实测里首轮失败的服务被它全部救回（累计 5/5），
-# 而且补启时 CPU 已空闲、Nacos 连接无竞争——重试的成功率本来就比首轮高。面试现场
+# 而且补启时 CPU 已空闲、Nacos 连接无竞争——重试的成功率本来就比首轮高。演示现场
 # 能接受自动重试的插曲，不能接受有服务起不来。
 start_all_services() {
   local svc port round

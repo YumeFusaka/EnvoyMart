@@ -109,7 +109,7 @@ const A = admin.token
  *      已经把额度吃掉大半，脚本会在「第 3 条评价提交成功」这一步就失败——
  *      而那看起来像防刷功能坏了，其实是验收脚本自己不可重复。
  *   2. 评价是只增不减的用户数据，往演示账号名下堆「verify-review-loop 夹具一」
- *      这种行，二面演示时点开「我的评价」就穿帮。
+ *      这种行，演示时点开「我的评价」就穿帮。
  * 新用户从 0 条起步，上限测试才是确定的；跑完留下的数据也都在一个只跑过验收的账号名下。
  */
 const tester = await (async () => {
@@ -230,7 +230,7 @@ try {
 // 夹具注入 2 条「今天」的评价，让额度从 3 起步而不是从 0 起步。
 // order_item_id 用负数与真实订单行隔开（与 data.sql 的种子同一约定）。
 // **status 取 HIDDEN**：额度计数不看状态（被隐藏的不该把额度还回来），
-// 但它不该出现在商品页的评价列表里、也不该掺进均分——那是给面试官看的数据
+// 但它不该出现在商品页的评价列表里、也不该掺进均分——那是给用户看的数据
 sql(
   `insert into envoymart_review.review
      (spu_id, sku_id, order_id, order_item_id, user_id, rating, content, is_anonymous, status, useful_count, created_at)

@@ -56,7 +56,7 @@ public class ReviewServiceImpl implements ReviewService {
      * 而刷评的要的是量。卡在正常用量的上沿，误伤的概率最低、拦下的最多。
      * <p>
      * <b>它挡不住什么</b>：注册一批小号轮流刷。那需要设备指纹或实名维度，
-     * 超出这个项目的数据面——如实记在待改进清单里，比假装防线完整要好。
+     * 超出这个项目的数据面——如实记为已知缺口，比假装防线完整要好。
      */
     private static final int MAX_DAILY_REVIEWS = 5;
 

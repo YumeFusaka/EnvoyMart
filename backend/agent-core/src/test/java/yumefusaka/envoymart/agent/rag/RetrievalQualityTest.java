@@ -78,7 +78,7 @@ class RetrievalQualityTest {
                 EvalFixtures.DOCS.size(), TOP_K,
                 EvalFixtures.randomBaselineHitRate(EvalFixtures.DOCS.size(), TOP_K));
 
-        // 顺带打一份 @5：面试里常见的对照是"别人的 Hit@5 是多少"，
+        // 顺带打一份 @5：常见的对照是"别人的 Hit@5 是多少"，
         // 而 @3 与 @5 不同口径，没有同一份语料上的 @5 数字就没法直接比。
         RetrievalEvaluator.EvalReport at5 = evaluate(EvalFixtures.allCases(), 5);
         System.out.println("[检索评测-全量@5] " + at5);

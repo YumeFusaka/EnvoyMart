@@ -87,7 +87,7 @@ class RetrievalComparisonTest {
         report("混合(BM25+向量)", hybrid);
         report("混合+重排", hybridWithRerank);
         // 归因配置：只喂角度、不喂假想答案。生产行为是两者都喂，
-        // 但"提升了多少"与"是哪一半提升的"是两个问题，后者当场答不出来最容易被追问到崩
+        // 但"提升了多少"与"是哪一半提升的"是两个问题，后者答不出来就说不清增益来自哪里
         report("混合+重排+角度改写", new MultiQueryRetriever(hybridWithRerank,
                 new AnglesOnlyExpander(expander)));
         report("混合+重排+扩写(生产配置)", new MultiQueryRetriever(hybridWithRerank, expander));

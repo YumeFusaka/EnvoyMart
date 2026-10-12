@@ -68,7 +68,7 @@ class ConflictReporterTest {
             var report = ConflictReporter.extract("成人每日推荐摄入量为 10 微克（即 400 国际单位）[1]。\n\n" + 段落, 3);
 
             assertThat(report.conflicts())
-                    .as("一张「并不存在的冲突」卡片会同时误导用户与面试官，比不显示更糟：%s", 段落)
+                    .as("一张「并不存在的冲突」卡片会同时误导用户与排查者，比不显示更糟：%s", 段落)
                     .isEmpty();
             assertThat(report.reply())
                     .as("段落照删：它不该变成卡片，也不该留在正文里")
