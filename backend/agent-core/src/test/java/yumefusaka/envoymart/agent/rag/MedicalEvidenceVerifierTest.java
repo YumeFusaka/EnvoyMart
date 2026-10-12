@@ -100,6 +100,18 @@ class MedicalEvidenceVerifierTest {
     }
 
     @Test
+    void KG09具体间隔引导词不进入裸主体() {
+        var source = DocumentChunk.builder().docId("KB-0010").chunkId("KB-0010_5").score(0.9)
+                .title("膳食补充剂摄入上限与常见药物相互作用")
+                .content("2.3 钙剂与四环素类、喹诺酮类抗生素合用会形成难吸收的络合物，两者服用时间应间隔 2 小时以上。").build();
+        String framed = "具体间隔：钙剂与四环素类、喹诺酮类抗生素合用会形成难吸收的络合物，两者服用时间应间隔 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, framed, List.of(source)).unsupported()).isEmpty();
+        // 数量不符仍拒：“具体”不影响数量核验
+        String wrong = "具体间隔：钙剂与四环素类、喹诺酮类抗生素合用会形成难吸收的络合物，两者服用时间应间隔 4 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, wrong, List.of(source)).unsupported()).containsExactly(wrong);
+    }
+
+    @Test
     void 商品规格金额仅由同一SKU结构化产物豁免() {
         for (String text : List.of("SKU38 60片39元。", "SPU26 SKU38，规格60片/瓶，单价39.00元。")) {
             assertThat(MedicalEvidenceVerifier.verify(true, text, List.of(), List.of(productTool(true)))

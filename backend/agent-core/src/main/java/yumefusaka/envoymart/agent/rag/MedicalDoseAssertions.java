@@ -296,7 +296,7 @@ final class MedicalDoseAssertions {
             if (matched && !POPULATION.matcher(subject.group(1)).matches() && !ROLE.matcher(subject.group(1)).find()
                     && !subjectText.matches("^(?:没有|不存在|无|存在|有|不会|不能|不|会|可能|可)?(?:相互作用|相互影响|影响).*" )
                     && !subjectText.matches("^(?:与|和|及)?(?:上述|这些|该|这|此)(?:药物|药品|产品|商品|补充剂).*" )
-                    && !subject.group(1).matches("(?:但|而|也|同时|则|并|此外|另外|每|可耐受|一次|单次|首次|约|大约|至少|通常|一般|正常|健康|长期|本品|该产品).*" )
+                    && !subject.group(1).matches("(?:但|而|也|同时|则|并|此外|另外|具体|每|可耐受|一次|单次|首次|约|大约|至少|通常|一般|正常|健康|长期|本品|该产品).*" )
                     && !subject.group(1).matches("(?:该|这|此|上述)(?:产品|商品|罐装|瓶装|药品|补充剂).*" )
                     && !subject.group(1).matches("该|本|这|此|上述|两者|二者|双方")
                     && !(subject.group(1).matches("[一二三四五六七八九十两0-9]+(?:平勺|勺|粒|片|丸|袋|瓶|盒|桶)(?:约|约为|重)?")
