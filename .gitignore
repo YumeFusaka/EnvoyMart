@@ -37,6 +37,9 @@ dist/
 # 变体（备份、临时切换）同样含真实密钥，一并忽略：只忽略 .env.local 时，
 # 一次「先 cp 再改」的操作就会把 .env.local.bak 带进待提交列表
 .env.local*
+# 会话级密钥导出脚本（含真实密钥）。它不被任何脚本引用——run-local.sh 读的是 .env.local；
+# 之前被误跟踪过一次，显式忽略避免同类事故重演。
+backend/_env.sh
 
 # Generated docs
 backend/HELP.md
