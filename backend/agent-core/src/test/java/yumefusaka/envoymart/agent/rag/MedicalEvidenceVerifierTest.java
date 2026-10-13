@@ -100,6 +100,36 @@ class MedicalEvidenceVerifierTest {
     }
 
     @Test
+    void KG10行首列表标记与加粗不再挡住裸主体() {
+        var source = DocumentChunk.builder().docId("KB-0010").chunkId("KB-0010_5").score(0.9)
+                .title("膳食补充剂摄入上限与常见药物相互作用")
+                .content("2.5 益生菌与抗生素同服会显著降低活菌存活率，建议错开 2 小时以上。").build();
+        // 生成侧惯用列表排版：行首 "- " 挡住 SUBJECT_HEAD 的 ^ 锚定、句中无冒号可回退，
+        // 词表外的裸主体“抗生素”收不进来、整句被判“数量主体不完整”——确定性复现的解析缺口。
+        String bullet = "- 益生菌与抗生素同服会显著降低活菌存活率，建议错开 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, bullet, List.of(source)).unsupported()).isEmpty();
+        // 加粗包裹同样不能挡住解析
+        String starred = "* **益生菌**与**抗生素**同服会显著降低活菌存活率，建议错开 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, starred, List.of(source)).unsupported()).isEmpty();
+        // 剥离排版标记不放宽数量核验：数字不对仍拒
+        String wrong = "- 益生菌与抗生素同服会显著降低活菌存活率，建议错开 3 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, wrong, List.of(source)).unsupported()).containsExactly(wrong);
+    }
+
+    @Test
+    void G17主体词尾助词剥离而不吞掉真实主体() {
+        var source = DocumentChunk.builder().docId("KB-0010").chunkId("KB-0010_5").score(0.9)
+                .title("膳食补充剂摄入上限与常见药物相互作用")
+                .content("2.5 益生菌与抗生素同服会显著降低活菌存活率，建议错开 2 小时以上。").build();
+        // “抗生素要错开时间”被解析成主体“抗生素要”：剥掉词尾“要”才与切片主体一致
+        String yao = "益生菌和抗生素要错开 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, yao, List.of(source)).unsupported()).isEmpty();
+        // “需要”必须整体剥掉（多字符优先），不能把“抗生素需要”削成“抗生素需”
+        String xuyao = "益生菌和抗生素需要错开 2 小时以上 [1]。";
+        assertThat(MedicalEvidenceVerifier.verify(true, xuyao, List.of(source)).unsupported()).isEmpty();
+    }
+
+    @Test
     void KG09具体间隔引导词不进入裸主体() {
         var source = DocumentChunk.builder().docId("KB-0010").chunkId("KB-0010_5").score(0.9)
                 .title("膳食补充剂摄入上限与常见药物相互作用")

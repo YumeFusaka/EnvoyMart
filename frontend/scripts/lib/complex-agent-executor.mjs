@@ -8,6 +8,16 @@ const counts = (items) => items.map(({ skuId, quantity }) => ({ skuId, quantity 
 const fail = (reason, blocked = false) => { throw Object.assign(new Error(reason), { blocked }) }
 const normalizedName = (name) => String(name ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase()
 
+/**
+ * 否定辖域：`没有/无法/查不到 … 依据|证据|规定|要求` 这一整段宾语。
+ *
+ * 政策事实判据要问的是「这句话在**断言**某条政策」，而被否定的宾语里照样会
+ * 出现政策词——「没有查到关于退货所需材料的具体依据」整句恰恰在说"不知道"，
+ * 直接对整句跑关键词会把正确拒答判成编造。剥离后，句子里独立的政策断言
+ * （「但必须提供发票」「退款在 7 天内完成」）仍照常命中。
+ */
+const NEGATED_OBJECT_SCOPE = /(?:没有|未|缺少|查不到|找不到|无法|不能|暂无|暂时没有)[^，。；、!?]{0,30}?(?:依据|证据|资料|说明|规定|要求|结论)/g
+
 export function prepareCase(source) {
   if (!source.contract || !source.setup || !source.steps?.length || !source.expected?.authority?.length) fail(`${source.caseId} 缺执行契约`)
   const completed = new Set()
@@ -151,8 +161,15 @@ export function checkDag(step, data, state, result) {
       const reply = String(data.reply ?? '')
       const explicitRefusal = /(?:没有|未|缺少).{0,10}(?:依据|证据)|无法.{0,8}(?:判断|确认|说明)|不能.{0,8}(?:判断|确认|说明)/.test(reply)
       // 本分支验收反馈的前置消息，不把礼貌性的拒答前缀当成后续政策编造的通行证。
+      //
+      // 判据是「这句话在**断言**某条政策事实」，所以必须先去掉被否定的那部分宾语：
+      // 拒答句「没有查到关于退货所需材料的具体依据」里，政策词全都落在「依据」的
+      // 定语里，整句恰恰是在说"不知道"——直接对整句跑关键词会把正确拒答判成编造。
+      // 剥离只作用于否定辖域（没有/无法…依据|要求|规定…），句子里真出现独立的
+      // 政策断言（「但必须提供发票」「退款在 7 天内完成」）仍会照常命中。
       const policyFacts = reply.split(/[。！？!?；;\n]/).filter(sentence => !/是否|哪些|吗|？/.test(sentence)).some(sentence =>
-        /(?:必须|须|需|需要|要求|应当).{0,8}(?:提供|提交|准备|保留|寄回).{0,15}(?:发票|凭证|照片|视频|报告|材料|包装)|(?:退货|退款|售后).{0,8}(?:必须|须|需|要求).{0,8}(?:发票|凭证|照片|视频|报告|材料|包装)|(?:退款|退货|售后).{0,15}(?:\d+|[一二三四五六七八九十]+)\s*(?:天|日|小时|元|%)|(?:支持|允许|不支持|不允许).{0,12}(?:退货|退款)|可以放心|绝对安全|没有任何风险/.test(sentence))
+        /(?:必须|须|需|需要|要求|应当).{0,8}(?:提供|提交|准备|保留|寄回).{0,15}(?:发票|凭证|照片|视频|报告|材料|包装)|(?:退货|退款|售后).{0,8}(?:必须|须|需|要求).{0,8}(?:发票|凭证|照片|视频|报告|材料|包装)|(?:退款|退货|售后).{0,15}(?:\d+|[一二三四五六七八九十]+)\s*(?:天|日|小时|元|%)|(?:支持|允许|不支持|不允许).{0,12}(?:退货|退款)|可以放心|绝对安全|没有任何风险/
+          .test(sentence.replace(NEGATED_OBJECT_SCOPE, '')))
       const clean = !(data.unsupportedClaims ?? []).length && !(data.factMismatches ?? []).length
       const refusalValid = ['NONE', 'WEAK'].includes(data.evidenceLevel) && explicitRefusal && !policyFacts && citations.length === 0 && clean
       const pass = result.caseId === 'CA-048' && (data.evidenceLevel === 'SUFFICIENT' ? validCitation && clean : refusalValid)
@@ -163,14 +180,20 @@ export function checkDag(step, data, state, result) {
   if (step.evidence === 'refusal') result.assertions.push(ck('缺证据明确不确定且不编造安全结论', /无.{0,8}证据|未.{0,8}(证据|记录)|无法.{0,8}(判断|确认)|不能.{0,8}(判断|确认)|缺少.{0,8}证据/.test(data.reply ?? '') && !/可以放心|绝对安全|没有任何风险/.test(data.reply ?? '')))
 }
 
-/** 服务usageOf在TokenLedger为空时返回null；只接受已验证原审批的固定执行收尾分支为零用量。 */
-export function usageEvidence(data, approvalCarried) {
+/** 服务usageOf在TokenLedger为空时返回null；只接受已验证原审批的固定执行收尾分支为零用量：完成清理（DONE）或未完成保留**原**令牌（WAITING_USER）。 */
+export function usageEvidence(data, approvalCarried, carriedToken = null) {
   if (data.usage && typeof data.usage === 'object') return { mode: 'REPORTED', valid: true, usage: data.usage, proof: '服务端本轮TokenLedger返回用量' }
-  const fixedApproval = approvalCarried && data.stage === 'DONE' && !data.approvalToken && (data.toolCalls ?? []).length > 0 && data.toolCalls.every((call) => WRITE_TOOLS.has(call.tool))
-  if (data.usage == null && fixedApproval) return {
+  const approvedWritesOnly = (data.toolCalls ?? []).length > 0 && data.toolCalls.every((call) => WRITE_TOOLS.has(call.tool))
+  const fixedApproval = approvalCarried && data.stage === 'DONE' && !data.approvalToken && approvedWritesOnly
+  // 执行非全 COMMITTED（UNKNOWN/REJECTED）时冻结规格要求保留**逐字相同的原**令牌并停在 WAITING_USER，
+  // 同样不跑规划/续作模型；换发新令牌不属于这个分支。
+  const recoveryPending = approvalCarried && data.stage === 'WAITING_USER' && carriedToken && data.approvalToken === carriedToken && approvedWritesOnly
+  if (data.usage == null && (fixedApproval || recoveryPending)) return {
     mode: 'NO_MODEL_CALL', valid: true,
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, costCny: 0, models: [], unpricedModels: [] },
-    proof: '已核对原审批令牌；Agent.executeApproved固定执行分支DONE、只含已批准写工具；AiAssistantServiceImpl.usageOf空TokenLedger明确返回null，无规划/续作模型调用',
+    proof: fixedApproval
+      ? '已核对原审批令牌；Agent.executeApproved固定执行分支DONE、只含已批准写工具；AiAssistantServiceImpl.usageOf空TokenLedger明确返回null，无规划/续作模型调用'
+      : '已核对原审批令牌逐字一致；执行未完成按规格保留原令牌并停在WAITING_USER，未跑续作模型任务；AiAssistantServiceImpl.usageOf空TokenLedger明确返回null，无规划/续作模型调用',
     rawUsage: null,
   }
   return { mode: 'UNRECORDED', valid: false, usage: null, proof: '没有用量对象，且未证明无模型调用分支；不得猜测0tokens' }
@@ -194,7 +217,7 @@ export async function executeCase(source, ctx, result) {
     const message = resolveValue(step.message, state)
     const r = await ctx.api('/ai/chat', { method: 'POST', body: { sessionId: result.sessionId, message, ...options } })
     const data = r.data
-    const usage = usageEvidence(data, Boolean(options.approvalToken))
+    const usage = usageEvidence(data, Boolean(options.approvalToken), options.approvalToken ?? null)
     const t = { ...r, index: result.turns.length + 1, message, status: 'RECEIVED', approvalCarried: Boolean(options.approvalToken), stepId: step.id, response: data, usage: usage.usage, usageEvidence: usage }
     result.turns.push(t)
     result.toolCalls.push(...(data.toolCalls ?? []).map((c) => ({ ...c, stepId: step.id, requestId: r.requestId, approvalCarried: t.approvalCarried })))
@@ -258,7 +281,14 @@ export async function executeCase(source, ctx, result) {
         lastApproval = { ...pending, actions }
         const data = await chat({ ...step, message: step.message ?? '确认', dag: step.dag ?? actions.map((a) => ({ tool: a.tool, arguments: a.arguments })) }, { approvalToken: pending.token })
         result.approvals.push({ stepId: step.id, actions, details: lastApproval.details, confirmed: true, expectedSuccess: step.dag?.some((n) => n.outcome === 'failure') !== true, operationIdEvidence: '响应未暴露operationId；需按requestId核对服务端日志，原审批令牌仅内存保存' })
-        if (data.approvalToken) fail('确认后仍有审批令牌')
+        // 执行非全 COMMITTED（UNKNOWN/REJECTED）时，冻结规格要求保留**原**令牌与恢复载荷、停在 WAITING_USER；
+        // 只有换发新令牌、已完成仍带令牌、缺恢复载荷才是缺陷——旧断言只看"有没有令牌"，把规格行为误判成了失败。
+        if (data.approvalToken) {
+          const retained = data.approvalToken === lastApproval.token && data.stage === 'WAITING_USER' && (data.pendingActionDetails ?? []).length > 0
+          result.assertions.push(ck(`确认 ${step.id} 未完成保留原令牌并停在WAITING_USER`, retained, { stage: data.stage, tokenReplaced: data.approvalToken !== lastApproval.token, details: data.pendingActionDetails }))
+        } else {
+          result.assertions.push(ck(`确认 ${step.id} 完成后清掉审批令牌`, data.stage === 'DONE', { stage: data.stage }))
+        }
         if (step.capture === 'order') {
           const added = (await ctx.get('/orders?tab=ALL&page=0&size=100')).records.filter((o) => !result.before.orders.some((b) => b.id === o.id))
           if (added.length !== 1) fail('结算未唯一新增订单')

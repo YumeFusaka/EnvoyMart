@@ -75,9 +75,12 @@ ck(
 const sample = [...(coverage.uncoveredSpu ?? [])].slice(0, 3)
 const coveredSpuKeys = []
 // 走管理端的 SPU 列表拿在售商品（`/internal/` 前缀在网关上是 404，脚本够不着）。
-// 取前 50 个里「接口说已覆盖」的，抽 3 个对拍。
+// 必须带 status=1：覆盖率的分母只在售（catalog 只查 status=ON），下架商品既不在
+// 「已覆盖」也不在「未覆盖」清单里；不带 status 时管理列表（含下架、updated_at desc）
+// 的头部是其他验收脚本每轮收尾下架的新夹具，「不在未覆盖清单」会把它们误判成
+// 「已覆盖」→ 对从未建过文档的 SPU 断言「必须有文档」= 0 篇假红。
 const allSpu = await (
-  await fetch(`${GW}/products/admin/spus?page=0&size=50`, { headers: asAdmin })
+  await fetch(`${GW}/products/admin/spus?page=0&size=100&status=1`, { headers: asAdmin })
 ).json().catch(() => null)
 if (allSpu?.data?.records) {
   const uncoveredSet = new Set((coverage.uncoveredSpu ?? []).map((u) => u.spuKey.toLowerCase()))
@@ -86,6 +89,16 @@ if (allSpu?.data?.records) {
     if (!uncoveredSet.has(key)) {
       coveredSpuKeys.push(key)
     }
+  }
+  // 口径对拍：候选池（在售）里「不在未覆盖清单」应恰好等于接口说的已覆盖数——
+  // 两个口径再分叉时变成红灯，而不是被「抽 3 个恰好都对」掩盖。装得下（单页 100
+  // 覆盖全部在售）才对拍；在售超过一页时 coveredSpuKeys 会被截断，对拍无意义。
+  if ((allSpu.data.total ?? 0) <= 100) {
+    ck(
+      '候选池口径与覆盖率一致（在售列表 = 覆盖率分母）',
+      coveredSpuKeys.length === coverage.coveredSpu,
+      `候选池算出 ${coveredSpuKeys.length}，接口说已覆盖 ${coverage.coveredSpu}`,
+    )
   }
 }
 for (const key of coveredSpuKeys.slice(0, 3)) {

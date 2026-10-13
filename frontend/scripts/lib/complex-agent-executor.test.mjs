@@ -76,16 +76,21 @@ function transport(source, result) {
       if (source.caseId === 'CA-012') data.recommendedProducts = [{ id: 1, name: '维生素C咀嚼片' }, { id: 2, name: '鱼油软胶囊' }]
       if (source.caseId === 'CA-029') data.recommendedProducts = [{ id: 3, name: '植物蛋白粉' }, { id: 1, name: '乳清蛋白粉' }]
       if (body.approvalToken) {
+        const failed = step.dag?.some((n) => n.outcome === 'failure')
         if (!executed.has(body.approvalToken)) {
-          const failed = step.dag?.some((n) => n.outcome === 'failure')
           if (!failed) pendingActions.forEach(mutateTool)
           data.toolCalls = pendingActions.map((a) => ({ ...a, input: JSON.stringify(a.arguments), success: !failed, noData: false }))
           executed.add(body.approvalToken)
         }
+        // 与真实服务端一致：非全 COMMITTED 保留**原**令牌 + WAITING_USER + 恢复载荷；完成才清令牌回 DONE。
+        // 旧 mock 从不回传令牌，掩盖了"断言只查令牌有无"与冻结规格的差异（CA-023/024/043 真跑因此误判失败）。
+        if (failed) { data.stage = 'WAITING_USER'; data.approvalToken = body.approvalToken; data.pendingActionDetails = clone(pendingActions) }
+        else data.stage = 'DONE'
         pendingActions = []
       } else {
         data.toolCalls = (step.dag ?? []).map((a) => ({ tool: a.tool, arguments: resolveValue(a.arguments, state), input: JSON.stringify(resolveValue(a.arguments, state)), success: a.outcome !== 'failure', noData: a.outcome === 'empty' }))
         if (step.actions) { pendingActions = resolveValue(step.actions, state); lastToken = 'token-' + nextId; data.approvalToken = lastToken; data.pendingActionDetails = clone(pendingActions) }
+        data.stage = step.actions ? 'WAITING_USER' : 'DONE'
       }
       db.messages.push({ id: data.userMessageId }, { id: data.assistantMessageId, response: clone(data) })
     } else throw new Error('mock未支持公开接口：' + path)
@@ -132,6 +137,38 @@ test('CA048弱或无证据只接受明确拒答，不能用拒答前缀夹带政
     checkDag(step, data, {}, result)
     assert.equal(result.assertions.length, 1)
     assert.equal(result.assertions[0].pass, pass, data.reply)
+  }
+})
+
+// 真实真跑样本（2026-10-13 CA-048 s2，evidenceLevel=WEAK）：拒答句的政策词
+// 全落在被否定的宾语里（「关于退货所需材料的具体依据」），整句恰恰在说"不知道"。
+// 旧判据对整句跑关键词，把它判成编造政策事实——正确拒答被误杀。
+// 修法是否定辖域剥离，因此这里同时锁住两侧：这类正确拒答必须过，
+// 而拒答前缀后面真接政策断言（「但必须提供发票」）仍必须拒。
+test('CA048拒答句里被否定的宾语不算编造政策事实，但独立政策断言仍拒', () => {
+  const step = { id: 's2', evidence: 'citation-or-refusal', dag: [] }
+  const base = { evidenceLevel: 'WEAK', knowledge: [], unsupportedClaims: null }
+  const truthfullyUncertain = [
+    '这次没有查到关于退货所需材料的具体依据，平台暂时无法确认这方面的明确要求。',
+    '平台暂时没有查到关于退货需要的材料的明确依据，无法确认。',
+    '没有查到关于退货所需材料的规定，无法确认具体要求，建议以订单页售后说明为准。',
+    '未找到关于售后退款所需凭证的说明，无法确认，请咨询人工客服。',
+  ]
+  const fabrications = [
+    '无法确认。但必须提供发票和检测报告。',
+    '无法确认。退货需发票。',
+    '无法确认，但退款在7天内完成。',
+    '没有查到依据。退货需保留原包装。',
+  ]
+  for (const reply of truthfullyUncertain) {
+    const result = { caseId: 'CA-048', assertions: [] }
+    checkDag(step, { ...base, reply }, {}, result)
+    assert.equal(result.assertions[0].pass, true, '正确拒答被误杀：' + reply)
+  }
+  for (const reply of fabrications) {
+    const result = { caseId: 'CA-048', assertions: [] }
+    checkDag(step, { ...base, reply }, {}, result)
+    assert.equal(result.assertions[0].pass, false, '编造政策事实未被拦住：' + reply)
   }
 })
 
@@ -253,15 +290,34 @@ test('主体失败与finally恢复失败都保留，不能只交付恢复错误'
   await assert.rejects(executeCase(c, ctx, r), (e) => e instanceof AggregateError && e.errors.some((x) => x.message === '主体审批失败') && e.errors.some((x) => x.message === '恢复失败'))
 })
 
-test('确认纯执行usage null由明确无模型分支映射零，普通问答缺用量仍未覆盖', () => {
+test('确认纯执行usage null只接受"完成清理"与"未完成保留原令牌"两个已证明分支', () => {
   const fixed = usageEvidence({ usage: null, stage: 'DONE', toolCalls: [{ tool: 'coupon_receive', success: true }] }, true)
   assert.equal(fixed.valid, true)
   assert.equal(fixed.mode, 'NO_MODEL_CALL')
   assert.equal(fixed.usage.totalTokens, 0)
   assert.match(fixed.proof, /executeApproved/)
+  const retained = usageEvidence({ usage: null, stage: 'WAITING_USER', approvalToken: 'tk', pendingActionDetails: [{ tool: 'cart_remove' }], toolCalls: [{ tool: 'cart_remove', success: false }] }, true, 'tk')
+  assert.equal(retained.valid, true)
+  assert.equal(retained.mode, 'NO_MODEL_CALL')
+  assert.match(retained.proof, /保留原令牌/)
   assert.equal(usageEvidence({ usage: null, stage: 'DONE', toolCalls: [{ tool: 'knowledge_search', success: true }] }, true).valid, false)
   assert.equal(usageEvidence({ usage: null, stage: 'DONE', toolCalls: [{ tool: 'coupon_receive', success: true }] }, false).valid, false)
-  assert.equal(usageEvidence({ usage: null, stage: 'WAITING_USER', toolCalls: [{ tool: 'coupon_receive', success: true }] }, true).valid, false)
+  assert.equal(usageEvidence({ usage: null, stage: 'WAITING_USER', approvalToken: 'tk', toolCalls: [{ tool: 'coupon_receive', success: false }] }, true).valid, false)
+  // 换发新令牌 / 没带原令牌比对，都不算"保留原令牌"分支
+  assert.equal(usageEvidence({ usage: null, stage: 'WAITING_USER', approvalToken: 'tk2', toolCalls: [{ tool: 'coupon_receive', success: false }] }, true, 'tk').valid, false)
+})
+
+test('确认未完成时换发新令牌判FAIL，按规格保留原令牌与恢复载荷才PASS', async () => {
+  const c = fixture.cases.find((x) => x.caseId === 'CA-023'); const r = makeResult(c)
+  const ctx = transport(c, r); const base = ctx.api
+  ctx.api = async (path, options) => {
+    const reply = await base(path, options)
+    if (path === '/ai/chat' && options.body?.approvalToken && reply.data.stage === 'WAITING_USER') reply.data.approvalToken = 'token-换发'
+    return reply
+  }
+  await executeCase(c, ctx, r)
+  assert.equal(r.status, 'FAIL')
+  assert.ok(r.assertions.some((a) => !a.pass && /保留原令牌/.test(a.name)))
 })
 
 test('CA002跨查询候选合并仍绑定一款维C一款鱼油并明确真实序数，不喂SKU', async () => {

@@ -25,8 +25,12 @@ class GroundingBoundaryEvidenceWiringTest {
     @TempDir Path directory;
 
     @Test
-    void 成功结构化未知检查即使没有图谱召回切片仍可证明本次边界() throws Exception {
-        assertThat(run(List.of(check("磷虾油", true)), false).multiHopHit()).isTrue();
+    void 成功结构化未知检查即使没有图谱召回切片仍满足本次关系边界契约() throws Exception {
+        // KG-05 金标 2026-10-13 对齐为「该答」：结构化未知检查不再直接判定多跳命中，
+        // 但它仍驱动当前关系边界契约（answerComplete）——这条断言保护那段接线不退化。
+        var outcome = run(List.of(check("磷虾油", true)), false);
+        assertThat(outcome.answerComplete()).isTrue();
+        assertThat(outcome.multiHopHit()).isFalse();
     }
 
     @Test
@@ -50,7 +54,8 @@ class GroundingBoundaryEvidenceWiringTest {
     void 没有知识依据的成功未知检查不能把生产NONE伪提升为SUFFICIENT() throws Exception {
         var outcome = run(List.of(check("磷虾油", true)), false, EvidenceGate.Level.NONE);
         assertThat(outcome.gateRefused()).isTrue();
-        assertThat(outcome.multiHopHit()).isTrue();
+        assertThat(outcome.answerComplete()).isTrue();
+        assertThat(outcome.multiHopHit()).isFalse();
     }
 
     private yumefusaka.envoymart.agent.rag.GroundingEvaluator.CaseOutcome run(

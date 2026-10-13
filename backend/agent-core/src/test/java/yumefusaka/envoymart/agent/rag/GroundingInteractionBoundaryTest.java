@@ -41,12 +41,13 @@ class GroundingInteractionBoundaryTest {
             + "图谱没有收录磷虾油；没有收录不等于安全。";
 
     @Test
-    void KG05保留原场景并按现有原文要求关系边界而不是臆造本品出血风险() {
+    void KG05对齐当前语料按事实结论判定而不是沿用未收录边界() {
         assertThat(GraphMultiHopFixtures.CASES).hasSize(12);
         var item = GraphMultiHopFixtures.CASES.stream().filter(value -> value.id().equals("KG-05")).findFirst().orElseThrow();
         assertThat(item.question()).isEqualTo("磷虾油和阿司匹林一起用要注意什么？");
-        assertThat(item.expectRefuse()).isTrue();
-        assertThat(item.mustMention()).containsExactlyElementsOf(BOUNDARY);
+        // 语料已入库《磷虾油软胶囊产品说明书》（KB-0049），正确产出是原文事实而非未收录边界
+        assertThat(item.expectRefuse()).isFalse();
+        assertThat(item.mustMention()).containsExactly("磷虾油", "阿司匹林", "出血风险");
     }
 
     @Test

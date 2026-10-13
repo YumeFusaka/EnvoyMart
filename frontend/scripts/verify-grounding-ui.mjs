@@ -156,13 +156,33 @@ ck(
 
 // ─────────── 二、点引用角标 → 点亮对应卡片 ───────────
 console.log('\n二、引用角标的跳转与高亮')
-const citeButton = knowledge.locator('.message-content__cite', { hasText: /^1$/ }).first()
-if ((await citeButton.count()) === 0) {
-  ck('正文里有可点的引用角标', false, '正文中没找到 [1] 角标，跳转链路无从触发')
+// 角标编号由模型引用哪条依据决定（本轮先引 [2] 完全合法），不能钉死 [1]：
+// 钉死编号测的是「模型是否恰好先引第一条」，那是输出方差，不是这条验收要的链路。
+// 改为读实际编号，再核对同号卡片是否被点亮——角标与卡片同号对应
+// （CitationList 的 is-active 判据是 activeIndex === i + 1）。
+//
+// 另一处方差：生成侧写完句子后，医学发布审核可能把未支撑句整段剔光，
+// 该轮就退化成确定性拒答（正文一句带角标的话都没有）——那一轮没有角标可点，
+// 是产品在证据不足时的正确出口，不是 UI 缺陷。与下面「冲突型」同一处理：
+// 给一次有界重试，重试只写进日志、**不改变判据本身**（放宽成"没角标也行"等于删掉这条验收）。
+let badgeScope = knowledge
+if ((await badgeScope.locator('.message-content__cite').count()) === 0) {
+  console.log('  \x1b[33mRETRY\x1b[0m 本轮回答被发布审核剔光、正文没有角标：用同一个问题再问一次')
+  badgeScope = await ask('维生素D每天推荐摄入多少？成年人上限是多少？')
+}
+const firstBadge = badgeScope.locator('.message-content__cite').first()
+if ((await firstBadge.count()) === 0) {
+  ck('正文里有可点的引用角标', false, '两轮回答都没有 [n] 角标，跳转链路无从触发')
 } else {
-  await citeButton.click()
-  const active = await poll(() => citations.first().getAttribute('class'), (c) => c?.includes('is-active'))
-  ck('点 [1] 后第 1 张卡片被点亮', Boolean(active?.includes('is-active')), `class=${active}`)
+  const badgeIndex = Number(await firstBadge.getAttribute('data-cite'))
+  ck('角标带可解析的依据编号', Number.isInteger(badgeIndex) && badgeIndex >= 1,
+    `data-cite=${await firstBadge.getAttribute('data-cite')}`)
+  await firstBadge.click()
+  // 卡片作用域必须跟着角标那一轮走：重试后角标来自新卡片，仍拿旧的 citations
+  // 会在旧卡片上找 is-active，永远找不到（旧卡片根本不会因为点新卡片而变化）
+  const targetCard = badgeScope.locator('.citation').nth(badgeIndex - 1)
+  const active = await poll(() => targetCard.getAttribute('class'), (c) => c?.includes('is-active'))
+  ck(`点 [${badgeIndex}] 后第 ${badgeIndex} 张卡片被点亮`, Boolean(active?.includes('is-active')), `class=${active}`)
 }
 
 // ─────────── 三、冲突型：真矛盾要露出来 ───────────

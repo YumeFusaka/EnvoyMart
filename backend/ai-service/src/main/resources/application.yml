@@ -77,7 +77,10 @@ envoymart:
     api-key: ${LLM_API_KEY:}
     base-url: ${LLM_BASE_URL:https://api.deepseek.com}
     model: ${LLM_MODEL:deepseek-flash}
-    temperature: 0.7
+    # 【高级项】主对话生成温度。0.7 时同一问题多轮答案方差很大（多跳评测实测 13~17/18
+    # 波动，漏写关键句的位置每轮不同）；0.2 收窄方差、保持自然表达，医学类回答也更稳。
+    # 分类/规划/扩写等内部调用在各自调用点固定 temperature=0，不受此项影响。
+    temperature: 0.2
     max-tokens: 2048
     timeout-ms: ${LLM_TIMEOUT_MS:60000}
     # DeepSeek 默认开启思考模式，会返回 reasoning_content 并占用输出 token。

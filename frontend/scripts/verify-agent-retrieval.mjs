@@ -71,9 +71,15 @@ const titlesIn = (text) => [...String(text ?? '').matchAll(TITLE)].map((m) => no
 
 const citableOf = (d) => {
   const set = new Set()
+  const counts = new Map() // 标题出现在几个证据切片里——生产侧只按证据切片计数
   for (const k of d.knowledge ?? []) {
-    if (k.title) set.add(norm(k.title))
-    for (const t of [...titlesIn(k.title), ...titlesIn(k.position)]) set.add(t)
+    const perChunk = new Set()
+    if (k.title) perChunk.add(norm(k.title))
+    for (const t of [...titlesIn(k.title), ...titlesIn(k.position)]) perChunk.add(t)
+    for (const t of perChunk) {
+      set.add(t)
+      counts.set(t, (counts.get(t) ?? 0) + 1)
+    }
   }
   for (const t of d.toolCalls ?? []) {
     for (const line of String(t.output ?? '').split('\n')) {
@@ -83,6 +89,13 @@ const citableOf = (d) => {
       const quote = rest.search(/[「“"]/) // 引文里的书名不是平台的出处
       for (const x of titlesIn(quote < 0 ? rest : rest.slice(0, quote))) set.add(x)
     }
+  }
+  // 生产侧 Agent.java:1526 `citableTitles.removeAll(ambiguousTitles(evidence))`：
+  // 同一标题落在 >1 个证据切片时说不清指哪篇，整个从可引用集合移除（工具输出的同名标题
+  // 一并移除，因为合并在一个集合里）。漏了这一步，脚本的尺子就比生产宽——
+  // 生产按规格剔掉歧义标题的句子，脚本却记成「平台声明过的《文档名》被误伤」的假红。
+  for (const [t, n] of counts) {
+    if (n > 1) set.delete(t)
   }
   return set
 }

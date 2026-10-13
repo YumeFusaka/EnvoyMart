@@ -303,7 +303,9 @@ final class MedicalDoseAssertions {
                     && (MedicalQuantities.QUANTITY.matcher(subject.group(1)).find() || MedicalQuantities.hasUnparsedQuantity(subject.group(1))))
                     && !subject.group(1).matches(".*(?:资料|说明书|依据|证据|指南|研究).*")) {
                 for (String part : subject.group(1).split("与|和|及|、")) {
-                    String name = part.replaceFirst("(?:可能|不会|不能|会|不|可|也)$", "");
+                    // 尾部情态助词（“抗生素要错开时间”解析出“抗生素要”）要剥掉；只剥“要”会
+                    // 把“需要”削成“需”，所以多字符形式排在前面。
+                    String name = part.replaceFirst("(?:需要|要|可能|不会|不能|会|不|可|也)$", "");
                     if (name.isEmpty()) continue;
                     boolean known = candidates.stream().anyMatch(term -> name.contains(term)
                             && !("维生素".equals(term) && !name.equals(term)));
@@ -320,7 +322,12 @@ final class MedicalDoseAssertions {
 
     /** 同一语法入口用于内联数量与裸主体，不能只在某一分支剥离话语前缀。 */
     private static String subjectText(String text) {
-        String body = text.replaceFirst("^\\d+(?:\\.\\d+)+(?=[\\p{IsHan}a-z])", "");
+        // 行首 "- "/"* " 列表标记与 "**" 加粗会挡住 SUBJECT_HEAD 的 ^ 锚定（生成侧习惯用列表
+        // 与加粗排版），句中又无冒号可回退，裸主体（如“抗生素”）就补不进来、整句被判
+        // “数量主体不完整”——这是确定性复现的解析缺口，不是模型措辞问题。
+        String body = text.replaceFirst("^\\d+(?:\\.\\d+)+(?=[\\p{IsHan}a-z])", "")
+                .replaceFirst("^[-*·•]\\s*", "")
+                .replace("**", "");
         return QUANTITY_FRAME.matcher(VERSION_FRAME.matcher(body).replaceFirst("")).replaceFirst("")
                 .replaceFirst("^(?:结论|具体风险|风险提示)[：:]", "")
                 .replaceFirst("^(?:(?:根据资料|根据说明书|同时|建议|推荐|(?:正在|在)?服用|摄入|补充|但|而|也|则|并|此外|另外|通常|一般|正常|健康|长期|首次|一次|单次|(?:在)?(?:合用|同服)(?:期间|时)|"

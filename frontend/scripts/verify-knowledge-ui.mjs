@@ -709,14 +709,27 @@ try {
   const comboRow = page.locator('.evidence__row').filter({ hasText: '组合注意事项' })
     .filter({ hasText: edge.head.label }).filter({ hasText: edge.tail.label }).first()
   await comboRow.locator('.evidence__head').click()
-  const source = comboRow.locator('.evidence__source-item')
-    .filter({ hasText: edge.quote }).filter({ hasText: edge.docTitle }).first()
-  await source.waitFor({ state: 'visible', timeout: 8000 })
+  await comboRow.locator('.evidence__source-item').first().waitFor({ state: 'visible', timeout: 8000 })
+  // 两条只读路径对同一条存储边的引文口径不同：interactions 路径做句子补全
+  // （GraphService.java withVerifiedSentenceContext，存储 [14,46) → 返回 [14,64)），
+  // 而页面证据栏走 entity 邻域路径（neighborhood 只 withTitles），渲染的是存储原文本身。
+  // 拿扩展后的 edge.quote 逐字比 DOM 必然 0 命中——页面渲染的应是它的前缀（同起点、
+  // 尾部延展）。按同源前缀定位，顺带把同文档其他切片的引文排除在外。
+  const domQuotes = await comboRow.locator('.evidence__source-item').evaluateAll((els) =>
+    els.map((el) => el.querySelector('.evidence__quote')?.textContent ?? ''))
+  const sourceIndex = domQuotes.findIndex((q) => q.length > 0 && edge.quote.startsWith(q))
+  if (sourceIndex < 0) {
+    throw new Error(
+      `组合行里没有与 interactions 引文同源的条目；DOM 引文=${JSON.stringify(domQuotes)}`
+        + `，interactions=${JSON.stringify(edge.quote)}`)
+  }
+  const source = comboRow.locator('.evidence__source-item').nth(sourceIndex)
+  const domQuote = domQuotes[sourceIndex]
   ck(
     '组合关系展示同一条真实引文与后果',
-    (await source.locator('.evidence__quote').textContent()) === edge.quote
-      && (await source.locator('.evidence__effect').textContent()) === edge.effect,
-    await source.innerText(),
+    (await source.locator('.evidence__effect').textContent()) === edge.effect,
+    `DOM 引文=${JSON.stringify(domQuote)} 应为 interactions=${JSON.stringify(edge.quote)} 的同源前缀；`
+      + await source.innerText(),
   )
   const link = source.getByRole('link', { name: `《${edge.docTitle}》· 查看原文`, exact: true })
   const href = await link.getAttribute('href')
@@ -725,9 +738,10 @@ try {
   await link.click()
   await page.locator('mark.doc__mark').waitFor({ state: 'visible', timeout: 15000 })
   const markedText = await page.locator('mark.doc__mark').allTextContents()
+  // 高亮的也是存储原文（与页面证据栏同口径），基准用 domQuote 而非扩展后的 edge.quote
   ck('组合引用跳到真实原文并高亮同一句',
     hashOf() === `/knowledge/${edge.docId}?chunk=${edge.chunkId}`
-      && markedText.some((text) => text.includes(edge.quote)), markedText.join(' | '))
+      && markedText.some((text) => text.includes(domQuote)), markedText.join(' | '))
 } catch (e) {
   comboErr = e
 }

@@ -376,6 +376,13 @@ class AgentApprovalTokenTest {
 
         assertThat(cancel.calls).containsExactly(Map.of("orderId", 12));
         assertThat(confirmed.getStage()).isEqualTo(TaskStage.WAITING_USER);
+        assertThat(confirmed.getApprovalToken())
+                .as("执行非全 COMMITTED 必须保留**原**令牌，恢复入口才能沿原签名继续")
+                .isEqualTo(token);
+        assertThat(confirmed.getPendingActionDetails())
+                .as("保留令牌时必须同时给回恢复载荷（含工具名与参数），前端才有可展示的恢复卡")
+                .hasSize(2)
+                .allSatisfy(detail -> assertThat(detail).containsEntry("tool", "order_cancel"));
         assertThat(recovered.getToolExecutions()).hasSize(1);
         assertThat(recovered.getToolExecutions().getFirst().getOperationState()).isEqualTo(ToolResult.OperationState.NOT_FOUND);
         assertThat(recovered.getReply()).contains("结果待确认");

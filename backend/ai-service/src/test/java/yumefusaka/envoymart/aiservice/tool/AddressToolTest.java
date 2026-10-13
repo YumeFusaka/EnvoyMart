@@ -68,6 +68,34 @@ class AddressToolTest {
     }
 
     @Test
+    void 默认之外的条目连同标签一起列出供用户挑() {
+        AuthClient client = mock(AuthClient.class);
+        AgentAddress company = addr(1L, "张三", 0);
+        company.setTag("公司");
+        when(client.listAddresses(anyString()))
+                .thenReturn(Result.success(List.of(addr(2L, "李四", 1), company)));
+
+        ToolResult r = new AddressTool(client).execute(call());
+
+        assertThat(r.isSuccess()).isTrue();
+        assertThat(r.getOutput()).contains("其余 1 条").contains("张三").contains("标签：公司");
+    }
+
+    @Test
+    void 条目逐字段输出且默认条目带默认标记() {
+        AuthClient client = mock(AuthClient.class);
+        when(client.listAddresses(anyString()))
+                .thenReturn(Result.success(List.of(addr(2L, "李四", 1))));
+
+        ToolResult r = new AddressTool(client).execute(call());
+
+        assertThat(r.getOutput())
+                .contains("收货人：李四")
+                .contains("详细地址：文一西路 100 号 1 幢 101")
+                .contains("[默认地址]");
+    }
+
+    @Test
     void 没有默认地址时不擅自取第一条而是让用户指定() {
         AuthClient client = mock(AuthClient.class);
         when(client.listAddresses(anyString()))

@@ -52,7 +52,11 @@ class KnowledgePromptTest {
                 .contains("版本：v2026.03")
                 .contains("每日推荐摄入量为 400IU")
                 .contains("标注来源编号")
-                .contains("不得编造编号");
+                .contains("不得编造编号")
+                // 转述口径：术语照抄引用条目、原文“本品”要展开成商品名——锚点词逐字
+                // 匹配与“本品”孤儿句都是这条指令的直接目标。
+                .contains("展开成该条目的商品名")
+                .contains("照抄所引条目的原文用词");
     }
 
     /**

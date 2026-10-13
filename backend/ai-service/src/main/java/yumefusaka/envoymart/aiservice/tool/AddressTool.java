@@ -43,7 +43,10 @@ public class AddressTool implements Tool {
                         + "当用户要下单/结算但没在话里给出收货信息时使用："
                         + "先调本工具把默认地址念给用户确认，"
                         + "**不要自己编一个地址，也不要凭空报出一个不存在的地址**。"
-                        + "若用户明确说寄到别处，或地址簿为空，则照旧向用户索要完整收货信息。"
+                        + "「先不要用默认地址」「还没确定寄哪里」不豁免本工具——"
+                        + "用户拒绝的只是**默认**那一条，地址簿里可能还有他想要的（比如公司地址），"
+                        + "此时先查出来让他挑，不许跳过查询直接向他索要。"
+                        + "只有两种情况不念默认地址：地址簿为空；或用户给出了地址簿之外的新地址，则向他索要完整收货信息。"
                         + "**本工具只读**：不提供新增、修改、删除地址的能力。")
                 .requiresConfirmation(false)
                 .parameters(Map.of())
@@ -65,12 +68,23 @@ public class AddressTool implements Tool {
             StringBuilder sb = new StringBuilder();
             sb.append("地址簿共 ").append(addresses.size()).append(" 条。");
             if (preferred != null) {
-                sb.append("默认地址：").append(format(preferred))
-                        .append("。请把这条地址念给用户确认——确认后再调用 cart_checkout。");
+                sb.append("默认地址：\n").append(formatBlock(preferred));
+                sb.append("\n请把这条地址念给用户确认——确认后再调用 cart_checkout。");
+                // 非默认地址必须一并念出来：用户说「不要默认那条」（如寄公司）时，
+                // 模型手里只有其余条目的完整内容，才谈得上描述里承诺的「念给他挑」。
+                List<AgentAddress> others = addresses.stream().filter((a) -> a != preferred).toList();
+                if (!others.isEmpty()) {
+                    sb.append("\n其余 ").append(others.size()).append(" 条：");
+                    for (AgentAddress a : others) {
+                        sb.append("\n").append(formatBlock(a));
+                    }
+                    sb.append("\n用户说不要默认地址、或要寄到别处时，把这些条目念给他挑，"
+                            + "并把挑中的条目按字段填进 cart_checkout，不要重新索要地址簿里已有的信息。");
+                }
             } else {
                 sb.append("没有标记为默认的地址，可选项：");
                 for (AgentAddress a : addresses) {
-                    sb.append("\n- ").append(format(a));
+                    sb.append("\n").append(formatBlock(a));
                 }
                 sb.append("\n请让用户指定其中一条，不要替用户挑。");
             }
@@ -96,11 +110,25 @@ public class AddressTool implements Tool {
         return null;
     }
 
-    private static String format(AgentAddress a) {
+    /**
+     * 逐字段输出，而不是拼成一整句。两个理由：模型要把选中条目填进 cart_checkout 的六个
+     * 参数（省/市/区连排一句话拆不出来），逐字段是它唯一可靠的来源；{@code tag}（家/公司）
+     * 是用户「寄公司」这类指代能否对上号的唯一凭据，此前建成后没有任何链路读过它。
+     */
+    private static String formatBlock(AgentAddress a) {
         StringBuilder sb = new StringBuilder();
-        sb.append(nullSafe(a.getReceiverName())).append(" ").append(nullSafe(a.getReceiverPhone())).append(" ");
-        sb.append(nullSafe(a.getProvince())).append(nullSafe(a.getCity())).append(nullSafe(a.getDistrict()));
-        sb.append(nullSafe(a.getDetail()));
+        sb.append("- 收货人：").append(nullSafe(a.getReceiverName()));
+        sb.append("；手机号：").append(nullSafe(a.getReceiverPhone()));
+        sb.append("；省：").append(nullSafe(a.getProvince()));
+        sb.append("；市：").append(nullSafe(a.getCity()));
+        sb.append("；区：").append(nullSafe(a.getDistrict()));
+        sb.append("；详细地址：").append(nullSafe(a.getDetail()));
+        if (a.getTag() != null && !a.getTag().isBlank()) {
+            sb.append("；标签：").append(a.getTag());
+        }
+        if (a.getIsDefault() != null && a.getIsDefault() == 1) {
+            sb.append("；[默认地址]");
+        }
         return sb.toString();
     }
 

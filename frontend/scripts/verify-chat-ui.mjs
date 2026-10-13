@@ -60,6 +60,8 @@ async function poll(fn, predicate, timeoutMs = 30000) {
   return last
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
 const session = await (async () => {
   const res = await fetch(`${GW}/auth/login`, {
     method: 'POST',
@@ -427,40 +429,60 @@ await page.locator('.composer textarea').fill(`平台的退换货政策有哪些
 await page.getByRole('button', { name: '发送消息' }).click()
 // 第一轮跑完会话才进侧栏（空会话不落号），随后才有东西可删
 await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'detached', timeout: 180000 })
-const doomed = (await apiSessions()).find(
+const sessions = await apiSessions()
+const doomed = sessions.find(
   (s) => (s.title ?? '').includes(RUN_TAG) && (s.title ?? '').startsWith('平台的退换货'),
 )
-ck('新会话已进入侧栏', Boolean(doomed), `当前：${(await apiSessions()).map((s) => s.title).join(' / ')}`)
+ck('新会话已进入侧栏', Boolean(doomed), `当前：${sessions.map((s) => s.title).join(' / ')}`)
 if (doomed) {
   // 第二轮故意长：趁它还在跑的时候删。**走接口删而不是点界面**——
   // 界面上删活动会话会顺带切走、中断这条流，那正好把要验的时序放跑了
   await page.locator('.composer textarea').fill('请用不少于 500 字详细展开每一条政策，并逐条标注依据编号')
   await page.getByRole('button', { name: '发送消息' }).click()
   await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'visible', timeout: 30000 })
-  const del = await fetch(`${GW}/ai/sessions/${doomed.sessionId}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${session.token}` },
-  })
-  ck('生成途中删除接口回成功', (await del.json()).code === 200)
+  // 网关对 /ai/** 有 5rps 共享限流：撞上限流拿到 429 时请求根本没到服务端，
+  // 那不是墓碑缺陷。退避重试；仍失败时把真实状态码与响应体打出来，由人分辨。
+  let del = { status: 0, body: null }
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const res = await fetch(`${GW}/ai/sessions/${doomed.sessionId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${session.token}` },
+    })
+    del = { status: res.status, body: await res.json().catch(() => null) }
+    if (res.status !== 429) break
+    await sleep(1200)
+  }
+  ck(
+    '生成途中删除接口回成功',
+    del.body?.code === 200,
+    `HTTP ${del.status} ${JSON.stringify(del.body)}`,
+  )
 
   // 等这一轮在界面上跑完 —— 这一刻服务端才落历史，也正是"还魂"会发生的那一刻
   await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'detached', timeout: 180000 })
-  const back = await poll(
-    () => apiSessions(),
-    (list) => list.some((s) => s.sessionId === doomed.sessionId),
-    30000,
-  )
-  ck(
-    '生成结束后会话没有还魂',
-    !back.some((s) => s.sessionId === doomed.sessionId),
-    `删掉的 id=${doomed.sessionId} 又出现在侧栏了`,
-  )
-  const msgs = await (
-    await fetch(`${GW}/ai/sessions/${doomed.sessionId}/messages`, {
-      headers: { Authorization: `Bearer ${session.token}` },
-    })
-  ).json()
-  ck('被删会话读不出任何消息', (msgs.data ?? []).length === 0, `实际 ${(msgs.data ?? []).length} 条`)
+  if (del.body?.code !== 200) {
+    // 删除没落地，后面两条必然一起红——那不是两个新缺陷，是这条失败的级联；
+    // 标红并给出真实原因，不让级联红灯把上一条的根因埋掉
+    ck('生成结束后会话没有还魂', false, '删除接口未成功，墓碑断言不成立（见上一条真实响应）')
+    ck('被删会话读不出任何消息', false, '删除接口未成功，级联断言短路（见上一条真实响应）')
+  } else {
+    const back = await poll(
+      () => apiSessions(),
+      (list) => list.some((s) => s.sessionId === doomed.sessionId),
+      30000,
+    )
+    ck(
+      '生成结束后会话没有还魂',
+      !back.some((s) => s.sessionId === doomed.sessionId),
+      `删掉的 id=${doomed.sessionId} 又出现在侧栏了`,
+    )
+    const msgs = await (
+      await fetch(`${GW}/ai/sessions/${doomed.sessionId}/messages`, {
+        headers: { Authorization: `Bearer ${session.token}` },
+      })
+    ).json()
+    ck('被删会话读不出任何消息', (msgs.data ?? []).length === 0, `实际 ${(msgs.data ?? []).length} 条`)
+  }
 }
 
 // ─────────── 八、窄屏：侧栏收进抽屉 ───────────

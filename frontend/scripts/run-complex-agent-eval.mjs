@@ -75,14 +75,14 @@ async function save() {
     }
   }
 }
-async function api(path, { method = 'GET', body, actor = 'buyer', allowCodes = [200] } = {}) {
+async function api(path, { method = 'GET', body, actor = 'buyer', allowCodes = [200], requestId: traceId, retried = false } = {}) {
   if (actor === 'admin' && !adminToken) {
     const r = await api('/auth/login', { actor: 'anonymous', method: 'POST', body: { username: process.env.COMPLEX_EVAL_ADMIN_USERNAME ?? 'admin', password: process.env.COMPLEX_EVAL_ADMIN_PASSWORD ?? '123456' } })
     adminToken = r.data.token
     if (!adminToken) throw Object.assign(new Error('管理员登录未返回令牌'), { blocked: true })
   }
   const token = actor === 'anonymous' ? null : actor === 'admin' ? adminToken : buyerToken
-  const requestId = randomUUID()
+  const requestId = traceId ?? randomUUID()
   const started = Date.now()
   const response = await fetch((process.env.COMPLEX_EVAL_GW ?? 'http://127.0.0.1:8080') + path, {
     method,
@@ -93,6 +93,23 @@ async function api(path, { method = 'GET', body, actor = 'buyer', allowCodes = [
   const payload = await response.json()
   const r = { data:payload.data, requestId:payload.data?.requestId ?? response.headers.get('X-Request-Id') ?? requestId, httpStatus:response.status, businessCode:payload.code, latencyMs:Date.now()-started }
   if (!allowCodes.includes(payload.code) || (!response.ok && payload.code === 200)) {
+    // 订单决议的 fail-closed 503（Seata 权威状态查询超时）是服务端明说的「请稍后重试」信号，
+    // 不是业务结论。业务幂等键在 body.requestId 里原样不变，同请求重放会命中下单幂等
+    // 闸门取回同一结果；只对这一次瞬时信号同 X-Request-Id 有界重试一次，其余错误照常抛出。
+    if (!retried && response.status === 503 && payload.code === 503 && String(payload.msg ?? '').includes('订单事务结果尚未确认')) {
+      await new Promise((done) => setTimeout(done, 3000))
+      return api(path, { method, body, actor, allowCodes, requestId, retried: true })
+    }
+    // 网关对 ai-service 的路由限流是 5 QPS（一次对话要打多轮模型，桶必须小）。
+    // 反馈步骤会在几毫秒内连发 5 个请求（读消息 → PUT → GET → DELETE → GET → 列表），
+    // 单机串行也会撞上限流——这是产品按设计工作，不是缺陷；限流响应本身带
+    // 「请稍后再试」的语义，属于可重试信号。按 Retry-After 语义有界退避，
+    // 重试只对 429 生效，其余错误照常抛出，且请求参数（含业务幂等键）原样不变。
+    if (!retried && response.status === 429 && payload.code === 429) {
+      const retryAfter = Number(response.headers.get('Retry-After'))
+      await new Promise((done) => setTimeout(done, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1200))
+      return api(path, { method, body, actor, allowCodes, requestId, retried: true })
+    }
     throw Object.assign(new Error(path+' HTTP='+response.status+' code='+payload.code+' '+(payload.msg??'')), r)
   }
   return r
