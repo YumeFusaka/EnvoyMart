@@ -23,6 +23,12 @@ import java.util.List;
  * @param stage          保存时的阶段。恢复的判据就是「这个阶段有没有后续动作可接」
  * @param coreIntent     首次规划冻结的核心意图（见 AgentGraph#KEY_CORE_INTENT）
  * @param executedTools  已经真正执行过的工具名，按执行顺序。恢复时据此跳过重复调用
+ * @param executedWriteFingerprints 已经真正执行过的**写操作指纹**（见
+ *                       {@code yumefusaka.envoymart.agent.tool.WriteFingerprints}），按执行顺序。
+ *                       与 {@code executedTools} 的分工：那个记「用过哪些工具」，这个记「对哪个目标
+ *                       做过写操作」——续作轮判重需要的是后者，因为同一件商品加购两次时工具名完全相同。
+ *                       <b>必须落进断点</b>：确认执行发生在图外，续作轮的图内既推不出来、
+ *                       也没有第二次机会拿到它（见 {@code AgentGraph#run} 的第十个参数）。
  * @param pendingActions 待用户确认的调用载荷。为空表示不是在等确认
  * @param round          已用掉的规划轮次。恢复时接着它继续计数，护栏预算才不会被重置绕过
  * @param continuationPrompt 确认成功后继续未完成复合任务的服务端指令；为空表示本批已是最后一步
@@ -34,6 +40,7 @@ public record TaskCheckpoint(String taskId,
                              TaskStage stage,
                              String coreIntent,
                              List<String> executedTools,
+                             List<String> executedWriteFingerprints,
                              List<PendingCall> pendingActions,
                              int round,
                              String continuationPrompt,
@@ -41,13 +48,22 @@ public record TaskCheckpoint(String taskId,
 
     public TaskCheckpoint {
         executedTools = executedTools == null ? List.of() : List.copyOf(executedTools);
+        executedWriteFingerprints = executedWriteFingerprints == null ? List.of() : List.copyOf(executedWriteFingerprints);
         pendingActions = pendingActions == null ? List.of() : List.copyOf(pendingActions);
     }
 
+    /** 旧签名 —— 指纹是新增字段，缺省为空表示「没有可对账的历史」，与改造前行为一致 */
     public TaskCheckpoint(String taskId, String userId, String sessionId, TaskStage stage,
                           String coreIntent, List<String> executedTools,
                           List<PendingCall> pendingActions, int round, long savedAtEpochMs) {
-        this(taskId, userId, sessionId, stage, coreIntent, executedTools,
+        this(taskId, userId, sessionId, stage, coreIntent, executedTools, List.of(),
+                pendingActions, round, null, savedAtEpochMs);
+    }
+
+    public TaskCheckpoint(String taskId, String userId, String sessionId, TaskStage stage,
+                          String coreIntent, List<String> executedTools, List<String> executedWriteFingerprints,
+                          List<PendingCall> pendingActions, int round, long savedAtEpochMs) {
+        this(taskId, userId, sessionId, stage, coreIntent, executedTools, executedWriteFingerprints,
                 pendingActions, round, null, savedAtEpochMs);
     }
 

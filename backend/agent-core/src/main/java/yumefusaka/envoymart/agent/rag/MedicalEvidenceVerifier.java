@@ -55,6 +55,26 @@ public final class MedicalEvidenceVerifier {
     private static final Pattern NUMBERED_SOURCE_FRAME = Pattern.compile(
             "^\\s*\\[\\d+]\\s*(?:第[一二三四五六七八九十百\\d]+[章节条款]|正文|原文|其中|该条|本条)?"
                     + "(?:中|里|内)?(?:也)?(?:写明|指出|说明|提到|记载|明确)[：:]");
+
+    /**
+     * 章节引用框架：`第四章写明：…` —— 与 {@link #NUMBERED_SOURCE_FRAME} 是同一件事的第三种写法。
+     * <p>
+     * 三种写法的来源都是「句子自己声明的出处」，区别只在书写形式：
+     * <pre>
+     * 《维生素 K2 软胶囊产品说明书》第四章写明：…   ← 标题形态（reportedSource 分支）
+     * [1]第四章写明：…                              ← 编号形态（NUMBERED_SOURCE_FRAME）
+     * 第四章写明：…                                 ← 章节形态（本模式）
+     * </pre>
+     * 第三种出现在真实链路里：标题被 {@code numberTitles} 换成 `[1]` 之后，若该编号
+     * 随后被挪到句末或去掉，句首就只剩下章节号。判据不该因为书写形式的变化而失效。
+     * <p>
+     * <b>边界不放宽</b>：仍然要求句子自己带来源框架动词（写明/指出/说明/提到/记载/明确）。
+     * 「本品所含钙可影响…[1]」这种没有任何框架声明的句子照样要过归属检查——
+     * 引用的切片是说明书不等于句子说了「本品」就是那一份（KG-02/KG-11 两个用例守的正是这条）。
+     */
+    private static final Pattern SECTION_SOURCE_FRAME = Pattern.compile(
+            "^\\s*(?:第[一二三四五六七八九十百\\d]+[章节条款]|正文|原文|其中|该条|本条)"
+                    + "(?:中|里|内)?(?:也)?(?:写明|指出|说明|提到|记载|明确)[：:]");
     private static final Pattern TOPIC_FRAME = Pattern.compile("^(?:现在|接下来)?(?:讨论|说回|关于|至于|针对).*");
     private static final Pattern RELATION_DIRECTION = Pattern.compile(
             "(?:(不会|不可能|不|未|没有)(?:再|明显|显著|直接)?)?"
@@ -283,17 +303,81 @@ public final class MedicalEvidenceVerifier {
                 || facts.stream().anyMatch(fact -> fact.entities().isEmpty() || fact.requiresPair() && fact.entities().size() < 2);
     }
 
+    /**
+     * 临床硬信号：用户问的是**医学结论**（剂量、相互作用、风险、禁忌），出现即判医学。
+     * <p>
+     * <b>为什么不含「补充剂 / 保健品 / 药品 / 药物」这类类别名词</b>：它们标识的是**医学实体**，
+     * 不是「在问医学结论」这个行为。把它们算成硬信号，会让「推荐一款维生素D补充剂」这类
+     * 纯选购句在第二层之前就被判成医学问题——那正是 N1 要修的第一类现象。
+     */
+    private static final Pattern CLINICAL_SIGNAL = Pattern.compile(String.join("|",
+            "推荐摄入", "最高摄入", "可耐受", "摄入上限", "每日上限", "每天上限",
+            "相互作用", "同服", "同吃", "合用", "一起用", "一起吃", "服药", "用药", "服用", "剂量", "用量",
+            "(?:每天|每日|每次).{0,6}(?:几|多少)(?:粒|片|颗|袋|毫克|微克|克)",
+            "(?:多久|多长时间).{0,6}(?:吃|服用)",
+            "(?:吃|服用).{0,4}(?:几|多少)(?:粒|片|颗|袋|毫克|微克|克)",
+            "^(?:那)?(?:几|多少)(?:毫克|微克|克)[?？]?$",
+            "(?:每天|每日|每次).{0,6}(?:吃|喝|服用|补|摄入).{0,4}(?:几|多少)",
+            "能不能吃", "可不可以吃", "能吃吗", "能不能喝", "可以喝吗", "禁忌", "副作用", "不良反应",
+            "过量", "超量", "中毒",
+            "会不会", "有没有.{0,8}(?:影响|冲突|风险|作用|关系|禁忌|相互作用)",
+            "间隔", "错开", "隔开", "相隔",
+            "(?:影响|降低|增加|减少|增强|削弱|干扰|妨碍).{0,8}(?:吸收|药效|疗效|效果|生物利用度|抗凝|凝血|代谢)",
+            "吃什么药", "能吃什么"));
+
+    /**
+     * 明确选购 / 检索语境：用户在**挑商品、问规格价格、执行加购**，不是问医学结论。
+     * <p>
+     * 只在**临床硬信号缺席**时才生效——「我在补钙，同时吃抗生素怎么安排时间」既含
+     * 「安排时间」（不命中本层）也含「补钙」「抗生素」，但它命中了硬信号里的「相互作用」类，
+     * 所以仍然走医学链。顺序反过来的话，一句真正的用药咨询会被「推荐」两个字放走。
+     */
+    private static final Pattern COMMERCE_CONTEXT = Pattern.compile(String.join("|",
+            "搜索", "搜一下", "搜下", "查找", "找一款", "找几款", "改搜", "展示", "列出", "列一下", "列出来",
+            "推荐", "哪款", "哪一款", "哪个好", "有什么推荐", "有没有推荐",
+            "加入购物车", "加购", "下单", "结算", "购买", "买一", "买点", "来一份", "来一个", "各来", "帮我买",
+            "候选", "多少钱", "有货", "库存", "销量", "已售", "评价", "品牌", "评分",
+            // 「规格」只认问句形态：它是**属性名词**，出现在「两份说明书规格不一样」里时问的
+            // 是文档内容而不是在挑商品——放它过去会把医学问题判成非医学（G06 实证）。
+            "有什么规格", "有哪些规格", "哪些规格", "什么规格", "几个规格", "多种规格", "各规格",
+            "规格可以选", "规格能选", "规格可以挑", "规格能挑"));
+
+    /**
+     * 这是不是一个**医学问题**——判据只回答「用户是不是在问医学结论」，不回答「这句话里有没有医学词」。
+     * <p>
+     * <b>三层的顺序是判据本身，不是实现细节</b>（顺序换了结论就变）：
+     * <ol>
+     *   <li><b>临床硬信号</b> → 医学。剂量、相互作用、风险、禁忌属于安全性断言，必须确定性命中，
+     *       不能交给概率系统（见改造方案 §4.1「硬约束为什么不能交给判官」）。</li>
+     *   <li><b>明确选购语境</b> → 非医学。「搜索钙片，至少展示3个候选」「推荐一款维生素D补充剂」
+     *       里的医学词标识的是**商品**，用户在挑商品。实测这类句子有 164 轮被旧词表判成医学问题，
+     *       整篇走兜底拒答（N1 §2.14 发现 T/V）。</li>
+     *   <li><b>其余沿用既有词表</b> → fail-safe。「维生素D软胶囊开封后怎么贮存」这类既不命中硬信号、
+     *       也不像选购的句子，保持改造前的判定，不因新能力缺失而放宽。</li>
+     * </ol>
+     * <b>为什么第三层不能删</b>：词表是兜底，不是主判据。删掉它，所有「没写剂量也没说买」的医学问句
+     * （例如「维生素 D 对骨骼有什么好处」）都会掉到非医学侧。
+     * <p>
+     * <b>判据只读用户本轮原话</b>——改写后的检索句是给检索器用的中间产物（R20/R23）。
+     */
     public static boolean isMedicalQuestion(String question) {
         if (question == null || question.isBlank()) {
             return false;
         }
         String normalized = normalize(question);
+        if (CLINICAL_SIGNAL.matcher(normalized).find()) {
+            return true;
+        }
+        if (COMMERCE_CONTEXT.matcher(normalized).find()) {
+            return false;
+        }
         return MEDICAL_TERMS.stream().anyMatch(term -> normalized.contains(normalize(term)))
                 || normalized.matches(".*(?:推荐摄入|最高摄入|可耐受|摄入上限).*" )
-                || normalized.matches(".*(相互作用|同服|服药|用药|服用|剂量|药品|药物|抗生素|补充剂|保健品|头疼|头痛|肚子不舒服|腹痛|睡不好|失眠|发烧|发热|咳嗽|腹泻|便秘|过敏|恶心|呕吐|吃什么药|能吃什么|一起吃|一起用|合用|吃了以后).*" )
+                || normalized.matches(".*(?:相互作用|同服|服药|用药|服用|剂量|药品|药物|抗生素|补充剂|保健品|头疼|头痛|肚子不舒服|腹痛|睡不好|失眠|发烧|发热|咳嗽|腹泻|便秘|过敏|恶心|呕吐|吃什么药|能吃什么|一起吃|一起用|合用|吃了以后).*" )
                 || Pattern.compile("(?:每天|每日|每次).{0,6}(?:几|多少)(?:粒|片|颗|袋|毫克|微克|克)"
                         + "|(?:多久|多长时间).{0,6}(?:吃|服用)|(?:吃|服用).{0,4}(?:几|多少)(?:粒|片|颗|袋|毫克|微克|克)"
-                        + "|^(?:那)?(?:几|多少)(?:毫克|微克|克)[?？]?$" ).matcher(normalized).find();
+                        + "|^(?:那)?(?:几|多少)(?:毫克|微克|克)[?？]?$"
+                        + "|(?:每天|每日|每次).{0,6}(?:吃|喝|服用|补|摄入).{0,4}(?:几|多少)" ).matcher(normalized).find();
     }
 
     /** 查询边界与遵医嘱提醒没有处方结论，不因提醒中提及风险或引用弱片段而误删。 */
@@ -795,6 +879,10 @@ public final class MedicalEvidenceVerifier {
         // 同一段回答里出现第二份说明书时归属立刻歧义（KG-02/KG-11 两个用例守的正是这条）。
         // 差别在于：框架动词是句子**自己**给出的来源声明，编号只是它的书写形式。
         boolean numberedSourceFrame = NUMBERED_SOURCE_FRAME.matcher(normalizedSentence).find();
+        // 章节框架与编号框架是同一件事的两种写法，合并成一个判据：
+        // 句子自己声明了「来源是某一份文档的某一节」，归属由引用切片提供
+        boolean sourceFrame = numberedSourceFrame
+                || SECTION_SOURCE_FRAME.matcher(normalizedSentence).find();
         for (DocumentChunk chunk : citedEvidence) {
             if (chunk == null) { failures.add("引用切片不存在"); continue; }
             if (graphClaim && !isGraphEvidence(chunk)) {
@@ -811,11 +899,30 @@ public final class MedicalEvidenceVerifier {
                 // 已匹配的来源名称保留身份约束；临床参与组只取其后的正文，不能把标题成分变成服药对象。
                 // “说明书写明：所含钙”中的“所含”仍指已核对的商品，拆框架后须保留此语法绑定。
                 clinicalSentence = normalizedSentence.substring(reportedSource.end()).replaceFirst("^所含", "本品所含");
+            } else if (sourceFrame) {
+                // 编号框架是同一件事的另一种写法：`《X 说明书》第四章写明：…` 在
+                // CitationVerifier.numberTitles 之后会变成 `[1]第四章写明：…`——
+                // 标题被换成编号，来源身份**没有消失，只是换了载体**。
+                //
+                // 此前这个形态漏了：`reportedSource` 要求句首是《…说明书》，匹配不到，
+                // 于是落到下面「本品必须有归属声明」那条，而归属声明恰好刚被编号替换掉——
+                // 判据在追一个自己刚擦掉的证据。实测代价（c091b3b9 的 KG-04）：
+                // 模型把 K2 与华法林的拮抗关系答得完全正确、引用也对，整段却被剔除，
+                // 最终交付一句「无法根据本次检查判断维生素 K2与华法林的具体关系」。
+                //
+                // 身份改由**引用切片自身的 title** 提供（编号 [n] 指的就是第 n 片证据），
+                // 与 reportedSource 分支取的是同一份信息，只是来源从句子挪到了引用表。
+                String owner = productOwner(chunk.getTitle());
+                if (owner == null || owner.isBlank()) {
+                    failures.add("编号来源框架无法定位引用商品"); continue;
+                }
+                // 保留 ownerContext：后续句子省略主体时要能接住这个身份
+                clinicalSentence = normalizedSentence;
             }
             if (PRODUCT_PRONOUN.matcher(normalizedSentence).find() && isMedicalFact(sentence)) {
                 String owner = productOwner(chunk.getTitle());
                 if (owner == null || !normalizedSentence.contains(owner) && !owner.equals(ownerContext)
-                        && !numberedSourceFrame) {
+                        && !sourceFrame) {
                     failures.add("本品临床事实没有声明引用来源所属商品"); continue;
                 }
             }

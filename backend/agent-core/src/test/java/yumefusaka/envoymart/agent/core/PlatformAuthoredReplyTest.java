@@ -19,7 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>确认中断轮报 {@code source="approval"}，正文是代码里的常量；</li>
  *   <li>确认执行轮报 {@code source="approved"}，正文是工具回执的逐字拼接；</li>
  *   <li>原批次恢复报 {@code source="approval-recovery"}；</li>
- *   <li>确定性流程报 {@code source="flow"}，正文由预定义工具序列产出。</li>
+ *   <li>确定性流程报 {@code source="flow"}，正文由预定义工具序列产出；</li>
+ *   <li>用户照口令回了一句、现场没有载荷时报 {@code source="approval-idle"}，正文是代码里的常量。</li>
  * </ul>
  * 这四种都没有「模型凭自身知识生成」的成分，但下游若不认识它们，就会按
  * 「没有引用、没有工具记录」处理——挂「本轮没有平台依据」横幅，
@@ -32,10 +33,10 @@ class PlatformAuthoredReplyTest {
             + "确认无误请点击「确认执行」，或直接回复这四个字。";
 
     @Test
-    void 四种平台来源都被认定为有依据() {
+    void 五种平台来源都被认定为有依据() {
         assertThat(Agent.PLATFORM_AUTHORED_SOURCES)
                 .as("集合本身就是判据：新增一种平台来源时，落点只有这里一处")
-                .containsExactlyInAnyOrder("flow", "approval", "approved", "approval-recovery");
+                .containsExactlyInAnyOrder("flow", "approval", "approved", "approval-recovery", "approval-idle");
     }
 
     @Test

@@ -17,6 +17,7 @@ import java.util.function.Consumer;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -57,7 +58,7 @@ class AiAssistantServiceTest {
     @Test
     void 重新生成就地改写历史而不是追加一轮() {
         Agent agent = mock(Agent.class);
-        when(agent.chat(anyString(), anyString(), anyString(), any()))
+        when(agent.chat(anyString(), anyString(), anyString(), any(), anyBoolean()))
                 .thenReturn(Agent.AgentResponse.builder().reply("新答复").build());
         ChatHistoryStore history = mock(ChatHistoryStore.class);
 
@@ -70,7 +71,7 @@ class AiAssistantServiceTest {
     @Test
     void 普通一轮照常记一对问答() {
         Agent agent = mock(Agent.class);
-        when(agent.chat(anyString(), anyString(), anyString(), any()))
+        when(agent.chat(anyString(), anyString(), anyString(), any(), anyBoolean()))
                 .thenReturn(Agent.AgentResponse.builder().reply("新答复").build());
         ChatHistoryStore history = mock(ChatHistoryStore.class);
 
@@ -83,7 +84,7 @@ class AiAssistantServiceTest {
     @Test
     void 取消时把已经推出去的部分答复落历史() {
         Agent agent = mock(Agent.class);
-        when(agent.chatStream(anyString(), anyString(), anyString(), any(), any(), any()))
+        when(agent.chatStream(anyString(), anyString(), anyString(), any(), any(), any(), anyBoolean()))
                 .thenAnswer(invocation -> {
                     Consumer<String> onChunk = invocation.getArgument(4);
                     onChunk.accept("前半句");
@@ -104,7 +105,7 @@ class AiAssistantServiceTest {
     @Test
     void 取消发生在重新生成中时同样原改写历史() {
         Agent agent = mock(Agent.class);
-        when(agent.chatStream(anyString(), anyString(), anyString(), any(), any(), any()))
+        when(agent.chatStream(anyString(), anyString(), anyString(), any(), any(), any(), anyBoolean()))
                 .thenAnswer(invocation -> {
                     Consumer<String> onChunk = invocation.getArgument(4);
                     onChunk.accept("重写了一半");
@@ -148,7 +149,7 @@ class AiAssistantServiceTest {
                 return cancelled.get();
             }
         };
-        when(agent.chatStream(anyString(), anyString(), anyString(), any(), any(), any()))
+        when(agent.chatStream(anyString(), anyString(), anyString(), any(), any(), any(), anyBoolean()))
                 .thenAnswer(invocation -> {
                     Consumer<String> onChunk = invocation.getArgument(4);
                     onChunk.accept("用户看到的前半句");

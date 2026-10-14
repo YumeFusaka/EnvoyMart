@@ -54,6 +54,7 @@ import yumefusaka.envoymart.agent.tool.ToolCall;
 import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
+import yumefusaka.envoymart.agent.tool.WriteFingerprints;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -94,11 +95,12 @@ public class Agent {
      * 一轮刚执行完用户批准操作的回答被判成「本轮没有平台依据」。
      * <p>
      * {@code approval} 是确认中断（还没执行），{@code approved} 是确认轮执行完，
-     * {@code approval-recovery} 是原批次恢复，{@code flow} 是确定性流程。
+     * {@code approval-recovery} 是原批次恢复，{@code flow} 是确定性流程，
+     * {@code approval-idle} 是用户照平台教的口令回了一句、而现场没有可确认的载荷时平台接住的那一句。
      * <b>不包含</b> {@code plan} / {@code react} / {@code fallback}——那三种的正文出自模型。
      */
     static final java.util.Set<String> PLATFORM_AUTHORED_SOURCES = java.util.Set.of(
-            "flow", "approval", "approved", "approval-recovery");
+            "flow", "approval", "approved", "approval-recovery", "approval-idle");
 
     /**
      * 确认令牌失效时的答复。
@@ -110,6 +112,19 @@ public class Agent {
     static final String APPROVAL_EXPIRED_REPLY =
             "这次确认已失效（超过确认时限，或不是在当前会话里发起的），为安全起见没有执行任何操作。"
                     + "请重新告诉我你要做什么。";
+
+    /**
+     * 用户照平台教的口令回了一句，而现场没有任何可确认的载荷时的答复。
+     * <p>
+     * 与 {@link #APPROVAL_EXPIRED_REPLY} 的区别是「没有对象」与「对象失效」：那边有一张卡片、
+     * 但令牌过期了；这边压根没有卡片——要么刚才那件事已经办完，要么从来就没有。
+     * <p>
+     * 两种情形共用一句实话：<b>这一轮什么都没执行</b>。用户按的是不可撤销的操作，
+     * 最坏的结果不是失败，而是他以为成功了。
+     */
+    static final String APPROVAL_IDLE_REPLY =
+            "这一轮没有需要确认的操作，因此没有执行任何操作。"
+                    + "刚才那件事可能已经办完了；如果你还要办别的事，直接告诉我就行。";
 
     private final Config config;
     private final ToolRegistry toolRegistry;
@@ -310,8 +325,18 @@ public class Agent {
     }
 
     public AgentResponse chat(String userId, String sessionId, String message, String approvalToken) {
+        return chat(userId, sessionId, message, approvalToken, false);
+    }
+
+    /**
+     * @param regenerate 「重新生成」：用户重问的是<b>刚才那条</b>，会话里不该出现第二条
+     *                   用户消息、模型也不该看见自己上一版答案。见
+     *                   {@link Memory#dropLastTurn(String)} 的注释。
+     */
+    public AgentResponse chat(String userId, String sessionId, String message, String approvalToken,
+                              boolean regenerate) {
         // 非流式入口没有实时通道，进度落在空实现上
-        return doChat(userId, sessionId, message, approvalToken, null, ToolProgressListener.NOOP);
+        return doChat(userId, sessionId, message, approvalToken, null, ToolProgressListener.NOOP, regenerate);
     }
 
     /**
@@ -323,7 +348,14 @@ public class Agent {
     public AgentResponse chatStream(String userId, String sessionId, String message,
                                     String approvalToken, Consumer<String> onChunk,
                                     ToolProgressListener progress) {
-        return doChat(userId, sessionId, message, approvalToken, onChunk, progress);
+        return chatStream(userId, sessionId, message, approvalToken, onChunk, progress, false);
+    }
+
+    /** 流式变体 + 重新生成标志，语义见 {@link #chat(String, String, String, String, boolean)}。 */
+    public AgentResponse chatStream(String userId, String sessionId, String message,
+                                    String approvalToken, Consumer<String> onChunk,
+                                    ToolProgressListener progress, boolean regenerate) {
+        return doChat(userId, sessionId, message, approvalToken, onChunk, progress, regenerate);
     }
 
     /**
@@ -332,11 +364,39 @@ public class Agent {
      */
     private AgentResponse doChat(String userId, String sessionId, String message,
                                  String approvalToken, Consumer<String> onChunk,
-                                 ToolProgressListener progress) {
-        log.info("[Agent] chat userId={} sessionId={} approvalToken={}",
-                userId, sessionId, approvalToken == null ? "-" : "已携带");
+                                 ToolProgressListener progress, boolean regenerate) {
+        return doChat(userId, sessionId, message, approvalToken, onChunk, progress, regenerate, List.of());
+    }
+
+    /**
+     * @param executedWriteFingerprints 本会话已经真正落地过的写操作指纹，见
+     *                                  {@link WriteFingerprints}。它由<b>确认执行</b>那条路径产出——
+     *                                  写操作在图外执行，图内既推不出来、也没有第二次机会拿到，
+     *                                  所以只能由调用方带着往下传。续作轮靠它拒绝重复载荷。
+     *                                  非续作轮传空列表：空表示「没有可对账的历史」，判重一律不命中。
+     */
+    private AgentResponse doChat(String userId, String sessionId, String message,
+                                 String approvalToken, Consumer<String> onChunk,
+                                 ToolProgressListener progress, boolean regenerate,
+                                 List<String> executedWriteFingerprints) {
+        log.info("[Agent] chat userId={} sessionId={} approvalToken={} regenerate={}",
+                userId, sessionId, approvalToken == null ? "-" : "已携带", regenerate);
 
         String scopedSession = ShortTermMemoryStore.scoped(userId, sessionId);
+
+        // 重新生成：**先把上一轮从窗口里丢掉**，让本轮对模型回到「首问」的形态。
+        //
+        // 必须在这里、而不是收尾时替换：新答复此刻还不存在，唯一能做的就是把旧的挪开。
+        // 留在窗口里的代价是实测过的——模型读到历史最后两条正是「用户问了这句 → 我答过一版」，
+        // 于是把本轮读成「同一个问题又问一次」，转而点评自己上一版，产出一段**编造的忏悔**：
+        // 「我上一轮的回答有问题，我并没有真正检索到这些条款」（而知识库确实有那些条款）。
+        //
+        // 丢的时机必须在改写与记录本轮消息**之前**：那两处都要读这段窗口，
+        // 丢晚了本轮一样会看到旧答案。
+        if (regenerate) {
+            boolean dropped = shortTermMemory.dropLastTurn(scopedSession);
+            log.info("[Agent][Regenerate] 丢弃上一轮上下文 dropped={} session={}", dropped, scopedSession);
+        }
 
         // 断点恢复：上一轮在这里中断过，而这一轮没有带回确认令牌。
         // 只提示、不自动接着跑 —— 恢复的触发点必须是用户的下一次动作。
@@ -360,6 +420,27 @@ public class Agent {
         //    模型比正则合适。顺序不能反：模型改写会把「第二个」的所指判断成它自己的猜测，
         //    而不是我们从候选列表里查出来的那一条。
         SessionContext sessionContext = loadSessionContext(userId, sessionId);
+        // 平台自己教过「直接回复这四个字」。用户照做了，而现场没有任何待确认的操作时，
+        // 这一轮由平台直接答，不进模型——这四个字是**平台规定的口令**，含义不依赖这句话的语境。
+        //
+        // 交给模型自由发挥的代价是实测过的：历史里刚躺着一次成功的加购，模型把同一件商品
+        // 重新出了一张卡片，用户再点一次就是第二次加购（购物车没有删减入口，他收拾不掉）。
+        // 判据必须同时看两处现场，缺一不可：
+        //   - 断点：还挂着确认载荷（或执行中途被打断）时，这句话是有对象的，交给模型接上一轮；
+        //   - 会话现场：确认轮刚执行完时断点已被清掉，只剩现场还记着「有待确认」。
+        //
+        // 只认平台教过的那两个词。「确定」「是」「好的」不算：它们更可能是一句普通回应，
+        // 在别的话题里回一句「好的」不该收到「没有执行任何操作」。
+        if (pendingHint == null && sessionContext.pendingTools().isEmpty() && isBareConfirmPhrase(message)) {
+            emit(onChunk, APPROVAL_IDLE_REPLY);
+            AgentResponse idle = AgentResponse.builder()
+                    .reply(APPROVAL_IDLE_REPLY)
+                    .source("approval-idle")
+                    .stage(TaskStage.DONE)
+                    .build();
+            remember(scopedSession, userId, sessionId, message, idle);
+            return idle;
+        }
         List<String> candidates = candidatesOf(sessionContext);
         List<ProductCandidateList.Item> savedProducts = ProductCandidateList.restore(
                 sessionContext.contextSnapshot().get(SNAPSHOT_PRODUCT_CANDIDATES));
@@ -444,15 +525,23 @@ public class Agent {
         AgentResponse response;
         List<DocumentChunk> knowledge;
         EvidenceGate.Decision evidence;
-        boolean medicalQuestion = MedicalEvidenceVerifier.isMedicalQuestion(message)
-                || MedicalEvidenceVerifier.isMedicalQuestion(retrievalQuery);
+        // 路由判据只读**用户本轮原话**，不读改写后的检索句（R20/R23）。
+        //
+        // 改写句是给检索器用的中间产物：它补全指代、展开商品名，为的是让召回更准。
+        // 代价是它会引入「用户原话里没有的医学词」——实测 38 轮里有 3 轮因此把
+        // 「取消加购」判成医学问题，整篇走兜底拒答。
+        //
+        // 判据方向的规则：**路由只读原话，检索才用改写句。**把中间产物当意图用，
+        // 等于让一个为召回率优化的变换去决定业务路由。
+        boolean medicalQuestion = MedicalEvidenceVerifier.isMedicalQuestion(message);
         boolean deferMedicalText = onChunk != null
                 && (medicalQuestion || ProductCandidateList.requestsNewList(message));
         // 保持执行图的流式分支与取消检查，只在出口丢弃未经审核的正文。
         Consumer<String> generationSink = deferMedicalText ? chunk -> { } : onChunk;
         try {
             // 执行图必须看到与检索侧相同的确定性序号指代，否则规划器会凭模型记忆再猜一遍。
-            response = execute(userId, sessionId, withReference, retrievalQuery, systemPrompt, retriever, generationSink, progress);
+            response = execute(userId, sessionId, withReference, retrievalQuery, systemPrompt, retriever,
+                    generationSink, progress, executedWriteFingerprints);
             // 检索在图里跑完才回填：轮空（闲聊/业务操作）时两个引用都还是 null，
             // 此时按「没检索」处理，而不是按「检索了、没有依据」——两者对用户说法不同
             RetrievalOutcome outcome = retrievalRef.get();
@@ -575,6 +664,13 @@ public class Agent {
 
         Optional<TaskCheckpoint> checkpoint = taskStateStore.load(userId, taskId(userId, sessionId));
         String continuationPrompt = checkpoint.map(TaskCheckpoint::continuationPrompt).orElse(null);
+        // 上一批已经落地过的写操作指纹（含更早几批累积的）。续作轮把它交给执行图，
+        // 由图拒绝生成「目标与已执行写操作重合」的确认载荷。
+        //
+        // 判据是「已经 COMMITTED 的」：非 COMMITTED 的那些压根没生效，把它们算进去
+        // 会让用户「重试一次」这个合法动作被自己的失败记录拦下
+        List<String> executedWriteFingerprints = new ArrayList<>(
+                checkpoint.map(TaskCheckpoint::executedWriteFingerprints).orElse(List.of()));
         List<ToolExecution> executions = new ArrayList<>();
         try {
             for (PendingAction action : actions.get()) {
@@ -599,6 +695,22 @@ public class Agent {
                 && executions.stream().allMatch(item -> item.getOperationState() == ToolResult.OperationState.COMMITTED);
         log.info("[Agent] 确认轮执行完成 userId={} 操作数={} 成功={}", userId, executions.size(),
                 executions.stream().filter(ToolExecution::isSuccess).count());
+        // 交给续作轮的对账账本 = 更早几批已落地的 + 本批刚落地的。
+        //
+        // 本批只算 COMMITTED 的：被拒或结果未知的那些没有生效，把它们算进去，
+        // 会让「用户重试一次」这个完全合法的动作被自己的失败记录拦下。
+        // 执行循环在第一条非 COMMITTED 处中断，所以已落地的恰好是 executions 的前缀，
+        // 与载荷按下标一一对应。
+        List<String> continuationFingerprints = new ArrayList<>(executedWriteFingerprints);
+        for (int i = 0; i < executions.size(); i++) {
+            if (executions.get(i).getOperationState() != ToolResult.OperationState.COMMITTED) {
+                continue;
+            }
+            String fingerprint = WriteFingerprints.of(actions.get().get(i));
+            if (!fingerprint.isEmpty()) {
+                continuationFingerprints.add(fingerprint);
+            }
+        }
         if (continuationPrompt != null && !continuationPrompt.isBlank()
                 && completed) {
             taskStateStore.clear(userId, taskId(userId, sessionId));
@@ -606,7 +718,7 @@ public class Agent {
             String continuationMessage = continuationPrompt + "\n\n本批已确认执行结果：\n" + reply
                     + "\n请立即继续执行未完成步骤；不要重复本批已经成功执行的操作。";
             AgentResponse continuation = doChat(userId, sessionId, continuationMessage,
-                    null, onChunk, progress);
+                    null, onChunk, progress, false, continuationFingerprints);
             continuation.setReply(reply + "\n\n" + continuation.getReply());
             List<ToolExecution> merged = new ArrayList<>(executions);
             if (continuation.getToolExecutions() != null) {
@@ -619,6 +731,13 @@ public class Agent {
         }
         // 没有后续计划时，确认现场在这里作废；有后续计划的分支已由嵌套续作负责保存新现场。
         if (completed) taskStateStore.clear(userId, taskId(userId, sessionId));
+        // 断点作废了，会话现场也要跟着走：确认轮在 doChat 里提前返回、走不到那段常规收尾，
+        // 于是现场会一直停在「执行之前」的样子——pendingTools 里还挂着刚刚已经落地的那个调用。
+        // 下一轮 prompt 把「还有待确认的操作」照实注入，模型据此把同一件商品重新出一张卡
+        // （实测：用户再点一次确认，同一 SKU 被加了两次）。
+        // 一处判定，另一处只负责读：这一轮的载荷才是权威，现场是它的投影。
+        syncPendingAfterApproval(userId, sessionId,
+                completed ? List.of() : actions.get().stream().map(PendingAction::describe).toList());
         emit(onChunk, reply);
         return AgentResponse.builder()
                 .reply(reply)
@@ -800,7 +919,8 @@ public class Agent {
     private AgentResponse execute(String userId, String sessionId, String message, String retrievalQuery,
                                   String systemPrompt,
                                   java.util.function.Supplier<AgentGraph.RetrievalResult> retriever,
-                                  Consumer<String> onChunk, ToolProgressListener progress) {
+                                  Consumer<String> onChunk, ToolProgressListener progress,
+                                  List<String> executedWriteFingerprints) {
 
         Optional<DeterministicFlow> flowOpt = intentRouter.route(retrievalQuery);
         if (flowOpt.isPresent()) {
@@ -824,9 +944,11 @@ public class Agent {
         // 执行图：计划为空时它会转为直接对话（ReAct 所在的位置）
         // 循环护栏一次请求一份，同时约束图里的环与框架驱动的工具循环
         LoopGuard guard = new LoopGuard(config.getLoopBudget());
-        AgentGraph.GraphResult graphResult = AgentGraph.withSession(sessionId, () -> agentGraph.run(
-                userId, message, systemPrompt,
-                recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk, progress, retriever));
+        AgentGraph.GraphResult graphResult = AgentGraph.withRequestScope(sessionId, executedWriteFingerprints,
+                () -> agentGraph.run(
+                        userId, message, systemPrompt,
+                        recentConversation(ShortTermMemoryStore.scoped(userId, sessionId)), guard, onChunk, progress,
+                        retriever));
         log.info("[Agent] loops {}", guard.summary());
         // 跑偏观测：这轮最终执行了什么 vs 首轮冻结的意图。
         // 读的是收尾后的完整步骤列表——执行中途读到的是还在长的一份
@@ -845,12 +967,13 @@ public class Agent {
         // 就能知道上次查到哪了、用过哪些工具，而不是让用户重问一遍。
         // 落盘失败绝不能影响正常回答（见 saveCheckpointQuietly 的注释）。
         if (pending == null || pending.isEmpty()) {
-            saveCheckpointQuietly(userId, sessionId, graphResult);
+            saveCheckpointQuietly(userId, sessionId, graphResult, executedWriteFingerprints);
         }
         if (pending != null && !pending.isEmpty()) {
             // 落一份断点：这一轮到此为止，用户可能过一会儿才点确认。
-            // 存的是**载荷**——恢复时要执行的是那次调用本身，不是关于它的一句话
-            saveCheckpoint(userId, sessionId, graphResult, pending, message);
+            // 存的是**载荷**——恢复时要执行的是那次调用本身，不是关于它的一句话。
+            // 指纹一并落进断点：下一批确认执行时要接着这份账本往下对（跨批累积）
+            saveCheckpoint(userId, sessionId, graphResult, pending, message, executedWriteFingerprints);
             // 句子里刻意不抄一遍 pendingActions：那是形如 order_cancel(orderId=22) 的
             // 机器可读描述，工具名不该出现在给用户看的话里。要确认哪一单由前端渲染的
             // 确认卡片负责（它会翻译成中文标签），卡片就在下面、与本句同时出现。
@@ -1148,12 +1271,12 @@ public class Agent {
      */
     private void saveCheckpoint(String userId, String sessionId,
                                 AgentGraph.GraphResult graphResult, List<PendingAction> pending) {
-        saveCheckpoint(userId, sessionId, graphResult, pending, null);
+        saveCheckpoint(userId, sessionId, graphResult, pending, null, List.of());
     }
 
     private void saveCheckpoint(String userId, String sessionId,
                                 AgentGraph.GraphResult graphResult, List<PendingAction> pending,
-                                String originalMessage) {
+                                String originalMessage, List<String> executedWriteFingerprints) {
         TaskCheckpoint checkpoint = new TaskCheckpoint(
                 taskId(userId, sessionId),
                 userId,
@@ -1169,6 +1292,9 @@ public class Agent {
                         .filter(java.util.Objects::nonNull)
                         .distinct()
                         .toList(),
+                // 已经落地过的写操作账本。跨审批批次累积：本批确认执行时读它，
+                // 追加本批刚落地的那几条，再随新断点写回——续作轮判重的事实来源
+                executedWriteFingerprints,
                 pending.stream()
                         .map(a -> new TaskCheckpoint.PendingCall(a.tool(), a.arguments()))
                         .toList(),
@@ -1211,9 +1337,10 @@ public class Agent {
      * 而这里只是「给下一次留个现场」，没有它回答照样成立。
      * 让一次 Redis 抖动把正常回答变成 500，是拿主链路去赌一个增强项。
      */
-    private void saveCheckpointQuietly(String userId, String sessionId, AgentGraph.GraphResult graphResult) {
+    private void saveCheckpointQuietly(String userId, String sessionId, AgentGraph.GraphResult graphResult,
+                                      List<String> executedWriteFingerprints) {
         try {
-            saveCheckpoint(userId, sessionId, graphResult, List.of());
+            saveCheckpoint(userId, sessionId, graphResult, List.of(), null, executedWriteFingerprints);
         } catch (RuntimeException e) {
             log.warn("[Agent] 执行中途的断点保存失败，本轮回答不受影响：{}", e.getMessage());
         }
@@ -1332,6 +1459,43 @@ public class Agent {
         } catch (RuntimeException e) {
             log.warn("[Agent][Session] 会话现场保存失败，本轮回答不受影响：{}", e.getMessage());
         }
+    }
+
+    /**
+     * 把会话现场里的「还有待确认的操作」对齐到确认轮的真实结果。
+     * <p>
+     * <b>为什么确认轮必须自己收尾。</b>它在 {@code doChat} 里提前返回，走不到那段常规收尾，
+     * 而现场是常规收尾写的。不补这一下，现场就永远停在「执行之前」的样子，
+     * 下一轮读到的是一份过期事实——而它读起来和新鲜的完全一样。
+     * <p>
+     * 失败只记日志：现场是增强项，一次存储抖动不该让一次已经执行完的确认轮变成报错。
+     */
+    private void syncPendingAfterApproval(String userId, String sessionId, List<String> pending) {
+        try {
+            SessionContext current = loadSessionContext(userId, sessionId);
+            sessionContextStore.save(current.withPending(pending, System.currentTimeMillis()));
+        } catch (RuntimeException e) {
+            log.warn("[Agent][Session] 确认轮后同步待确认现场失败，本轮回答不受影响：{}", e.getMessage());
+        }
+    }
+
+    /**
+     * 这一句是不是「平台教的那四个字」。
+     * <p>
+     * 判据收得很紧：整句就是一个确认口令（允许尾随标点）。平台自己在确认提示里写的是
+     * 「确认无误请点击「确认执行」，或直接回复这四个字」，用户照做时输入的就是这两个词之一。
+     * <p>
+     * <b>刻意不包含</b>「确定」「是」「好的」「ok」这类宽口径确认词。前端把它们也算确认，
+     * 但前提是「最新一条助手消息正挂着待确认」——那时令牌随请求走，压根到不了这里。
+     * 在**没有对象**的这一侧放宽，代价是用户在别的话题里回一句「好的」收到
+     * 「没有执行任何操作」——为省一次模型调用而把普通对话答错，不划算。
+     */
+    static boolean isBareConfirmPhrase(String message) {
+        if (message == null) {
+            return false;
+        }
+        String trimmed = message.trim().replaceAll("[。！!，,～~\\s]+", "");
+        return "确认执行".equals(trimmed) || "确认".equals(trimmed);
     }
 
     /**
@@ -1778,7 +1942,10 @@ public class Agent {
         for (int pass = 0; pass < limit; pass++) {
             var verdict = MedicalEvidenceVerifier.verify(true, current, evidence, response.getToolExecutions(), thresholds, graphIds);
             if (verdict.unsupported().isEmpty()) {
-                String unknownBoundary = enforceUnknownInteractionRefusal(response, "", true);
+                // 只探测、不交付：用纯函数取边界文本，**不走**那个会改 level 的交付入口。
+                // 之前这里传空正文调交付入口，副作用把整轮证据门降成 WEAK（见 interactionBoundary 注释）
+                InteractionBoundary probe = interactionBoundary(response);
+                String unknownBoundary = probe == null ? null : probe.text();
                 boolean verifiedBoundary = unknownBoundary != null && !unknownBoundary.isBlank() && current.contains(unknownBoundary);
                 if (!current.isBlank() && ((!earlierFactsRemoved && rejected.isEmpty())
                         || !MedicalEvidenceVerifier.factSentences(current).isEmpty() || verifiedBoundary)) {
@@ -1894,40 +2061,76 @@ public class Agent {
         }
     }
 
+    /**
+     * 图谱边界文本 + 它该怎么交付。
+     * @param text          边界文本（非空）
+     * @param replacesReply true 表示这一轮交付的就是这段拒答本身，不保留原正文
+     * @param count         未收录项数，仅用于日志
+     */
+    record InteractionBoundary(String text, boolean replacesReply, int count) {
+    }
+
+    /**
+     * 图谱未收录对象的边界文本 —— <b>纯函数，不修改 response</b>。
+     * <p>
+     * 单独抽出来是因为调用方有两类意图：一类要<b>交付</b>这段边界（追加或整段替换），
+     * 另一类只想<b>探测</b>它是否已经在正文里（{@code finalizeMedicalReply} 的发布审核）。
+     * 后一类此前复用了前者，而前者带着「交付物里没有已核验正文就降级」的副作用——
+     * 探测传进去的空正文让那条判据恒成立，于是<b>一次只读探测把整轮证据门从 SUFFICIENT 降成 WEAK</b>。
+     * <p>
+     * 实测代价（{@code c091b3b9} 真跑 36 题）：4 例过拒（G-16 / KG-05 / KG-08 / KG-11）
+     * 全部是「正文完整答对 + 入口证据门 SUFFICIENT」，却因这次探测被记成拒答，
+     * 前端还挂上「相关度不足」横幅。日志判据：入口那行 `证据门 SUFFICIENT` 之后，
+     * `医学确定性边界` 那一行报的是 `证据=WEAK`——level 是在两步之间被改掉的。
+     * @return null 表示本轮不适用（没有 interaction 报告，或对象都已被收录）
+     */
+    static InteractionBoundary interactionBoundary(AgentResponse response) {
+        if (response == null || response.getToolExecutions() == null) return null;
+        List<Map<?, ?>> items = latestInteractionItems(response);
+        if (items == null) return null;
+        boolean allUnknown = items.stream().allMatch(item -> Boolean.FALSE.equals(((Map<?, ?>) item).get("found")));
+        if (allUnknown && (response.getEvidenceLevel() == EvidenceGate.Level.NONE
+                || response.getEvidenceLevel() == EvidenceGate.Level.WEAK)) {
+            return new InteractionBoundary("目前缺少相关原文依据，无法判断这些物品能否一起使用或食用。"
+                    + "本次检查的对象在平台知识图谱中都没有收录；没有收录不等于安全，也不能据此断言存在冲突。"
+                    + "请提供准确商品名或成分名，以便核对；涉及用药请咨询医师或药师。", true, items.size());
+        }
+        List<Map<?, ?>> missing = items.stream().<Map<?, ?>>map(item -> (Map<?, ?>) item)
+                .filter(item -> Boolean.FALSE.equals(item.get("found"))).toList();
+        if (missing.isEmpty() || items.stream().anyMatch(item -> !(((Map<?, ?>) item).get("input") instanceof String input)
+                || input.isBlank() || input.length() > 100)) return null;
+        String names = items.stream().map(item -> (String) ((Map<?, ?>) item).get("input"))
+                .distinct().collect(java.util.stream.Collectors.joining("与"));
+        String absent = missing.stream().map(item -> (String) item.get("input"))
+                .distinct().collect(java.util.stream.Collectors.joining("、"));
+        String boundary = "仅依据本次图谱检查，无法判断" + names + "的具体相互作用。"
+                + "图谱没有收录以下称呼：" + absent + "。没有收录不等于安全，也不能据此断言存在冲突。";
+        List<String> nearest = missing.stream().map(item -> item.get("nearest"))
+                .filter(value -> value instanceof String name && !name.isBlank() && name.length() <= 100)
+                .map(String.class::cast).distinct().toList();
+        if (!nearest.isEmpty()) boundary += "相近名称“" + String.join("、", nearest)
+                + "”仅为候选，请确认准确名称后再检查。";
+        boundary += "涉及用药请咨询医师或药师。";
+        return new InteractionBoundary(boundary, false, missing.size());
+    }
+
     /** 未收录对象的图谱边界由结构化结果决定，不能借另一对象的已知关系替它作答。 */
     static String enforceUnknownInteractionRefusal(AgentResponse response, String reply, boolean medicalQuestion) {
-        if (!medicalQuestion || response.getToolExecutions() == null) {
+        if (!medicalQuestion) {
             return reply;
         }
-        List<Map<?, ?>> items = latestInteractionItems(response);
-        if (items == null) return reply;
+        InteractionBoundary resolved = interactionBoundary(response);
+        if (resolved == null) {
+            return reply;
+        }
+        if (resolved.replacesReply()) {
+            log.info("[Agent] 医学确定性拒答 mode=ALL_INTERACTION_UNKNOWN 证据={} 未收录项={}",
+                    response.getEvidenceLevel(), resolved.count());
+            return resolved.text();
+        }
+        String boundary = resolved.text();
         {
-            boolean allUnknown = items.stream().allMatch(item -> Boolean.FALSE.equals(((Map<?, ?>) item).get("found")));
-            if (allUnknown && (response.getEvidenceLevel() == EvidenceGate.Level.NONE
-                    || response.getEvidenceLevel() == EvidenceGate.Level.WEAK)) {
-                log.info("[Agent] 医学确定性拒答 mode=ALL_INTERACTION_UNKNOWN 证据={} 未收录项={}",
-                        response.getEvidenceLevel(), items.size());
-                return "目前缺少相关原文依据，无法判断这些物品能否一起使用或食用。"
-                        + "本次检查的对象在平台知识图谱中都没有收录；没有收录不等于安全，也不能据此断言存在冲突。"
-                        + "请提供准确商品名或成分名，以便核对；涉及用药请咨询医师或药师。";
-            }
-            List<Map<?, ?>> missing = items.stream().<Map<?, ?>>map(item -> (Map<?, ?>) item)
-                    .filter(item -> Boolean.FALSE.equals(item.get("found"))).toList();
-            if (missing.isEmpty() || items.stream().anyMatch(item -> !(((Map<?, ?>) item).get("input") instanceof String input)
-                    || input.isBlank() || input.length() > 100)) return reply;
 
-            String names = items.stream().map(item -> (String) ((Map<?, ?>) item).get("input"))
-                    .distinct().collect(java.util.stream.Collectors.joining("与"));
-            String absent = missing.stream().map(item -> (String) item.get("input"))
-                    .distinct().collect(java.util.stream.Collectors.joining("、"));
-            String boundary = "仅依据本次图谱检查，无法判断" + names + "的具体相互作用。"
-                    + "图谱没有收录以下称呼：" + absent + "。没有收录不等于安全，也不能据此断言存在冲突。";
-            List<String> nearest = missing.stream().map(item -> item.get("nearest"))
-                    .filter(value -> value instanceof String name && !name.isBlank() && name.length() <= 100)
-                    .map(String.class::cast).distinct().toList();
-            if (!nearest.isEmpty()) boundary += "相近名称“" + String.join("、", nearest)
-                    + "”仅为候选，请确认准确名称后再检查。";
-            boundary += "涉及用药请咨询医师或药师。";
             // <b>整轮 level 不再因为追加了这段边界而降级。</b>这段话说的是「图谱这一路
             // 没有收录某个称呼」——它是一个**子结论**，不是对整轮作答能力的否定，
             // 适用范围也已经写在它自己的文本里（「仅依据本次图谱检查，无法判断X与Y」）。
@@ -1943,10 +2146,14 @@ public class Agent {
             boolean deliversVerifiedContent = reply != null && !reply.isBlank()
                     && !reply.strip().equals(boundary.strip());
             if (!deliversVerifiedContent && response.getEvidenceLevel() == EvidenceGate.Level.SUFFICIENT) {
+                // 降级必须留痕：level 决定评测记不记过拒、前端挂不挂「相关度不足」横幅，
+                // 而它有三个写入点。不留一行日志的话，下一次只能靠「入口 SUFFICIENT、
+                // 出口 WEAK」两行日志反推是中间哪一步改的（本轮 4 例过拒就是这么查出来的）
+                log.info("[Agent] 证据门降级 SUFFICIENT→WEAK 原因=交付物就是图谱边界本身（无可作答正文）");
                 response.setEvidenceLevel(EvidenceGate.Level.WEAK);
             }
             log.info("[Agent] 医学确定性边界 mode=PARTIAL_OR_TEXT_BACKED_INTERACTION_UNKNOWN 证据={} 未收录项={}",
-                    response.getEvidenceLevel(), missing.size());
+                    response.getEvidenceLevel(), resolved.count());
             if (reply != null && reply.contains(boundary)) return reply;
             return (reply == null || reply.isBlank() ? "" : reply + "\n\n") + boundary;
         }

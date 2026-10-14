@@ -729,4 +729,73 @@ class ReactToolLoopTest {
                 }))
                 .satisfies(e -> assertThat(AgentCancelledException.isCancellation(e)).isTrue());
     }
+
+    /**
+     * 续作轮把已落地的写操作又填了一遍 —— ReAct 路径同样不得生成确认卡。
+     * <p>
+     * <b>为什么计划路径有一道还不够。</b>计划路径能在批次执行前把整批拿来比对；
+     * ReAct 的调用是模型直接给出的，没有「批次」可以预先比对——只能在它要出来之后、
+     * 执行之前拦。两条路径都要有，因为模型走哪条不由我们决定。
+     * <p>
+     * 现场是 {@code chat:hist:u1001:u1001-1791529067350}：用户批准了原版 120 片
+     * （{@code skuId=39}），续作轮又把 39 填了一遍，用户再点确认，同一件商品加了两次。
+     * <p>
+     * 与「未解析引用」那一条的区别：那一种是模型自己修得了的（缺一次查询），
+     * 所以回填纠正；这一种要它改的也是目标——同样回填纠正，让它可以换一件商品继续，
+     * 而不是把整轮变成一句失败。护栏兜住转圈（同参重复 + 震荡检测）。
+     */
+    @Test
+    @Timeout(10)
+    void ReAct续作轮填回已落地写操作时拒绝生成确认卡() {
+        AtomicInteger executions = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(cancelTool(executions));
+
+        // 模型两轮都要取消同一单：第一轮该被拒（与账本重合），
+        // 第二轮仍要同一单 —— 本用例要验的是「一次都不放行」，不是「拒完就散」
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(greedyCanceller(new AtomicInteger()), null,
+                registry, LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+        List<PendingAction> pending = new ArrayList<>();
+        List<String> ledger = List.of(
+                yumefusaka.envoymart.agent.tool.WriteFingerprints.of("order_cancel", Map.of("orderId", 12)));
+
+        provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.LOOP_GUARD, new LoopGuard(new LoopBudget(8, 2, 2)),
+                        ToolContextKeys.PENDING_ACTIONS, pending,
+                        ToolContextKeys.EXECUTED_WRITE_FINGERPRINTS, ledger));
+
+        assertThat(executions.get())
+                .as("账本里那一次已经落地过，这一轮绝不能真的再执行一次")
+                .isZero();
+        assertThat(pending)
+                .as("重复的操作不能出现在确认卡上：用户看到卡片会以为这是新的一次，"
+                        + "点下去就是同一件商品的第二次副作用")
+                .isEmpty();
+    }
+
+    /** 账本里没有的目标必须照常放行 —— 判据的边界，否则「续作」这件事本身做不成了 */
+    @Test
+    @Timeout(10)
+    void ReAct目标不在账本上时照常生成确认卡() {
+        AtomicInteger executions = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(cancelTool(executions));
+
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(greedyCanceller(new AtomicInteger()), null,
+                registry, LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+        List<PendingAction> pending = new ArrayList<>();
+        // 账本记的是另一单（22），这一轮要取消的是 12 —— 这正是续作该做的事
+        List<String> ledger = List.of(
+                yumefusaka.envoymart.agent.tool.WriteFingerprints.of("order_cancel", Map.of("orderId", 22)));
+
+        provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.LOOP_GUARD, new LoopGuard(new LoopBudget(8, 2, 2)),
+                        ToolContextKeys.PENDING_ACTIONS, pending,
+                        ToolContextKeys.EXECUTED_WRITE_FINGERPRINTS, ledger));
+
+        assertThat(pending)
+                .as("另一单照常给确认卡，否则用户就再也取消不了别的订单了")
+                .hasSize(1);
+        assertThat(executions.get()).as("仍然只拦不执行").isZero();
+    }
 }

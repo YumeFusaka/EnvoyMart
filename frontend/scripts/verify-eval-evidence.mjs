@@ -13,6 +13,8 @@ try {
   await badge.waitFor()
   await badge.click()
   const caseRow = badge.locator('xpath=ancestor::li[contains(@class,"case-row")]')
+  // 评测页的证据块不折叠（没有开关），点角标只是滚动 + 高亮
+  if (await caseRow.locator('.citations__toggle').count()) throw new Error('评测页依据块不该出现折叠开关')
   const source = caseRow.locator('.citations a').first()
   await source.waitFor()
   if (!(await source.getAttribute('href'))?.includes('/knowledge/')) throw new Error('证据链接缺少原文路由')

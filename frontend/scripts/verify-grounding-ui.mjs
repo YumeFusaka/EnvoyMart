@@ -53,6 +53,24 @@ async function poll(fn, predicate, timeoutMs = 90000) {
   return last
 }
 
+/**
+ * 展开某一轮回答里的依据块。
+ *
+ * 依据块默认折叠：折叠只是「不显示」，卡片仍在 DOM 里（断言「渲染出卡片」照样成立），
+ * 但卡片内部元素不可见、点不动。所以**凡是读卡片内容或点卡片内部元素的断言，
+ * 都必须先展开**——这不改变任何判据，只是把用户要看它时会做的那一步做出来。
+ *
+ * 不可折叠（评测页）或没有卡片（0 条依据）时没有开关，返回 false，调用方照常继续。
+ */
+async function setCitationsExpanded(scope, expanded) {
+  const toggle = scope.locator('.citations__toggle').first()
+  if ((await toggle.count()) === 0) return false
+  if ((await toggle.getAttribute('aria-expanded')) !== String(expanded)) await toggle.click()
+  return true
+}
+
+const expandCitations = (scope) => setCitationsExpanded(scope, true)
+
 const session = await (async () => {
   const res = await fetch(`${GW}/auth/login`, {
     method: 'POST',
@@ -133,6 +151,21 @@ const knowledge = await ask('维生素D每天推荐摄入多少？成年人上�
 const citations = knowledge.locator('.citation')
 ck('渲染出引用卡片', (await citations.count()) >= 2, `实际 ${await citations.count()} 张`)
 
+// 折叠是默认态，而卡片本身要在：DOM 里少一张就等于这块没渲染出来
+ck(
+  '依据块默认折叠但卡片留在 DOM 里',
+  (await knowledge.locator('.citations__toggle').count()) === 1 &&
+    (await knowledge.locator('.citations__toggle').first().getAttribute('aria-expanded')) === 'false' &&
+    (await knowledge.locator('.citations__list').first().isVisible()) === false,
+  '默认应当是「标题行在、卡片不在视口」，而不是整块消失',
+)
+await expandCitations(knowledge)
+ck(
+  '点开开关后卡片可见',
+  await knowledge.locator('.citations__list').first().isVisible(),
+  '折叠开关点不动，或展开后内容仍不显示',
+)
+
 const firstCite = (await citations.first().innerText()).replace(/\s+/g, ' ')
 ck(
   '卡片不是空壳：带原标题或出处位置',
@@ -177,12 +210,21 @@ if ((await firstBadge.count()) === 0) {
   const badgeIndex = Number(await firstBadge.getAttribute('data-cite'))
   ck('角标带可解析的依据编号', Number.isInteger(badgeIndex) && badgeIndex >= 1,
     `data-cite=${await firstBadge.getAttribute('data-cite')}`)
+  // 折叠态下点角标要能自己把依据块打开 —— 这是「默认折叠」不伤可用性的前提。
+  // 先收起：上面那一段可能已经把它展开过（重试轮则本来就是收起的）
+  await setCitationsExpanded(badgeScope, false)
   await firstBadge.click()
   // 卡片作用域必须跟着角标那一轮走：重试后角标来自新卡片，仍拿旧的 citations
   // 会在旧卡片上找 is-active，永远找不到（旧卡片根本不会因为点新卡片而变化）
   const targetCard = badgeScope.locator('.citation').nth(badgeIndex - 1)
   const active = await poll(() => targetCard.getAttribute('class'), (c) => c?.includes('is-active'))
   ck(`点 [${badgeIndex}] 后第 ${badgeIndex} 张卡片被点亮`, Boolean(active?.includes('is-active')), `class=${active}`)
+  ck(
+    '点角标会把折叠的依据块展开',
+    (await badgeScope.locator('.citations__toggle').first().getAttribute('aria-expanded')) === 'true' &&
+      (await badgeScope.locator('.citations__list').first().isVisible()),
+    '角标点下去依据块仍是收起的，用户看不到被引用的那一条',
+  )
 }
 
 // ─────────── 三、冲突型：真矛盾要露出来 ───────────
@@ -225,6 +267,8 @@ ck(
 // 三种都不会报错，页面照样打得开，只是没高亮。
 console.log('\n五、跳原文并高亮')
 const citedCard = conflict.locator('.citation').first()
+// 读卡片正文与点「查看原文」都要求它可见：折叠态下这两个动作都做不到
+await expandCitations(conflict)
 const citedText = (await citedCard.locator('.citation__content').innerText()).trim()
 await citedCard.locator('.citation__link').click()
 await page.waitForURL(/knowledge\//, { timeout: 20000 })

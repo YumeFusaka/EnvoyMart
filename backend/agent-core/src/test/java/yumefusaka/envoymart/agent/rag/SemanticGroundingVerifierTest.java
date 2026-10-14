@@ -25,6 +25,62 @@ class SemanticGroundingVerifierTest {
                 sentence, List.of(sentence), EVIDENCE, "无");
     }
 
+    /** 判官给出的档位应当原样落到去留上：META 与 CONVERSATIONAL 保留，UNSUPPORTED 剔除。 */
+    @Test
+    void 检索自述句判为元陈述时保留() {
+        for (String meta : List.of("以上是知识库中与满减直接相关的全部内容。",
+                "以上内容来自平台知识库。", "本次检索没有查到维生素 D 的推荐摄入量。",
+                "本轮没有检索到相关依据。")) {
+            var verdict = judge(meta, "META");
+            assertThat(verdict.evaluated()).as(meta).isTrue();
+            assertThat(verdict.unsupported()).as(meta).isEmpty();
+        }
+    }
+
+    /**
+     * 元陈述档位不能承接关于世界的事实：判官若把医学事实句标成 META，
+     * 确定性事实识别仍须把它降级剔除（与 CONVERSATIONAL 同一条兜底）。
+     */
+    @Test
+    void 医学事实句借元陈述档位逃逸仍被确定性判据拒绝() {
+        for (String claim : List.of("知识库没有收录维生素 D 的推荐摄入量。",
+                "阿司匹林是处方药。", "服用本品期间应监测凝血指标。",
+                "本品所含钙可影响铁的吸收。")) {
+            var verdict = judge(claim, "META");
+            assertThat(verdict.evaluated()).as(claim).isTrue();
+            assertThat(verdict.unsupported()).as(claim).containsExactly(claim);
+        }
+    }
+
+    /** 档位表外取值说明判官输出不可信，必须整轮退回确定性审核而不是按未知档位放行。 */
+    @Test
+    void 表外判定档位视为判官不可用() {
+        var verdict = judge("以上是知识库中与满减直接相关的全部内容。", "UNKNOWN");
+        assertThat(verdict.evaluated()).isFalse();
+        assertThat(verdict.unsupported()).isEmpty();
+    }
+
+    /**
+     * 提示词声明的档位与代码接受的档位必须是同一套：只改一处，判官会整轮不可用，
+     * 症状是「语义审核静默失效」而不是报错。
+     */
+    @Test
+    void 提示词档位与代码解析档位一致() {
+        java.util.concurrent.atomic.AtomicReference<String> system = new java.util.concurrent.atomic.AtomicReference<>();
+        LLMProvider llm = (messages, config) -> {
+            system.set(messages.getFirst().getContent());
+            return LLMResponse.builder()
+                    .content("[{\"index\":1,\"decision\":\"META\",\"refs\":[]}]").build();
+        };
+        SemanticGroundingVerifier.verify(llm, null, "维生素K2与华法林有相互作用吗？",
+                "以上是知识库中与满减直接相关的全部内容。",
+                List.of("以上是知识库中与满减直接相关的全部内容。"), EVIDENCE, "无");
+        assertThat(system.get())
+                .contains("\"SUPPORTED|CONVERSATIONAL|META|UNSUPPORTED|CONFLICTED\"")
+                .contains("本次检索没有查到维生素 D 的推荐摄入量」只报告本次检索结果")
+                .contains("「知识库没有收录维生素 D 的推荐摄入量」是对知识库内容的断言");
+    }
+
     @Test
     void KG04明确原文引用不被模型语义误删() {
         var verdict = judge(ORIGINAL, "UNSUPPORTED");

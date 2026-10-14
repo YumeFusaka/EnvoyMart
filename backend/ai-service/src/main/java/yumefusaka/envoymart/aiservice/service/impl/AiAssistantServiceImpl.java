@@ -84,7 +84,8 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         try (TokenLedger.Scope ledger = TokenLedger.begin()) {
             ChatHistoryStore.TurnIdentity identity = identityFor(userId, request);
             ChatResponse response = toChatResponse(userId, request, agent.chat(
-                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken()), ledger, identity);
+                    userId, request.getSessionId(), request.getMessage(), request.getApprovalToken(),
+                    request.isRegenerate()), ledger, identity);
             recordTurn(userId, request, response, identity);
             idempotency.complete(userId, requestId, response);
             return response;
@@ -134,7 +135,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                             }
                             onChunk.accept(chunk);
                         },
-                        effective), ledger, identity);
+                        effective, request.isRegenerate()), ledger, identity);
                 recordTurn(userId, request, response, identity);
                 // 正常收尾后把占位换成结果。**必须替换**，不能留在 "PENDING"：
                 // 占位在窗口内会让同一个请求号一律被拒，而「这一轮已经成功交付完了」之后

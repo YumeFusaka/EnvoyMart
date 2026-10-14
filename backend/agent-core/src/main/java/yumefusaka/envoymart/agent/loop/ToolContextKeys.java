@@ -65,6 +65,20 @@ public final class ToolContextKeys {
      */
     public static final String TOOL_PROGRESS = "toolProgress";
 
+    /**
+     * 已经落地过的写操作指纹（{@code List<String>}），见
+     * {@code yumefusaka.envoymart.agent.tool.WriteFingerprints}。
+     * <p>
+     * <b>这是入口键，与 {@link #PENDING_ACTIONS} 方向相反。</b>高危写操作在图外执行
+     * （用户点确认之后），所以「上一批到底对哪个目标做过写操作」这件事，
+     * 循环自己推不出来——只能由调用方递进来。续作轮靠它拒绝「目标与已执行写操作重合」的
+     * 确认卡：实测形态是同一件商品被加购两次（用户第 13 轮亲自质问才发现）。
+     * <p>
+     * 与 {@link #LOOP_GUARD} 一样缺失即退化：不传就按「没有可对账的历史」处理，
+     * 判重一律不命中——与改造前逐位一致。
+     */
+    public static final String EXECUTED_WRITE_FINGERPRINTS = "executedWriteFingerprints";
+
     private ToolContextKeys() {
     }
 }

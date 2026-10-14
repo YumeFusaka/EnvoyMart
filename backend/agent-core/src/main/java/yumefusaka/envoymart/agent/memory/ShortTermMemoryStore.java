@@ -24,6 +24,19 @@ public interface ShortTermMemoryStore {
     /** 追加一条，并把窗口裁剪到 limit 条 —— 滑动窗口的裁剪刀在存储侧也要有一把。 */
     void append(String sessionId, MemoryItem item, int limit);
 
+    /**
+     * 丢弃窗口里最后一轮（末尾的用户消息 + 它对应的助手答复）。
+     * <p>
+     * 「重新生成」必须走这条：窗口每轮无条件追加，不丢弃就会在同一个问题下留下两条
+     * 不同答案，模型据此产出「我上一轮答错了」这类**关于自身行为的假陈述**。
+     * <p>
+     * 丢弃发生在**生成之前**（那时新答复还不存在），所以只能是「丢」不能是「换」。
+     * @return true 表示确实丢掉了完整一轮；false 表示窗口里凑不齐一轮
+     */
+    default boolean dropLastTurn(String sessionId) {
+        return false;
+    }
+
     /** 清空该会话。 */
     void clear(String sessionId);
 

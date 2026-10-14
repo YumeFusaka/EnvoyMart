@@ -36,6 +36,7 @@ import yumefusaka.envoymart.agent.tool.ToolDefinition;
 import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
+import yumefusaka.envoymart.agent.tool.WriteFingerprints;
 import yumefusaka.envoymart.common.context.BaseContext;
 
 import java.util.ArrayList;
@@ -408,6 +409,25 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 // 查询。所以这里回填一条可执行的纠正而不是中断——退回的是「先查真实编号
                 // 再重发」，模型照做就能拿到一张正确的卡片。转圈有护栏兜底
                 // （同参重复 + 震荡检测），不会变成无界重试。
+                // 续作轮参数对账（与计划路径 executePlan 里那道同源）：这一步的操作目标
+                // 若与已经落地过的写操作重合，同样不能生成确认卡。
+                //
+                // <b>为什么两条路径都要有。</b>计划路径能按「批次」提前比对；ReAct 的调用是
+                // 模型直接给出的，没有批次——只能在它要出来之后、执行之前比。
+                // 少了这一道，实测形态是同一件商品被加购两次：
+                // 用户批准了 A，续作轮又把 A 填了一遍，而系统全程没有任何地方发现这是重复。
+                String fingerprint = WriteFingerprints.of(request.name(), arguments);
+                if (WriteFingerprints.isRepeat(fingerprint, ctx.executedWriteFingerprints)) {
+                    log.warn("[LLM] 高危操作与已落地写操作重复，拒绝生成确认卡并退回模型 tool={} fingerprint={}",
+                            request.name(), fingerprint);
+                    working.add(dev.langchain4j.data.message.ToolExecutionResultMessage.from(request,
+                            "这一步的操作目标（" + fingerprint + "）与已经执行过的写操作相同，"
+                                    + "重复执行会产生用户没有要求的第二次副作用，因此没有生成确认卡片。"
+                                    + "若本应作用于另一件商品、另一条记录或另一个订单，"
+                                    + "请先用查询工具取得它真实的编号，再用真实值重新调用；"
+                                    + "若用户要的就是刚才那一次，直接说明它已经执行过，不要再次发起。"));
+                    continue;
+                }
                 if (StepReferences.hasUnresolved(arguments)) {
                     log.warn("[LLM] 高危操作参数含未解析引用，拒绝生成确认卡并退回模型 tool={} arguments={}",
                             request.name(), arguments);
@@ -1132,13 +1152,16 @@ public class LangChain4jLLMProvider implements LLMProvider {
         private final List<PendingAction> pendingActions;
         /** 工具执行进度回调，见 {@link ToolContextKeys#TOOL_PROGRESS}；不传退化为 NOOP */
         private final ToolProgressListener progress;
+        /** 已经落地过的写操作指纹，见 {@link ToolContextKeys#EXECUTED_WRITE_FINGERPRINTS}；不传退化为空 */
+        private final List<String> executedWriteFingerprints;
 
         private LoopContext(LoopGuard guard, String userId, List<PendingAction> pendingActions,
-                            ToolProgressListener progress) {
+                            ToolProgressListener progress, List<String> executedWriteFingerprints) {
             this.guard = guard;
             this.userId = userId;
             this.pendingActions = pendingActions;
             this.progress = progress;
+            this.executedWriteFingerprints = executedWriteFingerprints;
         }
 
         private static LoopContext from(Map<String, Object> toolContext) {
@@ -1166,7 +1189,13 @@ public class LangChain4jLLMProvider implements LLMProvider {
             // 界面少几片「正在执行」的指示，而不是在工具执行处抛 NPE
             ToolProgressListener progress = toolContext.get(ToolContextKeys.TOOL_PROGRESS)
                     instanceof ToolProgressListener listener ? listener : ToolProgressListener.NOOP;
-            return new LoopContext(guard, userId, pendingActions, progress);
+            // 账本同理缺失即退化：不传就按「没有可对账的历史」处理，判重一律不命中
+            Object providedLedger = toolContext.get(ToolContextKeys.EXECUTED_WRITE_FINGERPRINTS);
+            @SuppressWarnings("unchecked")
+            List<String> executedWriteFingerprints = providedLedger instanceof List<?> ledger
+                    ? (List<String>) ledger
+                    : List.of();
+            return new LoopContext(guard, userId, pendingActions, progress, executedWriteFingerprints);
         }
     }
 }

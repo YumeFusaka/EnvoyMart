@@ -62,6 +62,20 @@ async function poll(fn, predicate, timeoutMs = 30000) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * 收起某一轮回答里的依据块。
+ *
+ * 依据块默认折叠，但「默认」只保证刚渲染那一刻 —— 点过正文角标就会展开。
+ * 本脚本刻意在「已经点过角标」之后断言角标能把它打开，所以要先把状态压回折叠，
+ * 否则那条断言在没有展开逻辑时也能通过。不可折叠时（评测页）没有开关，直接跳过。
+ */
+async function collapseCitations(scope) {
+  const toggle = scope.locator('.citations__toggle').first()
+  if ((await toggle.count()) === 0) return false
+  if ((await toggle.getAttribute('aria-expanded')) === 'true') await toggle.click()
+  return true
+}
+
 const session = await (async () => {
   const res = await fetch(`${GW}/auth/login`, {
     method: 'POST',
@@ -244,9 +258,20 @@ const badgeCount = await card.locator('.message-content__cite').count()
 ck('回答里带可点角标', badgeCount > 0, '一条 [n] 角标都没有')
 ck('引用卡片同时渲染', (await card.locator('.citation').count()) > 0)
 ck('用量块同时渲染', (await card.locator('details.usage').count()) > 0)
+// 默认折叠是这次体验优化的全部内容：标题行在、卡片在 DOM 里、内容不占屏。
+// 三条分开断言 —— 少一条，「整块消失」或「根本没折」都能蒙混过关
+ck(
+  '依据块默认折叠且卡片仍留在 DOM 里',
+  (await card.locator('.citations__toggle').count()) === 1 &&
+    (await card.locator('.citations__toggle').first().getAttribute('aria-expanded')) === 'false' &&
+    (await card.locator('.citations__list').first().isVisible()) === false,
+  '标题行、折叠态、DOM 保留三者至少有一条不成立',
+)
 await page.screenshot({ path: resolve(OUT_DIR, 'chat-2-answer.png'), fullPage: true })
 
 if (badgeCount > 0) {
+  // 先确保是折叠态：这条断言要验的正是「点角标能把它打开」
+  await collapseCitations(card)
   await card.locator('.message-content__cite').first().click()
   // 角标与引用卡是一一对应的：点亮的是同号那张
   const activeIndex = await page.evaluate(() => {
@@ -254,6 +279,12 @@ if (badgeCount > 0) {
     return nodes.findIndex((n) => n.classList.contains('is-active'))
   })
   ck('点击角标点亮对应引用卡', activeIndex >= 0, `activeIndex=${activeIndex}`)
+  ck(
+    '点击角标自动展开折叠的依据块',
+    (await card.locator('.citations__toggle').first().getAttribute('aria-expanded')) === 'true' &&
+      (await card.locator('.citations__list').first().isVisible()),
+    '角标点下去依据块仍是收起的，用户看不到被引用的那一条',
+  )
 }
 
 // 复制整条回答（操作行里的第一个按钮）

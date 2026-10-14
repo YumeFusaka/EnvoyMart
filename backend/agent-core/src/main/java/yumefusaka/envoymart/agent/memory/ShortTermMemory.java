@@ -46,6 +46,40 @@ public class ShortTermMemory implements Memory {
         persistentStore.append(item.getSessionId(), item, maxSize);
     }
 
+    /**
+     * 重新生成：**丢弃**窗口里最后一轮，让本轮对模型回到「首问」的形态。
+     * <p>
+     * 内存里的双端队列与持久化载体要一起丢——只丢一处会出现「本进程看到的是干净上下文、
+     * 别的实例/重启后看到旧答案还在」这种最难查的不一致。
+     * <p>
+     * 只丢末尾两条是不够严谨的：末尾应当是「用户消息 + 助手答复」这一对，但窗口可能
+     * 停在任何位置（例如上一轮只落了用户消息、或该轮被判成取消而只落了半条）。
+     * 判据因此是「末尾那条是不是助手答复」——不是就只丢一条，
+     * 宁可少丢也不要误删上一轮的正经内容。
+     */
+    @Override
+    public boolean dropLastTurn(String sessionId) {
+        Deque<MemoryItem> deque = dequeOf(sessionId);
+        boolean dropped;
+        synchronized (deque) {
+            if (deque.isEmpty()) {
+                return false;
+            }
+            MemoryItem last = deque.peekLast();
+            dropped = last != null && last.getType() == MemoryItem.Type.MESSAGE
+                    && last.getContent() != null && last.getContent().startsWith("assistant:");
+            deque.removeLast();
+            if (dropped) {
+                deque.removeLast();
+            }
+        }
+        // 持久化侧也要丢，否则两条路径对「窗口里还剩什么」给出不同答案。
+        // 它返回的「丢了几条」与内存的判定可能不同（另一实例刚写过），
+        // 这里以内存为准：内存是本进程本轮真正要用的那份上下文
+        persistentStore.dropLastTurn(sessionId);
+        return dropped;
+    }
+
     @Override
     public List<MemoryItem> recent(String sessionId, int limit) {
         Deque<MemoryItem> deque = dequeOf(sessionId);

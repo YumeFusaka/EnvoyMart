@@ -121,6 +121,12 @@ try {
     (await anon.locator('.case-row .message-content').allTextContents()).every((answer) => answer.trim().length > 0))
   ck('当次证据完整展示', await anon.locator('.citation').count() ===
     run.cases.reduce((count, item) => count + (item.evidence?.length ?? 0), 0))
+  // 评测页**不折叠**：这一页就是拿来逐条核对证据的，折起来等于把被核对的东西藏了。
+  // 反过来说，对话流里默认折叠的前提正是这里保持原样
+  if (await anon.locator('.citation').count()) {
+    ck('评测页证据不折叠', await anon.locator('.citations__toggle').count() === 0 &&
+      await anon.locator('.citation').first().isVisible())
+  }
 
   const traceIndex = run.cases.findIndex((item) => item.retrievalTrace && item.evidence?.length)
   ck('真实快照包含可追溯检索与证据', traceIndex >= 0)

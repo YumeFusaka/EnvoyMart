@@ -257,6 +257,16 @@ async function handleCite(messageId: string, index: number) {
   })
 }
 
+/**
+ * 依据块自己收起来了：把高亮一并撤掉。
+ *
+ * 留着它，下次再点同一个角标时 `activeCite` 值不变、`activeIndex` 也就没有变化，
+ * 依据块收不到那次点击 —— 用户会看到「点了角标，什么都没发生」。
+ */
+function handleCiteCollapse(messageId: string) {
+  if (activeCite.value?.messageId === messageId) activeCite.value = null
+}
+
 /** 刚复制过的那条。1.5 秒后复位，让按钮文字回到「复制」 */
 const copiedId = ref<string | null>(null)
 let copiedTimer: number | undefined
@@ -546,6 +556,7 @@ async function handleCopy(message: ChatMessage) {
       -->
       <CitationList
         v-if="message.knowledge?.length || message.retrievalQuery"
+        collapsible
         :items="message.knowledge ?? []"
         :list-id="message.id"
         :evidence-level="message.evidenceLevel"
@@ -553,6 +564,7 @@ async function handleCopy(message: ChatMessage) {
         :expansion="message.expansion"
         :tool-calls="message.toolCalls"
         :active-index="activeCite?.messageId === message.id ? activeCite.index : null"
+        @collapse="handleCiteCollapse(message.id)"
       />
 
       <!--

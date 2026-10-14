@@ -23,9 +23,11 @@ import yumefusaka.envoymart.agent.loop.ToolContextKeys;
 import yumefusaka.envoymart.agent.rag.MedicalEvidenceVerifier;
 import yumefusaka.envoymart.agent.tool.PendingAction;
 import yumefusaka.envoymart.agent.tool.ToolCall;
+import yumefusaka.envoymart.agent.tool.ToolCallDescription;
 import yumefusaka.envoymart.agent.tool.ToolProgressListener;
 import yumefusaka.envoymart.agent.tool.ToolRegistry;
 import yumefusaka.envoymart.agent.tool.ToolResult;
+import yumefusaka.envoymart.agent.tool.WriteFingerprints;
 
 import java.util.*;
 import java.util.concurrent.ExecutionException;
@@ -119,7 +121,17 @@ public class AgentGraph {
     private final LLMConfig llmConfig;
     private final ToolRegistry toolRegistry;
     private final ExecutorService executor;
-    private static final ThreadLocal<String> SESSION_OVERRIDE = new ThreadLocal<>();
+    /**
+     * 请求级上下文：会话边界 + 「已经落地过的写操作」账本（见 {@link WriteFingerprints}）。
+     * <p>
+     * <b>为什么这两样走 ThreadLocal 而不是参数。</b>不带会话标识的那几个 {@code run} 重载
+     * 是<b>测试的覆写缝</b>——十来个单测用桩图替换执行图，覆写的正是那几个签名。
+     * 把新参数加进签名，等于让所有桩同时失效（而且是静默失效：桩还在，只是再也不会被调用）。
+     * 所以扩展走这条既有通道，覆写缝保持不变。
+     */
+    private record RequestScope(String sessionId, List<String> executedWriteFingerprints) { }
+
+    private static final ThreadLocal<RequestScope> REQUEST_SCOPE = new ThreadLocal<>();
 
     public AgentGraph(LLMProvider llmProvider, LLMConfig llmConfig,
                       ToolRegistry toolRegistry, ExecutorService executor) {
@@ -144,14 +156,22 @@ public class AgentGraph {
                 () -> RetrievalResult.empty());
     }
 
-    /** 在保留旧 override 入口的前提下，把会话边界传给内置图。 */
-    public static <T> T withSession(String sessionId, java.util.function.Supplier<T> action) {
-        String previous = SESSION_OVERRIDE.get();
+    /**
+     * 在保留旧 override 入口的前提下，把请求级上下文传给内置图。
+     * <p>
+     * {@code executedWriteFingerprints} 是<b>确认执行</b>那条路径产出的账本：写操作在图外执行，
+     * 图内既推不出来、也没有第二次机会拿到它。续作轮靠它拒绝「目标与已执行写操作重合」的载荷。
+     * 传 null 或空表示「没有可对账的历史」，判重一律不命中——与改造前逐位一致。
+     */
+    public static <T> T withRequestScope(String sessionId, List<String> executedWriteFingerprints,
+                                         java.util.function.Supplier<T> action) {
+        RequestScope previous = REQUEST_SCOPE.get();
         try {
-            SESSION_OVERRIDE.set(sessionId);
+            REQUEST_SCOPE.set(new RequestScope(sessionId,
+                    executedWriteFingerprints == null ? List.of() : List.copyOf(executedWriteFingerprints)));
             return action.get();
         } finally {
-            if (previous == null) SESSION_OVERRIDE.remove(); else SESSION_OVERRIDE.set(previous);
+            if (previous == null) REQUEST_SCOPE.remove(); else REQUEST_SCOPE.set(previous);
         }
     }
 
@@ -169,7 +189,12 @@ public class AgentGraph {
                            LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
                            java.util.function.Supplier<RetrievalResult> retriever) {
 
-        return run(userId, SESSION_OVERRIDE.get(), message, systemPrompt, conversation, guard, onChunk, progress, retriever);
+        // 请求级上下文（会话边界 + 已落地写操作账本）由调用方经 withRequestScope 放入，
+        // 没有放入时退化为「无会话、无历史」——与改造前逐位一致
+        RequestScope scope = REQUEST_SCOPE.get();
+        return run(userId, scope == null ? null : scope.sessionId(), message, systemPrompt, conversation,
+                guard, onChunk, progress, retriever,
+                scope == null ? List.of() : scope.executedWriteFingerprints());
     }
 
     /** 带会话标识的入口：写操作 operationId 需要在用户+会话边界内稳定。 */
@@ -178,6 +203,27 @@ public class AgentGraph {
                            ToolProgressListener progress,
                            java.util.function.Supplier<RetrievalResult> retriever) {
 
+        return run(userId, sessionId, message, systemPrompt, conversation, guard, onChunk, progress,
+                retriever, List.of());
+    }
+
+    /**
+     * 带「已经执行过的写操作」的入口 —— 续作轮参数对账（R12）的事实来源。
+     * <p>
+     * <b>为什么要由调用方传进来，而不是图自己记。</b>要判重的那批写操作
+     * <b>不在本轮的图里</b>：高危步骤在执行前就被拦下、由用户点确认后才执行，
+     * 而确认执行走的是图外的审批链路。所以「上一批到底执行过哪个 SKU」这件事，
+     * 只有调用方知道；图内既推不出来，也没有第二次机会拿到它。
+     * <p>
+     * 元素是 {@code WriteFingerprints.of(...)} 产出的规范化指纹。传 null 或空
+     * 表示「没有可对账的历史」，此时判重一律不命中——与改造前逐位一致。
+     */
+    public GraphResult run(String userId, String sessionId, String message, String systemPrompt,
+                           List<ChatMessage> conversation, LoopGuard guard, Consumer<String> onChunk,
+                           ToolProgressListener progress,
+                           java.util.function.Supplier<RetrievalResult> retriever,
+                           List<String> executedWriteFingerprints) {
+
         GraphContext ctx = GraphContext.of(userId, sessionId,
                 message,
                 systemPrompt == null ? "" : systemPrompt,
@@ -185,7 +231,14 @@ public class AgentGraph {
                 guard == null ? new LoopGuard() : guard,
                 onChunk,
                 ToolProgressListener.orNoop(progress),
-                retriever);
+                retriever,
+                // 用流过滤而不是 List.copyOf：后者遇到 null 元素直接抛 NPE，
+                // 于是调用方一个「没填指纹」的空位会把整轮对话变成 500。
+                // 而 null 指纹的语义本来就明确——它不匹配任何东西（见 WriteFingerprints#isRepeat），
+                // 所以这里过滤掉即可，不必让一次防御性列表的瑕疵打穿主链路
+                executedWriteFingerprints == null ? List.of() : executedWriteFingerprints.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .toList());
 
         Map<String, Object> initial = new HashMap<>();
         initial.put(KEY_STEPS, new ArrayList<GraphStep>());
@@ -311,6 +364,7 @@ public class AgentGraph {
             ctx.runtimePrompt.updateAndGet(base -> base
                     + "\n\n## 本轮检索\n本轮问题不涉及平台知识（闲聊或纯业务操作），未做知识库检索。"
                     + "不要因此声称「知识库中没有依据」——那是没查，不是没有。\n");
+            ctx.retrievalFact().set(RetrievalFact.notAttempted());
             log.info("[Graph] 本轮跳过入口检索（规划判定无需检索）");
             return updates(KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
         }
@@ -319,14 +373,42 @@ public class AgentGraph {
             ctx.retrieval().set(result);
             if (result != null && result.contextSection() != null && !result.contextSection().isBlank()) {
                 ctx.runtimePrompt.updateAndGet(base -> base + "\n\n" + result.contextSection());
+                ctx.retrievalFact().set(RetrievalFact.attempted(evidenceCountOf(result.contextSection())));
+            } else {
+                // 「查了、一条没命中」与「没查」是两件事，不能共用一个默认值：
+                // 前者 payload 一定非空（调用方传的是真实检索结果），
+                // 而 payload 为空的空哨兵只可能来自「没有检索器」的旧调用方
+                ctx.retrievalFact().set(result == null || result.payload() == null
+                        ? RetrievalFact.notAttempted() : RetrievalFact.attempted(0));
             }
         } catch (RuntimeException e) {
             // 检索失败不能阻断回答：推理中途还有 knowledge_search 工具可以补一次。
             // 但必须留痕——把「检索挂了」当成「没有依据」是最难发现的失真
+            ctx.retrievalFact().set(RetrievalFact.broken());
             log.warn("[Graph] 入口检索失败，本轮无知识段，模型仍可调用 knowledge_search 重试", e);
         }
         return updates(KEY_ROUTE, plan.isEmpty() ? ROUTE_ANSWER : ROUTE_ACT);
     }
+
+    /**
+     * 知识段里的依据条数 —— 数的是 {@code KnowledgePrompt} 渲染出的编号条目。
+     * <p>
+     * 数「模型能引用的条目」而不是「检索器召回了几片」：两者在有重排截断时并不相等，
+     * 而这里要陈述的是「本轮给到模型的依据有几条」——它是模型判断「我手上有没有依据」
+     * 的依据，也正是引用编号的上界。
+     */
+    private static int evidenceCountOf(String contextSection) {
+        java.util.regex.Matcher entry = KNOWLEDGE_ENTRY.matcher(contextSection);
+        int count = 0;
+        while (entry.find()) {
+            count++;
+        }
+        return count;
+    }
+
+    /** 知识条目的编号行首，形如 {@code [1] }。与 {@code KnowledgePrompt#entry} 的渲染格式同源 */
+    private static final java.util.regex.Pattern KNOWLEDGE_ENTRY =
+            java.util.regex.Pattern.compile("(?m)^\\[\\d+] ");
 
     /** 显式证据请求不能被规划器的省略判断抹掉；只读本轮原话，不把历史当作本轮证据。 */
     private static boolean requiresKnowledgeRetrieval(String message) {
@@ -643,6 +725,44 @@ public class AgentGraph {
             // 没解析的引用串，而且检索那一步永远没机会执行。用户看到的是一张参数是
             // "$0.skuId" 的确认卡片，点确认后必然失败。
             // 拦截的粒度必须与执行的粒度一致：这一批要执行的，才是此刻要用户批准的。
+            // R12 续作轮参数对账：高危步骤的<b>操作目标</b>若与已经执行过的写操作重合，
+            // 这一批一律拒绝生成确认载荷。判据只覆盖高危步骤、且只比目标编号
+            // （见 {@link WriteFingerprints}）——只读调用天然会重复，纳入判重会拦下正常链路。
+            List<Integer> repeated = ready.stream()
+                    .filter(index -> requiresConfirmation(resolved.get(index)))
+                    .filter(index -> WriteFingerprints.isRepeat(
+                            WriteFingerprints.of(resolved.get(index).getTool(), resolved.get(index).getArguments()),
+                            ctx.executedWriteFingerprints()))
+                    .toList();
+            if (!repeated.isEmpty()) {
+                // <b>整批拒绝，不是静默丢掉那一条。</b>只丢重复项、放行其余，
+                // 用户会以为「两件都批了」，而实际上只批了一件——那正是本条要修的那个失真。
+                // 记录方式与「引用没解析」那一条同形：留一条失败步骤供重规划看见，
+                // 但<b>不写 planError</b>——那条通道的兜底文案说的是「参数无法安全解析」，
+                // 与本条的原因不符，会把一次「目标重复」说成一次「解析失败」。
+                String conflicts = repeated.stream()
+                        .map(index -> ToolCallDescription.of(resolved.get(index).getTool(),
+                                resolved.get(index).getArguments()))
+                        .distinct()
+                        .reduce((a, b) -> a + "、" + b)
+                        .orElse("");
+                String correction = "检测到重复的写操作，已阻止生成确认卡片：" + conflicts
+                        + "。本批这些步骤的操作目标与已经执行过的写操作相同，"
+                        + "重复执行会产生用户没有要求的第二次副作用。"
+                        + "若这些步骤本应作用于另一件商品、另一条记录或另一个订单，"
+                        + "请先用查询工具取得它真实的编号，再用真实值重新调用；"
+                        + "若用户要的就是刚才那一次，直接说明它已经执行过，不要再次发起。";
+                for (Integer index : repeated) {
+                    PlanStep step = resolved.get(index);
+                    steps.add(GraphStep.builder()
+                            .round(round).index(index).tool(step.getTool())
+                            .reason(step.getReason()).optional(step.isOptional())
+                            .success(false).output(correction)
+                            .build());
+                }
+                log.warn("[Graph] 续作轮参数对账命中，已阻止确认载荷 round={} 重复步骤={}", round, conflicts);
+                return List.of();
+            }
             List<PendingAction> risky = ready.stream()
                     .map(resolved::get)
                     .filter(this::requiresConfirmation)
@@ -1054,6 +1174,10 @@ public class AgentGraph {
         if (!ctx.currentPrompt().isEmpty()) {
             messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(ctx.currentPrompt()).build());
         }
+        // 本轮执行事实：与 synthesize 同源注入。这条路径同样会产生「我查过/没查过」
+        // 这类自述，只注入一条路径等于让另一条继续凭空自述
+        messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
+                .content(renderExecutionFacts(ctx.retrievalFact().get(), List.of())).build());
         if (!ctx.conversation().isEmpty()) {
             messages.addAll(ctx.conversation());
         } else {
@@ -1069,6 +1193,8 @@ public class AgentGraph {
         if (!ctx.currentPrompt().isEmpty()) {
             messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM).content(ctx.currentPrompt()).build());
         }
+        messages.add(ChatMessage.builder().role(ChatMessage.Role.SYSTEM)
+                .content(renderExecutionFacts(ctx.retrievalFact().get(), steps)).build());
         // 历史必须带上，否则「那能退吗」这种指代在工具路径下无从解析——
         // 而工具路径恰恰是多轮对话里最主要的路径（见 history 的注释）
         messages.addAll(history(ctx));
@@ -1097,6 +1223,61 @@ public class AgentGraph {
     private static final int MAX_OBSERVATION_CHARS = 12000;
 
     /**
+     * 本轮执行事实 —— <b>「关于系统自身行为的陈述」必须由它来回答</b>。
+     * <p>
+     * <b>为什么需要单独一段。</b>模型对自己的检索史与工具调用史<b>没有可靠的知情权</b>：
+     * 它看得见的是 prompt 里有没有知识段、历史里说过什么，而这两样都推不出
+     * 「本轮到底做了什么」——知识段缺失既可能是「没查」也可能是「查了没命中」，
+     * 历史里那句「我查过知识库」还可能是它上一轮编的。缺事实时它的默认反应是
+     * 用最像话的那一种补上，于是出现「无检索却声称检索过」。
+     * <p>
+     * <b>只陈述事实，不给结论。</b>写「本轮知识检索：命中 3 条」，不写「所以你可以说……」
+     * ——后者会把一个事实陈述变成一句行为指令，而模型该怎么措辞是它自己的事。
+     * 这段话的价值在于把「系统做了什么」变成可核对的事实，而不是替它把话说出来。
+     * <p>
+     * <b>三种检索形态分别陈述</b>（见 {@link RetrievalFact}）：没查、查了命中 N 条、
+     * 查了但失败。合并任意两种都会让模型把一种事实说成另一种。
+     * <p>
+     * 包级可见：单测直接断言注入内容，不必为了构造工具轨迹去拖一整个图。
+     */
+    static String renderExecutionFacts(RetrievalFact retrieval, List<GraphStep> steps) {
+        StringBuilder facts = new StringBuilder("""
+
+                ## 本轮执行事实（权威）
+                以下是系统记录的、本轮真实发生过的动作，是唯一权威的事实来源。
+                关于「本轮有没有检索过」「调用了哪些工具」「查到了几条」这类问题，
+                只能依据这里的内容回答：**不得凭记忆否认或补充**，不得声称做过这里没有记录的动作，
+                也不得把这里记录过的动作说成没做过。若用户问起你的检索或调用过程，照这里的记录直说。
+                工具结局有三种：成功 / 无结果（调用成功，但没有查到数据）/ 失败。
+                """);
+
+        if (retrieval == null) {
+            retrieval = RetrievalFact.notAttempted();
+        }
+        if (retrieval.failed()) {
+            facts.append("\n- 本轮知识检索：已发起，但检索未成功（下游异常），本轮没有取得任何知识条目。");
+        } else if (!retrieval.attempted()) {
+            facts.append("\n- 本轮知识检索：未做知识库检索（不是「查了没有」，是「没有查」）。");
+        } else if (retrieval.evidenceCount() > 0) {
+            facts.append("\n- 本轮知识检索：已检索，命中 ").append(retrieval.evidenceCount())
+                    .append(" 条条目（能否作为结论依据，以上文「知识依据」段的规定为准）。");
+        } else {
+            facts.append("\n- 本轮知识检索：已检索，未命中任何条目。");
+        }
+
+        if (steps.isEmpty()) {
+            facts.append("\n- 本轮工具调用：未调用任何工具。");
+        } else {
+            facts.append("\n- 本轮工具调用（共 ").append(steps.size()).append(" 次）：");
+            for (GraphStep step : steps) {
+                facts.append("\n  - ").append(step.getTool()).append("：").append(verdict(step));
+            }
+        }
+        facts.append('\n');
+        return facts.toString();
+    }
+
+    /**
      * 拼装给模型的工具观测，并守住总长度上界。
      * <p>
      * <b>超限时截断而不是丢弃整条。</b>被丢弃的那条工具结果里可能正好有用户要的数字
@@ -1105,8 +1286,9 @@ public class AgentGraph {
      * <p>
      * 末尾必须写明「还有 N 条未展示」。不写的话，模型看到的是一个自洽但残缺的列表，
      * 它会基于这份残缺数据给出毫无保留的结论，而用户与排查者都看不出它少了东西。
+     * <p>
+     * 包级可见：单测直接验证上界行为，不必为了构造 8 次工具调用去拖一整个图。
      */
-    /** 包级可见：单测直接验证上界行为，不必为了构造 8 次工具调用去拖一整个图 */
     static String renderObservations(List<GraphStep> steps) {
         StringBuilder observations = new StringBuilder();
         int omitted = 0;
@@ -1207,6 +1389,10 @@ public class AgentGraph {
         // （见 ToolContextKeys#PENDING_ACTIONS——ReAct 无法像计划路径那样提前拦，
         // 拦截只能发生在循环内部，这是拦住的结果回到图里的唯一通道）
         loopContext.put(ToolContextKeys.PENDING_ACTIONS, ctx.pendingActions());
+        // 同一个通道的入口方向：已落地写操作的账本递进循环，让 ReAct 路径也能拒绝重复载荷。
+        // 计划路径的同一道判据在 executePlan 里——两条路径都要有，
+        // 因为模型自驱的那条不经过计划，也就没有「批次」可以预先比对
+        loopContext.put(ToolContextKeys.EXECUTED_WRITE_FINGERPRINTS, ctx.executedWriteFingerprints());
         if (ctx.userId() != null) {
             loopContext.put(ToolContextKeys.USER_ID, ctx.userId());
         }
@@ -1298,11 +1484,14 @@ public class AgentGraph {
                                  java.util.concurrent.atomic.AtomicReference<String> planError,
                                 java.util.function.Supplier<RetrievalResult> retriever,
                                 java.util.concurrent.atomic.AtomicReference<String> runtimePrompt,
-                                java.util.concurrent.atomic.AtomicReference<RetrievalResult> retrieval) {
+                                java.util.concurrent.atomic.AtomicReference<RetrievalResult> retrieval,
+                                java.util.concurrent.atomic.AtomicReference<RetrievalFact> retrievalFact,
+                                List<String> executedWriteFingerprints) {
 
         static GraphContext of(String userId, String sessionId, String message, String systemPrompt, List<ChatMessage> conversation,
                                LoopGuard guard, Consumer<String> onChunk, ToolProgressListener progress,
-                               java.util.function.Supplier<RetrievalResult> retriever) {
+                               java.util.function.Supplier<RetrievalResult> retriever,
+                               List<String> executedWriteFingerprints) {
             // 计划只在本次 Agent 请求内稳定。按消息内容生成会让同一会话重复提问时复用
             // ToolRegistry 的进程内 operationId 结果，把上一轮的商品/订单结果冒充本轮结果。
             // 确认重入不经过这里，而是直接使用签名载荷里的 operationId，因此不会破坏确认幂等。
@@ -1317,11 +1506,48 @@ public class AgentGraph {
                     // 运行期 prompt：初始就是调用方给的 systemPrompt；检索节点决定要检索时，
                     // 会把知识段追加进来，后续节点读到的是追加后的版本
                     new java.util.concurrent.atomic.AtomicReference<>(systemPrompt),
-                    new java.util.concurrent.atomic.AtomicReference<>());
+                    new java.util.concurrent.atomic.AtomicReference<>(),
+                    // 本轮检索事实：由检索节点写、由收口回答读。初值是「还没检索过」——
+                    // 与「检索了但空手而归」是两件事，不能共用同一个默认值
+                    new java.util.concurrent.atomic.AtomicReference<>(RetrievalFact.notAttempted()),
+                    executedWriteFingerprints);
         }
         String currentPrompt() {
             String p = runtimePrompt.get();
             return p == null ? "" : p;
+        }
+    }
+
+    /**
+     * 本轮检索的结构化事实 —— <b>「关于系统自身行为的陈述」的唯一依据</b>。
+     * <p>
+     * 三种形态必须分开，因为它们对应三句不同的实话：
+     * <ul>
+     *   <li>{@link #notAttempted()} —— 没查（闲聊、纯业务操作）；</li>
+     *   <li>{@link #attempted(int)} —— 查了，命中 N 条（N 可以为 0）；</li>
+     *   <li>{@link #broken()} —— 查了但没查成（下游异常）。</li>
+     * </ul>
+     * 把它们压成一个布尔或一个条数，就会出现「把没查说成没查到」「把查挂了说成没依据」
+     * 这类失真——而这两种说法对用户的意义完全不同：一个是「这件事不在平台知识范围内」，
+     * 另一个是「平台资料里没有」。
+     *
+     * @param attempted 本轮是否真的发起过检索
+     * @param evidenceCount 检索命中的依据条数；未检索时为 0
+     * @param failed 检索发起过但失败了
+     */
+    record RetrievalFact(boolean attempted, int evidenceCount, boolean failed) {
+
+        static RetrievalFact notAttempted() {
+            return new RetrievalFact(false, 0, false);
+        }
+
+        static RetrievalFact attempted(int evidenceCount) {
+            return new RetrievalFact(true, Math.max(0, evidenceCount), false);
+        }
+
+        /** 名字刻意不叫 {@code failed()}：那会与记录的访问器同签名冲突 */
+        static RetrievalFact broken() {
+            return new RetrievalFact(true, 0, true);
         }
     }
 

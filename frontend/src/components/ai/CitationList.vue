@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatResponse, EvidenceLevel, KnowledgeSnippet, ToolCall } from '@/types/models'
 import { relevanceText, sourceLabel } from '@/utils/knowledge'
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps<{
   items: KnowledgeSnippet[]
@@ -26,7 +26,14 @@ const props = defineProps<{
   expansion?: ChatResponse['expansion']
   /** 业务工具返回的是业务事实，不应被 RAG 分数提示覆盖。 */
   toolCalls?: ToolCall[]
+  /**
+   * 这一块能不能折叠。默认不能 —— 评测页要靠它逐条核对证据，
+   * 折起来等于把被核对的东西藏了；只有对话流里才折。
+   */
+  collapsible?: boolean
 }>()
+
+const emit = defineEmits<{ collapse: [] }>()
 
 /**
  * 这一块该不该自称「依据」，由后端的证据门说了算。
@@ -54,6 +61,48 @@ const title = computed(() => (weak.value ? '参考' : '依据'))
 const empty = computed(() => props.items.length === 0)
 
 /**
+ * 折叠态。默认收起。
+ *
+ * 依据是「要核对时才看」的次级内容：一条回答动辄带 3~5 张卡片，
+ * 每条都摊开会把正文挤出屏幕，而多数轮次用户并不核对。
+ */
+const expanded = ref(false)
+
+/**
+ * 只有真有依据条目才谈得上折叠。
+ *
+ * 0 条时这一块唯一的内容是「按『…』检索」那一行，而那一行恰恰是「为什么没检到」
+ * 的答案 —— 把它折起来，等于最需要解释的那一次又没有解释。
+ */
+const foldable = computed(() => !!props.collapsible && !empty.value)
+/** 折叠区当前该不该显示。不可折叠时恒为真，与折叠改造前完全一致 */
+const open = computed(() => !foldable.value || expanded.value)
+/** 折叠区 id：`aria-controls` 要指向一个真实存在的元素，折叠时它也在 DOM 里 */
+const bodyId = computed(() => `citations-body-${props.listId}`)
+
+/**
+ * 正文角标点过来就展开。
+ *
+ * 只认「非空」，不认「变化」：已经展开时再点同一个角标，这里什么也不做，
+ * 滚动与高亮由点角标的那一侧负责 —— 点第二次不该把它收回去。
+ */
+watch(
+  () => props.activeIndex,
+  (value) => {
+    if (value != null && foldable.value) expanded.value = true
+  },
+)
+
+function toggle() {
+  expanded.value = !expanded.value
+  if (!expanded.value) {
+    // 收起时把「刚点过的那条」一并交还父组件：高亮已经看不见了，
+    // 而留着它会让「再点一次同一个角标」退化成一次没有变化的更新 —— 那时不会展开
+    emit('collapse')
+  }
+}
+
+/**
  * 本轮扩写是否真的产出了内容。
  *
  * 判据用后端的 `applied`，不用「字段非空」——空产出（关开关、模型降级、
@@ -77,65 +126,89 @@ function toChunk(item: KnowledgeSnippet) {
 
 <template>
   <section class="citations" :class="{ 'citations--weak': weak }" :aria-label="`${title}资料`">
-    <h4 v-if="!empty" class="citations__title">
+    <!--
+      折叠态保留这一行：它同时说明「有几条」和「点这里能看」。
+      用 button 而不是自己拼一块可点区 —— aria-expanded 与键盘可达是白拿的，
+      而点第二次是收起，所以标题行本身就是那个开关。
+    -->
+    <h4 v-if="foldable" class="citations__title">
+      <button
+        type="button"
+        class="citations__toggle"
+        :aria-expanded="expanded"
+        :aria-controls="bodyId"
+        @click="toggle"
+      >
+        <span class="citations__chevron" aria-hidden="true"></span>
+        <span><span aria-hidden="true">§</span> {{ title }} {{ items.length }} 条</span>
+        <span class="citations__hint">{{ expanded ? '收起' : '展开' }}</span>
+      </button>
+    </h4>
+    <h4 v-else-if="!empty" class="citations__title">
       <span aria-hidden="true">§</span> {{ title }} {{ items.length }} 条
     </h4>
-    <p v-if="weak" class="citations__note">
-      检索到这些内容，但相关度不足，<strong>不能作为回答依据</strong>，仅供你自行判断。
-    </p>
     <!--
-      改写过才显示：这一句解释的是「资料按什么检回来的」，与本轮问句不同才有信息量，
-      相同的时候显示它只是把用户刚说的话重复一遍。
+      用 v-show 而不是 v-if：`.citation` 必须留在 DOM 里 ——
+      多条端到端验收断言的是「卡片渲染出来了」，而折叠只是不看，不是没有。
     -->
-    <!--
-      扩写与「按…检索」并列：前者说检索前这句话被补成什么样，后者说最终拿哪句去查。
-      两行都出现时，读者能完整还原「用户原话 → 扩写 → 检索句」这条链路，
-      而这正是调召回率时唯一能逐轮核对的东西。
-    -->
-    <div v-if="hasExpansion" class="citations__expansion">
-      <p class="citations__expansion-label">检索前先做了扩写</p>
-      <p v-if="expansion?.hypothetical" class="citations__expansion-item">
-        <span class="citations__expansion-kind">假想答案</span>
-        <span class="citations__expansion-text">{{ expansion.hypothetical }}</span>
+    <div v-show="open" :id="bodyId" :class="['citations__body', { 'citations__body--open': open }]">
+      <p v-if="weak" class="citations__note">
+        检索到这些内容，但相关度不足，<strong>不能作为回答依据</strong>，仅供你自行判断。
       </p>
-      <p v-if="expansion?.angles?.length" class="citations__expansion-item">
-        <span class="citations__expansion-kind">角度改写</span>
-        <span class="citations__expansion-text">{{ expansion.angles.join(' / ') }}</span>
+      <!--
+        改写过才显示：这一句解释的是「资料按什么检回来的」，与本轮问句不同才有信息量，
+        相同的时候显示它只是把用户刚说的话重复一遍。
+      -->
+      <!--
+        扩写与「按…检索」并列：前者说检索前这句话被补成什么样，后者说最终拿哪句去查。
+        两行都出现时，读者能完整还原「用户原话 → 扩写 → 检索句」这条链路，
+        而这正是调召回率时唯一能逐轮核对的东西。
+      -->
+      <div v-if="hasExpansion" class="citations__expansion">
+        <p class="citations__expansion-label">检索前先做了扩写</p>
+        <p v-if="expansion?.hypothetical" class="citations__expansion-item">
+          <span class="citations__expansion-kind">假想答案</span>
+          <span class="citations__expansion-text">{{ expansion.hypothetical }}</span>
+        </p>
+        <p v-if="expansion?.angles?.length" class="citations__expansion-item">
+          <span class="citations__expansion-kind">角度改写</span>
+          <span class="citations__expansion-text">{{ expansion.angles.join(' / ') }}</span>
+        </p>
+      </div>
+      <p v-if="retrievalQuery" class="citations__query">
+        按「<span class="citations__query-text">{{ retrievalQuery }}</span>」检索
       </p>
-    </div>
-    <p v-if="retrievalQuery" class="citations__query">
-      按「<span class="citations__query-text">{{ retrievalQuery }}</span>」检索
-    </p>
-    <p v-if="empty" class="citations__note">没有检索到相关资料。</p>
+      <p v-if="empty" class="citations__note">没有检索到相关资料。</p>
 
-    <ol v-if="!empty" class="citations__list">
-      <li
-        v-for="(item, i) in items"
-        :id="`cite-${listId}-${i + 1}`"
-        :key="item.chunkId"
-        :class="['citation', { 'is-active': activeIndex === i + 1 }]"
-      >
-        <RouterLink class="citation__head" :to="toChunk(item)">
-          <span class="citation__no">{{ i + 1 }}</span>
-          <span class="citation__where">
-            <!-- 位置串已含《标题》，缺位置时退到标题，再缺才用编号 -->
-            <strong>{{ item.position || (item.title ? `《${item.title}》` : item.docId) }}</strong>
-            <span class="citation__meta">
-              <span v-if="item.source">{{ sourceLabel(item.source) }}</span>
-              <span v-if="item.version">{{ item.version }}</span>
-              <span>{{ relevanceText(item.score, item.reranked) }}</span>
+      <ol v-if="!empty" class="citations__list">
+        <li
+          v-for="(item, i) in items"
+          :id="`cite-${listId}-${i + 1}`"
+          :key="item.chunkId"
+          :class="['citation', { 'is-active': activeIndex === i + 1 }]"
+        >
+          <RouterLink class="citation__head" :to="toChunk(item)">
+            <span class="citation__no">{{ i + 1 }}</span>
+            <span class="citation__where">
+              <!-- 位置串已含《标题》，缺位置时退到标题，再缺才用编号 -->
+              <strong>{{ item.position || (item.title ? `《${item.title}》` : item.docId) }}</strong>
+              <span class="citation__meta">
+                <span v-if="item.source">{{ sourceLabel(item.source) }}</span>
+                <span v-if="item.version">{{ item.version }}</span>
+                <span>{{ relevanceText(item.score, item.reranked) }}</span>
+              </span>
             </span>
-          </span>
-        </RouterLink>
+          </RouterLink>
 
-        <p class="citation__content">{{ item.content }}</p>
+          <p class="citation__content">{{ item.content }}</p>
 
-        <div class="citation__actions">
-          <RouterLink class="citation__link" :to="toChunk(item)">查看原文 →</RouterLink>
-          <span class="citation__docno">{{ item.docId }}</span>
-        </div>
-      </li>
-    </ol>
+          <div class="citation__actions">
+            <RouterLink class="citation__link" :to="toChunk(item)">查看原文 →</RouterLink>
+            <span class="citation__docno">{{ item.docId }}</span>
+          </div>
+        </li>
+      </ol>
+    </div>
   </section>
 </template>
 
@@ -147,10 +220,66 @@ function toChunk(item: KnowledgeSnippet) {
 }
 
 .citations__title {
-  margin: 0 0 var(--ys-space-3);
+  margin: 0;
   color: var(--color-text-secondary);
   font-size: var(--ys-font-sm);
   font-weight: 600;
+}
+
+/* 展开态才需要标题与内容之间的间距：折叠态标题下面什么都没有 */
+.citations__body--open {
+  margin-top: var(--ys-space-3);
+}
+
+/*
+  标题行整行就是那个开关。负外边距把内边距撑出的命中区抵消掉：
+  可点面达到 24px 以上，视觉位置与改造前一致。
+*/
+.citations__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--ys-space-2);
+  width: calc(100% + var(--ys-space-4));
+  margin: calc(var(--ys-space-1) * -1) calc(var(--ys-space-2) * -1);
+  padding: var(--ys-space-1) var(--ys-space-2);
+  border: 0;
+  border-radius: var(--ys-radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.citations__toggle:hover {
+  color: var(--color-primary-strong);
+}
+
+.citations__toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 只动 transform：旋转不触发重排，reduced-motion 的全局降级也自动覆盖 */
+.citations__chevron {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-inline-start: 5px solid currentcolor;
+  border-block: 4px solid transparent;
+  transition: transform var(--ys-duration-base) var(--ys-ease-out);
+}
+
+.citations__toggle[aria-expanded='true'] .citations__chevron {
+  transform: rotate(90deg);
+}
+
+/* 「展开 / 收起」是给折叠态兜底的提示：单看小三角未必知道这行能点 */
+.citations__hint {
+  margin-inline-start: auto;
+  color: var(--color-text-muted);
+  font-size: var(--ys-font-xs);
+  font-weight: 400;
 }
 
 /* 相关度不足时整块降一档：不再是「已核对过的依据」，只是一些可能相关的材料 */
