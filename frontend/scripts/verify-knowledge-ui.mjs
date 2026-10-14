@@ -746,6 +746,38 @@ try {
   comboErr = e
 }
 ck('组合注意事项真实只读验收未抛异常', comboErr === null, comboErr === null ? '' : String(comboErr))
+
+// ---- 商品页 →「查看关系图谱」入口（用户实测报告的路径） ----
+//
+// 报告的现象：从商品页点进图谱，中心实体显示 `SPU16`，而图上没有这个节点，
+// 整页看起来像「图谱里没有收录 SPU16」。根因不在前端——它传的键是对的
+// （`SPU${detail.id}`），是建图侧对多主体文档一条边都没补，图上真的没有这个节点，
+// 页面于是回退显示原始键。这条断言把整条路径钉住：入口 href 带的键必须在图谱里
+// 真实存在，点进去必须能看到该商品自己的组成边，而不是一句空态。
+const probe = await (await fetch(`${GW}/knowledge/graph/search?keyword=${encodeURIComponent('褪黑素')}`)).json()
+const probeProduct = (probe.data ?? []).find((h) => h.kind === 'PRODUCT' && /^spu/i.test(h.name))
+ck('图谱搜索能按成分名找到商品实体', Boolean(probeProduct), JSON.stringify(probe.data ?? []).slice(0, 200))
+if (probeProduct) {
+  const spuId = probeProduct.name.replace(/^spu/i, '')
+  await page.goto(`${BASE}/#/products/${spuId}`, { waitUntil: 'networkidle' })
+  const entry = page.locator('.knowledge-entry__link')
+  await entry.waitFor({ state: 'visible', timeout: 15000 })
+  const entryHash = new URL((await entry.getAttribute('href')) ?? '', BASE).hash
+  ck('商品页入口带的是本商品的图谱键',
+    entryHash.startsWith('#/knowledge/graph') && entryHash.toUpperCase().includes(`SPU${spuId}`), entryHash)
+  await entry.click()
+  await page.locator('svg.canvas').waitFor({ state: 'visible', timeout: 20000 })
+  const emptyState = await poll(
+    () => page.locator('.graph-stage__empty').count(),
+    (n) => n === 0,
+    8000,
+  )
+  ck('从商品页进入后不出现「图谱里没有收录」空态', emptyState === 0)
+  const enteredText = await page.locator('body').innerText()
+  ck(`中心实体展示为商品名而不是键（${probeProduct.label}）`,
+    enteredText.includes(probeProduct.label) && !enteredText.includes(`以「SPU${spuId}」为中心`),
+    enteredText.slice(0, 300))
+}
 ck('全程无控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 
 await browser.close()

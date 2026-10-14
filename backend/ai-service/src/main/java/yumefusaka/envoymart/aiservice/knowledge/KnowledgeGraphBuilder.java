@@ -23,6 +23,7 @@ import yumefusaka.envoymart.contract.GraphBuildFailurePayload;
 import java.util.UUID;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +68,15 @@ public class KnowledgeGraphBuilder {
     private static final Pattern UNIT_COMPOSITION = Pattern.compile(
             "^(?:(?:本品|本产品)(?:规格(?:为|[:：]))?|规格(?:为|[:：]))?"
                     + "每(?:一包|片|粒|袋|支|份|瓶|滴)(?:\\d+(?:\\.\\d+)?(?:毫升|毫克|克))?(?:含有?|包含)");
+    /**
+     * 商品名锚点的最短公共子串。目录里的名字是「褪黑素缓释片」，而正文只写「缓释片」——
+     * 锚点靠子串识别，这个长度是「够具体、不至于在别的商品名里撞车」的下界。
+     */
+    private static final int ANCHOR_MIN_CHARS = 2;
+    /** 组成声明关键词。只有带它的子句才贡献成分，见 multiSubjectCompositions */
+    private static final Pattern COMPOSITION_KEYWORD = Pattern.compile("含|包含|成分为|主要成分|配方|添加");
+    /** 能定位到切片的最短引文长度，与 knowledge-service 的 MIN_QUOTE_CHARS 一致 */
+    private static final int LOCATABLE_QUOTE_CHARS = 6;
     private static final Pattern COMPOSITION_CONTINUATION = Pattern.compile(
             "^(?:主要成分为|成分为|含有?|包含|并添加|添加)");
     /**
@@ -463,79 +473,361 @@ public class KnowledgeGraphBuilder {
             // 领域文档（退货政策、监管规范）本就不属于任何商品，不需要补
             return triples;
         }
-        if (subjects.size() != 1) {
-            log.info("[Graph] 文档 {} 有 {} 个主体，仅保留抽取的各自组成，不跨商品补边",
-                    doc.getId(), subjects.size());
-            return triples;
-        }
         Map<String, ProductSummary> byKey = new LinkedHashMap<>();
         for (ProductSummary p : catalog) {
             byKey.put(key(p.getId()), p);
         }
-        // 抽取结果尚未经过服务端校验；补边必须自己找到独立的组成原句。
-        Map<String, String> ingredients = new LinkedHashMap<>();
-        Map<String, String> ingredientQuotes = new LinkedHashMap<>();
-        for (GraphTriplePayload t : triples) {
-            String headQuote = isCompositionPart(t.getHeadKind())
-                    ? compositionQuote(doc.getContent(), t.getHeadName()) : null;
-            if (headQuote != null) {
-                ingredients.putIfAbsent(t.getHeadName(), t.getHeadLabel());
-                ingredientQuotes.putIfAbsent(t.getHeadName(), headQuote);
-            }
-            String tailQuote = isCompositionPart(t.getTailKind())
-                    ? compositionQuote(doc.getContent(), t.getTailName()) : null;
-            if (tailQuote != null) {
-                ingredients.putIfAbsent(t.getTailName(), t.getTailLabel());
-                ingredientQuotes.putIfAbsent(t.getTailName(), tailQuote);
+        // 声明的商品不在目录里（下架、或编号错）：补出来的节点永远连不上目录，
+        // 查询时表现为「这个商品没有已知相互作用」—— 一个不报错的错误答案
+        for (Long spuId : subjects) {
+            if (!byKey.containsKey(key(spuId))) {
+                log.warn("[Graph] 文档 {} 声明的商品 {} 不在目录中，跳过主体边", doc.getId(), key(spuId));
             }
         }
-        if (ingredients.isEmpty()) {
-            log.debug("[Graph] 文档 {} 声明了 {} 个主体商品，但没抽出任何成分，不补主体边",
+        // 归属解析分两条路，判据是「这份文档的组成主语是什么」。
+        // 单主体文档的主语是「本品」；多主体文档里「本品」指的是**几款商品一起**，
+        // 拿它当主语会把各商品的成分合成同一份配方——那边只能由正文里的商品名锚点确定归属。
+        List<SubjectComposition> declared = subjects.size() == 1
+                ? singleSubjectCompositions(doc, triples, key(subjects.get(0)))
+                : multiSubjectCompositions(doc, subjects, byKey, triples);
+        if (declared.isEmpty()) {
+            log.debug("[Graph] 文档 {} 声明了 {} 个主体商品，但没解析出可归属的组成，不补主体边",
                     doc.getId(), subjects.size());
             return triples;
         }
-        // 已经由模型抽出的商品→成分对，避免重复
-        java.util.Set<String> existing = new java.util.HashSet<>();
+        // 已经由模型抽出的商品→成分对，避免重复。
+        // 键取**规范名**：别名表会把「叶黄素酯」并到「叶黄素」，拿原始写法去重的话，
+        // 同一篇文档里补出的边会与模型抽出的边重复一遍
+        Set<String> existing = new HashSet<>();
         for (GraphTriplePayload t : triples) {
             if (GraphRelation.CONTAINS.name().equals(t.getRelation())) {
-                existing.add(t.getHeadName() + "\u0000" + t.getTailName());
+                existing.add(t.getHeadName() + "\u0000" + ingredientKey(t.getTailName()));
             }
         }
         List<GraphTriplePayload> out = new ArrayList<>(triples);
         int added = 0;
-        for (Long spuId : subjects) {
-            String spuKey = key(spuId);
-            ProductSummary product = byKey.get(spuKey);
-            if (product == null) {
-                // 声明的商品不在目录里（下架、或编号错）：不补。补出来的节点永远连不上目录，
-                // 查询时表现为「这个商品没有已知相互作用」—— 一个不报错的错误答案
-                log.warn("[Graph] 文档 {} 声明的商品 {} 不在目录中，跳过主体边", doc.getId(), spuKey);
+        for (SubjectComposition composition : declared) {
+            ProductSummary product = byKey.get(composition.spuKey());
+            if (product == null
+                    || !existing.add(composition.spuKey() + "\u0000" + ingredientKey(composition.ingredient()))) {
                 continue;
             }
-            for (Map.Entry<String, String> e : ingredients.entrySet()) {
-                if (existing.contains(spuKey + "\u0000" + e.getKey())) {
-                    continue;
-                }
-                out.add(GraphTriplePayload.builder()
-                        .headKind(EntityKind.PRODUCT.name())
-                        .headName(spuKey)
-                        .headLabel(product.getName())
-                        .relation(GraphRelation.CONTAINS.name())
-                        .tailKind(EntityKind.INGREDIENT.name())
-                        .tailName(e.getKey())
-                        .tailLabel(e.getValue())
-                        .quote(ingredientQuotes.get(e.getKey()))
-                        // 商品端由人工主体绑定证明，组成端保留真实声明原句。
-                        .declared(true)
-                        .build());
-                existing.add(spuKey + "\u0000" + e.getKey());
-                added++;
-            }
+            out.add(GraphTriplePayload.builder()
+                    .headKind(EntityKind.PRODUCT.name())
+                    .headName(composition.spuKey())
+                    .headLabel(product.getName())
+                    .relation(GraphRelation.CONTAINS.name())
+                    .tailKind(EntityKind.INGREDIENT.name())
+                    .tailName(composition.ingredient())
+                    .tailLabel(composition.label())
+                    .quote(composition.quote())
+                    // 商品端由人工主体绑定证明，组成端保留真实声明原句。
+                    .declared(true)
+                    .build());
+            added++;
         }
         if (added > 0) {
             log.info("[Graph] 文档 {} 按声明的归属补出 {} 条商品→成分边", doc.getId(), added);
         }
         return out;
+    }
+
+    /**
+     * 一条「某商品含有某成分」的声明。
+     *
+     * @param spuKey     商品键（形如 {@code SPU16}）
+     * @param ingredient 成分的<b>原文写法</b>。不能存规范名：服务端校验要拿它去正文里找，
+     *                   而正文写的是「富马酸亚铁」这类变体，换成规范名「铁剂」就找不到了
+     * @param label      展示名
+     * @param quote      声明原句，用于溯源与切片定位
+     */
+    private record SubjectComposition(String spuKey, String ingredient, String label, String quote) {
+    }
+
+    /** 抽取结果里的成分候选：规范名 → 模型写的原文与展示名 */
+    private record IngredientCandidate(String name, String label) {
+    }
+
+    /**
+     * 单主体文档的组成声明：主语是「本品」，候选成分来自抽取结果。
+     * <p>
+     * 判据与原先一致（{@link #compositionQuote}）——「本品含 X」这类句子里，
+     * 商品端只有一个可能，缺的只是把成分认全。
+     */
+    private static List<SubjectComposition> singleSubjectCompositions(Document doc, List<GraphTriplePayload> triples,
+                                                                     String spuKey) {
+        Map<String, SubjectComposition> out = new LinkedHashMap<>();
+        for (GraphTriplePayload t : triples) {
+            collectComposition(out, doc.getContent(), spuKey, t.getHeadKind(), t.getHeadName(), t.getHeadLabel());
+            collectComposition(out, doc.getContent(), spuKey, t.getTailKind(), t.getTailName(), t.getTailLabel());
+        }
+        return List.copyOf(out.values());
+    }
+
+    private static void collectComposition(Map<String, SubjectComposition> out, String content, String spuKey,
+                                           String kind, String name, String label) {
+        if (!isCompositionPart(kind) || name == null || name.isBlank()) {
+            return;
+        }
+        String quote = compositionQuote(content, name);
+        if (quote == null) {
+            return;
+        }
+        out.putIfAbsent(ingredientKey(name),
+                new SubjectComposition(spuKey, name, labelOrName(label, name), quote));
+    }
+
+    /**
+     * 多主体文档的组成声明：主语是正文里的<b>商品名锚点</b>，不是「本品」。
+     * <p>
+     * <b>为什么不能沿用单主体那条路</b>：多主体说明书通篇写「本品」，而「本品」指的是
+     * <b>几款商品一起</b>——按单主体的判据补边，等于把各商品各自的成分合成同一份配方，
+     * 而这是比「没补上」更糟的错误（它看起来有出处）。这条边只能按商品名逐段归属。
+     * <p>
+     * <b>为什么不能整篇按「所有主体 × 所有成分」补</b>：那是笛卡尔积。KB-0018 的
+     * 玉米黄质只在 spu18 名下，spu19 拿不到它——补错了同样是「看起来有出处」。
+     * <p>
+     * <b>逐段归属怎么做</b>：按句号/分号切「声明单元」，单元内按逗号切子句；
+     * 子句各自认锚点（商品名子串），认不出的按「先前、后后」接上相邻锚点——
+     * 「叶黄素酯软胶囊，含叶黄素酯与玉米黄质」成分列表在后一个子句，
+     * 而「含锌与硒的锌硒宝片」把商品名放在后面，两个方向都得接得上。
+     * <b>只有带组成关键词的子句才贡献成分</b>：正文里单独提到某个成分名
+     * （「褪黑素是松果体分泌的一种激素」）不是组成声明，不该据此补边。
+     */
+    private static List<SubjectComposition> multiSubjectCompositions(Document doc, List<Long> subjects,
+                                                                    Map<String, ProductSummary> byKey,
+                                                                    List<GraphTriplePayload> triples) {
+        String content = doc.getContent();
+        if (content == null || content.isBlank()) {
+            return List.of();
+        }
+        Map<String, IngredientCandidate> candidates = compositionCandidates(triples);
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+        List<SubjectComposition> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (String unit : content.split("[。！？；;\n]")) {
+            if (unit.isBlank() || isNegatedComposition(unit)) {
+                continue;
+            }
+            String[] clauses = unit.split("[，,：:]");
+            String[] own = new String[clauses.length];
+            for (int i = 0; i < clauses.length; i++) {
+                List<String> hits = anchorKeysOf(clauses[i], subjects, byKey, candidates);
+                own[i] = hits.size() == 1 ? hits.get(0) : null;
+            }
+            for (int i = 0; i < clauses.length; i++) {
+                if (!isCompositionClause(clauses[i])) {
+                    continue;
+                }
+                String spuKey = own[i] != null ? own[i] : nearestAnchor(own, i);
+                if (spuKey == null) {
+                    continue;
+                }
+                String quote = clauses[i].strip();
+                if (EntityNames.stripBlanks(quote).length() < LOCATABLE_QUOTE_CHARS) {
+                    // 太短的子句在正文里定位不到（服务端要求引文至少 6 个字），
+                    // 退回整个声明单元——它同样是原文里的连续片段
+                    quote = unit.strip();
+                }
+                for (Map.Entry<String, IngredientCandidate> e : candidates.entrySet()) {
+                    if (!mentionsIngredient(clauses[i], e.getValue().name())) {
+                        continue;
+                    }
+                    if (!seen.add(spuKey + "\u0000" + e.getKey())) {
+                        continue;
+                    }
+                    out.add(new SubjectComposition(spuKey, e.getValue().name(),
+                            labelOrName(e.getValue().label(), e.getValue().name()), quote));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 抽取结果里出现过的成分 —— 组成事实必须另有正文的肯定声明，候选只回答「这篇提到了什么」 */
+    private static Map<String, IngredientCandidate> compositionCandidates(List<GraphTriplePayload> triples) {
+        Map<String, IngredientCandidate> out = new LinkedHashMap<>();
+        for (GraphTriplePayload t : triples) {
+            addCandidate(out, t.getHeadKind(), t.getHeadName(), t.getHeadLabel());
+            addCandidate(out, t.getTailKind(), t.getTailName(), t.getTailLabel());
+        }
+        return out;
+    }
+
+    private static void addCandidate(Map<String, IngredientCandidate> out, String kind, String name, String label) {
+        if (!isCompositionPart(kind) || name == null || name.isBlank()) {
+            return;
+        }
+        out.putIfAbsent(ingredientKey(name), new IngredientCandidate(name, labelOrName(label, name)));
+    }
+
+    /**
+     * 子句命中了哪些声明的商品主体 —— 按「商品名的 {@value #ANCHOR_MIN_CHARS} 字以上子串
+     * 出现在子句里」判定。
+     * <p>
+     * <b>用子串而不是整名相等</b>：多主体说明书的正文里商品名常常只写一个片段——
+     * KB-0017 写「缓释片」「软糖」，而目录里的名字是「褪黑素缓释片」「γ-氨基丁酸软糖」。
+     * 要求整名命中等于永远匹配不上。
+     * <p>
+     * <b>唯一性只在声明的几个主体之间判</b>：「软糖」在整个目录里还命中另外两个商品，
+     * 但那两个不是这篇文档的主体，不该参与竞争——参与的话「软糖」永远是歧义锚点，
+     * spu17 也就永远补不上。
+     */
+    private static List<String> anchorKeysOf(String clause, List<Long> subjects, Map<String, ProductSummary> byKey,
+                                            Map<String, IngredientCandidate> candidates) {
+        String text = EntityNames.normalize(clause);
+        List<int[]> covered = ingredientSpans(text, candidates);
+        String best = null;
+        int bestLength = 0;
+        boolean tied = false;
+        for (Long spuId : subjects) {
+            ProductSummary product = byKey.get(key(spuId));
+            if (product == null || product.getName() == null) {
+                continue;
+            }
+            int length = longestFragment(EntityNames.normalize(product.getName()), text, covered);
+            if (length < ANCHOR_MIN_CHARS) {
+                continue;
+            }
+            if (length > bestLength) {
+                best = key(spuId);
+                bestLength = length;
+                tied = false;
+            } else if (length == bestLength) {
+                tied = true;
+            }
+        }
+        return best == null || tied ? List.of() : List.of(best);
+    }
+
+    /**
+     * 子句里被<b>候选成分</b>占用的字符区间。
+     * <p>
+     * <b>为什么商品名片段落在其中就不算锚点</b>：实测 KB-0018 有一句
+     * 「越橘提取物的主要成分为花青素类物质」——它讲的是<b>成分</b>由什么构成，
+     * 不是商品由什么构成。但商品名「越橘叶黄素片」的前两个字「越橘」正好落在这句话里，
+     * 于是这条边被补成了 {@code spu19 -CONTAINS-> 花青素类物质}：一个<b>看起来有出处</b>、
+     * 实际张冠李戴的结论。更长的那个提及（「越橘提取物」）本来就该赢——
+     * 谁的名字更长、更具体，这段文字就是谁的。
+     */
+    private static List<int[]> ingredientSpans(String text, Map<String, IngredientCandidate> candidates) {
+        List<int[]> spans = new ArrayList<>();
+        for (IngredientCandidate candidate : candidates.values()) {
+            for (String variant : ingredientVariants(candidate.name())) {
+                if (variant.isEmpty()) {
+                    continue;
+                }
+                for (int at = text.indexOf(variant); at >= 0; at = text.indexOf(variant, at + 1)) {
+                    spans.add(new int[]{at, at + variant.length()});
+                }
+            }
+        }
+        return spans;
+    }
+
+    private static boolean coveredBy(List<int[]> spans, int start, int end) {
+        for (int[] span : spans) {
+            if (start >= span[0] && end <= span[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 名字与文本的最长公共子串长度。
+     * <p>
+     * <b>为什么取最长而不是「命中即算」</b>：同系列的商品名天然共享片段——
+     * 「叶黄素酯软胶囊」与「越橘叶黄素片」共享「叶黄素」。命中即算的话两个锚点永远同时命中，
+     * 判定退化成「歧义」，整篇文档一条边都补不出来（这正是修复前的实测结果）。
+     * 取最长则前者以 7 字、后者以 6 字各自胜出，各归各位；只有最长也并列时才是真歧义。
+     */
+    private static int longestFragment(String name, String text, List<int[]> covered) {
+        for (int length = name.length(); length >= ANCHOR_MIN_CHARS; length--) {
+            for (int start = 0; start + length <= name.length(); start++) {
+                int at = text.indexOf(name.substring(start, start + length));
+                if (at >= 0 && !coveredBy(covered, at, at + length)) {
+                    return length;
+                }
+            }
+        }
+        return 0;
+    }
+
+    /** 认不出锚点的子句接相邻锚点：先前、后后。跨商品的归属不在这里判，见声明单元切分 */
+    private static String nearestAnchor(String[] own, int index) {
+        for (int i = index - 1; i >= 0; i--) {
+            if (own[i] != null) {
+                return own[i];
+            }
+        }
+        for (int i = index + 1; i < own.length; i++) {
+            if (own[i] != null) {
+                return own[i];
+            }
+        }
+        return null;
+    }
+
+    /** 子句是不是组成声明 —— 只有带关键词的子句才贡献成分，见 {@link #multiSubjectCompositions} */
+    private static boolean isCompositionClause(String clause) {
+        return COMPOSITION_KEYWORD.matcher(clause).find();
+    }
+
+    /** 否定组成：「本品不含乳糖」里的乳糖不是组成。整单元跳过，不做半句裁剪 */
+    private static boolean isNegatedComposition(String unit) {
+        return unit.contains("不含") || unit.contains("而非") || unit.contains("没有含");
+    }
+
+    /**
+     * 子句里有没有提到这个候选成分 —— 按规范名与它的全部别名变体做包含判断。
+     * <p>
+     * 走别名变体而不是只比名字：正文写「抗坏血酸（维生素 C）」而模型抽出的名字可能是
+     * 「维生素C」，只比一个写法就会漏掉这次声明。
+     */
+    private static boolean mentionsIngredient(String clause, String candidate) {
+        String text = EntityNames.normalize(clause);
+        for (String variant : ingredientVariants(candidate)) {
+            if (!variant.isEmpty() && text.contains(variant)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 一个候选成分的全部写法（已规范化）：规范名、别名表里的变体、以及模型写的那份名字。
+     * <p>
+     * 走别名变体而不是只比一个写法：正文写「抗坏血酸（维生素 C）」而模型抽出的名字可能是
+     * 「维生素C」，只比一个写法就会漏掉这次声明。
+     */
+    private static List<String> ingredientVariants(String candidate) {
+        String normalized = EntityNames.normalize(candidate);
+        if (normalized.isEmpty()) {
+            return List.of();
+        }
+        EntityAliases.Canonical canonical = EntityAliases.resolve(normalized);
+        List<String> variants = canonical == null ? List.of(normalized)
+                : EntityAliases.variantsOf(canonical.name());
+        if (variants.contains(normalized)) {
+            return variants;
+        }
+        List<String> all = new ArrayList<>(variants);
+        all.add(normalized);
+        return all;
+    }
+
+    /** 成分去重键：别名表归并后的规范名，与图谱上的节点键同一套规则 */
+    private static String ingredientKey(String name) {
+        String normalized = normalize(name);
+        EntityAliases.Canonical canonical = EntityAliases.resolve(normalized);
+        return canonical == null ? normalized : canonical.name();
+    }
+
+    private static String labelOrName(String label, String name) {
+        return label == null || label.isBlank() ? name : label;
     }
 
     /** 候选物质必须位于肯定组成声明的列举部分，后面的共服条件不是组成。 */
