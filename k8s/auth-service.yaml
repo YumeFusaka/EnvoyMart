@@ -45,7 +45,7 @@ spec:
         - name: auth-service
           # 这个 tag 由 CI 在构建完成后提交更新（Argo CD 监测到变化即同步）。
           # 不要用 latest：出问题时无法回答「回滚到哪个版本」，commit 对应的镜像 tag 才是可追溯的。
-          image: ghcr.io/yumefusaka/envoymart-auth:21ca6d32fd256286edd41843d9145d2a68e0185f
+          image: ghcr.io/yumefusaka/envoymart-auth:e81217776ae746476d8f55ebc26c8ad4fcf12510
           ports:
             - name: http
               containerPort: 9001
