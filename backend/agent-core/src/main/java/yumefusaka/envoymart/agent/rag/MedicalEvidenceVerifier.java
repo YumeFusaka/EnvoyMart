@@ -41,6 +41,20 @@ public final class MedicalEvidenceVerifier {
     private static final Pattern ABSENCE = Pattern.compile("(?:没有|未)(?:收录|涉及|提到)|知识库.*没有.*(?:相互作用|含量)");
     private static final Pattern GRAPH_ABSENCE = Pattern.compile("^(?:平台)?(?:知识)?图谱(?:中)?(?:没有|未)收录.*");
     private static final Pattern PRODUCT_PRONOUN = Pattern.compile("本品|该商品|该产品");
+    /**
+     * 「来源展示框架被编号化」的形态：{@code [n]第四章写明：} 或 {@code [n]中写明：}。
+     * <p>
+     * 句子原本写的是《文档名》第四章写明：…，引用编号化把《文档名》换成了 [n]，
+     * 框架动词留了下来。它证明这句话<b>自己声明了来源</b>，只是来源的名字变成了编号——
+     * 归属因此可以改由引用切片的元数据给出（见 {@code invalidReason} 的「本品」判据）。
+     * <p>
+     * 匹配面刻意收得很窄：必须紧跟着「写明/指出/说明/提到/记载」这类框架动词，
+     * 中间不允许夹进别的内容。放宽成「句首有 [n]」会把「[1]本品所含钙…」这类
+     * 根本没声明来源的句子一并放行，那正是 KG-02/KG-11 守的那条线。
+     */
+    private static final Pattern NUMBERED_SOURCE_FRAME = Pattern.compile(
+            "^\\s*\\[\\d+]\\s*(?:第[一二三四五六七八九十百\\d]+[章节条款]|正文|原文|其中|该条|本条)?"
+                    + "(?:中|里|内)?(?:也)?(?:写明|指出|说明|提到|记载|明确)[：:]");
     private static final Pattern TOPIC_FRAME = Pattern.compile("^(?:现在|接下来)?(?:讨论|说回|关于|至于|针对).*");
     private static final Pattern RELATION_DIRECTION = Pattern.compile(
             "(?:(不会|不可能|不|未|没有)(?:再|明显|显著|直接)?)?"
@@ -86,6 +100,16 @@ public final class MedicalEvidenceVerifier {
             "噻嗪类利尿剂", "强心苷", "四环素类", "喹诺酮类", "孕期", "妊娠期", "哺乳期",
             "儿童", "肾功能", "肝功能", "出血性疾病");
 
+    /**
+     * 商品字段的**标签词**——模型为可读性给字段起的名字，回执里没有也不该有。
+     *
+     * <p>它们不参与「句子里有没有回执之外的内容」核对（见 nothingBeyondReceipt）。
+     * 这与「格式词」是两件事：格式词（瓶/盒/件/元）出现在值里，标签词只出现在冒号左边。
+     */
+    private static final Set<String> FIELD_LABELS = Set.of(
+            "规格", "成分", "价格", "适用", "适用人群", "编号", "商品", "候选", "品牌", "类目",
+            "标签", "库存", "是否含乳糖", "侧重", "作用", "提醒", "说明", "名称", "单价", "包装");
+
     private static final Map<String, String> MEDICATION_CLASS_ALIASES = medicationClassAliases();
     private static final Pattern MEDICATION_CLASS_COORDINATION = medicationClassCoordination();
 
@@ -127,6 +151,8 @@ public final class MedicalEvidenceVerifier {
         List<String> unsupported = new ArrayList<>();
         Map<String, String> reasons = new LinkedHashMap<>();
 
+
+
         String previousDose = null;
         Set<String> previousSubjects = Set.of();
         Set<String> previousPopulation = Set.of();
@@ -160,7 +186,19 @@ public final class MedicalEvidenceVerifier {
                 continue;
             }
             if (isGraphScopeIntro(sentence)) currentGraphScope = graphScopeSubjects(sentence);
+            // 引导句（「维生素D的推荐量和上限如下：」）与标题一样声明了后续正文的主体：
+            // 它自己不含量值、不算医学事实句，但省略主体的列表项要能接住它。
+            // 与标题同一条边界——只补主体，不补数值。
+            if (isSubjectLeadIn(sentence)) {
+                Set<String> declared = MedicalDoseAssertions.entities(MedicalText.visible(sentence), MEDICAL_TERMS);
+                if (!declared.isEmpty()) headingSubjects = declared;
+                currentGraphScope = Set.of();
+                continue;
+            }
             if (isScopedGraphAbsence(sentence, currentGraphScope)) continue;
+            // 澄清问句是向用户提问，不是向用户断言——它没有出处可言，也不该被当医学事实核验。
+            // 判据见 isQuestionToUser：带具体数值/编号的疑问句仍在确认事实，不在此列。
+            if (isQuestionToUser(sentence)) continue;
             if (boundaryReminder(sentence)) {
                 continue;
             }
@@ -195,8 +233,15 @@ public final class MedicalEvidenceVerifier {
                 // 前置事实也必须被当前同一引用切片支撑，不能把两个片段拼成新的剂量结论。
                 if (doseReference && !selfContainedDose) claim = antecedent + " " + claim;
                 if (dependentListItem) claim = String.join("与", listSubjects) + claim.replaceFirst("^(?:[-*+]|\\d+[.)])\\s*", "");
+                // 主体继承三个来源，就近优先：句内自己声明（MedicalDoseAssertions 在 claim 里解析）
+                // > 上一句已支撑的剂量句（承前省略）> 标题行/引导句声明的章节主体。
+                // 第三条此前只服务 MONITORING 分支，于是「**维生素D的推荐摄入量与上限** + 正文省略主体」
+                // 这种最自然的 Markdown 写法被判「数量主体不完整」——同一问题 12 轮里 4 轮因此被整篇
+                // 兜底（N1 文档 §2.13 发现 M）。只补主体，不补数值：继承来的主体仍要过
+                // 数值/人群/角色/约束四项逐项核对，切片里没有这个主体照样拒。
                 Set<String> scopedSubjects = MONITORING.matcher(normalize(claim)).find() && !headingSubjects.isEmpty()
-                        ? headingSubjects : antecedentSubjects;
+                        ? headingSubjects
+                        : !antecedentSubjects.isEmpty() ? antecedentSubjects : headingSubjects;
                 reason = invalidReason(claim, refs, safeEvidence, thresholds, graphChunkIds, scopedSubjects, antecedentPopulation, ownerContext);
             }
             if (reason != null) {
@@ -311,6 +356,24 @@ public final class MedicalEvidenceVerifier {
         return List.copyOf(facts);
     }
 
+    /**
+     * 引导句：以冒号结尾、不含量值、只声明「接下来要讲哪个主体的什么」。
+     * <p>
+     * 判据刻意保守——<b>含量值的句子不算</b>（那已经是断言，走正常核验），
+     * <b>过长或含多个分句的句子不算</b>（可能是陈述而非引导）。只在
+     * 「短句 + 冒号结尾 + 无量值」这一精确形态下把它当作主体声明。
+     */
+    private static boolean isSubjectLeadIn(String sentence) {
+        String visible = MedicalText.visible(sentence).trim();
+        if (visible.length() > 60 || !visible.matches("(?s).*[：:]\\s*$")) return false;
+        if (!quantities(visible).isEmpty()) return false;
+        // 列表项是「内容」，不是「引导」——图谱关系父项（「- **华法林**：…相互作用记录：」）
+        // 正是以冒号结尾，若按引导句跳过核验，父项与整棵子树都会被放行（KG-04 三条用例守着它）。
+        if (visible.matches("(?s)^(?:[-*+]|\\d+[.)])\\s+.*")) return false;
+        // 引导句是纯声明性的：一旦它自己就是医学事实句，说明已经在陈述内容，必须照常核验。
+        if (isMedicalFact(visible)) return false;
+        return !MedicalDoseAssertions.entities(visible, MEDICAL_TERMS).isEmpty();
+    }
     private static boolean isGraphScopeIntro(String sentence) {
         return normalize(sentence).matches("^(?:仅依据|根据|仅根据)本次图谱(?:检查|查询)(?:结果)?[,，].*无法判断.*")
                 && !isMedicalFact(sentence);
@@ -352,64 +415,331 @@ public final class MedicalEvidenceVerifier {
         return MEDICAL_TERMS.stream().anyMatch(term -> normalized.contains(normalize(term)));
     }
 
-    /** 只豁免成功检索的同一规格字段，不从展示文本或实体词汇共现推断商品或医学事实。 */
+    /**
+     * 商品行的放行判据：**与工具回执逐字段核对**，不是「句子里有没有医学词」。
+     *
+     * <p><b>为什么删掉前置排除词表。</b>原实现先按一张 40 词的排除表
+     * （含 {@code 含有|成分|适用|每日|…}）把句子一票否决，再谈结构化核对。
+     * 这张表与「商品事实 vs 医学结论」的分界无关——实测被它挡住的正是最正常的商品行：
+     * {@code | 1 | 孕妇钙片 | 柠檬酸钙 500mg + 维生素 D3 400IU，孕期哺乳期适用 · SKU34 | 129.00 元 |}
+     * 只因含「适用」二字即被否决，于是它只能退到医学证据链，而商品数据本就不在语料里
+     * → 判无依据 → 删。
+     *
+     * <p><b>分界改由两件事守住</b>（都比词表准）：
+     * <ol>
+     *   <li>{@link #hasMedicalConclusion}——句中若含医学结论（服用剂量/相互作用/风险/疗效/适用人群），
+     *       一律不走这条通道，回到医学链逐项核对。这是安全性边界，不放宽；</li>
+     *   <li>逐字段核对——编号、规格文本、金额都必须能在**同一个候选块**里找到，
+     *       且句中的规格与金额必须属于句中所引的那个 SKU。保证放行的只是「商品字段的复述」。</li>
+     * </ol>
+     *
+     * <p><b>回执的两种形态都要认。</b>实时链路里 {@code rawData} 是结构化产物；
+     * 持久化回放（评测快照、会话历史）里 {@code rawData} 会被裁剪，只剩工具自己写的
+     * {@code output} 文本——生产 14 轮实测 {@code rawData} 全部为 null。只认前者会让
+     * 同一条链路在两种读法下给出不同答案，那正是本项目批次 15「同一份 JSON 两条路
+     * 一个能读一个读不了」的同一类缺陷。
+     */
     private static boolean supportedProductRow(String sentence, List<ToolExecution> tools) {
-        String text = normalize(sentence);
-        if (tools == null || text.matches(".*(?:每日|每天|每次|用量|剂量|服用|服药|用药|同服|合用|一起吃|一起用|可以吃|建议|相互|风险|安全|禁用|不宜|禁忌|吸收|拮抗|治疗|疗效|功效|预防|缓解|摄入|有助|适合|适用|增加|降低|减少|促进|抑制|增强|影响|改善|含有|成分).*")) {
-            return false;
-        }
+        if (tools == null) return false;
+        if (hasMedicalConclusion(normalize(sentence))) return false;
         Map<String, String> codes = new LinkedHashMap<>();
         Matcher code = PRODUCT_CODE.matcher(sentence);
         while (code.find()) {
             String kind = code.group(1).toLowerCase(Locale.ROOT);
             if (codes.putIfAbsent(kind, code.group(2)) != null) return false;
         }
-        Set<String> packageQuantities = quantities(PRODUCT_CODE.matcher(sentence).replaceAll(""));
-        if (codes.isEmpty() || packageQuantities.isEmpty()) return false;
         for (ToolExecution tool : tools) {
-            if (!tool.isSuccess() || tool.isNoData() || !"product_search".equals(tool.getTool())
-                    || tool.getRawData() == null) continue;
-            Object decoded;
-            try { decoded = MAPPER.convertValue(tool.getRawData(), Object.class); }
-            catch (RuntimeException ignored) { continue; }
-            if (!(decoded instanceof List<?> products)) continue;
-            for (Object product : products) {
-                if (!(product instanceof Map<?, ?> row) || !(row.get("summary") instanceof Map<?, ?> summary)
-                        || !(row.get("skus") instanceof List<?> skus)) continue;
-                if (codes.containsKey("spu") && !codes.get("spu").equals(String.valueOf(summary.get("id")))) continue;
-                for (Object option : skus) {
-                    if (!(option instanceof Map<?, ?> sku) || !(sku.get("specText") instanceof String spec)
-                            || !(sku.get("price") instanceof Number price)) continue;
-                    if (codes.containsKey("sku") && !codes.get("sku").equals(String.valueOf(sku.get("skuId")))) continue;
-                    if (!quantities(spec).containsAll(packageQuantities)) continue;
-                    BigDecimal yuan = new BigDecimal(price.toString()).movePointLeft(2);
-                    Matcher money = MONEY.matcher(text);
-                    boolean amountMatches = true;
-                    while (money.find()) {
-                        String amount = money.group(1) == null ? money.group(2) : money.group(1);
-                        if (yuan.compareTo(new BigDecimal(amount)) != 0) amountMatches = false;
-                    }
-                    String remaining = normalize(PRODUCT_CODE.matcher(sentence).replaceAll(""));
-                    if (summary.get("name") instanceof String name) remaining = remaining.replace(normalize(name), "");
-                    remaining = remaining.replace(normalize(spec), "");
-                    remaining = MONEY.matcher(remaining).replaceAll("");
-                    remaining = QUANTITY.matcher(remaining).replaceAll("");
-                    remaining = remaining.replaceAll("规格|单价|价格|包装|编号|商品|候选|瓶|盒|袋|装", "")
-                            .replaceAll("[\\p{P}\\p{S}\\s]", "");
-                    if (amountMatches && remaining.isEmpty()) return true;
-                }
+            if (!tool.isSuccess() || tool.isNoData() || !"product_search".equals(tool.getTool())) continue;
+            for (ProductBlock block : productBlocks(tool)) {
+                if (!block.covers(codes)) continue;
+                if (!block.coversQuantities(sentence)) continue;
+                if (!block.coversAmounts(sentence)) continue;
+                if (block.nothingBeyond(sentence)) return true;
             }
         }
         return false;
     }
 
+    /**
+     * 工具回执的一个**候选块**——一个 SPU 及其全部规格行。
+     *
+     * <p>块内区分两种粒度：SPU 级字段（编号、商品名）对整块成立；SKU 级字段
+     * （规格文本、价格）只对**那一行**成立。分开存是「同 SKU 绑定」的前提：
+     * 「SKU38 30片25元」必须失败，因为 30 片属于 SKU39、25 元也属于 SKU39。
+     */
+    private record ProductBlock(String spuCode, String spuText, List<SkuLine> skus) {
+
+        /**
+         * 句中提到的每个 SPU/SKU 编号都必须在这一块里。
+         * <p>
+         * 句中一个编号都没提到时（「- 规格：柠檬酸钙 500mg …」这类续行）不按编号绑定，
+         * 改由「整句 token 与金额都能在本块逐字段找到」兜底——编号是**消歧**手段，
+         * 缺了它仍有纯度判据；把这类行一律拒掉，正是生产实测里商品描述被删的形态之一。
+         */
+        boolean covers(Map<String, String> codes) {
+            if (codes.isEmpty()) return true;
+            for (Map.Entry<String, String> entry : codes.entrySet()) {
+                String wanted = entry.getKey().toUpperCase(Locale.ROOT) + entry.getValue();
+                if ("SPU".equals(entry.getKey().toUpperCase(Locale.ROOT))) {
+                    if (!wanted.equals(spuCode)) return false;
+                } else if (skus.stream().noneMatch(line -> line.code().equals(wanted))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * 句中的每个金额都必须等于**句中所引那个 SKU** 的价格。
+         * <p>
+         * 判据不是「这个数字在块里出现过」——那样 {@code SKU38 30片25元} 会因为 25 元
+         * 属于同块的 SKU39 而被放行，用户看到的是「38 号规格卖 25 元」这个不存在的事实。
+         */
+        boolean coversAmounts(String sentence) {
+            Set<String> wanted = skuCodesIn(sentence);
+            Matcher money = MONEY.matcher(normalize(sentence));
+            while (money.find()) {
+                String amount = money.group(1) == null ? money.group(2) : money.group(1);
+                BigDecimal value;
+                try { value = new BigDecimal(amount).stripTrailingZeros(); }
+                catch (NumberFormatException invalid) { return false; }
+                boolean matched = skus.stream().filter(line -> wanted.isEmpty() || wanted.contains(line.code()))
+                        .anyMatch(line -> line.price() != null && line.price().compareTo(value) == 0);
+                if (!matched) return false;
+            }
+            return true;
+        }
+
+        /**
+         * 规格数量必须与句中所引 SKU 绑定。
+         * <p>
+         * 判据分两类：出现在**任一 SKU 行文本**里的数量是「规格类」（60片/120片），
+         * 必须属于句中所引的那个 SKU——{@code SKU38 30片25元} 里 30片 属于 SKU39，
+         * 放行就等于告诉用户「38 号规格是 30 片」；不在任何 SKU 行文本里的是
+         * 「成分含量类」（柠檬酸钙 500mg），它描述候选整体，块级存在即可。
+         */
+        boolean coversQuantities(String sentence) {
+            Set<String> wanted = skuCodesIn(sentence);
+            if (wanted.isEmpty()) return true;
+            for (String quantity : quantities(sentence)) {
+                boolean specLike = skus.stream().anyMatch(line -> line.text().contains(quantity));
+                if (!specLike) continue;
+                boolean owned = skus.stream().filter(line -> wanted.contains(line.code()))
+                        .anyMatch(line -> line.text().contains(quantity));
+                if (!owned) return false;
+            }
+            return true;
+        }
+
+        /**
+         * 纯度判据：句中每个实词 token 都要能在这一块里找到，**标签词除外**。
+         *
+         * <p><b>为什么逐 token 而不是「剔除后必须为空」。</b>后者的失效形态是把结构字符
+         * （表格竖线、行号、引用编号）也算「未声明内容」，于是一张完全正确的商品表格行
+         * 永远过不了；放宽它又会放过夹带内容的句子。逐 token 把两件事分开：标点与编号是
+         * **格式**（本来就该忽略），汉字与字母数字串是**内容**（必须对得上）。
+         *
+         * <p><b>标签词是第三条。</b>「规格：」「成分：」「价格：」「适用：」这类前缀是模型
+         * 为可读性给字段起的名字，回执里没有也不该有——回执是「字段：值」的原始形态。
+         * 把它们当内容核对，等于要求模型逐字复制工具的排版。
+         */
+        boolean nothingBeyond(String sentence) {
+            String text = normalize(sentence);
+            text = CITATION.matcher(text).replaceAll("");
+            text = PRODUCT_CODE.matcher(text).replaceAll("");
+            // 数量与金额是**值**，由 coversQuantities / coversAmounts 按 SKU 绑定核对；
+            // 这里只核对剩下的**文字内容**。不先剔除它们，`60片39元` 会因为没有分隔符
+            // 被当成一个整 token，而回执写的是「60片/瓶 39.00元」——一个字都对不上。
+            text = QUANTITY.matcher(text).replaceAll("");
+            text = MONEY.matcher(text).replaceAll("");
+            // 列表序号与项目符号是**排版**，不是内容：`**1. 孕妇钙片**` 归一化后是
+            // `1.孕妇钙片`，与回执里的 `孕妇钙片` 是同一个字段的两种排版。
+            // 不剥掉它，整 token 对不上，一条完全正确的商品行会被拒。
+            text = text.replaceFirst("^\\s*(?:\\d+[.)]|[-*+])", "");
+            for (String token : text.split("[^\\p{IsHan}a-z0-9.]+")) {
+                if (token.isBlank() || token.matches("[0-9.]+")) continue;
+                if (FIELD_LABELS.contains(token)) continue;
+                if (!contains(token)) return false;
+            }
+            return true;
+        }
+
+        /**
+         * 块文本里找 token。
+         * <p>
+         * <b>两侧必须用同一把尺子。</b>句子一侧已经剔掉了数量与金额（见 nothingBeyond），
+         * 块这一侧若还留着数字，{@code 软骨素与钙} 就永远对不上块里的
+         * {@code 软骨素250毫克与钙200毫克}——两侧各剔一次，剩下的才是可比的「内容」。
+         */
+        private boolean contains(String token) {
+            if (contentOnly(spuText).contains(token)) return true;
+            return skus.stream().anyMatch(line -> contentOnly(line.text()).contains(token));
+        }
+
+        private static String contentOnly(String text) {
+            return MONEY.matcher(QUANTITY.matcher(text).replaceAll("")).replaceAll("");
+        }
+    }
+
+    /** 回执里的一条规格行：编号、规格文本、价格三者**绑在一起**，不能拆开互相借。 */
+    private record SkuLine(String code, String text, BigDecimal price) { }
+
+    private static Set<String> skuCodesIn(String sentence) {
+        Set<String> codes = new LinkedHashSet<>();
+        Matcher code = PRODUCT_CODE.matcher(sentence);
+        while (code.find()) {
+            if ("SKU".equalsIgnoreCase(code.group(1))) codes.add("SKU" + code.group(2));
+        }
+        return codes;
+    }
+
+    /**
+     * 工具回执的候选块列表。
+     *
+     * <p>优先用结构化 {@code rawData}；它被裁剪时退回解析 {@code output}。
+     * 两种形态产出同一份 {@link ProductBlock}，下游核对逻辑只有一套——
+     * 结构化路把 {@code price} 分转元、文本路把「39.00 元」解析成同一个数值，
+     * 于是同一条链路在两种读法下给出同一个答案。
+     */
+    private static List<ProductBlock> productBlocks(ToolExecution tool) {
+        // 两种形态都要认，且产出同一份块：实时链路给 rawData（结构化、无歧义），
+        // 持久化回放只剩 output（生产 14 轮实测 rawData 全部为 null）。
+        // 结构化优先：它是工具亲手写的字段，文本是它的有损投影。
+        List<ProductBlock> blocks = structuredBlocks(tool.getRawData());
+        return blocks.isEmpty() ? textBlocks(tool.getOutput()) : blocks;
+    }
+
+    private static List<ProductBlock> structuredBlocks(Object rawData) {
+        if (rawData == null) return List.of();
+        Object decoded;
+        try { decoded = MAPPER.convertValue(rawData, Object.class); }
+        catch (RuntimeException ignored) { return List.of(); }
+        if (!(decoded instanceof List<?> products)) return List.of();
+        List<ProductBlock> blocks = new ArrayList<>();
+        for (Object product : products) {
+            if (!(product instanceof Map<?, ?> row)) continue;
+            Map<?, ?> summary = row.get("summary") instanceof Map<?, ?> value ? value : Map.of();
+            StringBuilder head = new StringBuilder();
+            if (summary.get("id") != null) head.append(summary.get("id")).append(' ');
+            if (summary.get("name") instanceof String name) head.append(name);
+            List<SkuLine> lines = new ArrayList<>();
+            if (row.get("skus") instanceof List<?> skus) {
+                for (Object option : skus) {
+                    if (!(option instanceof Map<?, ?> sku)) continue;
+                    BigDecimal price = sku.get("price") instanceof Number number
+                            ? new BigDecimal(number.toString()).movePointLeft(2) : null;
+                    String spec = sku.get("specText") instanceof String value ? normalize(value) : "";
+                    String text = price == null ? spec : spec + " " + price.toPlainString() + "元";
+                    lines.add(new SkuLine(
+                            sku.get("skuId") == null ? "" : "SKU" + sku.get("skuId"),
+                            normalize(text), price));
+                }
+            }
+            if (lines.isEmpty() && summary.get("id") != null) {
+                lines.add(new SkuLine("", "", null));
+            }
+            blocks.add(new ProductBlock("SPU" + summary.get("id"), normalize(head.toString()), lines));
+        }
+        return blocks;
+    }
+
+    /**
+     * 文本回执的解析——生产持久化视图里只剩这一种形态。
+     *
+     * <p>识别工具自己打印的两级结构：{@code - 候选[n] 编号 SPU25：…} 开一条候选，
+     * 缩进的 {@code 规格：SKU34（…） 129.00 元 有货} 归入它。规格行按 {@code ；}
+     * 拆开，每条各自绑定自己的编号与价格。解析不出来时返回空列表（不放行），
+     * 不猜测——猜错的方向是放行编造内容。
+     */
+    private static List<ProductBlock> textBlocks(String output) {
+        if (output == null || output.isBlank()) return List.of();
+        List<ProductBlock> blocks = new ArrayList<>();
+        for (String line : output.split("\\R")) {
+            if (line.startsWith("- 候选[")) {
+                blocks.add(new ProductBlock(spuCodeOf(line), normalize(line), new ArrayList<>()));
+                continue;
+            }
+            if (blocks.isEmpty()) continue;
+            String trimmed = line.trim();
+            if (!trimmed.startsWith("规格：")) continue;
+            for (String segment : trimmed.substring("规格：".length()).split("；")) {
+                String code = "";
+                Matcher sku = Pattern.compile("(?i)SKU\\s*(\\d+)").matcher(segment);
+                if (sku.find()) code = "SKU" + sku.group(1);
+                BigDecimal price = null;
+                Matcher money = MONEY.matcher(normalize(segment));
+                if (money.find()) {
+                    String amount = money.group(1) == null ? money.group(2) : money.group(1);
+                    try { price = new BigDecimal(amount); } catch (NumberFormatException ignored) { }
+                }
+                if (!code.isEmpty() || price != null) {
+                    blocks.get(blocks.size() - 1).skus().add(new SkuLine(code, normalize(segment), price));
+                }
+            }
+        }
+        return blocks;
+    }
+
+    private static String spuCodeOf(String line) {
+        Matcher spu = Pattern.compile("(?i)SPU\\s*(\\d+)").matcher(line);
+        return spu.find() ? "SPU" + spu.group(1) : "";
+    }
+    /**
+     * 句中是否含**医学结论**——这是商品行通道与医学链的分界，也是本类唯一放宽不了的地方。
+     *
+     * <p>商品事实（名称、编号、规格、价格、库存、**成分含量**）的来源是工具回执，
+     * 可以逐字段核对；医学结论（服用剂量、用法、相互作用、风险、疗效、适用人群）
+     * 的来源必须是知识切片，因为它的正确性不由「工具返回过」决定。
+     *
+     * <p><b>成分含量与服用剂量必须分开。</b>两者在字面上是同一形态（都是「数值 + 单位」）：
+     * 「柠檬酸钙 500mg」是规格，「每日 500mg」是用法。区分的判据是**有没有服用语境**——
+     * 前者没有，后者有（每日/每次/服用/剂量…）。早先的判据把两者一起当结论，
+     * 于是每一条正常的商品规格行都被拦回医学链，而商品数据不在语料里 → 判无依据 → 删。
+     *
+     * <p><b>这个门只负责「有没有临床断言」。</b>数值本身对不对由
+     * {@link #coversAmounts} 与 {@link #nothingBeyondReceipt} 逐字段核对——
+     * 编造的「600mg」对不上回执，照样出不去。两道判据合起来才是完整的安全边界。
+     */
+    private static boolean hasMedicalConclusion(String normalizedText) {
+        // 服用语境：有频次/用量词才是用法，不是规格。
+        if (DOSING_CONTEXT.matcher(normalizedText).find()) return true;
+        if (CLINICAL_POSTFIX.matcher(normalizedText).find()) return true;
+        if (RELATION_DIRECTION.matcher(normalizedText).find()) return true;
+        if (MONITORING.matcher(normalizedText).find()) return true;
+        if (RISK_PRESENCE.matcher(normalizedText).find()) return true;
+        if (INTERACTION_PRESENCE.matcher(normalizedText).find()) return true;
+        if (SAFE_COMBINATION.matcher(normalizedText).find()) return true;
+        if (ABSORPTION_COMPETITION.matcher(normalizedText).find()) return true;
+        if (MEDICATION_CLASSIFICATION.matcher(normalizedText).find()) return true;
+        if (SYMPTOM_WARNING.matcher(normalizedText).find()) return true;
+        if (isVersionDecision(normalizedText)) return true;
+        return normalizedText.matches(".*(?:禁用|不宜使用|拮抗|无风险|没有冲突|不存在相互作用|遵医嘱|咨询医师|咨询医生|适用人群|适合|有助|有助于|缓解|治疗|疗效|预防|补充|吸收).*");
+    }
+
+    /** 疑问句是向用户提问，不是向用户断言事实；带具体数值/编号的疑问句仍在确认事实，照常核验。 */
+    private static boolean isQuestionToUser(String sentence) {
+        String visible = MedicalText.visible(sentence).trim();
+        if (!visible.endsWith("？") && !visible.endsWith("?")) return false;
+        return quantities(sentence).isEmpty() && !PRODUCT_CODE.matcher(sentence).find();
+    }
     private static String invalidReason(String sentence, List<Integer> refs,
                                         List<DocumentChunk> evidence,
-                                        EvidenceGate.Thresholds thresholds,
-                                        java.util.Set<String> graphChunkIds, Set<String> verifiedSubjects, Set<String> verifiedPopulation, String ownerContext) {
+                                        EvidenceGate.Thresholds thresholds, java.util.Set<String> graphChunkIds,
+                                        Set<String> verifiedSubjects, Set<String> verifiedPopulation, String ownerContext) {
         String normalizedSentence = normalize(sentence);
         if (MedicalQuantities.hasUnparsedQuantity(normalizedSentence)) return "剂量/时间数量写法不明确，不能按空断言放行";
 
+        // 证据门判「这一句引用的那些片够不够格」。
+        //
+        // 为什么不是「整轮集合级」：实测反例（F4/F6/KG08 三组既有契约）——同轮有高分片时，
+        // 句子若引了一片低分的无关片，轮级判定照样 SUFFICIENT，于是一句「引错片但编号合法」
+        // 的医学结论被放行。轮的判定回答不了「这一句的依据是不是这一片」，那正是本类要守的线。
+        // 为什么不是「逐片全过」的放宽版（引用集合取最高分）：同样在这三组反例上失效，
+        // 且多引用句「一强一弱」的实测样本尚未出现，放宽方向没有证据支持。
+        //
+        // 历史：逐片判定曾被记为「粒度错配」（N1 文档 §2.7），但当时的实证是生产 14 轮被整篇兜底，
+        // 而那 14 轮的轮级判定本身就是 WEAK——门的口径对它们没有任何影响，
+        // 真因是「商品咨询被拖进医学链」（R20）与「商品行的出处是工具回执」（R21）。
         if (thresholds != null) {
             boolean allUsable = refs.stream().allMatch(ref -> {
                 DocumentChunk chunk = evidence.get(ref - 1);
@@ -423,7 +753,6 @@ public final class MedicalEvidenceVerifier {
                 return "引用证据低于统一证据门，不能支撑医学结论";
             }
         }
-
         if (ABSENCE.matcher(normalizedSentence).find() && !LIMITED_SEARCH.matcher(normalizedSentence).find()) {
             return "医学严格模式不允许用局部切片证明整份资料不存在该内容";
         }
@@ -453,6 +782,19 @@ public final class MedicalEvidenceVerifier {
                 .filter(term -> quantities(sentence).isEmpty() || !Set.of("孕期", "妊娠期", "哺乳期", "儿童").contains(term))
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         Set<String> failures = new LinkedHashSet<>();
+        // 「本品」指代的归属：当**来源展示框架本身被引用编号化**时，改由引用切片的元数据给出。
+        //
+        // 编号化把句首的《文档名》换成了 [n]（前端据此渲染可点击角标），但「第四章写明：」
+        // 这个框架动词还在——它证明这句话原本声明了来源。原先的判据要求商品名出现在
+        // 句子文本里，于是两个都正确的设计合起来把「引用对了、主体也对」的句子判成
+        // 「本品没有声明来源」：实测 KG-04 的正文因此被整句删除，最终 finalFacts=0。
+        //
+        // <b>判据必须收窄到「框架被编号化」这一形态，不能放宽成「引用的切片有归属」。</b>
+        // 后者会让「本品所含钙可影响…[1]」这种<b>根本没声明来源</b>的句子一并放行——
+        // 它引用的切片确实是一份说明书，但句子没有说「本品」就是那一份，
+        // 同一段回答里出现第二份说明书时归属立刻歧义（KG-02/KG-11 两个用例守的正是这条）。
+        // 差别在于：框架动词是句子**自己**给出的来源声明，编号只是它的书写形式。
+        boolean numberedSourceFrame = NUMBERED_SOURCE_FRAME.matcher(normalizedSentence).find();
         for (DocumentChunk chunk : citedEvidence) {
             if (chunk == null) { failures.add("引用切片不存在"); continue; }
             if (graphClaim && !isGraphEvidence(chunk)) {
@@ -472,7 +814,8 @@ public final class MedicalEvidenceVerifier {
             }
             if (PRODUCT_PRONOUN.matcher(normalizedSentence).find() && isMedicalFact(sentence)) {
                 String owner = productOwner(chunk.getTitle());
-                if (owner == null || !normalizedSentence.contains(owner) && !owner.equals(ownerContext)) {
+                if (owner == null || !normalizedSentence.contains(owner) && !owner.equals(ownerContext)
+                        && !numberedSourceFrame) {
                     failures.add("本品临床事实没有声明引用来源所属商品"); continue;
                 }
             }

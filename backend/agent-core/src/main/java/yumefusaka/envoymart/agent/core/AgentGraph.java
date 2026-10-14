@@ -16,6 +16,7 @@ import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMProvider;
 import yumefusaka.envoymart.agent.llm.LLMResponse;
 import yumefusaka.envoymart.agent.llm.PlanStep;
+import yumefusaka.envoymart.agent.llm.StepReferences;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
 import yumefusaka.envoymart.agent.loop.ToolContextKeys;
@@ -610,7 +611,7 @@ public class AgentGraph {
             // 自己到底在批准什么，而那正是确认卡片存在的全部意义
             List<PlanStep> resolved = resolveBatch(plan, ready, ctx);
             List<Integer> unresolved = ready.stream()
-                    .filter(index -> hasUnresolvedReference(resolved.get(index).getArguments()))
+                    .filter(index -> StepReferences.hasUnresolved(resolved.get(index).getArguments()))
                     .toList();
             if (!unresolved.isEmpty()) {
                 List<Integer> preparation = ready.stream()
@@ -627,27 +628,16 @@ public class AgentGraph {
                 finished += preparation.size();
                 continue;
             }
-            // 模型偶尔漏填 dependsOn，导致 product_search 与 cart_add 同时进入 ready。
-            // 高危动作不能在引用仍是 $0.skuId 时生成确认卡：先执行本批非高危准备步骤，
-            // 下一轮重新解析引用，确认卡拿到的才是真实 SKU。
-            List<Integer> unresolvedRisky = ready.stream()
-                    .filter(index -> requiresConfirmation(resolved.get(index)))
-                    .filter(index -> hasUnresolvedReference(resolved.get(index).getArguments()))
-                    .toList();
-            if (!unresolvedRisky.isEmpty()) {
-                List<Integer> preparation = ready.stream()
-                        .filter(index -> !requiresConfirmation(resolved.get(index)))
-                        .toList();
-                if (preparation.isEmpty()) {
-                    log.warn("[Graph] 高危步骤引用无法解析，拒绝生成确认卡 tools={}",
-                            unresolvedRisky.stream().map(index -> resolved.get(index).getTool()).toList());
-                    return List.of();
-                }
-                invokeBatch(resolved, preparation, round, ctx, steps);
-                preparation.forEach(index -> done[index] = true);
-                finished += preparation.size();
-                continue;
-            }
+            // 这里曾经有一段「高危步骤引用没解析就推迟到下一轮」的分支，现已删除：
+            // 它是**不可达的**——走到这一行时 `unresolved` 必为空（上面那个分支已经
+            // 处理了所有含未解析引用的 ready 步骤并 continue/return），而高危步骤
+            // 是 ready 的子集，所以 `unresolvedRisky` 永远为空。
+            // 它读起来像一道防线、实际一次都不会执行，这种代码比没有更糟：
+            // 后来的人会以为「推迟机制」存在，从而把真正的缺口留给别处。
+            //
+            // 计划路径在这里是安全的：含未解析引用的步骤由上游统一阻断（见 `unresolved`）。
+            // 真正需要这道判据的是 ReAct 路径——模型自驱的调用没有「计划」可以预先解析，
+            // 参数里的 `$N` 会被原样当成实参。那一道在 LangChain4jLLMProvider 里。
             // <b>只拦本批。</b>曾经这里扫的是整份计划，于是「先 product_search 再 cart_add」
             // 这种两步计划在第一批就被整个拦下——第一步还没跑，加购卡片的参数自然是
             // 没解析的引用串，而且检索那一步永远没机会执行。用户看到的是一张参数是
@@ -714,19 +704,7 @@ public class AgentGraph {
         return resolved;
     }
 
-    /** 递归检查参数中是否仍残留未解析的步骤引用。 */
-    private static boolean hasUnresolvedReference(Object value) {
-        if (value instanceof String text) {
-            return STEP_REF_MARKER.matcher(text).find();
-        }
-        if (value instanceof List<?> list) {
-            return list.stream().anyMatch(AgentGraph::hasUnresolvedReference);
-        }
-        if (value instanceof Map<?, ?> map) {
-            return map.values().stream().anyMatch(AgentGraph::hasUnresolvedReference);
-        }
-        return false;
-    }
+
 
     /**
      * 递归解析一个参数值里的引用。嵌套结构也要走：模型完全可能把列表或对象
@@ -754,13 +732,12 @@ public class AgentGraph {
         return value;
     }
 
-    /** 引用语法：前置步骤 + 任意嵌套字段/列表路径，完整匹配避免把后缀当成普通文本。 */
-    private static final java.util.regex.Pattern STEP_REF =
-            java.util.regex.Pattern.compile("\\$(\\d+)((?:\\[\\d+])*(?:\\.[A-Za-z_][A-Za-z0-9_]*(?:\\[\\d+])*)+)");
-    private static final java.util.regex.Pattern STEP_REF_MARKER =
-            java.util.regex.Pattern.compile("\\$-?\\d+");
-    private static final java.util.regex.Pattern REF_PATH_TOKEN =
-            java.util.regex.Pattern.compile("\\.([A-Za-z_][A-Za-z0-9_]*)|\\[(\\d+)]");
+    // 引用语法与「还有没有未解析引用」的判据统一放在 StepReferences —— 那是唯一来源。
+    // 各写一份的代价是「什么算引用」有两个定义，一处认、一处不认，症状是某个形态的
+    // 引用从其中一条路径静默漏过去（见该类注释）。
+    private static final java.util.regex.Pattern STEP_REF = StepReferences.REF;
+    private static final java.util.regex.Pattern STEP_REF_MARKER = StepReferences.MARKER;
+    private static final java.util.regex.Pattern REF_PATH_TOKEN = StepReferences.PATH_TOKEN;
 
     /**
      * 把整串就是一个引用的值换成<b>它原本的类型</b>，而不是拼成字符串。
@@ -989,6 +966,7 @@ public class AgentGraph {
                 .operationId(operationId)
                 .input(String.valueOf(arguments))
                 .output(output)
+                .userFacingText(result.getUserFacingText() == null ? output : result.getUserFacingText())
                 .success(result.isSuccess())
                 .noData(result.isNoData())
                 .latencyMs(result.getLatencyMs())

@@ -87,7 +87,10 @@ public final class WriteReceipts {
     public static ToolResult failure(Exception error, String action) {
         if (error instanceof ReceiptException receipt) return ToolResult.builder().success(false)
                 .operationState(receipt.state).transientFailure(receipt.state == ToolResult.OperationState.UNKNOWN)
-                .errorMessage(receipt.getMessage()).build();
+                .errorMessage(receipt.getMessage())
+                // 回执文案本来就写给人看（「原操作被业务服务拒绝，请核对对象与参数」），
+                // 两个读者看到的一样；显式填上，是为了让确认轮的渲染不必去猜哪些能露
+                .userFacingText(receipt.getMessage()).build();
         return Downstream.failure(action, error).toBuilder().operationState(ToolResult.OperationState.REJECTED).build();
     }
 

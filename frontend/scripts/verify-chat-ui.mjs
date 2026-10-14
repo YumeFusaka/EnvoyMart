@@ -91,6 +91,27 @@ const problems = []
 page.on('console', (m) => m.type() === 'error' && problems.push(m.text()))
 page.on('pageerror', (e) => problems.push('pageerror: ' + e.message))
 
+/**
+ * 本轮用过哪些会话号 —— 从 `/ai/chat/stream` 的请求体里读，<b>不从标题里猜</b>。
+ *
+ * 会话标题取自首条用户消息，跨轮必然重复；而「删掉的会话不许还魂」这类断言
+ * 必须先认准是哪一条，认错一条就等于把断言变成空话。会话号是传输层字段：
+ * 每次运行唯一、且不进模型上下文——它不会改变被问的那句话，也不会被模型读到。
+ */
+const sessionIdsUsed = []
+page.on('request', (request) => {
+  if (!request.url().includes('/ai/chat/stream')) return
+  try {
+    const payload = JSON.parse(request.postData() ?? '{}')
+    if (typeof payload.sessionId === 'string' && payload.sessionId) sessionIdsUsed.push(payload.sessionId)
+  } catch {
+    /* 请求体不是 JSON 的与本段无关 */
+  }
+})
+
+/** 最近一次发起对话用的会话号；本脚本每次「新对话」都紧跟一次发送 */
+const latestSessionId = () => sessionIdsUsed.at(-1)
+
 await page.addInitScript(
   ([key, value]) => localStorage.setItem(key, value),
   ['user', JSON.stringify({ token: session.token, profile: session.user })],
@@ -171,8 +192,17 @@ ck('空态给出快捷提问', (await page.locator('.quick-prompts button').coun
  * 第二轮跑的时候，侧栏里还躺着上一轮的「你好…」，按标题删就会删错一条，
  * 而「删掉之后这一条不见了」这个断言在重复标题下永远为假。
  */
-const RUN_TAG = Date.now().toString(36)
-const question = `平台的满减活动规则是什么？请用 Markdown 列表说明，并标注依据编号（${RUN_TAG}）`
+// 提问里<b>不带任何去重后缀</b>。
+//
+// 这里曾经拼过一个每次运行都变的标记（「……标注依据编号（mv23e4ds）」），
+// 本意只是让「认准本轮那条会话」有个锚点。代价是模型把那串字符当成**内容**读——
+// 它以为自己该找一个叫 mv23e4ds 的依据编号，找不到，就推断「我上一轮没真检索」，
+// 进而给出自我否认的答复。**装置自己制造的误导性输入污染的是被测对象的行为，
+// 而这种污染在结果上看起来像产品缺陷。**
+//
+// 现在锚点改从 `/ai/chat/stream` 的请求体里取 sessionId（见文件上方的监听器）：
+// 每次运行唯一，且是传输层字段、不进模型上下文——认得准，又不改被问的那句话。
+const question = '平台的满减活动规则是什么？请用 Markdown 列表说明，并标注依据编号'
 await page.locator('.composer textarea').fill(question)
 await page.getByRole('button', { name: '发送消息' }).click()
 ck('用户消息是独立气泡', (await page.locator('.message-card.user').count()) === 1)
@@ -339,7 +369,7 @@ ck('标题取自首条用户消息', firstTitle.startsWith('平台的满减'), `
 
 await page.getByRole('button', { name: /新对话/ }).click()
 ck('新对话回到空态', await page.locator('.chat-empty').isVisible())
-const secondQuestion = `你好，请用一句话说明你能做什么（${RUN_TAG}）`
+const secondQuestion = '你好，请用一句话说明你能做什么'
 await page.locator('.composer textarea').fill(secondQuestion)
 await page.getByRole('button', { name: '发送消息' }).click()
 await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'detached', timeout: 120000 })
@@ -377,20 +407,20 @@ ck('刷新后引用卡片仍在', (await page.locator('.citation').count()) > 0)
 // ─────────── 六、删除会话（界面 + 接口双向对账） ───────────
 console.log('\n六、删除会话')
 const sessionsBefore = await apiSessions()
-// 认本轮创建的那一条：标题是本轮首条用户消息，带着本轮后缀。
-// 单靠「你好」开头会认到上一轮留下的同名会话——标题就是用户说的第一句话，跨轮必然重复，
+// 认本轮创建的那一条：**按会话号**，不按标题。
+// 标题就是用户说的第一句话，跨轮必然重复（上一轮留下的「你好…」还在侧栏里），
 // 删错一条之后「这条不见了」那个断言就永远为假。
-const victim = sessionsBefore.find((s) => (s.title ?? '').includes(RUN_TAG))
+const secondSessionId = latestSessionId()
+const victim = sessionsBefore.find((s) => s.sessionId === secondSessionId)
 ck(
   '接口里能找到第二段会话',
   Boolean(victim),
-  `后缀=${RUN_TAG}；当前会话：${sessionsBefore.map((s) => s.title).join(' / ')}`,
+  `会话号=${secondSessionId}；当前会话：${sessionsBefore.map((s) => `${s.sessionId}(${s.title})`).join(' / ')}`,
 )
-const rows = page.locator('.session-list__item').filter({ hasText: RUN_TAG })
-// 后缀必须只认出一行。第一段会话的提问里也有后缀，但它落在标题截断（24 字）之后；
-// 哪天有人把那个问题改短到这个位置以内，这里会先炸，而不是让下面删错一行。
+const rows = page.locator(`.session-list__item[data-session-id="${secondSessionId}"]`)
+// 会话号必须只认出一行 —— 它每次运行唯一，认出多于一行说明列表渲染重了
 const rowCount = await poll(() => rows.count(), (c) => c === 1, 15000)
-ck('侧栏里带本轮后缀的只有一行', rowCount === 1, `匹配到 ${rowCount} 行`)
+ck('侧栏里本轮会话号只对应一行', rowCount === 1, `匹配到 ${rowCount} 行`)
 if (victim && rowCount === 1) {
   const row = rows.first()
   await row.hover()
@@ -423,17 +453,16 @@ console.log('\n七、生成中删除（墓碑）')
 // 删除与生成撞车是实测复现过的缺陷：SSE 断开不打断服务端那一轮，
 // 用户删掉的会话会在几十秒后带着新内容重新出现在侧栏 —— 删除语义等于失效
 await page.getByRole('button', { name: /新对话/ }).click()
-// 后缀紧跟在开头之后：标题只留前 24 字，放在句尾会被截掉，而认错会话会让
-// 下面那条「没有还魂」的断言变成一句空话（删的是别人的 id，当然不会还魂）
-await page.locator('.composer textarea').fill(`平台的退换货政策有哪些？（${RUN_TAG}）请分点说明`)
+// 认准会话号再删：认错一条，下面那条「没有还魂」的断言就变成一句空话
+// （删的是别人的 id，当然不会还魂）
+await page.locator('.composer textarea').fill('平台的退换货政策有哪些？请分点说明')
 await page.getByRole('button', { name: '发送消息' }).click()
 // 第一轮跑完会话才进侧栏（空会话不落号），随后才有东西可删
 await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'detached', timeout: 180000 })
+const doomedSessionId = latestSessionId()
 const sessions = await apiSessions()
-const doomed = sessions.find(
-  (s) => (s.title ?? '').includes(RUN_TAG) && (s.title ?? '').startsWith('平台的退换货'),
-)
-ck('新会话已进入侧栏', Boolean(doomed), `当前：${sessions.map((s) => s.title).join(' / ')}`)
+const doomed = sessions.find((s) => s.sessionId === doomedSessionId)
+ck('新会话已进入侧栏', Boolean(doomed), `会话号=${doomedSessionId}；当前：${sessions.map((s) => `${s.sessionId}(${s.title})`).join(' / ')}`)
 if (doomed) {
   // 第二轮故意长：趁它还在跑的时候删。**走接口删而不是点界面**——
   // 界面上删活动会话会顺带切走、中断这条流，那正好把要验的时序放跑了
@@ -507,9 +536,11 @@ await page.locator('.assistant-sidebar').getByRole('button', { name: /新对话/
 // 用户从没见过的结尾，比少记半句更坏
 await page
   .locator('.composer textarea')
-  .fill(`会员积分怎么算？（${RUN_TAG}）请用不少于 800 字逐条详细展开，全文结束后另起一行只写「【全文完】」`)
+  .fill('会员积分怎么算？请用不少于 800 字逐条详细展开，全文结束后另起一行只写「【全文完】」')
 await page.getByRole('button', { name: '发送消息' }).click()
 await page.getByRole('button', { name: '停止生成' }).waitFor({ state: 'visible', timeout: 60000 })
+// 认准会话号：停止之后这一轮还会在服务端跑完才落历史，判据是「那一条会话的历史」
+const cancelSessionId = latestSessionId()
 // 等用户确实读到了一部分再停——一个字都没上屏时停止，「历史该不该有东西」都说不清
 const partialText = await poll(
   () => page.locator('.message-content.is-streaming').first().innerText().catch(() => ''),
@@ -532,11 +563,7 @@ ck('半截回答留在屏幕上（不被清空）', stoppedLen > 0, `屏幕正�
 const cancelSession = await poll(
   async () => {
     const list = await apiSessions()
-    return (
-      list.find(
-        (s) => (s.title ?? '').includes(RUN_TAG) && (s.title ?? '').startsWith('会员积分'),
-      ) ?? null
-    )
+    return list.find((s) => s.sessionId === cancelSessionId) ?? null
   },
   (hit) => hit !== null,
   180000,

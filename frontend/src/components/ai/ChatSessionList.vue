@@ -75,6 +75,7 @@ const buckets = computed<Bucket[]>(() => {
             v-for="session in bucket.items"
             :key="session.sessionId"
             class="session-list__item"
+            :data-session-id="session.sessionId"
             :class="{ 'is-active': session.sessionId === activeId }"
           >
             <button

@@ -107,6 +107,10 @@ public class CheckoutTool implements Tool {
                             + "，应付 " + Money.yuan(order.getPayAmount())
                             + "。当前状态是待支付——务必提醒用户还要完成支付，"
                             + "否则订单会超时关闭。")
+                    // 用户看到的那一版：同一件事，去掉「务必提醒用户」这层对模型说的话
+                    .userFacingText("订单已创建：单号 " + order.getOrderNo()
+                            + "，应付 " + Money.yuan(order.getPayAmount())
+                            + "。当前状态是待支付，还要完成支付，否则订单会超时关闭。")
                     .rawData(order)
                     .build();
         } catch (Exception e) {

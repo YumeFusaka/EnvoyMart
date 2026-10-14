@@ -19,6 +19,24 @@ public class ToolResult {
     private boolean receiptReplayed;
     private boolean success;
     private String output;          // 文本结果
+    /**
+     * 这条结果的<b>用户可读版本</b>；为 null 表示 {@link #output} 本身就是用户可读的。
+     * <p>
+     * <b>为什么必须有这个字段。</b>{@link #output} 的首要读者是<b>模型</b>——它会被原样
+     * 送进上下文，所以里面可以写只对模型有意义的话（「不要据此说没有」「先查询再决定」
+     * 这类约束）。而审批确认轮走的是<b>不经模型</b>的路径：确认结果由工具输出逐字拼成
+     * 用户看到的那条消息。一个字段服务两个读者，结果就是实测那 11 次泄漏——
+     * 用户收到「已加入购物车：褪黑素缓释片 × 2，小计 198.00 元。<b>提醒用户：</b>
+     * 加入购物车还没有下单，需要结算并支付才算买到。」模型收到的是同一串字符。
+     * <p>
+     * <b>为什么不干脆把祈使句从 output 里删掉。</b>那些约束是有用的——失败文案里
+     * 「不要据此说『没有』」挡的是实测过的真实错误（工具失败时模型最爱把失败读成否定）。
+     * 删掉它是拿一个缺陷换另一个缺陷。分开两个字段，各自服务一个读者，两个都保住。
+     * <p>
+     * <b>缺省即相同。</b>绝大多数工具的 output 本来就是纯事实（「订单 12 待支付」），
+     * 两个读者看到的一样，不需要写两遍——只有确实分叉的工具才填它。
+     */
+    private String userFacingText;
     private Object rawData;         // 结构化数据（可选）
     private java.util.List<yumefusaka.envoymart.agent.rag.DocumentChunk> evidence;
     private String errorMessage;

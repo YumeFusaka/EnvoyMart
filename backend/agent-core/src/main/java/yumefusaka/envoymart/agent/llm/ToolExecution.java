@@ -20,6 +20,15 @@ public class ToolExecution implements java.io.Serializable {
     private String input;
     /** 工具返回的文本结果 */
     private String output;
+    /**
+     * 这条结果的<b>用户可读版本</b>；为 null 表示 {@link #output} 本身就是用户可读的。
+     * <p>
+     * 见 {@code ToolResult#userFacingText} 的说明。这里多一条存在的理由：
+     * 确认轮的执行结果<b>不经过模型</b>——{@code Agent#renderApproved} 把工具输出
+     * 逐字拼成用户看到的消息。那条路径上「output 里写了什么」就是「用户看到了什么」，
+     * 没有第二道可以拦截的关口。
+     */
+    private String userFacingText;
     private boolean success;
     /**
      * 跑通了但什么都没查到——见 {@code ToolResult#noData}。

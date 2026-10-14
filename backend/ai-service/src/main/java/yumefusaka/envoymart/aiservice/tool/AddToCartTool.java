@@ -94,6 +94,13 @@ public class AddToCartTool implements Tool {
                             + " × " + item.getQuantity()
                             + "，小计 " + Money.yuan(item.getSubtotal()) + "。"
                             + "提醒用户：加入购物车还没有下单，需要结算并支付才算买到。")
+                    // 用户看到的那一版：只说发生了什么，以及他接下来要做什么。
+                    // 「提醒用户：」这四个字是对模型说的，不该出现在用户界面上
+                    .userFacingText("已加入购物车：" + item.getName()
+                            + (item.getSpecText() == null ? "" : "（" + item.getSpecText() + "）")
+                            + " × " + item.getQuantity()
+                            + "，小计 " + Money.yuan(item.getSubtotal()) + "。"
+                            + "还没下单，需要结算并支付才算买到。")
                     .rawData(item)
                     .build();
         } catch (Exception e) {

@@ -593,7 +593,7 @@ public class ChatHistoryStore {
         if (batch.cancelled() || "CONFIRMED".equals(batch.status()) || batch.leaseUntil() > approvalClock.millis()) {
             response.put("approvalRetryAllowed", false);
         }
-        response.put("stage", "CONFIRMED".equals(batch.status()) ? "DONE" : "WAITING_USER");
+        response.put("stage", stageOf(batch.status()));
         response.put("pendingActions", batch.original().response().get("pendingActions"));
         response.put("pendingActionDetails", batch.original().response().get("pendingActionDetails"));
         response.put("assistantMessageId", batch.original().id());
@@ -632,6 +632,23 @@ public class ChatHistoryStore {
                     .digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             return APPROVAL_PREFIX + userId + ":" + sessionId + ":" + fingerprint;
         } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("无法计算审批指纹", impossible); }
+    }
+
+    /**
+     * 历史里那一轮的阶段 —— <b>由审批状态唯一派生，不再单独写一个值</b>。
+     * <p>
+     * 原先这里与 {@code pendingActions} 是两行各写各的 {@code put}，两者之间没有任何
+     * 东西保证语义一致。实测扫出的 7 处「{@code stage=DONE} 且 {@code pendingActions} 非空」
+     * 全部落在确认成功之后（{@code approvalStatus=CONFIRMED}）——那不是矛盾，
+     * 而是「已提交确认的操作」这张历史卡该有的样子：卡片留着当记录，阶段是收尾的。
+     * <p>
+     * 但「碰巧一致」与「保证一致」是两件事。这个方法的取值就是那条唯一判定：
+     * 只有还停着等人确认（{@code PENDING} / {@code IN_FLIGHT}）才报 {@code WAITING_USER}，
+     * 其余（已确认、已取消、结果未知、被拒）都是这一轮已经收尾。将来新增一种审批状态时，
+     * 它的落点只有这里一个地方，不会出现「阶段说收尾了、卡片还挂在等人确认」。
+     */
+    private static String stageOf(String approvalStatus) {
+        return "PENDING".equals(approvalStatus) || "IN_FLIGHT".equals(approvalStatus) ? "WAITING_USER" : "DONE";
     }
 
     private String readApprovalRecord(String key) {

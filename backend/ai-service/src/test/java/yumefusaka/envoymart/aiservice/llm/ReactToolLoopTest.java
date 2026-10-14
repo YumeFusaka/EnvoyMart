@@ -445,6 +445,61 @@ class ReactToolLoopTest {
                 .isEmpty();
     }
 
+    /**
+     * 参数里带步骤引用的高危调用，<b>不得生成确认卡</b>。
+     * <p>
+     * 这是 N1 文档发现 O 的第 4 条形态：模型把计划语法 {@code $0.id} 用在了 ReAct 调用上，
+     * 而 ReAct 路径没有解析器——字面量一路穿进确认卡。用户看到一张写着
+     * {@code order_cancel(orderId=$0.id)} 的卡片，点「确认执行」后必然失败，
+     * 而他并不知道自己批准的是什么。
+     * <p>
+     * <b>两种拒绝的区别在这里显形。</b>「用户还没批准」模型修不了，只能中断；
+     * 而这一种它自己修得了——只是缺一次查询。所以判据是：不产生载荷、回填一条
+     * 可执行的纠正（先查真实编号再重发），护栏负责兜住转圈。
+     * <p>
+     * 桩模型第二轮改用真实值，正好把「退回之后模型照做就能拿到正确卡片」也钉住——
+     * 只断言「第一次被拒」的话，一个把模型逼进死胡同的实现同样能通过。
+     */
+    @Test
+    @Timeout(10)
+    void 参数含步骤引用的高危调用不得生成确认卡且退回模型重发() {
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger requests = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(cancelTool(executions));
+
+        // 第一轮照抄计划语法（$0.id），第二轮按纠正改用真实编号
+        ChatModel model = new ChatModel() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                int round = requests.incrementAndGet();
+                String arguments = round == 1 ? "{\"orderId\":\"$0.id\"}" : "{\"orderId\":12}";
+                return ChatResponse.builder()
+                        .aiMessage(AiMessage.from("", List.of(ToolExecutionRequest.builder()
+                                .id("c" + round).name("order_cancel").arguments(arguments).build())))
+                        .build();
+            }
+        };
+        LangChain4jLLMProvider provider = new LangChain4jLLMProvider(model, null, registry,
+                LLMConfig.builder().model(MODEL).build(), new SimpleMeterRegistry());
+        List<PendingAction> pending = new ArrayList<>();
+
+        provider.chatWithTools(messages(), LLMConfig.builder().model(MODEL).build(),
+                Map.of(ToolContextKeys.LOOP_GUARD, new LoopGuard(new LoopBudget(8, 2, 2)),
+                        ToolContextKeys.PENDING_ACTIONS, pending));
+
+        assertThat(executions.get())
+                .as("无论参数解析得出来与否，没确认过的取消都不能执行")
+                .isZero();
+        assertThat(pending)
+                .as("载荷必须带真实编号。带 $0.id 的那一次若被记进来，"
+                        + "用户批准的就是一个不存在的操作")
+                .containsExactly(PendingAction.of("order_cancel", Map.of("orderId", 12), "react:c2"));
+        assertThat(requests.get())
+                .as("退回的是「先查真实编号」而不是死胡同：模型改用真实值后要能拿到卡片")
+                .isEqualTo(2);
+    }
+
     // ==================== 取消（用户点了「停止生成」） ====================
 
     /**

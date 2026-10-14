@@ -224,7 +224,15 @@ public class ToolRegistry {
         String truncated = output.substring(0, MAX_TOOL_OUTPUT_CHARS)
                 + "\n…（输出过长已截断，完整长度 " + output.length()
                 + " 字符，以上仅为前 " + MAX_TOOL_OUTPUT_CHARS + " 字符）";
-        return result.toBuilder().output(truncated).build();
+        // 用户可读版本同样要截断：它的读者在界面上，长文本一样会撑爆气泡。
+        // 两个字段各自截断、互不牵连——只截 output 会让确认轮原样输出整段未截断文本
+        String userFacing = result.getUserFacingText();
+        if (userFacing != null && userFacing.length() > MAX_TOOL_OUTPUT_CHARS) {
+            userFacing = userFacing.substring(0, MAX_TOOL_OUTPUT_CHARS)
+                    + "\n…（输出过长已截断，完整长度 " + userFacing.length()
+                    + " 字符，以上仅为前 " + MAX_TOOL_OUTPUT_CHARS + " 字符）";
+        }
+        return result.toBuilder().output(truncated).userFacingText(userFacing).build();
     }
 
     /**

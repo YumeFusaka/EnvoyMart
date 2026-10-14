@@ -84,6 +84,25 @@ class WriteToolConfirmationTest {
     }
 
     @Test
+    void 加购回执对用户只说事实不说给模型的指令() {
+        OrderClient client = mock(OrderClient.class);
+        stubMissing(client);
+        when(client.addCartItemReceipt(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            var request = invocation.getArgument(2, yumefusaka.envoymart.aiservice.model.AgentAddCartRequest.class);
+            var operation = yumefusaka.envoymart.common.operation.OperationContext.of(USER, "test:cart_add", "cart_add", Map.of("skuId", request.getSkuId(), "quantity", request.getQuantity()));
+            return new yumefusaka.envoymart.common.operation.OperationReceiptReply<>(operation, Result.success(cartItem()), false).response();
+        });
+
+        ToolResult result = new AddToCartTool(client).execute(call("cart_add", Map.of("skuId", 101, "quantity", 2)));
+
+        // output 的首要读者是模型，「提醒用户：」是对模型说的话；用户可读的那一版不能带它。
+        // 确认轮把工具输出逐字拼成用户看到的消息，这条路径不经过模型——
+        // 实测用户收到过「……小计 198.00 元。提醒用户：加入购物车还没有下单……」。
+        assertThat(result.getUserFacingText()).contains("98.00", "还没下单").doesNotContain("提醒用户");
+        assertThat(result.getOutput()).as("模型侧照旧保留指令，两个读者各拿各的").contains("提醒用户");
+    }
+
+    @Test
     void 加购数量缺省为一() {
         OrderClient client = mock(OrderClient.class);
         stubMissing(client);
@@ -193,6 +212,10 @@ class WriteToolConfirmationTest {
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.getOutput()).contains("EM20261004001").contains("129.00").contains("支付");
+        // 同一件事的两个版本：模型侧是「务必提醒用户还要完成支付」（指令），
+        // 用户侧是「还要完成支付」（事实）。确认轮逐字拼的是后者
+        assertThat(result.getUserFacingText()).contains("EM20261004001", "129.00", "支付")
+                .doesNotContain("务必提醒");
     }
 
     // ==================== 售后 ====================

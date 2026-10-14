@@ -64,7 +64,8 @@ public final class Downstream {
         int code = codeOf(result, -1);
         if (code >= 500) {
             throw new DownstreamException(code, service + "暂时不可用（连续 " + (MAX_RETRIES + 1)
-                    + " 次失败）。请告知用户稍后再试，不要据此说「没有」或「查不到」。", true);
+                    + " 次失败）。请告知用户稍后再试，不要据此说「没有」或「查不到」。",
+                    service + "暂时不可用（连续 " + (MAX_RETRIES + 1) + " 次失败），请稍后再试。", true);
         }
         if (code != 200) {
             // 4xx：参数错、无权限、查无此物——都是**结论**，重试无用。
@@ -93,7 +94,8 @@ public final class Downstream {
             // 与读不同，这里不重试：应答丢了不代表业务没生效。也说不出「没做成」——
             // 真相是**不知道**，所以文案要拦住模型自作主张地重来一次
             throw new DownstreamException(code, service + "暂时不可用，这次操作没有得到结果确认。"
-                    + "请告知用户稍后再试，并先查询当前状态，不要直接重复操作。", true);
+                    + "请告知用户稍后再试，并先查询当前状态，不要直接重复操作。",
+                    service + "暂时不可用，这次操作没有得到结果确认；请先查询当前状态再决定下一步。", true);
         }
         // 4xx 是下游给出的业务结论，原话就是要给用户看的那句
         throw new DownstreamException(code, msgOf(result) == null
@@ -128,7 +130,10 @@ public final class Downstream {
             log.warn("[工具失败] {} 业务码={} 瞬时={}：{}", what, d.getCode(), d.isTransient(), d.getMessage());
             return ToolResult.builder()
                     .success(false)
+                    // 模型侧拿全套（事实 + 行为约束）；用户侧只拿事实那一版。
+                    // 两个读者看到的东西必须分开，见 DownstreamException#getUserFacingMessage
                     .errorMessage(d.getMessage())
+                    .userFacingText(d.getUserFacingMessage())
                     .transientFailure(d.isTransient())
                     .build();
         }
@@ -138,9 +143,10 @@ public final class Downstream {
         String detail = e instanceof IllegalArgumentException || e instanceof IllegalStateException
                 ? "：" + e.getMessage()
                 : "（" + e.getClass().getSimpleName() + "）";
+        String fact = what + "未能完成" + detail + "，请稍后再试。";
         return ToolResult.builder().success(false)
-                .errorMessage(what + "未能完成" + detail + "，请稍后再试。"
-                        + (doNotClaim == null ? "" : " 不要据此说「" + doNotClaim + "」。"))
+                .errorMessage(fact + (doNotClaim == null ? "" : " 不要据此说「" + doNotClaim + "」。"))
+                .userFacingText(fact)
                 .build();
     }
 
@@ -174,12 +180,14 @@ public final class Downstream {
      */
     static DownstreamException transportFailure(String service, RuntimeException e) {
         if (isTimeout(e)) {
-            return new DownstreamException(-1, service + "在超时前没有返回结果，这次操作是否生效**无法确认**。"
+            return new DownstreamException(-1, service + "在超时前没有返回结果，这次操作是否生效无法确认。"
                     + "请先查询当前状态再决定下一步，不要直接重复操作。"
-                    + "不要据此说「没有」或「查不到」。", true);
+                    + "不要据此说「没有」或「查不到」。",
+                    service + "在超时前没有返回结果，这次操作是否生效无法确认；请先查询当前状态再决定下一步。", true);
         }
         return new DownstreamException(-1, service + "连不上（" + e.getClass().getSimpleName()
-                + "）。请告知用户稍后再试，不要据此说「没有」或「查不到」。", true);
+                + "）。请告知用户稍后再试，不要据此说「没有」或「查不到」。",
+                service + "连不上，请稍后再试。", true);
     }
 
     /**
@@ -231,15 +239,44 @@ public final class Downstream {
 
         private final int code;
         private final boolean transientFailure;
+        /**
+         * 只陈述事实的那一版 —— 用户可读，<b>不含</b>行为约束。
+         * <p>
+         * {@link #getMessage()} 是<b>给模型看</b>的完整文案（事实 + 「不要据此说没有」
+         * 这类约束），这条路径上的读者是模型，一个字都不能少——那些约束挡的是实测过的
+         * 真实错误（工具失败时模型最爱把失败读成否定）。
+         * <p>
+         * 而确认轮的失败回执<b>不经过模型</b>：它被逐字拼成用户看到的那条消息。
+         * 于是同一串字符同时服务了两个读者，用户收到过「请告知用户稍后再试，
+         * 不要直接重复操作」——那是写给我们自己的话。
+         * <p>
+         * 因此不拆 {@code getMessage()}（拆了就是拿一个缺陷换另一个），
+         * 而是<b>多给一个只含事实的版本</b>：模型侧照旧拿全套，用户侧拿这一版。
+         */
+        private final String userFacingMessage;
 
         DownstreamException(int code, String message, boolean transientFailure) {
+            this(code, message, message, transientFailure);
+        }
+
+        DownstreamException(int code, String message, String userFacingMessage, boolean transientFailure) {
             super(message);
             this.code = code;
+            this.userFacingMessage = userFacingMessage == null ? message : userFacingMessage;
             this.transientFailure = transientFailure;
         }
 
         public int getCode() {
             return code;
+        }
+
+        /**
+         * 用户可读的那一版：只说他遇到了什么，不夹带给模型的行为约束。
+         * <p>
+         * 没有分叉的失败（下游 4xx 的原话、业务参数错）两个版本相同，不必逐条写两遍。
+         */
+        public String getUserFacingMessage() {
+            return userFacingMessage;
         }
 
         /** 过一会儿再试有意义。写操作的 5xx 也在这里——不是因为重发安全，是因为「结果未知」 */

@@ -24,6 +24,7 @@ import yumefusaka.envoymart.agent.memory.ShortTermMemoryStore;
 import yumefusaka.envoymart.agent.memory.UserProfile;
 import yumefusaka.envoymart.agent.memory.UserProfileStore;
 import yumefusaka.envoymart.agent.rag.CitationVerifier;
+import yumefusaka.envoymart.agent.rag.CountReconciliation;
 import yumefusaka.envoymart.agent.rag.ConflictReporter;
 import yumefusaka.envoymart.agent.rag.ConflictVerdictService;
 import yumefusaka.envoymart.agent.rag.DocumentChunk;
@@ -83,6 +84,21 @@ import java.util.function.Consumer;
 @Slf4j
 public class Agent {
     private static final tools.jackson.databind.ObjectMapper TOOL_DATA_MAPPER = new tools.jackson.databind.ObjectMapper();
+
+    /**
+     * 由平台自己写的回复来源 —— 这些轮次的正文不是模型生成的，而是代码里的常量或工具回执。
+     * <p>
+     * <b>为什么需要一个集合而不是就地写两个 equals。</b>「这轮正文是谁写的」是
+     * 下游多处判定的共同前提（有没有工具背书、要不要过句子级事实校验），
+     * 散成多处的字符串比较，新增一种来源时必然漏掉某一处——漏掉的表现是
+     * 一轮刚执行完用户批准操作的回答被判成「本轮没有平台依据」。
+     * <p>
+     * {@code approval} 是确认中断（还没执行），{@code approved} 是确认轮执行完，
+     * {@code approval-recovery} 是原批次恢复，{@code flow} 是确定性流程。
+     * <b>不包含</b> {@code plan} / {@code react} / {@code fallback}——那三种的正文出自模型。
+     */
+    static final java.util.Set<String> PLATFORM_AUTHORED_SOURCES = java.util.Set.of(
+            "flow", "approval", "approved", "approval-recovery");
 
     /**
      * 确认令牌失效时的答复。
@@ -157,6 +173,19 @@ public class Agent {
      */
     private static final String SNAPSHOT_CANDIDATES = "lastCandidates";
     private static final String SNAPSHOT_PRODUCT_CANDIDATES = "productCandidates";
+
+    /**
+     * 上一轮失败的调用在 context_snapshot 里的键 —— 发现 O 第 2 条的修法。
+     * <p>
+     * <b>它补的是「失败的写操作不留痕」。</b>实测 {@code u1001-1791359634411} 第 25 与
+     * 第 27 轮是<b>逐字相同</b>的 {@code order_cancel(orderId=YS2026...)}：第一次失败后，
+     * 系统里没有任何东西阻止模型原样重发，用户每次都得重说一遍。
+     * <p>
+     * 存的是「工具 + 参数 + 失败原因」三样：前两样是判据（下一轮要不要重发），
+     * 第三样是给模型的增量信息（上次为什么没成）——少了第三样，模型只知道「失败过」，
+     * 不知道该怎么办，于是它最可能做的还是原样再发一次。
+     */
+    private static final String SNAPSHOT_LAST_FAILURE = "lastFailure";
 
     /** 各会话的对话轮次计数，用于按间隔触发记忆抽取 */
     private final Map<String, Integer> turnCounters = new ConcurrentHashMap<>();
@@ -401,6 +430,12 @@ public class Agent {
         // 把用户已经审过的那次调用重新推导成另一个样子
         if (pendingHint != null) {
             systemPrompt = systemPrompt + "\n\n" + pendingHint;
+        }
+        // 上一轮的失败事实：与 pendingHint 同一处注入，因为它是同一类信息 ——
+        // 「上一轮在这里停过」，一个是等人点头、一个是没能做成
+        String lastFailureHint = lastFailureHint(switchVerdict.switched() ? null : sessionContext);
+        if (lastFailureHint != null) {
+            systemPrompt = systemPrompt + "\n\n" + lastFailureHint;
         }
         if (!switchVerdict.switched() || message.contains("原列表") || message.contains("刚才列表")) {
             systemPrompt = systemPrompt + candidateContext(sessionContext);
@@ -704,6 +739,7 @@ public class Agent {
                 .receiptReplayed(result.isReceiptReplayed())
                 .input(String.valueOf(action.arguments()))
                 .output(output)
+                .userFacingText(result.getUserFacingText() == null ? output : result.getUserFacingText())
                 .success(result.isSuccess())
                 .noData(result.isNoData())
                 .latencyMs(result.getLatencyMs())
@@ -715,7 +751,7 @@ public class Agent {
     }
 
     /** 结果逐字来自工具，不做任何润色——这条路径上「好看」是次要的，「与事实一致」才是全部 */
-    private String renderApproved(List<ToolExecution> executions) {
+    static String renderApproved(List<ToolExecution> executions) {
         long ok = executions.stream().filter(ToolExecution::isSuccess).count();
         boolean unknown = executions.stream().anyMatch(item -> item.getOperationState() == ToolResult.OperationState.UNKNOWN
                 || item.getOperationState() == ToolResult.OperationState.NOT_FOUND);
@@ -723,7 +759,11 @@ public class Agent {
                 : ok == executions.size() ? "已取得本批操作的权威回执：" : "本批操作被明确拒绝，后续操作未执行：";
         StringBuilder sb = new StringBuilder(head);
         for (ToolExecution execution : executions) {
-            sb.append("\n- ").append(execution.getOutput());
+            // 优先取用户可读版本：工具的 output 首要读者是模型，可能带着「不要据此说没有」
+            // 这类只对模型有意义的约束；那条路径不经过模型，写什么用户就看到什么。
+            // 没填该字段的工具，两个读者看到的一样，照旧用 output。
+            sb.append("\n- ").append(execution.getUserFacingText() == null
+                    ? execution.getOutput() : execution.getUserFacingText());
         }
         return sb.toString();
     }
@@ -1274,6 +1314,15 @@ public class Agent {
                 snapshot.put(SNAPSHOT_PRODUCT_CANDIDATES, ProductCandidateList.snapshot(response.getProductCandidates()));
                 log.info("[Agent][候选] 已替换会话候选快照 数量={}", response.getProductCandidates().size());
             }
+            // 失败的调用留痕，供下一轮注入 —— 见 SNAPSHOT_LAST_FAILURE 的说明。
+            // **成功即清除**：留着旧失败会让下一轮对着一个已经解决过的问题反复叮嘱，
+            // 而那种叮嘱读起来像「系统又在报错」，用户会去点它。
+            Map<String, Object> failure = failureOf(response);
+            if (failure.isEmpty()) {
+                snapshot.remove(SNAPSHOT_LAST_FAILURE);
+            } else {
+                snapshot.put(SNAPSHOT_LAST_FAILURE, failure);
+            }
             next = next.advance(next.currentSubtask(), snapshot, now);
             sessionContextStore.save(next);
             if (switchVerdict.switched()) {
@@ -1377,6 +1426,65 @@ public class Agent {
             return List.of();
         }
         return List.copyOf(response.getPendingActions());
+    }
+
+    /**
+     * 本轮<b>失败的写调用</b>压成一条可序列化事实；没有失败就返回空。
+     * <p>
+     * 只看写操作（{@code operationState} 非空）：读查询失败重发是合理的——换个条件
+     * 或等下游缓过来，本来就该重试；而写操作的失败几乎都伴随「参数本身有问题」
+     * 或「下游拒绝了这件事」，原样重发只是把同一笔失败再记一次账。
+     * <p>
+     * 参数整串存下来（截断到 300 字）：判「是不是同一次调用」要比对参数，
+     * 只存工具名的话，「取消 12 号单」失败后重发「取消 13 号单」会被误判成同一笔。
+     */
+    static Map<String, Object> failureOf(AgentResponse response) {
+        if (response == null || response.getToolExecutions() == null) {
+            return Map.of();
+        }
+        return response.getToolExecutions().stream()
+                .filter(item -> item.getOperationState() != null)
+                .filter(item -> !item.isSuccess())
+                .reduce((first, second) -> second)
+                .map(item -> {
+                    Map<String, Object> failure = new java.util.LinkedHashMap<>();
+                    failure.put("tool", item.getTool());
+                    failure.put("input", abbreviateError(item.getInput()));
+                    failure.put("error", abbreviateError(item.getOutput()));
+                    return failure;
+                })
+                .orElse(Map.of());
+    }
+
+    /**
+     * 把上一轮的失败事实写成给模型的提示。
+     * <p>
+     * <b>为什么必须有这一段。</b>实测第 25 与第 27 轮是逐字相同的取消请求：失败之后
+     * 模型手上没有任何「上次这样试过、没成」的信息——历史里只有一句它自己写的
+     * 「执行失败」，而它读到那句话时的自然反应是再试一次。把工具名、参数与失败原因
+     * 摆在一起，「重发」就从默认动作变成一个有依据的决定。
+     * <p>
+     * 给的是<b>事实与出路</b>，不是禁令：直接写「不得重发」会挡住那些「换个参数就能成」
+     * 的正常重试（下游抖动、参数该换形态）。所以正例写法是「先解决失败原因再重发」。
+     */
+    static String lastFailureHint(SessionContext context) {
+        if (context == null || context.contextSnapshot() == null) {
+            return null;
+        }
+        Object raw = context.contextSnapshot().get(SNAPSHOT_LAST_FAILURE);
+        if (!(raw instanceof Map<?, ?> failure) || failure.isEmpty()) {
+            return null;
+        }
+        Object tool = failure.get("tool");
+        Object input = failure.get("input");
+        Object error = failure.get("error");
+        if (tool == null) {
+            return null;
+        }
+        return "【上一轮失败的操作】" + tool + "(" + (input == null ? "" : input) + ") 没有成功"
+                + (error == null || String.valueOf(error).isBlank() ? "。" : "，原因：" + error + "。")
+                + "同一参数原样重发会得到同一个结果；请先处理这个原因"
+                + "（换参数形态、先补齐缺失信息、或如实告诉用户暂时做不了），不要直接重试。";
     }
 
     /**
@@ -1501,9 +1609,27 @@ public class Agent {
         // 结构上没有工具记录，但它们的答案同样不是模型凭空写的——前者由预定义的工具
         // 序列产出，后者是一句固定的确认提示。漏掉这个特判，售后流程那句
         // 「退款会在 1~3 个工作日原路退回」会被当成无出处的断言报给用户。
-        boolean toolBacked = "flow".equals(response.getSource()) || "approval".equals(response.getSource());
+        // source 可能为 null（单测与部分装配路径不填它），必须先判空：
+        // Set.of(...) 的 contains(null) 会抛 NPE，而原先的 "flow".equals(...) 是 null 安全的。
+        boolean toolBacked = response.getSource() != null
+                && PLATFORM_AUTHORED_SOURCES.contains(response.getSource());
         boolean hasToolEvidence = toolBacked
                 || (response.getToolExecutions() != null && !response.getToolExecutions().isEmpty());
+
+        // 平台自写文案（确认中断 / 确认执行 / 原批次恢复 / 确定性流程）的正文不是模型生成的，
+        // 而是代码里的常量、或工具回执的逐字拼接。对它做「句子级事实校验与替换」是在用
+        // 一个不成立的前提——「这些句子应当能在切片里找到出处」——去删平台自己写的话。
+        //
+        // 判据为什么是来源而不是句式：来源是**封闭集合**（由代码里的 builder 调用点穷举），
+        // 句式是**开放集合**（自然语言的表达方式枚举不完）。这一条与 §4.1「规则从裁判降为哨兵」
+        // 同源：能穷举正确，就不要去穷举错误。
+        //
+        // 保留的是两类**纯确定性**校验：ToolFactVerifier 的数字核对（回执里写了 129.00，
+        // 正文就不能写 139.00）与 CitationVerifier 的越界编号摘除（引用了一个不存在的编号，
+        // 无论谁写的都该摘掉）。它们误伤的前提不成立——数字对不上就是错了。
+        boolean platformAuthored = response.getSource() != null
+                && PLATFORM_AUTHORED_SOURCES.contains(response.getSource());
+        boolean medicalStrict = medicalQuestion && !platformAuthored;
 
         // 可引用标题 = 本轮证据切片的标题/位置 + 工具输出中「出处：」行里的书名号。
         // 集合只装平台自己声明过的出处：模型写的《XX 规范》若不在其中，引用校验不认它
@@ -1524,13 +1650,15 @@ public class Agent {
         }
 
         citableTitles.removeAll(CitationVerifier.ambiguousTitles(evidence));
-        SemanticGroundingVerifier.Verdict semanticVerdict = semanticReview(report.reply(), userMessage, evidence,
-                response.getToolExecutions(), evidenceCount, citableTitles, toolStrings);
+        SemanticGroundingVerifier.Verdict semanticVerdict = platformAuthored
+                ? SemanticGroundingVerifier.Verdict.unavailable()
+                : semanticReview(report.reply(), userMessage, evidence,
+                        response.getToolExecutions(), evidenceCount, citableTitles, toolStrings);
         if (medicalQuestion) auditMedicalStage("SEMANTIC_REVIEW", report.reply(), evidence,
                 semanticVerdict.unsupported().stream().collect(java.util.stream.Collectors.toMap(
                         java.util.function.Function.identity(), ignored -> "SEMANTIC_UNSUPPORTED", (first, second) -> first)));
         Map<String, String> listRejections = new LinkedHashMap<>();
-        var semanticRemoval = removeMedicalRejected(response, report.reply(), semanticVerdict.unsupported(), medicalQuestion, config.getRagGateThresholds());
+        var semanticRemoval = removeMedicalRejected(response, report.reply(), semanticVerdict.unsupported(), medicalStrict, config.getRagGateThresholds());
         semanticRemoval.dependentSentences().forEach(sentence -> listRejections.put(sentence, "列表父项被语义审核拒绝，依赖子项联合剔除"));
         String acceptedReply = semanticRemoval.reply();
         String repairedReply = CitationVerifier.repairCitations(acceptedReply, semanticVerdict.citations(), evidence);
@@ -1547,7 +1675,7 @@ public class Agent {
             }
         }
         MedicalEvidenceVerifier.Verdict medicalVerdict = MedicalEvidenceVerifier.verify(
-                medicalQuestion, repairedReply, evidence, response.getToolExecutions(),
+                medicalStrict, repairedReply, evidence, response.getToolExecutions(),
                 config.getRagGateThresholds(), response.getRetrieval() == null
                         ? Set.of() : response.getRetrieval().graphChunkIds());
         if (medicalQuestion) auditMedicalStage("MEDICAL_REVIEW", repairedReply, evidence, medicalVerdict.reasons());
@@ -1555,7 +1683,7 @@ public class Agent {
             log.info("[Agent] 医学严格证据闸门 medical={} rejected={} reasons={}",
                     medicalVerdict.medical(), medicalVerdict.unsupported().size(),
                     new LinkedHashSet<>(medicalVerdict.reasons().values()));
-            var medicalRemoval = removeMedicalRejected(response, repairedReply, medicalVerdict.unsupported(), medicalQuestion, config.getRagGateThresholds());
+            var medicalRemoval = removeMedicalRejected(response, repairedReply, medicalVerdict.unsupported(), medicalStrict, config.getRagGateThresholds());
             medicalRemoval.dependentSentences().forEach(sentence -> listRejections.put(sentence, "列表父项被医学审核拒绝，依赖子项联合剔除"));
             repairedReply = medicalRemoval.reply();
         }
@@ -1581,9 +1709,9 @@ public class Agent {
         if (medicalVerdict.medical() && (finalReply == null || finalReply.isBlank())) {
             finalReply = "当前检索证据不足以支持该医学问题的结论，请咨询医师或药师，遵医嘱安排用药。";
         }
-        finalReply = enforceUnknownInteractionRefusal(response, finalReply, medicalQuestion);
+        finalReply = enforceUnknownInteractionRefusal(response, finalReply, medicalStrict);
         String publicationInput = finalReply;
-        MedicalPublication publication = finalizeMedicalReply(response, finalReply, medicalQuestion,
+        MedicalPublication publication = finalizeMedicalReply(response, finalReply, medicalStrict,
                 config.getRagGateThresholds(), !MedicalEvidenceVerifier.factSentences(numbered).isEmpty()
                         && MedicalEvidenceVerifier.factSentences(finalReply).isEmpty());
         finalReply = publication.reply();
@@ -1596,6 +1724,10 @@ public class Agent {
                     semanticVerdict.unsupported().size(), medicalVerdict.unsupported().size(), verdict.unsupported().size(),
                     publication.reasons().size());
         }
+        // 计数词对账排在最末：它是唯一一道**改模型原文**而不是删句子的关口，
+        // 必须跑在全部剔除之后——前面每剔一句，「这几款」里的数就可能变成错的。
+        // 只改计数词、不补条目：被剔掉的那条正是因为没有依据，补它等于把刚拦下的东西放回去。
+        finalReply = CountReconciliation.reconcile(finalReply);
         response.setReply(finalReply);
         Set<String> rejectedClaims = new LinkedHashSet<>(semanticVerdict.unsupported());
         rejectedClaims.addAll(medicalVerdict.unsupported());
@@ -1796,9 +1928,21 @@ public class Agent {
             if (!nearest.isEmpty()) boundary += "相近名称“" + String.join("、", nearest)
                     + "”仅为候选，请确认准确名称后再检查。";
             boundary += "涉及用药请咨询医师或药师。";
-            // 边界拒答与证据门必须说的是同一件事：输出都声明“无法判断具体相互作用”了，
-            // 同一轮就不能再记账为“证据充分到可以作答”——评测与前端读的是同一个 level。
-            if (response.getEvidenceLevel() == EvidenceGate.Level.SUFFICIENT) {
+            // <b>整轮 level 不再因为追加了这段边界而降级。</b>这段话说的是「图谱这一路
+            // 没有收录某个称呼」——它是一个**子结论**，不是对整轮作答能力的否定，
+            // 适用范围也已经写在它自己的文本里（「仅依据本次图谱检查，无法判断X与Y」）。
+            // 用整轮的 level 去承载一个局部事实，会让「答对了 + 一句自我限定」被读成「拒答」。
+            //
+            // 实测代价：G-16 的正文完整给出了鱼油与抗凝药的出血风险（有原文依据），
+            // 只因末尾追加了这段边界，整轮 level 被降成 WEAK——评测记为过拒，
+            // 前端挂上「相关度不足」横幅。系统明明给出了有依据的答案，却告诉用户别信它。
+            //
+            // 唯一该降级的场合是「这一轮交付的就是这段拒答本身」：那时确实没有可作答的内容，
+            // level 必须与输出说的是同一件事。判据因此是「交付物里有没有已核验正文」，
+            // 不是「有没有出现边界话术」。
+            boolean deliversVerifiedContent = reply != null && !reply.isBlank()
+                    && !reply.strip().equals(boundary.strip());
+            if (!deliversVerifiedContent && response.getEvidenceLevel() == EvidenceGate.Level.SUFFICIENT) {
                 response.setEvidenceLevel(EvidenceGate.Level.WEAK);
             }
             log.info("[Agent] 医学确定性边界 mode=PARTIAL_OR_TEXT_BACKED_INTERACTION_UNKNOWN 证据={} 未收录项={}",
@@ -2042,6 +2186,11 @@ public class Agent {
         List<ProfileEntry> profileEntries = profile == null ? List.of() : profile.injectionEntries();
         if (!profileEntries.isEmpty()) {
             sb.append("\n\n## 用户画像\n");
+            // 画像同样是**跨会话**累积的：实测「你 200 元以内的预算」正是从画像里读出来，
+            // 而当前会话的用户从没提过预算（N1 文档 §2.13 发现 N）。
+            sb.append("以下是跨会话累积的偏好，**不是用户本轮说过的话**；")
+                    .append("需要引用时说明它来自更早的记录，不要用「你刚才说」的口径，")
+                    .append("也不要假设它此刻仍然成立。\n");
             for (ProfileEntry entry : profileEntries) {
                 sb.append("- ").append(entry.getSlot().label()).append("：").append(entry.getValue())
                         .append("（").append(entry.getUpdatedAt().atZone(java.time.ZoneId.systemDefault()).toLocalDate())
@@ -2051,6 +2200,13 @@ public class Agent {
 
         if (episodes != null && !episodes.isEmpty()) {
             sb.append("\n\n## 相关记忆\n");
+            // 这一段的来源是**更早的会话**，不是本轮对话。实测模型会把跨会话召回的事实
+            // 说成「你之前提到在补钙」「你 200 元以内的预算」——用户在当前会话里从没说过，
+            // 于是被追问一个他没给过的前提（N1 文档 §2.13 发现 N）。
+            // 日期已经是「更早」的证据，但模型不会自己推——必须把口径写死。
+            sb.append("以下是更早的会话里记录过的事实，**不是用户本轮说过的话**；")
+                    .append("引用时说明它来自更早的记录（例如「按之前记录的…」），")
+                    .append("不得说成「你刚才说」「你这次提到」，也不要假设用户此刻仍然同意它。\n");
             for (MemoryItem episode : episodes) {
                 sb.append("- [").append(episode.getTimestamp().atZone(java.time.ZoneId.systemDefault()).toLocalDate())
                         .append("] ").append(episode.getContent()).append("\n");

@@ -25,6 +25,7 @@ import yumefusaka.envoymart.agent.llm.LLMConfig;
 import yumefusaka.envoymart.agent.llm.LLMProvider;
 import yumefusaka.envoymart.agent.llm.LLMResponse;
 import yumefusaka.envoymart.agent.llm.PlanStep;
+import yumefusaka.envoymart.agent.llm.StepReferences;
 import yumefusaka.envoymart.agent.llm.TokenLedger;
 import yumefusaka.envoymart.agent.llm.ToolExecution;
 import yumefusaka.envoymart.agent.loop.LoopGuard;
@@ -383,6 +384,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
                 continue;
             }
 
+
             // 高危拦截：与计划路径同一位置——调用之前。计划路径能提前看到整份计划、
             // 在批次执行前拦；ReAct 无从预知模型要调什么，只能在它调出来之后、执行之前拦。
             //
@@ -392,6 +394,29 @@ public class LangChain4jLLMProvider implements LLMProvider {
             //     转一圈它只会换个说法再要一次，每一圈都是一次真实计费的调用。
             // 载荷写进 sink 交给调用方：ReAct 路径的高危确认出口靠它签发确认令牌
             if (requiresConfirmation(request.name())) {
+                // 参数里还留着 $N 引用 = 它指向的值从来没被填进来。这种调用绝不能生成
+                // 确认卡：卡片的全部意义是「用户批准的东西 = 真正会执行的东西」，
+                // 而 $0.id 不是任何一次真实调用——用户点确认后必然失败，还以为系统坏了。
+                //
+                // <b>这道判据只有 ReAct 路径需要，而它此前完全没有。</b>计划路径的参数由
+                // AgentGraph.resolveBatch 按前置步骤的真实输出填值，填不上就被上游阻断；
+                // ReAct 的调用是模型直接给出的，没有「计划」可以预先解析——而 system prompt
+                // 又确实教了模型 $N[i] 语法（多步任务的示例就写着 cart_add 用 "$0[0].skuId"），
+                // 于是模型在 ReAct 轮里照写，字面量一路穿到确认卡。实测形态见 N1 文档发现 O。
+                //
+                // 与下面的「用户还没批准」不同，这一种**模型自己修得了**：它只是缺一次
+                // 查询。所以这里回填一条可执行的纠正而不是中断——退回的是「先查真实编号
+                // 再重发」，模型照做就能拿到一张正确的卡片。转圈有护栏兜底
+                // （同参重复 + 震荡检测），不会变成无界重试。
+                if (StepReferences.hasUnresolved(arguments)) {
+                    log.warn("[LLM] 高危操作参数含未解析引用，拒绝生成确认卡并退回模型 tool={} arguments={}",
+                            request.name(), arguments);
+                    working.add(dev.langchain4j.data.message.ToolExecutionResultMessage.from(request,
+                            "参数里的 $0.id 这类步骤引用在当前调用中没有对应的步骤可以取值，"
+                                    + "该语法只在执行计划里有效。请先用查询工具取得真实编号，"
+                                    + "再用真实值重新调用 " + request.name() + "。"));
+                    continue;
+                }
                 String operationId = "react:" + (request.id() == null ? UUID.randomUUID() : request.id());
                 ctx.pendingActions.add(PendingAction.of(request.name(), arguments, operationId));
                 log.info("[LLM] 高危操作待用户确认，ReAct 循环中断 tool={} operationId={}",
@@ -421,6 +446,7 @@ public class LangChain4jLLMProvider implements LLMProvider {
                     .operationId(request.id() == null ? null : "react:" + request.id())
                     .input(request.arguments())
                     .output(output)
+                    .userFacingText(result.getUserFacingText() == null ? output : result.getUserFacingText())
                     .success(result.isSuccess())
                     .noData(result.isNoData())
                     .latencyMs(result.getLatencyMs())

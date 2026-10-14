@@ -48,13 +48,28 @@ class AgentPartialInteractionBoundaryTest {
     }
 
     @Test
-    void 部分未知的边界拒答必须把同轮证据门同步降为弱证据() {
+    void 交付了已核验正文的边界说明不把整轮证据门降为弱证据() {
         var response = response(EvidenceGate.Level.SUFFICIENT, List.of(mixed()));
 
         Agent.enforceUnknownInteractionRefusal(response, "阿司匹林的已核验条款保留[1]。", true);
 
-        // 输出已声明“无法判断具体相互作用”，同一轮就不能再记账为“证据充分到可以作答”；
-        // 评测与前端读的是同一个 level，两处判定必须一致。
+        // 「图谱没收录某个称呼」是**子结论**，它的适用范围写在它自己的文本里
+        //（「仅依据本次图谱检查，无法判断X与Y」），不该升级成对整轮作答能力的否定。
+        // 实测代价：正文完整给出了有原文依据的结论，只因末尾追加了这段边界，
+        // 整轮 level 被降成 WEAK——评测记为过拒，前端挂上「相关度不足」横幅。
+        assertThat(response.getEvidenceLevel()).isEqualTo(EvidenceGate.Level.SUFFICIENT);
+    }
+
+    @Test
+    void 交付物就是边界拒答本身时证据门必须同步降为弱证据() {
+        var response = response(EvidenceGate.Level.SUFFICIENT, List.of(mixed()));
+
+        String boundary = Agent.enforceUnknownInteractionRefusal(response, "", true);
+        Agent.enforceUnknownInteractionRefusal(response, boundary, true);
+
+        // 另一半不能一起放宽：这一轮交付的就是这段拒答，没有可作答的内容，
+        // level 必须与输出说的是同一件事，否则会出现「输出说无法判断、记账说证据充分」。
+        assertThat(boundary).contains("无法判断磷虾油与阿司匹林的具体相互作用");
         assertThat(response.getEvidenceLevel()).isEqualTo(EvidenceGate.Level.WEAK);
     }
 
