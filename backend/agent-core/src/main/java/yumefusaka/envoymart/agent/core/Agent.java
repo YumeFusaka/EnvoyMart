@@ -759,9 +759,24 @@ public class Agent {
         return approvals.verifyGrantForRecovery(token, userId, sessionId);
     }
 
+    /**
+     * 确认轮的对外入口之一（生产链路走的就是这一条，见 {@code AiAssistantServiceImpl}）。
+     * <p>
+     * <b>它必须与 {@code doChat} 的令牌分支做同一件收尾：把这一轮记进短期记忆。</b>
+     * 同一个语义写在两条路上时，两条路的收尾迟早分叉——实测分叉的形态是
+     * 「{@code stm:} 窗口里只有『加购 → 出卡 → 用户问了别的』，确认那一轮整轮缺席」，
+     * 于是下一轮模型把<b>已经执行完</b>的加购说成「这个操作还在等你确认」。
+     * 模型没有说错：它读到的那份历史里，用户确实没有确认过。
+     * <p>
+     * 记的是「用户说的话 + 系统给的权威回执」两行：回执是「这件事已经办完」的唯一证据，
+     * 缺了它，模型只能从「出了一张卡」推断「还在等确认」。
+     */
     public AgentResponse confirmApproved(String userId, String sessionId, String message, String token,
                                          Consumer<String> onChunk, ToolProgressListener listener) {
-        return executeApproved(userId, sessionId, message, token, onChunk, ToolProgressListener.orNoop(listener));
+        AgentResponse confirmed = executeApproved(userId, sessionId, message, token, onChunk,
+                ToolProgressListener.orNoop(listener));
+        remember(ShortTermMemoryStore.scoped(userId, sessionId), userId, sessionId, message, confirmed);
+        return confirmed;
     }
 
     /** 原签名批次恢复不会续作模型任务；只读查询不会执行任何没有回执的动作。 */
@@ -769,7 +784,9 @@ public class Agent {
                                          ToolProgressListener listener) {
         Optional<List<PendingAction>> signed = verifyApproval(userId, sessionId, token, !retry);
         if (signed.isEmpty()) throw new IllegalArgumentException("原审批签名或用户会话不匹配，不能恢复");
-        return recoverSignedActions(userId, token, signed.get(), retry, () -> true, listener);
+        AgentResponse recovered = recoverSignedActions(userId, token, signed.get(), retry, () -> true, listener);
+        rememberRecovery(userId, sessionId, recovered);
+        return recovered;
     }
 
     private AgentResponse recoverSignedActions(String userId, String token, List<PendingAction> actions, boolean retry,
@@ -815,7 +832,9 @@ public class Agent {
         if (acceptedAuthorization == null || !acceptedAuthorization.getAsBoolean()) {
             throw new IllegalStateException("原批次接受授权无效，不能恢复写操作");
         }
-        return recoverSignedActions(userId, token, grant.actions(), true, acceptedAuthorization, listener);
+        AgentResponse recovered = recoverSignedActions(userId, token, grant.actions(), true, acceptedAuthorization, listener);
+        rememberRecovery(userId, sessionId, recovered);
+        return recovered;
     }
 
     private static List<Map<String, Object>> approvalRecoveryDetails(List<PendingAction> actions) {
@@ -885,6 +904,17 @@ public class Agent {
                     ? execution.getOutput() : execution.getUserFacingText());
         }
         return sb.toString();
+    }
+
+    /**
+     * 恢复轮的留痕：只记系统给的那句回执，不替用户编一句他没说过的话。
+     * <p>
+     * 与 {@code confirmApproved} 同一条理由——恢复轮同样会让世界前进（取回权威回执），
+     * 而下一轮模型读的正是这份窗口。缺了它，模型看到的故事是「出了一张卡就没有下文」，
+     * 于是把已经办完的事说成「还在等你确认」。
+     */
+    private void rememberRecovery(String userId, String sessionId, AgentResponse response) {
+        rememberMessage(userId, ShortTermMemoryStore.scoped(userId, sessionId), "assistant: " + response.getReply());
     }
 
     /** 记两个角色、沉淀长期记忆 —— 确认轮与普通轮共用的收尾 */

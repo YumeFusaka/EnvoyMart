@@ -323,7 +323,13 @@ public class GroundingLiveEvalService {
                     evidence, response.getReply(), level, toolEvidence,
                     response.getSemanticExemptions(),
                     response.getRetrieval() != null && response.getRetrieval().hasGraphEvidence(),
-                    fixtureCase.question(), verifiedInteractionBoundary(response, fixtureCase.interactionInputs()), response.getToolExecutions());
+                    fixtureCase.question(), verifiedInteractionBoundary(response, fixtureCase.interactionInputs()),
+                    response.getToolExecutions(),
+                    // 与生产同口径：句子证据门在生产侧看的是「本轮图谱路触达过哪几片」
+                    // （Agent#groundResponse 传 response.getRetrieval().graphChunkIds()）。
+                    // 评测漏传时，同一条被图谱依据放行的句子会被记成未支撑，
+                    // 幻觉率凭空多出来——两把尺子对同一句话给出相反答案。
+                    response.getRetrieval() == null ? java.util.Set.of() : response.getRetrieval().graphChunkIds());
             GroundingEvaluator.CaseOutcome outcome =
                     GroundingEvaluator.evaluate(List.of(sample)).cases().getFirst();
             log.info("[AI] 医学评测完整性 caseId={} requestId={} complete={} missingRequired={} facts={} unsupported={}",

@@ -69,6 +69,16 @@ public class KnowledgeGraphStore implements DisposableBean {
      * 在那里截断等于悄悄漏掉一条风险。
      */
     private static final int MAX_RECALL_EDGES = 40;
+    /**
+     * 商品展示名尾部的剂型后缀，按语料实际出现的写法取。
+     * <p>
+     * <b>逐个都试</b>，不是「剥到第一个命中就停」：「全营养配方粉」既能剥
+     * 「配方粉」（→「全营养」）也能剥「粉」（→「全营养配方」），两个都可能是用户的说法。
+     * 见 {@link #productNameStems}
+     */
+    private static final List<String> DOSAGE_SUFFIXES = List.of(
+            "软胶囊", "胶囊", "咀嚼片", "缓释片", "复合片", "口服液", "固体饮料", "滴剂",
+            "胶丸", "软糖", "营养包", "配方粉", "片", "粉", "颗粒");
 
     private final Driver driver;
     private final Duration queryTimeout;
@@ -478,7 +488,7 @@ public class KnowledgeGraphStore implements DisposableBean {
         }
         try (Session session = driver.session()) {
             return session.executeRead(tx -> {
-                var result = tx.run("MATCH (n:Entity) RETURN n.name AS name, n.label AS label");
+                var result = tx.run("MATCH (n:Entity) RETURN n.name AS name, n.label AS label, n.kind AS kind");
                 record Candidate(String name, String needle) {
                 }
                 List<Candidate> candidates = new ArrayList<>();
@@ -497,6 +507,17 @@ public class KnowledgeGraphStore implements DisposableBean {
                     if (label != null && matches(haystack, label)) {
                         candidates.add(new Candidate(name, TripleValidator.normalizeName(label)));
                     }
+                    // 商品节点的 label 带剂型后缀，而用户说的是口语简称：「磷虾油」对上
+                    // 「磷虾油软胶囊」时按完整 label 做包含判断一个实体都命中不了，
+                    // 这个商品的说明书边就永远进不了召回。只对商品补词干候选，
+                    // 成分/药物节点的名字本来就是用户说的那个词。
+                    if (EntityKind.PRODUCT.name().equals(r.get("kind").asString(null))) {
+                        for (String stem : productNameStems(label)) {
+                            if (matches(haystack, stem)) {
+                                candidates.add(new Candidate(name, TripleValidator.normalizeName(stem)));
+                            }
+                        }
+                    }
                 }
                 // 长的名字更具体，排在前面：同一次召回里先放「深海鱼油」，再放「鱼油」
                 candidates.sort((a, b) -> Integer.compare(b.needle().length(), a.needle().length()));
@@ -512,6 +533,62 @@ public class KnowledgeGraphStore implements DisposableBean {
     private static boolean matches(String haystack, String candidate) {
         String needle = TripleValidator.normalizeName(candidate);
         return needle.length() >= 2 && haystack.contains(needle);
+    }
+
+    /**
+     * 商品展示名的口语词干：剥掉<b>尾部</b>括号注释与剂型后缀。「磷虾油软胶囊」→「磷虾油」。
+     * <p>
+     * <b>为什么商品需要这一层而成分不需要</b>：商品节点的展示名带剂型后缀（「磷虾油软胶囊」），
+     * 而用户嘴里的写法通常是它的词干（「磷虾油」）。按完整展示名做子串判断时，
+     * {@code 「磷虾油和抗凝药同时吃有什么风险」.contains("磷虾油软胶囊")} 为 false ——
+     * 这个商品一个实体都链接不上，它的说明书边（KB-0049）永远进不了召回。
+     * 而成分/药物节点的名字就是用户说的那个词（「DHA」「华法林」），没有这一层需要。
+     * <p>
+     * <b>后缀逐个试而不是只剥一个</b>：「全营养配方粉」既能剥「配方粉」（→「全营养」）
+     * 也能剥「粉」（→「全营养配方」），两个都可能是用户的说法。
+     * <p>
+     * 结果只用于<b>召回</b>：多一个词干只会多带一条候选依据，漏一个才少一条。
+     *
+     * @return 去重保序的词干；不含与原名相同者、不含长度小于 2 者；
+     *         label 为 null 或空白时返回空列表
+     */
+    static List<String> productNameStems(String label) {
+        if (label == null || label.isBlank()) {
+            return List.of();
+        }
+        String original = label.strip();
+        String base = stripTrailingNote(original);
+        List<String> stems = new ArrayList<>();
+        addStem(stems, original, base);
+        for (String suffix : DOSAGE_SUFFIXES) {
+            if (base.endsWith(suffix)) {
+                addStem(stems, original, base.substring(0, base.length() - suffix.length()).strip());
+            }
+        }
+        return List.copyOf(stems);
+    }
+
+    /** 剥掉尾部的 {@code （…）} 或 {@code (…)}，只剥一次、只在末尾。没有则原样返回 */
+    private static String stripTrailingNote(String name) {
+        String open = null;
+        if (name.endsWith("）")) {
+            open = "（";
+        } else if (name.endsWith(")")) {
+            open = "(";
+        }
+        if (open == null) {
+            return name;
+        }
+        int at = name.lastIndexOf(open);
+        return at <= 0 ? name : name.substring(0, at).strip();
+    }
+
+    /** 词干入列：与原名相同或长度不足 2 的丢弃，重复的只留第一次（保序） */
+    private static void addStem(List<String> stems, String original, String stem) {
+        if (stem.length() < 2 || stem.equals(original) || stems.contains(stem)) {
+            return;
+        }
+        stems.add(stem);
     }
 
     /**

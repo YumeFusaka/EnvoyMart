@@ -652,8 +652,15 @@ public class GraphService {
         else {
             boolean sourceProduct = sources.products().getOrDefault(edge.docId(), Set.of()).contains(root);
             // “本品”及配方/过敏限定归产品；成分同名不能把此类边迁移到另一产品。
-            boolean productScoped = java.util.regex.Pattern.compile("本品|该产品|本产品|配方|鱼类|甲壳类|任一成分|过敏")
-                    .matcher(quote).find();
+            //
+            // 「本品所含/含有/含/中的/里的/提供 X」是把 X 归属到本品（定语），风险主语是 X：
+            // 「本品所含 DHA 与抗凝药合用可能增加出血风险」陈述的是 DHA 的通用结论，
+            // 对任何 DHA 来源都成立，不能因为句首出现「本品」就把整条拒掉。只有「本品」自己
+            // 作风险陈述的主语（「本品与广谱抗生素长期合用……」）时才把这条边限定到该商品。
+            // 该产品/本产品/配方/鱼类/甲壳类/任一成分/过敏是产品配方与过敏限定，仍归产品。
+            boolean productScoped = java.util.regex.Pattern.compile("该产品|本产品|配方|鱼类|甲壳类|任一成分|过敏")
+                    .matcher(quote).find()
+                    || java.util.regex.Pattern.compile("本品(?!所含|含有|含|中的|里的|提供)").matcher(quote).find();
             boolean explicitHead = members.isEmpty() ? quote.contains(edge.head().label())
                     : members.stream().allMatch(quote::contains);
             boolean explicitGeneric = !productScoped && explicitHead && quote.contains(edge.tail().label());

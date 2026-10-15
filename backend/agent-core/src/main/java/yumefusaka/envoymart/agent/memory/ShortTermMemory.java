@@ -3,6 +3,7 @@ package yumefusaka.envoymart.agent.memory;
 import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -54,8 +55,14 @@ public class ShortTermMemory implements Memory {
      * <p>
      * 只丢末尾两条是不够严谨的：末尾应当是「用户消息 + 助手答复」这一对，但窗口可能
      * 停在任何位置（例如上一轮只落了用户消息、或该轮被判成取消而只落了半条）。
-     * 判据因此是「末尾那条是不是助手答复」——不是就只丢一条，
-     * 宁可少丢也不要误删上一轮的正经内容。
+     * 判据因此是「末尾是助手答复 <b>且它前面紧挨着的是一条用户消息</b>」——两条都成立
+     * 才算完整一轮，否则只丢末尾那一条，宁可少丢也不要误删上一轮的正经内容。
+     * <p>
+     * 只判「末尾是不是助手答复」是不够的：<b>助手行可以不与用户行配对</b>——
+     * 确认执行成功后的回执行、恢复轮取回的回执行都只写助手一条（那是系统的回执，
+     * 不是用户说过的话）。这时若照旧连丢两条，轻则删掉上一轮出卡那条助手行、
+     * 留下一条悬空的用户消息，重则窗口里只剩这一条孤儿助手行时第二次
+     * {@code removeLast()} 直接越界抛 {@code NoSuchElementException}。
      */
     @Override
     public boolean dropLastTurn(String sessionId) {
@@ -65,9 +72,7 @@ public class ShortTermMemory implements Memory {
             if (deque.isEmpty()) {
                 return false;
             }
-            MemoryItem last = deque.peekLast();
-            dropped = last != null && last.getType() == MemoryItem.Type.MESSAGE
-                    && last.getContent() != null && last.getContent().startsWith("assistant:");
+            dropped = isCompleteTurn(deque);
             deque.removeLast();
             if (dropped) {
                 deque.removeLast();
@@ -78,6 +83,26 @@ public class ShortTermMemory implements Memory {
         // 这里以内存为准：内存是本进程本轮真正要用的那份上下文
         persistentStore.dropLastTurn(sessionId);
         return dropped;
+    }
+
+    /**
+     * 末尾两条是否构成完整一轮：最新是助手答复，且它前面紧挨着的是一条用户消息。
+     * <p>
+     * 不只看最新那条——助手行可以不与用户行配对（确认回执、恢复回执只写助手一条）。
+     */
+    private static boolean isCompleteTurn(Deque<MemoryItem> deque) {
+        if (deque.size() < 2) {
+            return false;
+        }
+        Iterator<MemoryItem> descending = deque.descendingIterator();
+        MemoryItem last = descending.next();
+        MemoryItem previous = descending.next();
+        return isMessageFrom(last, "assistant:") && isMessageFrom(previous, "user:");
+    }
+
+    private static boolean isMessageFrom(MemoryItem item, String prefix) {
+        return item != null && item.getType() == MemoryItem.Type.MESSAGE
+                && item.getContent() != null && item.getContent().startsWith(prefix);
     }
 
     @Override

@@ -70,7 +70,24 @@ public final class GroundingEvaluator {
                          EvidenceGate.Level evidenceLevel, boolean toolEvidence,
                          List<String> semanticExemptions, boolean graphEvidence,
                          String userMessage, boolean interactionBoundaryEvidence,
-                         List<yumefusaka.envoymart.agent.llm.ToolExecution> tools) {
+                         List<yumefusaka.envoymart.agent.llm.ToolExecution> tools,
+                         java.util.Set<String> graphChunkIds) {
+        /**
+         * 不带图谱 id 的便捷构造：离线夹具没有「本轮图谱路触达过哪几片」这份运行时事实。
+         * <p>
+         * <b>live 评测必须走带 {@code graphChunkIds} 的那个</b>——生产
+         * {@code Agent#groundResponse} 判定句子证据门时传的是本轮图谱 id，
+         * 评测漏传会让「生产放行、评测判未支撑」，幻觉率因此虚高（同一句两把尺子两个答案）。
+         */
+        public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
+                      List<String> mustMention, List<DocumentChunk> evidence, String answer,
+                      EvidenceGate.Level evidenceLevel, boolean toolEvidence,
+                      List<String> semanticExemptions, boolean graphEvidence,
+                      String userMessage, boolean interactionBoundaryEvidence,
+                      List<yumefusaka.envoymart.agent.llm.ToolExecution> tools) {
+            this(id, kind, expectRefuse, mustMention, evidence, answer, evidenceLevel, toolEvidence,
+                    semanticExemptions, graphEvidence, userMessage, interactionBoundaryEvidence, tools, java.util.Set.of());
+        }
         public Sample(String id, GroundingFixtures.Kind kind, boolean expectRefuse,
                       List<String> mustMention, List<DocumentChunk> evidence, String answer,
                       EvidenceGate.Level evidenceLevel, boolean toolEvidence,
@@ -110,6 +127,7 @@ public final class GroundingEvaluator {
         public Sample {
             semanticExemptions = semanticExemptions == null ? List.of() : List.copyOf(semanticExemptions);
             tools = tools == null ? List.of() : List.copyOf(tools);
+            graphChunkIds = graphChunkIds == null ? java.util.Set.of() : java.util.Set.copyOf(graphChunkIds);
         }
     }
 
@@ -267,8 +285,13 @@ public final class GroundingEvaluator {
         // 收不到；线上收得到。它只可能让线上比评测更宽，不会让评测比线上更松。
         CitationVerifier.Verdict verdict =
                 CitationVerifier.verify(answer, evidenceCount, sample.toolEvidence(), citableTitles);
+        // 商品行的出处是**工具回执**，不是知识库切片：生产 {@code Agent#groundResponse}
+        // 把本轮工具轨迹一并交给医学核对（回执逐字段对上即放行），评测侧必须同口径——
+        // 漏传 tools 时同一条逐字复述的回执行会落进「没有出处」的账里，
+        // 幻觉率于是比线上真实表现高，而两把尺子对同一句话给出相反答案。
         MedicalEvidenceVerifier.Verdict medical = MedicalEvidenceVerifier.verify(
-                sample.userMessage(), answer, sample.evidence());
+                MedicalEvidenceVerifier.isMedicalQuestion(sample.userMessage()), answer, sample.evidence(),
+                sample.tools(), EvidenceGate.Thresholds.defaults(), sample.graphChunkIds());
 
         boolean answerable = sample.kind() != GroundingFixtures.Kind.UNANSWERABLE;
         boolean gateRefused = sample.evidenceLevel() != EvidenceGate.Level.SUFFICIENT;
@@ -334,6 +357,15 @@ public final class GroundingEvaluator {
                     continue;
                 }
                 if (!medicalFact && (presentationOnly(sentence) || boundaryOnly(sentence))) {
+                    continue;
+                }
+                // 商品行的出处是**工具回执**，不是知识库切片。生产闸门在
+                // {@code MedicalEvidenceVerifier#verify} 里**无条件先判**它
+                // （回执逐字段对上即跳过核验），评测侧必须同口径且同一顺序——
+                // 放在 medicalFact 判断之后会让这些行先被算成医学事实句，
+                // 于是同一条逐字复述的回执行被记成「没有出处」，
+                // 幻觉率比线上真实表现高，两把尺子对同一句话给出相反答案。
+                if (MedicalEvidenceVerifier.supportedProductRow(sentence, sample.tools())) {
                     continue;
                 }
                 List<String> anchors = anchorsIn(sentence, sample.mustMention());

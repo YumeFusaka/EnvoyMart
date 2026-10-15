@@ -77,6 +77,34 @@ class RedisShortTermMemoryDropLastTurnTest {
     }
 
     @Test
+    void 头部是孤儿助手行时只丢一条() {
+        RedisShortTermMemoryStore store = store();
+        // 确认回执只写助手一条：它前面那条是上一轮的助手答复，不是它配对的用户消息
+        List<String> head = new ArrayList<>(List.of(
+                stored("assistant: 已加入购物车"),
+                stored("assistant: 这个操作不可撤销，请确认")));
+        when(listOps.range(anyString(), eq(0L), eq(1L))).thenReturn(head);
+
+        assertThat(store.dropLastTurn("s1")).isFalse();
+
+        // 照旧 trim 2 会把上一轮出卡那条助手行也删掉
+        verify(listOps).trim(anyString(), eq(1L), eq(-1L));
+    }
+
+    @Test
+    void 头部助手行前一条是用户消息时才算完整一轮() {
+        RedisShortTermMemoryStore store = store();
+        List<String> head = new ArrayList<>(List.of(
+                stored("assistant: 已加入购物车"),
+                stored("user: 确认执行")));
+        when(listOps.range(anyString(), eq(0L), eq(1L))).thenReturn(head);
+
+        assertThat(store.dropLastTurn("s1")).isTrue();
+
+        verify(listOps).trim(anyString(), eq(2L), eq(-1L));
+    }
+
+    @Test
     void 丢弃不续期窗口TTL() {
         RedisShortTermMemoryStore store = store();
         when(listOps.range(anyString(), eq(0L), eq(1L))).thenReturn(new ArrayList<>(List.of(

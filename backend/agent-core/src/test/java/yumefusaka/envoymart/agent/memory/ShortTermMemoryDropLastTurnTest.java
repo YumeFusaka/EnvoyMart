@@ -66,6 +66,30 @@ class ShortTermMemoryDropLastTurnTest {
     }
 
     @Test
+    void 末尾是孤儿助手行时只丢自己且不越界() {
+        ShortTermMemory memory = new ShortTermMemory(20);
+        memory.add(message("s1", "assistant: 恢复轮给的回执"));
+
+        assertThat(memory.dropLastTurn("s1")).as("凑不齐一轮，按 false 报").isFalse();
+
+        assertThat(memory.recent("s1", 20)).isEmpty();
+    }
+
+    @Test
+    void 末尾助手行前面是另一条助手行时只丢自己() {
+        ShortTermMemory memory = new ShortTermMemory(20);
+        memory.add(message("s1", "user: 把越橘叶黄素片加入购物车"));
+        memory.add(message("s1", "assistant: 这个操作不可撤销，请确认"));
+        memory.add(message("s1", "assistant: 已加入购物车"));
+
+        assertThat(memory.dropLastTurn("s1")).as("凑不齐一轮，按 false 报").isFalse();
+
+        // 照旧连丢两条会连「出卡」那条一起删掉，留下一条悬空的用户行
+        assertThat(memory.recent("s1", 20).stream().map(MemoryItem::getContent).toList())
+                .containsExactly("user: 把越橘叶黄素片加入购物车", "assistant: 这个操作不可撤销，请确认");
+    }
+
+    @Test
     void 丢弃会同步落到持久化载体() {
         java.util.List<String> appended = new java.util.ArrayList<>();
         int[] dropped = {0};

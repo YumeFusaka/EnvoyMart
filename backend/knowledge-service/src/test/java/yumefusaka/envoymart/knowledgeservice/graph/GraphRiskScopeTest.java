@@ -105,6 +105,56 @@ class GraphRiskScopeTest {
         assertThat(service(store).recall("DHA禁忌", 10)).isEmpty();
     }
 
+    /**
+     * 「本品所含 X」是把 X 归属到本品的定语，风险主语是 X —— 这条边陈述的是通用结论。
+     * <p>
+     * 真实反例 KB-0035_4：head=dha、tail=抗凝或抗血小板药物，整句以「本品所含 DHA」开头。
+     * 旧判据只要句中出现「本品」就把整条判成产品专属，于是问「孕期 DHA 与抗凝药」时
+     * （绑定表里 KB-0035 的商品是 spu12，而用户没提这个商品）被 PRODUCT_SCOPE_UNPROVEN
+     * 拒掉 —— 句中的「本品」只出现在定语里，不是风险陈述的主语。
+     */
+    @Test
+    void 本品作定语时风险主语是成分按通用结论放行() {
+        var store = store();
+        String quote = "4.1 本品所含 DHA 具有轻微抗血小板聚集作用，与华法林、阿司匹林等抗凝或抗血小板药物合用时可能增加出血风险，合用前须咨询医师。";
+        var risk = edgeWithLabel("dha", "DHA", "INGREDIENT", "INTERACTS_WITH", "抗凝或抗血小板药物", "KB-0035", quote);
+        when(store.linkEntities(any())).thenReturn(List.of("dha", "抗凝药物"));
+        when(store.expandSubstances(anyList())).thenReturn(List.of(
+                new Substance("dha", "DHA", "dha", "DHA", "INGREDIENT", List.of("DHA"))));
+        when(store.risksOf(anyList())).thenReturn(List.of(risk));
+        var service = serviceWithBinding(store, risk, "KB-0035", 12L);
+        assertThat(service.recall("孕期 DHA 与抗凝药", 10))
+                .as("句中「本品」是定语，风险主语是 DHA —— 通用结论不能因它被拒")
+                .extracting(GraphEdge::chunkId).contains("KB-0035_4");
+    }
+
+    /**
+     * 反向断言：本品<b>自己</b>作风险陈述主语时必须仍被拒 —— 否则缺口 B 的收窄就成了过度放宽。
+     * <p>
+     * 真实句子 KB-0027 4.2：「本品与噻嗪类利尿剂合用时可能增加高钙血症风险」。
+     * 句中「本品」是主语（后面接「与」，不是定语引导词），这条边限定在该商品上；
+     * 绑定表里 KB-0027 的商品是 spu10，而用户问的是成分「钙」与药物类别，root 里没有 spu10。
+     * <p>
+     * <b>这条断言必须能区分「productScoped 命中」与「explicitHead 不成立」</b>：
+     * 两个 label（{@code 钙}、{@code 噻嗪类利尿剂}）都在句中出现，所以
+     * {@code explicitGeneric} 只差 {@code productScoped} 这一项 —— 去掉本品那一支，
+     * 这条边就会被放进来，断言随即变红。
+     */
+    @Test
+    void 本品作风险陈述主语时仍按产品专属拒绝() {
+        var store = store();
+        String quote = "4.2 本品与噻嗪类利尿剂合用时可能增加高钙血症风险，合用期间应咨询医师。";
+        var risk = edgeWithLabel("钙", "钙", "NUTRIENT", "INTERACTS_WITH", "噻嗪类利尿剂", "KB-0027", quote);
+        when(store.linkEntities(any())).thenReturn(List.of("钙", "噻嗪类利尿剂"));
+        when(store.expandSubstances(anyList())).thenReturn(List.of(
+                new Substance("钙", "钙", "钙", "钙", "NUTRIENT", List.of("钙"))));
+        when(store.risksOf(anyList())).thenReturn(List.of(risk));
+        var service = serviceWithBinding(store, risk, "KB-0027", 10L);
+        assertThat(service.recall("钙和噻嗪类利尿剂能一起吃吗", 10))
+                .as("「本品与…」的主语是本品，这条边限定在该商品上，不能迁移给别的商品")
+                .extracting(GraphEdge::chunkId).doesNotContain("KB-0027_4");
+    }
+
     private static KnowledgeGraphStore store() {
         var store = mock(KnowledgeGraphStore.class);
         when(store.isAvailable()).thenReturn(true);
@@ -140,5 +190,48 @@ class GraphRiskScopeTest {
     private static GraphEdge edge(String head, String kind, String relation, String doc, String quote, String tail) {
         return new GraphEdge(new GraphNode(head, head, kind), relation, relation,
                 new GraphNode(tail, tail, "DRUG"), doc, null, doc + "_0", 0, quote.length(), quote, null, List.of());
+    }
+
+    /**
+     * 端点带独立展示名的边。{@link #edge} 把 name 与 label 设成同一个值，
+     * 而风险作用域判据里的 {@code explicitHead} 比的是 <b>label</b>：
+     * DHA 节点的键是 {@code dha}（规范化过），label 才是原文写法「DHA」，
+     * 两者不同正是生产形态。
+     */
+    private static GraphEdge edgeWithLabel(String head, String headLabel, String headKind, String relation,
+                                           String tail, String doc, String quote) {
+        return new GraphEdge(new GraphNode(head, headLabel, headKind), relation, relation,
+                new GraphNode(tail, tail, "DRUG_CLASS"), doc, null, doc + "_4", 0, quote.length(), quote, null, List.of());
+    }
+
+    /**
+     * 单篇文档 + 单个商品绑定的服务实例。文档内容逐字包含 {@code quote}
+     * （{@code riskAppliesTo} 有 SOURCE_MISSING 检查），切片带 docId/chunkId/charOffset
+     * （{@code withVerifiedSentenceContext} 有 CURRENT_DOC_CHUNK_MISMATCH 与
+     * SENTENCE_OUTSIDE_CURRENT_CHUNK 检查，charOffset 留 null 会被判为无法恢复上下文）。
+     */
+    private static GraphService serviceWithBinding(KnowledgeGraphStore store, GraphEdge edge,
+                                                   String docNo, long spuId) {
+        var docs = mock(KnowledgeDocumentMapper.class);
+        var doc = new KnowledgeDocumentEntity();
+        doc.setId(1L);
+        doc.setDocNo(docNo);
+        doc.setTitle(docNo);
+        doc.setContent(edge.quote());
+        when(docs.selectList(any())).thenReturn(List.of(doc));
+        var chunks = mock(KnowledgeChunkMapper.class);
+        var chunk = new KnowledgeChunkEntity();
+        chunk.setDocId(1L);
+        chunk.setChunkId(edge.chunkId());
+        chunk.setContent(edge.quote());
+        chunk.setCharOffset(0);
+        when(chunks.selectList(any())).thenReturn(List.of(chunk));
+        var bindings = mock(KnowledgeDocProductMapper.class);
+        var binding = new KnowledgeDocProductEntity();
+        binding.setDocNo(docNo);
+        binding.setSpuId(spuId);
+        binding.setRole(KnowledgeDocProductEntity.Role.SUBJECT.name());
+        when(bindings.selectList(any())).thenReturn(List.of(binding));
+        return new GraphService(docs, chunks, store, null, bindings);
     }
 }

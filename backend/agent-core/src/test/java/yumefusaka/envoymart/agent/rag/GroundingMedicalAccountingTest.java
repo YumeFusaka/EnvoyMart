@@ -321,6 +321,77 @@ class GroundingMedicalAccountingTest {
                 .source("manual").reranked(true).score(0.9).build();
     }
 
+    /**
+     * 商品行的出处是**工具回执**，评测必须与生产用同一把尺子。
+     *
+     * <p>生产 {@code Agent#groundResponse} 调的是
+     * {@code MedicalEvidenceVerifier.verify(…, tools, …)}，回执逐字段核对通过的商品行会被放行；
+     * 评测侧原先漏传 {@code tools}，同一条逐字复述的回执行就落进「没有出处」的账里——
+     * 两把尺子对同一句话给出相反答案，幻觉率因此比线上真实表现高。
+     * 这与本项目已记过的「评测口径与生产链路不一致」是同一类缺陷。
+     */
+    @Test
+    void 商品行的工具回执出处与生产同口径放行() {
+        var tool = yumefusaka.envoymart.agent.llm.ToolExecution.builder().tool("product_search").success(true)
+                .output("找到 1 个商品：\n"
+                        + "- 候选[0] 编号 SPU1：维生素 D3 软胶囊（每粒 400IU，助力钙吸收），价格 59.00 元-99.00 元，类目 维生素矿物质，品牌 元气元素，有货\n"
+                        + "    规格：SKU2（规格:400IU×180粒;包装:瓶装） 99.00 元 有货；SKU3（规格:1000IU×90粒;包装:礼盒装） 79.00 元 有货\n")
+                .build();
+        String answer = "- SKU2 400IU×180粒 瓶装 99.00 元；\n- SKU3 1000IU×90粒 礼盒装 79.00 元。";
+        var sample = new GroundingEvaluator.Sample("product-row-accounting", GroundingFixtures.Kind.MULTI_HOP, false,
+                List.of("2000IU"),
+                List.of(doc("KB-0010", "膳食补充剂摄入上限与常见药物相互作用",
+                        "1.1 维生素 D 的成人每日可耐受最高摄入量为 2000IU。")),
+                answer, EvidenceGate.Level.SUFFICIENT, true, List.of(), true,
+                "成人维生素D的每日可耐受最高摄入量是多少？", false, List.of(tool));
+        var outcome = GroundingEvaluator.evaluate(List.of(sample)).cases().getFirst();
+
+        assertThat(outcome.unsupported())
+                .as("回执逐字段核对放行的商品行不是幻觉句：评测漏传 tools 会把它们记成 MISSING")
+                .isZero();
+    }
+
+    /**
+     * 现场全文回归：G-14 真实答案 + 真实 5 片证据 + 真实工具回执。
+     *
+     * <p>生产闸门放行的那两条 SKU 行曾被评测记成 2 条幻觉，幻觉率因此从 0 变成 0.0278。
+     * 夹具是现场原样（答案取自快照 `b416582d`，回执取自同轮 {@code product_search}），
+     * 断言「同一条链路在评测侧与生产侧给出同一答案」。
+     */
+    @Test
+    void G14现场全文的商品行不进入幻觉账() {
+        var product = yumefusaka.envoymart.agent.llm.ToolExecution.builder().tool("product_search").success(true)
+                .output("找到 3 个商品：\n"
+                        + "- 候选[0] 编号 SPU1：维生素 D3 软胶囊（每粒 400IU，助力钙吸收），价格 59.00 元-99.00 元，类目 维生素矿物质，品牌 元气元素，有货\n"
+                        + "    规格：SKU1（规格:400IU×90粒;包装:瓶装） 59.00 元 有货；SKU2（规格:400IU×180粒;包装:瓶装） 99.00 元 有货；SKU3（规格:1000IU×90粒;包装:礼盒装） 79.00 元 有货\n")
+                .build();
+        String answer = """
+                **成人维生素 D 的每日可耐受最高摄入量是 2000IU [1]。**
+
+                - 维生素 D 的成人每日可耐受最高摄入量为 2000IU，长期超过该剂量应在医生监测下进行 [1]。
+                - 健康成年人每日维生素 D 推荐摄入量为 400IU，可耐受最高摄入量为 2000IU [1]。
+
+                **关于您会不会超量：**
+
+                这取决于您手上那瓶的每粒含量和每天吃几粒，知识库里没有您的具体服用量，我无法替您判断。
+
+                - SKU2 400IU×180粒 瓶装 99.00 元；
+                - SKU3 1000IU×90粒 礼盒装 79.00 元。
+                """;
+        var evidence = List.of(doc("KB-0010", "膳食补充剂摄入上限与常见药物相互作用",
+                "1.1 维生素 D 的成人每日可耐受最高摄入量为 2000IU，长期超过该剂量应在医生监测下进行。"));
+        var sample = new GroundingEvaluator.Sample("G-14", GroundingFixtures.Kind.MULTI_HOP, false,
+                List.of("2000IU"), evidence, answer, EvidenceGate.Level.SUFFICIENT, true, List.of(), true,
+                "成人维生素D的每日可耐受最高摄入量是多少？", false, List.of(product));
+        var outcome = GroundingEvaluator.evaluate(List.of(sample)).cases().getFirst();
+
+        // 这两条 SKU 行是回执的逐字复述，生产闸门按逐字段核对放行它们；
+        // 评测侧若把它们记进引用账（MISSING/WRONG_TARGET），幻觉率就会凭空多出 2 条
+        assertThat(outcome.citations())
+                .as("商品行不得进入引用账")
+                .noneMatch(check -> check.sentence().contains("SKU"));
+    }
+
     @Test
     void 被强调拆分的剂量必须进入事实分母并拒绝错数值() {
         String answer = "维生素D成人每日上限为**9000** IU [1]。";

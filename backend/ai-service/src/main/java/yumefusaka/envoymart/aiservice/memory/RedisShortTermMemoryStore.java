@@ -170,9 +170,13 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
      * 而知识库确实有那些条款）。丢掉之后本轮就是一次干净的首问，
      * 新答复在生成结束后按正常路径 append，窗口形状与 {@code chat:hist:} 一致。
      * <p>
-     * <b>判据看内容而不是条数</b>：头部那条必须真的是助手答复才连丢两条。
-     * 窗口可能停在任何位置（上一轮只落了用户消息、或被取消而只落了半条），
-     * 按条数硬丢会误删上一轮的正经内容——宁可少丢。
+     * <b>判据看内容而不是条数</b>：头部那条是助手答复、且它后面紧挨着的是一条用户消息，
+     * 两条都成立才连丢两条。窗口可能停在任何位置（上一轮只落了用户消息、或被取消
+     * 而只落了半条），按条数硬丢会误删上一轮的正经内容——宁可少丢。
+     * <p>
+     * 只判头部是不是助手答复是不够的：<b>助手行可以不与用户行配对</b>——确认执行成功后的
+     * 回执行、恢复轮取回的回执行都只写助手一条（那是系统的回执，不是用户说过的话）。
+     * 这时若照旧 {@code trim 2}，删掉的是上一轮那条正经内容。
      * <p>
      * <b>TTL 不续</b>：丢弃不是「这一轮发生过对话」的证据。重新生成若在生成阶段
      * 失败，续期会让一个已经没人用的会话窗口又活一遍；真正的续期交给随后的 append。
@@ -186,7 +190,7 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
             if (head == null || head.isEmpty()) {
                 return false;
             }
-            boolean paired = head.size() >= 2 && isAssistantReply(head.get(0));
+            boolean paired = head.size() >= 2 && isAssistantReply(head.get(0)) && isUserMessage(head.get(1));
             redis.opsForList().trim(key, paired ? 2 : 1, -1);
             return paired;
         } catch (Exception e) {
@@ -198,9 +202,17 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
     }
 
     private boolean isAssistantReply(String json) {
+        return isFrom(json, "assistant:");
+    }
+
+    private boolean isUserMessage(String json) {
+        return isFrom(json, "user:");
+    }
+
+    private boolean isFrom(String json, String prefix) {
         try {
             String content = objectMapper.readValue(json, StoredItem.class).content();
-            return content != null && content.startsWith("assistant:");
+            return content != null && content.startsWith(prefix);
         } catch (Exception e) {
             return false;
         }

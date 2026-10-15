@@ -181,8 +181,14 @@ final class MedicalDoseAssertions {
                     if (clause.contains("本品")) subject.addAll(titleSubjects);
                     if (subject.isEmpty()) subject = inherited;
                     if (mentions.isEmpty() && !sentenceParticipants.isEmpty()) subject = sentenceParticipants;
-                    // “两者”回指完整关系，不回指最后一次提到的单个药物终点；一般剂量不借此扩大主体。
-                    if (PAIR_PRONOUN.matcher(clause).find()) subject = relationParticipants;
+                    // 回指（“两者/二者”“这类药物/上述药物”）不是新主体：它的指代对象是同句前文
+                    // 已经解析出的实体组。关系对能解析出来时优先用它（“两者”回指的是完整关系，
+                    // 不是最后一次提到的单个药物终点）；解析不出来时退回 inherited——这条路径此前
+                    // 没有出口，于是「所以两者服用时间应间隔 2 小时」在关系对恰好被噪声子句清空时
+                    // 被判“数量主体不完整”。
+                    boolean anaphora = PAIR_PRONOUN.matcher(clause).find()
+                            || clause.matches(".*(?:上述|这些|这类|该类|该等|此等)(?:药物|药品|产品|商品|补充剂).*");
+                    if (anaphora) subject = relationParticipants.isEmpty() ? inherited : relationParticipants;
                     constraint = clause.substring(0, quantity.start()).matches(".*(?:至少|不少于)(?:(?:间隔|相隔|错开))?$")
                             || clause.substring(quantity.end()).matches("^(?:以上|及以上).*" ) ? "LOWER" : "EXACT";
                     if (clause.substring(quantity.end()).matches("^后再.*")) {
@@ -295,9 +301,15 @@ final class MedicalDoseAssertions {
             }
             if (matched && !POPULATION.matcher(subject.group(1)).matches() && !ROLE.matcher(subject.group(1)).find()
                     && !subjectText.matches("^(?:没有|不存在|无|存在|有|不会|不能|不|会|可能|可)?(?:相互作用|相互影响|影响).*" )
-                    && !subjectText.matches("^(?:与|和|及)?(?:上述|这些|该|这|此)(?:药物|药品|产品|商品|补充剂).*" )
-                    && !subject.group(1).matches("(?:但|而|也|同时|则|并|此外|另外|具体|每|可耐受|一次|单次|首次|约|大约|至少|通常|一般|正常|健康|长期|本品|该产品).*" )
-                    && !subject.group(1).matches("(?:该|这|此|上述)(?:产品|商品|罐装|瓶装|药品|补充剂).*" )
+                    && !subjectText.matches("^(?:与|和|及)?(?:上述|这些|该|这|此)(?:类|种|些|等)?(?:药物|药品|产品|商品|补充剂).*" )
+                    // 以动词或连词开头的主体不是名词短语：「会形成难吸收的络合物」「导致药物吸收下降」
+                    // 「所以两者服用时间应间隔 2 小时」会被 SUBJECT_HEAD 截成「会形成难」「导致药物」
+                    // 「所以两者」，进主体集后把 relationParticipants 清空（named 非空且不满足关系参与
+                    // 条件即重置），后面「两者」回指就再也拿不到主体——实测 KG-09 整句因此被判
+                    // 「关系对象或极性与引用切片不一致」。判据是词性边界，不是词表长短：
+                    // 名词短语不会以这些词开头，而它们在句中的位置恰恰是谓语。
+                    && !subject.group(1).matches("(?:但|而|也|同时|则|并|此外|另外|具体|每|可耐受|一次|单次|首次|约|大约|至少|通常|一般|正常|健康|长期|本品|该产品|会|将|能|导致|所以|因此|从而|进而|于是|使|令|造成|引起|形成|故|可见|表明|意味着).*" )
+                    && !subject.group(1).matches("(?:与|和|及)?(?:该|这|此|上述|这些)(?:类|种|些|等)?(?:产品|商品|罐装|瓶装|药品|药物|补充剂|成分).*" )
                     && !subject.group(1).matches("该|本|这|此|上述|两者|二者|双方")
                     && !(subject.group(1).matches("[一二三四五六七八九十两0-9]+(?:平勺|勺|粒|片|丸|袋|瓶|盒|桶)(?:约|约为|重)?")
                     && (MedicalQuantities.QUANTITY.matcher(subject.group(1)).find() || MedicalQuantities.hasUnparsedQuantity(subject.group(1))))

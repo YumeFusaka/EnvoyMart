@@ -90,6 +90,17 @@ public final class MedicalEvidenceVerifier {
     private static final Pattern EFFECT_PRESENCE = Pattern.compile(
             "(不会|不能|不|没有)?(?:可能|会|可)?(?:相互)?影响");
     private static final Pattern ABSORPTION_COMPETITION = Pattern.compile("(?:不存在|没有|无)?吸收竞争");
+    /**
+     * 「吸收被阻碍」的另一种写法：原文用形容词（「形成难吸收的络合物」），
+     * 生成侧复述成动词短语（「导致药物吸收下降」）。
+     * <p>
+     * 极性判据要认的是<b>极性本身</b>，不是书写形式——两种写法陈述的是同一条结论
+     * （钙把四环素类结合成无法吸收的络合物）。只认动词短语会让「引文写难吸收、
+     * 复述写吸收下降」被判「关系对象或极性与引用切片不一致」，而两边说的是同一件事。
+     * 判据只覆盖这一条明确语义，不做同义泛化。
+     */
+    private static final Pattern POOR_ABSORPTION = Pattern.compile(
+            "(?:难|不易|难以|妨碍|阻碍|干扰)(?:以)?吸收|吸收(?:困难|受阻|受抑制)");
     private static final Pattern RISK_PRESENCE = Pattern.compile(
             "(没有|无|不存在|存在|有)([^，,。；;！？!?]{0,12}?风险)");
     private static final Pattern SAFE_COMBINATION = Pattern.compile(
@@ -523,7 +534,7 @@ public final class MedicalEvidenceVerifier {
      * 同一条链路在两种读法下给出不同答案，那正是本项目批次 15「同一份 JSON 两条路
      * 一个能读一个读不了」的同一类缺陷。
      */
-    private static boolean supportedProductRow(String sentence, List<ToolExecution> tools) {
+    public static boolean supportedProductRow(String sentence, List<ToolExecution> tools) {
         if (tools == null) return false;
         if (hasMedicalConclusion(normalize(sentence))) return false;
         Map<String, String> codes = new LinkedHashMap<>();
@@ -1160,6 +1171,10 @@ public final class MedicalEvidenceVerifier {
             String polarity = effects.group(1) == null ? "存在" : "不存在";
             result.computeIfAbsent("影响", ignored -> new LinkedHashSet<>()).add(polarity);
             result.computeIfAbsent("相互作用", ignored -> new LinkedHashSet<>()).add(polarity);
+        }
+        Matcher poorAbsorption = POOR_ABSORPTION.matcher(text);
+        while (poorAbsorption.find()) {
+            result.computeIfAbsent("吸收", ignored -> new LinkedHashSet<>()).add("降低");
         }
         Matcher competition = ABSORPTION_COMPETITION.matcher(text);
         while (competition.find()) {
