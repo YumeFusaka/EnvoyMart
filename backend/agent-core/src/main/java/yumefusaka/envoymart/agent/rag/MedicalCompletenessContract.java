@@ -133,7 +133,12 @@ final class MedicalCompletenessContract {
     private static boolean supported(String claim, List<DocumentChunk> evidence) {
         if (evidence == null) return false;
         for (int ref = 1; ref <= evidence.size(); ref++) {
-            if (MedicalEvidenceVerifier.verify(true, claim + " [" + ref + "]。", evidence).unsupported().isEmpty()) return true;
+            // 契约检查只问「这一片原文能不能支撑这个要点」，不是复现整轮证据门。
+            // 评测夹具里会混有低分但原文逐字支撑的切片（G-13 的 KB-0010_5 是图谱片、
+            // 无重排分），若这里传默认阈值，会把「检索上下文是否具备」与
+            // 「这一片是否过统一门槛」混成同一件事，缺的要点被记成 MISSING_RETRIEVAL_CONTEXT。
+            if (MedicalEvidenceVerifier.verify(true, claim + " [" + ref + "]。", evidence, List.of(),
+                    null, java.util.Set.of()).unsupported().isEmpty()) return true;
         }
         return false;
     }

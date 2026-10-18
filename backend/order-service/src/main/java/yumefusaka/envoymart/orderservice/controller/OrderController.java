@@ -99,6 +99,21 @@ public class OrderController {
         return Result.success(orderDomainService.orderSummary(userId));
     }
 
+    /**
+     * 按用户可见订单号取详情。
+     * <p>
+     * <b>必须声明在 {@code /{id}} 之前。</b>Spring 的路由匹配不会因为
+     * 「{@code by-no} 不像数字」就自动选更具体的那个：{@code /{id}} 会把
+     * {@code by-no/...} 整段当成 id，报一句「参数格式不正确：id」，
+     * 把「路由没生效」伪装成「参数写错了」（13e 批踩过同一个坑）。
+     */
+    @GetMapping("/by-no/{orderNo}")
+    public Result<OrderResponse> detailByNo(
+            @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+            @PathVariable("orderNo") String orderNo) {
+        return Result.success(orderDomainService.getOrderByNo(userId, orderNo));
+    }
+
     @GetMapping("/{id}")
     public Result<OrderResponse> detail(
             @RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,

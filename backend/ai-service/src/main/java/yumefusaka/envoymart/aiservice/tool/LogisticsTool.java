@@ -29,11 +29,12 @@ public class LogisticsTool implements Tool {
         return ToolDefinition.builder()
                 .name("logistics_query")
                 .description("按订单编号查询当前用户的物流轨迹：承运商、运单号、每一步的状态、时间与所在地。"
+                        + "参数 orderId 接受数字内部 ID 或用户看到的 YS 开头订单号，照原样传入即可。"
                         + "用户问「货到哪了」「什么时候能到」时使用。"
                         + "轨迹不含预计到达时间——承运商没有给出这个信息时，不要替它估一个。")
                 .parameters(Map.of(
                         "orderId", ToolDefinition.ParameterSpec.builder()
-                                .type("integer").description("订单编号").required(true).build()
+                                .type("string").description("订单内部 ID（数字）或 YS 开头的订单号").required(true).build()
                 ))
                 .build();
     }
@@ -42,7 +43,8 @@ public class LogisticsTool implements Tool {
     public ToolResult execute(ToolCall call) {
         try {
             String userId = call.requireUserId();
-            Long orderId = Long.valueOf(String.valueOf(call.getArguments().get("orderId")));
+            // 与 order_query 同一个解析入口：数字直接用，YS 订单号换一次 id。
+            Long orderId = OrderRefs.resolveOrderId(orderClient, userId, call.getArguments().get("orderId"));
             LogisticsResponse logistics =
                     Downstream.read("订单服务", () -> orderClient.getLogistics(userId, orderId));
 

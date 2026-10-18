@@ -583,6 +583,18 @@ public class OrderDomainServiceImpl implements OrderDomainService {
     @Override
     @io.seata.spring.annotation.GlobalLock
     @Transactional
+    public OrderResponse getOrderByNo(String userId, String orderNo) {
+        if (orderNo == null || orderNo.isBlank()) {
+            throw new IllegalArgumentException("订单号不能为空");
+        }
+        OrderEntity order = orderMapper.lockOwnedByNo(userId, orderNo.trim());
+        if (order == null) {
+            throw new IllegalArgumentException("订单不存在");
+        }
+        return toOrderResponse(order);
+    }
+
+    @Override
     public OrderResponse getOrder(String userId, Long orderId) {
         OrderEntity order = orderId == null ? null : orderMapper.lockOwned(userId, orderId);
         if (order == null) {

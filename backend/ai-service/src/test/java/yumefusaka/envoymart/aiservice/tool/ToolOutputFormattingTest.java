@@ -102,6 +102,11 @@ class ToolOutputFormattingTest {
         ToolResult result = new ProductTool(client).execute(call("product_search", Map.of("query", "商品")));
 
         assertThat(result.getOutput()).contains("候选[0]").contains("候选[1]");
+        assertThat(result.getOutput())
+                .as("每条规格都要印出可引用路径。只印「SKU71」是展示编号，"
+                        + "模型照着它拼引用取不到值，整轮会被判成「参数无法安全解析」")
+                .contains("[引用写 $N[0].skus[0].skuId]")
+                .contains("[引用写 $N[1].skus[0].skuId]");
         assertThat(result.getRawData()).asList().hasSize(2);
         assertThat(result.getRawData()).asList().element(0)
                 .extracting("skuId").isEqualTo(71L);
@@ -340,6 +345,31 @@ class ToolOutputFormattingTest {
                 .contains("59.00 元")
                 .contains("维生素 D3 软胶囊")
                 .doesNotContain("null");
+    }
+
+    /**
+     * 用户给的是 YS 订单号，工具必须换一次内部 id，而不是把订单号当数字解析。
+     * <p>
+     * 修复前的现场：{@code order_query} 收到 {@code YS2026...} 直接
+     * {@code Long.valueOf}，抛 {@code For input string}，而系统里没有第二条按订单号查的路。
+     * 这条断言锁住「解析入口只有一处」：数字形态不查下游，订单号形态查一次 by-no。
+     */
+    @Test
+    void 订单工具接受YS订单号并换取内部ID() {
+        OrderClient client = mock(OrderClient.class);
+        when(client.getOrderByNo(anyString(), anyString())).thenReturn(Result.success(OrderResponse.builder()
+                .id(3L).orderNo("YS20260930001").status("PAID").statusText("已支付").payAmount(5900L)
+                .build()));
+        when(client.getOrder(anyString(), anyLong())).thenReturn(Result.success(OrderResponse.builder()
+                .id(3L).orderNo("YS20260930001").status("PAID").statusText("已支付").payAmount(5900L)
+                .build()));
+
+        ToolResult result = new OrderTool(client).execute(call("order_query", Map.of("orderId", "YS20260930001")));
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("已支付");
+        verify(client).getOrderByNo(USER, "YS20260930001");
+        verify(client).getOrder(USER, 3L);
     }
 
     // ==================== 金额格式化本身 ====================

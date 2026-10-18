@@ -906,8 +906,11 @@ public class AgentGraph {
         }
         Object value = readPath(source, path);
         if (value == null) {
-            log.warn("[Graph] 步骤 {} 的引用无法取值 来源步骤={} 原因=字段缺失、下标越界或列表选择不唯一",
-                    currentIndex, stepIndex);
+            // 把「模型实际写的那串引用」带进日志：没有它，这条告警只能说明"取不到"，
+            // 不能说明"它写成了什么形态"，归因只能靠猜（2026-10-18 实测踩到）。
+            // raw 是引用串本身，不含用户输入内容。
+            log.warn("[Graph] 步骤 {} 的引用无法取值 来源步骤={} 引用={} 原因=字段缺失、下标越界或列表选择不唯一",
+                    currentIndex, stepIndex, raw);
             return raw;
         }
         return value;

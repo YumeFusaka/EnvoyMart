@@ -188,7 +188,7 @@ public class ProductTool implements Tool {
                 sb.append("\n");
                 // 规格编号必须印出来：加购/下单认的是 SKU，不是商品名。
                 // 检索摘要是 SPU 级的，光有名字，模型只能猜一个编号——实测它猜的是 0。
-                appendSkus(sb, p.getId(), limit);
+                appendSkus(sb, p.getId(), limit, productIndex);
             }
 
             return ToolResult.builder()
@@ -345,6 +345,24 @@ public class ProductTool implements Tool {
      * 「这里没列全」，而不是以为规格就这么多。
      */
     private void appendSkus(StringBuilder sb, Long spuId, int limit) {
+        appendSkus(sb, spuId, limit, null);
+    }
+
+    /**
+     * 印规格，并把**可引用的路径**一起印出来。
+     * <p>
+     * <b>为什么要把路径写进文字输出。</b>模型写 {@code $N} 引用时，手上只有这段文字。
+     * 而这段文字此前只写「SKU16（规格:60 片）」——那是**展示编号**，不是可引用的字段路径；
+     * 模型照着它拼 {@code $0[0].skus[16].skuId} 之类的写法，执行器当然取不到值。
+     * 实测（alice，「把碳酸钙 D3 咀嚼片（60 片）加入购物车」）就是这么被阻断的：
+     * 检索成功、SKU 都在输出里，却因为引用形态不对，整轮写成「参数无法安全解析」。
+     * <p>
+     * 路径里的下标与 {@code rawData} 里的列表顺序**同源**（都来自同一个 detail 的 skus），
+     * 不是另算一份。
+     *
+     * @param candidateIndex 该商品在本次检索结果里的下标；{@code null} 表示不打印路径
+     */
+    private void appendSkus(StringBuilder sb, Long spuId, int limit, Integer candidateIndex) {
         ProductDetail detail = skuDetail(spuId);
         if (detail == null || detail.getSkus() == null || detail.getSkus().isEmpty()) {
             return;
@@ -360,6 +378,15 @@ public class ProductTool implements Tool {
             sb.append("SKU").append(sku.getId());
             if (sku.getSpecText() != null && !sku.getSpecText().isBlank()) {
                 sb.append("（").append(sku.getSpecText()).append("）");
+            }
+            // 可引用路径：与 rawData 的 skus 列表下标一一对应。
+            // 只印给模型看的「SKU16」不能当引用写，两者必须显式区分开。
+            //
+            // 用 $N 而不是写死 $0：这一步在计划里的下标由模型决定（它可能不是第 0 步）。
+            // 把步骤号留成占位，模型只需把 N 换成「产出这条结果的那一步」的序号，
+            // 下标部分照抄——那正是它此前会猜错的部分。
+            if (candidateIndex != null) {
+                sb.append(" [引用写 $N[").append(candidateIndex).append("].skus[").append(i).append("].skuId]");
             }
             sb.append(" ").append(Money.yuan(sku.getPrice()));
             if (sku.getStock() != null) {

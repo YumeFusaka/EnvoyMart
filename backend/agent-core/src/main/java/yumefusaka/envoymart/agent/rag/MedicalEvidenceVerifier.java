@@ -42,6 +42,19 @@ public final class MedicalEvidenceVerifier {
     private static final Pattern GRAPH_ABSENCE = Pattern.compile("^(?:平台)?(?:知识)?图谱(?:中)?(?:没有|未)收录.*");
     private static final Pattern PRODUCT_PRONOUN = Pattern.compile("本品|该商品|该产品");
     /**
+     * 「本品」指代的是<b>说明书自身的成分表</b>，不是商品身份：「对本品任一成分过敏者禁用」
+     * 是每一份说明书的通用禁忌，换一份说明书这句话照样成立。它不承担「这个成分属于哪个商品」
+     * 的断言，因此归属由**这句引用的切片**唯一确定即可。
+     * <p>
+     * 与之相对，「本品所含钙可影响…」「本品为蛋白质类补充剂」是在陈述<b>商品本身</b>的属性，
+     * 同一句话换到另一份说明书上就不成立——这类仍必须由句子自己（或前文）声明来源，
+     * KG-02/KG-11 守的正是这条线。
+     */
+    private static final Pattern PRODUCT_COMPOSITION_PRONOUN = Pattern.compile(
+            "本品(?:任一|任何|所有|全部)?(?:成分|配料|原料)|对本品(?:任一|任何)?成分");
+    /** 成对回指（「两者/二者」）指向同段前文已出现的关系参与组，不是待补全的剂量前指。 */
+    private static final Pattern PAIR_PRONOUN = Pattern.compile("两者|二者");
+    /**
      * 「来源展示框架被编号化」的形态：{@code [n]第四章写明：} 或 {@code [n]中写明：}。
      * <p>
      * 句子原本写的是《文档名》第四章写明：…，引用编号化把《文档名》换成了 [n]，
@@ -106,11 +119,33 @@ public final class MedicalEvidenceVerifier {
     private static final Pattern SAFE_COMBINATION = Pattern.compile(
             "安全(?:同服|合用|一起吃)|(?:同服|合用|一起吃)(?:是|属于)?安全(?:的)?|没有冲突");
     /**
+     * 售后/物流/订单政策里的时间量不是医学剂量：`七天无理由退货`、`72 小时发货`
+     * 会被 {@link MedicalQuantities#hasUnparsedQuantity} 当成未解析剂量，把整句
+     * 误判成医学事实并送进严格证据门（G-15 的真实售后回答因此被记成错误引用）。
+     * 判据要求「政策动作词 + 时间量」同时出现，且没有临床信号；只有政策词或
+     * 只有时间量的句子不豁免。
+     */
+    private static final Pattern NON_CLINICAL_POLICY = Pattern.compile(
+            "(?:退货|退款|退换|售后|签收|配送|发货|物流|订单|无理由).{0,12}(?:天|日|小时|工作日)"
+                    + "|(?:天|日|小时|工作日).{0,12}(?:退货|退款|退换|售后|签收|配送|发货|物流|订单|无理由)");
+    private static final Pattern CLINICAL_POLICY_OVERRIDE = Pattern.compile(
+            "服用|服药|用药|剂量|用量|摄入|出血|风险|相互作用|禁忌|过敏|不良反应|副作用|治疗|疗效|吸收");
+    /**
      * 症状警示句：给出可核对症状列表与行动建议，如“出现异常出血、皮肤瘀斑等表现应及时就医”。
      * 通用提醒（“如有疑问请咨询医师”）没有症状中介语，不进入事实句分母与核验。
      */
     private static final Pattern SYMPTOM_WARNING = Pattern.compile(
             "(?:出现|发生|若有|如有|若出现|如出现|一旦出现)(?<symptoms>[^，,。；;！？!?\\n]{2,60}?)(?:等)?(?:表现|症状|不适|反应|情况)(?:时)?[，,]?(?<action>(?:应|需|须|要|请|建议|务必)[^，,。；;！？!?\\n]{1,30})");
+    /**
+     * 安全警示句：超量、过量、大剂量、中毒、蓄积、掩盖、不良反应、副作用等。
+     * 这些结论写错一位就会误导用户，必须逐片复核引用强度；普通膳食建议不在此列。
+     */
+    private static final Pattern SAFETY_WARNING = Pattern.compile(
+            "超量|过量|大剂量|中毒|蓄积|掩盖|不良反应|副作用|血钙升高|延误[^，,。；;！？!?\\n]{0,12}损害");
+    /**
+     * 纯剂量/用法句的逐片复核只要求「不明显弱于本轮最强依据」，不要求它自己跨过绝对阈值。
+     */
+    private static final double RELATIVE_CHUNK_SCORE_FLOOR = 0.60;
     /** 版本优先裁定句：改变“以哪一份资料为准”的结论，必须由同一引用切片给出替代授权。 */
     private static final Pattern VERSION_MENTION = Pattern.compile("v\\d{4}(?:\\.\\d+)?");
     private static final Pattern VERSION_DECISION = Pattern.compile(
@@ -179,6 +214,12 @@ public final class MedicalEvidenceVerifier {
             return Verdict.notApplicable();
         }
         List<DocumentChunk> safeEvidence = evidence == null ? List.of() : evidence;
+        // 证据门只对**整轮**判一次：它回答的是「这一轮证据够不够回答这个问题」。
+        // 逐句再按引用切片重判一次，是同一事实两处各算——短句/口语化转述的重排分
+        // 天然偏低，会把原文逐字支撑的结论误杀（2026-10-18 alice 便秘会话）。
+        boolean roundSufficient = thresholds == null
+                || EvidenceGate.evaluate(safeEvidence, thresholds,
+                graphChunkIds == null ? Set.of() : graphChunkIds).isSufficient();
         List<String> unsupported = new ArrayList<>();
         Map<String, String> reasons = new LinkedHashMap<>();
 
@@ -245,7 +286,13 @@ public final class MedicalEvidenceVerifier {
                 continue;
             }
             boolean doseReference = DOSE_REFERENCE.matcher(normalize(sentence)).find();
-            boolean selfContainedDose = quantities(sentence).size() == 1 && hasMedicalTerm(sentence);
+            // 「两者/二者」是句内回指，不是「这个剂量」式的前向指代：它指向同一段前文
+            // 已经出现的关系参与组，引用切片里的间隔句本身可以完整支撑。把成对回指
+            // 也当 DOSE_REFERENCE，会让 G13 的真实 v7 回答在「两者应间隔至少 2 小时」
+            // 这一句上被要求再找一次 antecedent，最终判「剂量指代缺少同段已支撑的
+            // 唯一实体与数值」——关系、数值、引用都对，只是回指形式不同。
+            boolean pairReference = PAIR_PRONOUN.matcher(normalize(sentence)).find();
+            boolean selfContainedDose = (quantities(sentence).size() == 1 && hasMedicalTerm(sentence)) || pairReference;
             String claim = sentence.trim();
             List<String> ancestors = CitationVerifier.listAncestors(reply, sentences.start());
             boolean listSyntax = claim.matches("(?s)^(?:[-*+]|\\d+[.)])\\s+.*") || sentence.matches("(?s)^[ \\t]+.*");
@@ -273,7 +320,8 @@ public final class MedicalEvidenceVerifier {
                 Set<String> scopedSubjects = MONITORING.matcher(normalize(claim)).find() && !headingSubjects.isEmpty()
                         ? headingSubjects
                         : !antecedentSubjects.isEmpty() ? antecedentSubjects : headingSubjects;
-                reason = invalidReason(claim, refs, safeEvidence, thresholds, graphChunkIds, scopedSubjects, antecedentPopulation, ownerContext);
+                reason = invalidReason(claim, refs, safeEvidence, thresholds, graphChunkIds,
+                        roundSufficient, scopedSubjects, antecedentPopulation, ownerContext);
             }
             if (reason != null) {
                 String key = sentence.trim();
@@ -405,6 +453,9 @@ public final class MedicalEvidenceVerifier {
 
     private static boolean isMedicalFact(String sentence) {
         String text = normalize(sentence);
+        // 售后/物流政策不是医学事实；先于数量解析排除，避免「七天」被当成剂量。
+        // 若同句还有临床信号（服用/出血/风险…），仍按医学事实核验。
+        if (NON_CLINICAL_POLICY.matcher(text).find() && !CLINICAL_POLICY_OVERRIDE.matcher(text).find()) return false;
         // 格式不能免除事实的证据责任；纯表头无事实词，自然不会命中。
         Set<String> amounts = quantities(text);
         boolean dose = amounts.stream().anyMatch(amount -> DOSE_UNIT.matcher(amount).find())
@@ -817,33 +868,113 @@ public final class MedicalEvidenceVerifier {
         if (!visible.endsWith("？") && !visible.endsWith("?")) return false;
         return quantities(sentence).isEmpty() && !PRODUCT_CODE.matcher(sentence).find();
     }
+
+    /**
+     * 哪些断言在轮级证据门之外还要**再看一次引用切片**。
+     *
+     * <p>轮级判定回答「这一轮证据够不够回答这个问题」，不回答「这一句的结论是不是
+     * 落在它引用的那一片上」。对低后果陈述（适宜人群、一般膳食建议），后者由主体/
+     * 数量/人群/极性逐字段核对负责，重排分不参与——短句与口语化转述的重排分天然
+     * 偏低，拿它二次判死会删掉原文逐字支撑的结论。
+     *
+     * <p>高后果断言保留逐片判定：<b>带具体数值的剂量</b>、相互作用、风险、禁忌、
+     * 药物分类、监测要求。这些内容写错一位就会误导用户，宁可多拦。判据与
+     * {@link #hasMedicalConclusion} 同源，不另起一张词表。
+     */
+    private static boolean requiresChunkLevelGate(String normalizedSentence) {
+        return requiresAbsoluteChunkGate(normalizedSentence)
+                || !quantities(normalizedSentence).isEmpty()
+                || MedicalQuantities.hasUnparsedQuantity(normalizedSentence);
+    }
+
+    /**
+     * 哪些断言必须由**引用切片自己跨过绝对门槛**。
+     *
+     * <p>这一层只放高后果结论：相互作用、风险、禁忌、安全警示、版本裁定。
+     * 它们写错一位就会误导用户，不能因为「同轮另有强片」就放行——强片支撑的是别的事实，
+     * 不是这一句。纯剂量/用法句先由轮级证据门确认本轮够用，再按相对档核对是否明显弱于
+     * 本轮最强依据；纯膳食建议、适宜人群、饮水提醒等低后果陈述不在其中。
+     */
+    private static boolean requiresAbsoluteChunkGate(String normalizedSentence) {
+        return CLINICAL_POSTFIX.matcher(normalizedSentence).find()
+                || RELATION_DIRECTION.matcher(normalizedSentence).find()
+                || MONITORING.matcher(normalizedSentence).find()
+                || RISK_PRESENCE.matcher(normalizedSentence).find()
+                || INTERACTION_PRESENCE.matcher(normalizedSentence).find()
+                || SAFE_COMBINATION.matcher(normalizedSentence).find()
+                || ABSORPTION_COMPETITION.matcher(normalizedSentence).find()
+                || MEDICATION_CLASSIFICATION.matcher(normalizedSentence).find()
+                || SYMPTOM_WARNING.matcher(normalizedSentence).find()
+                || SAFETY_WARNING.matcher(normalizedSentence).find()
+                || isVersionDecision(normalizedSentence)
+                || normalizedSentence.matches(".*(?:禁用|不宜使用|拮抗).*");
+    }
+
+    /**
+     * 一片引用证据是否可用。绝对档要求它自己达到配置阈值；相对档只要求它不明显弱于
+     * 本轮最强依据（{@link #RELATIVE_CHUNK_SCORE_FLOOR}）。没有分数时沿用证据门的
+     * fail-open：缺失指标不等于不相关。
+     */
+    private static boolean chunkUsable(int ref, List<DocumentChunk> evidence, EvidenceGate.Thresholds thresholds,
+                                       java.util.Set<String> graphChunkIds, boolean absolute) {
+        if (ref < 1 || ref > evidence.size()) return false;
+        DocumentChunk chunk = evidence.get(ref - 1);
+        if (chunk == null) return false;
+        String key = chunk.getChunkId() == null || chunk.getChunkId().isBlank()
+                ? chunk.getDocId() + "#" + chunk.getChunkIndex() : chunk.getChunkId();
+        java.util.Set<String> graph = graphChunkIds == null ? java.util.Set.of()
+                : graphChunkIds.contains(key) ? java.util.Set.of(key) : java.util.Set.of();
+        if (absolute) {
+            return EvidenceGate.evaluate(List.of(chunk), thresholds, graph).isSufficient();
+        }
+        if (chunk.getScore() == null) return true;
+        Double topScore = evidence.stream().filter(java.util.Objects::nonNull)
+                .map(DocumentChunk::getScore).filter(java.util.Objects::nonNull)
+                .max(Double::compareTo).orElse(null);
+        if (topScore == null || topScore <= 0) return true;
+        // 图谱依据的相关性由结构给出，文本相似度天然偏低；已有图谱豁免时不再按分数卡。
+        if (!graph.isEmpty()) return true;
+        return chunk.getScore() >= topScore * RELATIVE_CHUNK_SCORE_FLOOR;
+    }
+
     private static String invalidReason(String sentence, List<Integer> refs,
                                         List<DocumentChunk> evidence,
                                         EvidenceGate.Thresholds thresholds, java.util.Set<String> graphChunkIds,
+                                        boolean roundSufficient,
                                         Set<String> verifiedSubjects, Set<String> verifiedPopulation, String ownerContext) {
         String normalizedSentence = normalize(sentence);
+        // 售后/物流/订单政策句里的「七天无理由」「72 小时发货」不是医学剂量，不能
+        // 进入医学严格门：它没有剂量、关系或风险结论可核验，出处由普通引用校验负责。
+        // G-15 的真实售后回答引用了逐字支撑的售后切片，却因为「七天」被判
+        // 「剂量/时间数量写法不明确」，整句被剔除、正确引用被记成 WRONG_TARGET。
+        // 判据由 isMedicalFact 内的 NON_CLINICAL_POLICY 收窄为「政策动作词 + 时间量
+        // 且无临床信号」；真正的医学结论仍走下面的完整核对。
+        if (!isMedicalFact(sentence) && NON_CLINICAL_POLICY.matcher(normalizedSentence).find()) return null;
         if (MedicalQuantities.hasUnparsedQuantity(normalizedSentence)) return "剂量/时间数量写法不明确，不能按空断言放行";
 
-        // 证据门判「这一句引用的那些片够不够格」。
+        // 证据门分两层，回答两个不同的问题：
+        //   1) 本轮证据够不够回答这个问题——由 EvidenceGate 对**整轮**判一次；
+        //   2) 这一句的高后果结论有没有落在它引用的那一片上——只对带数值的剂量、
+        //      相互作用、风险、禁忌这类断言再判一次。
         //
-        // 为什么不是「整轮集合级」：实测反例（F4/F6/KG08 三组既有契约）——同轮有高分片时，
-        // 句子若引了一片低分的无关片，轮级判定照样 SUFFICIENT，于是一句「引错片但编号合法」
-        // 的医学结论被放行。轮的判定回答不了「这一句的依据是不是这一片」，那正是本类要守的线。
-        // 为什么不是「逐片全过」的放宽版（引用集合取最高分）：同样在这三组反例上失效，
-        // 且多引用句「一强一弱」的实测样本尚未出现，放宽方向没有证据支持。
-        //
-        // 历史：逐片判定曾被记为「粒度错配」（N1 文档 §2.7），但当时的实证是生产 14 轮被整篇兜底，
-        // 而那 14 轮的轮级判定本身就是 WEAK——门的口径对它们没有任何影响，
-        // 真因是「商品咨询被拖进医学链」（R20）与「商品行的出处是工具回执」（R21）。
-        if (thresholds != null) {
-            boolean allUsable = refs.stream().allMatch(ref -> {
-                DocumentChunk chunk = evidence.get(ref - 1);
-                if (chunk == null) return false;
-                String key = chunk.getChunkId() == null || chunk.getChunkId().isBlank()
-                        ? chunk.getDocId() + "#" + chunk.getChunkIndex() : chunk.getChunkId();
-                return EvidenceGate.evaluate(List.of(chunk), thresholds,
-                        graphChunkIds == null ? java.util.Set.of() : graphChunkIds.contains(key) ? java.util.Set.of(key) : java.util.Set.of()).isSufficient();
-            });
+        // 低后果陈述（适宜人群、一般膳食建议）不再按引用切片的重排分二次判死：
+        // 轮级已经判过「这一轮证据够」，逐片再判一次是同一事实两处各算；重排分对
+        // 短句/口语化转述天然偏低，实测 0.14~0.19 的切片原文逐字支撑结论
+        //（2026-10-18 alice 便秘会话）。高后果断言保留逐片判定：数值或关系写错
+        // 一位就会误导用户，不能只靠轮级；「同轮有强片、句子却引了弱片」的既有
+        // 契约由这一层守住。
+        if (!roundSufficient) {
+            // 轮级不足时，只有引用切片自己达到绝对门槛或属于图谱依据才放行；
+            // 否则仍按轮级拒绝。这样既不整篇误杀，也不给弱片开口子。
+            boolean citedStrong = refs.stream().anyMatch(ref -> chunkUsable(ref, evidence, thresholds, graphChunkIds, true));
+            if (!citedStrong) return "本轮证据低于统一证据门，不能支撑医学结论";
+        }
+        if (thresholds != null && requiresChunkLevelGate(normalizedSentence)) {
+            // 高后果断言按绝对门槛逐片复核：写错一位就会误导用户，不能只靠轮级。
+            // 纯剂量/用法句走相对判据：它已经有主体/数值/人群/角色/约束的逐字段核验，
+            // 重排分只再回答「这片是不是明显弱于本轮最强依据」，不再用同一绝对阈值二次判死。
+            boolean allUsable = refs.stream().allMatch(ref -> chunkUsable(ref, evidence, thresholds, graphChunkIds,
+                    requiresAbsoluteChunkGate(normalizedSentence)));
             if (!allUsable) {
                 return "引用证据低于统一证据门，不能支撑医学结论";
             }
@@ -859,6 +990,13 @@ public final class MedicalEvidenceVerifier {
         }
 
         List<DocumentChunk> citedEvidence = refs.stream().map(ref -> evidence.get(ref - 1)).toList();
+        // 「本品」的归属可以来自**这句引用的切片**：当且仅当所有被引用切片都指向同一个商品时，
+        // 那个商品就是句子里的「本品」。这与「句子必须自己点名商品」不是同一条判据：
+        // 后者防的是同一轮出现多份说明书时归属歧义（KG-02/KG-11），而这里的前提正是
+        // 多份证据中**只有一份**被这句引用——归属没有第二种可能。
+        Set<String> citedOwners = citedEvidence.stream().map(chunk -> chunk == null ? null : productOwner(chunk.getTitle()))
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        String citedOwner = citedOwners.size() == 1 ? citedOwners.iterator().next() : null;
         boolean graphClaim = normalizedSentence.contains("图谱");
         if (graphClaim) {
             boolean graphEvidence = citedEvidence.stream().anyMatch(MedicalEvidenceVerifier::isGraphEvidence);
@@ -933,7 +1071,8 @@ public final class MedicalEvidenceVerifier {
             if (PRODUCT_PRONOUN.matcher(normalizedSentence).find() && isMedicalFact(sentence)) {
                 String owner = productOwner(chunk.getTitle());
                 if (owner == null || !normalizedSentence.contains(owner) && !owner.equals(ownerContext)
-                        && !sourceFrame) {
+                        && !sourceFrame
+                        && !(PRODUCT_COMPOSITION_PRONOUN.matcher(normalizedSentence).find() && owner.equals(citedOwner))) {
                     failures.add("本品临床事实没有声明引用来源所属商品"); continue;
                 }
             }
@@ -952,7 +1091,7 @@ public final class MedicalEvidenceVerifier {
                     && !relation.matcher(normalizedSource).find())) {
                 failures.add("关系类别与引用切片不一致"); continue;
             }
-            String doseReason = MedicalDoseAssertions.rejection(clinicalSentence, sourceText(chunk), MEDICAL_TERMS, verifiedSubjects, verifiedPopulation);
+            String doseReason = MedicalDoseAssertions.rejection(clinicalSentence, sourceText(chunk), chunk.getTitle(), MEDICAL_TERMS, verifiedSubjects, verifiedPopulation);
             if (isMedicalFact(sentence) && doseReason != null) {
                 failures.add(doseReason); continue;
             }

@@ -50,6 +50,19 @@ public interface OrderDomainService {
 
     OrderResponse getOrder(String userId, Long orderId);
 
+    /**
+     * 按用户可见的订单号（YS 开头）取订单。
+     * <p>
+     * <b>为什么必须有这条。</b>用户嘴里说的是订单号，而模型/工具链只认内部数字 ID；
+     * 原先唯一的桥是「先查列表再找 ID」，可列表查询并不支持按订单号过滤——
+     * 于是「查一下 YS2026...」在系统里根本没有可执行路径，工具只能抛
+     * {@code For input string: "YS..."}。
+     * <p>
+     * 归属校验与 {@link #getOrder(String, Long)} 同源：都是带 {@code userId} 条件的查询，
+     * 不额外放行任何东西。
+     */
+    OrderResponse getOrderByNo(String userId, String orderNo);
+
     LogisticsResponse getLogistics(String userId, Long orderId);
 
     /**

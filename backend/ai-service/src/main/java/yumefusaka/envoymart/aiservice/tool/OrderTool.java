@@ -32,11 +32,12 @@ public class OrderTool implements Tool {
     public ToolDefinition getDefinition() {
         return ToolDefinition.builder()
                 .name("order_query")
-                .description("按订单内部 ID 查询当前用户的订单详情：状态、金额、商品明细、收货信息。"
-                        + "参数 orderId 必须是数字 ID；用户看到的 YS 开头订单号是 orderNo，不能直接作为 orderId 传入。")
+                .description("查询当前用户的订单详情：状态、金额、商品明细、收货信息。"
+                        + "参数 orderId 接受两种形态：订单查询结果里的数字 ID，或用户看到的 YS 开头订单号。"
+                        + "用户直接给出 YS 订单号时照原样传入，不要先猜一个数字 ID。")
                 .parameters(Map.of(
                         "orderId", ToolDefinition.ParameterSpec.builder()
-                                .type("integer").description("订单编号").required(true).build()
+                                .type("string").description("订单内部 ID（数字）或 YS 开头的订单号").required(true).build()
                 ))
                 .build();
     }
@@ -45,7 +46,9 @@ public class OrderTool implements Tool {
     public ToolResult execute(ToolCall call) {
         try {
             String userId = call.requireUserId();
-            Long orderId = Long.valueOf(String.valueOf(call.getArguments().get("orderId")));
+            // 两种编号形态在这里收口：数字直接用，YS 订单号换一次 id。
+            // 少了这一步，用户给的订单号会变成 JVM 的 For input string 异常原文。
+            Long orderId = OrderRefs.resolveOrderId(orderClient, userId, call.getArguments().get("orderId"));
             OrderResponse order = Downstream.read("订单服务", () -> orderClient.getOrder(userId, orderId));
 
             if (order == null) {

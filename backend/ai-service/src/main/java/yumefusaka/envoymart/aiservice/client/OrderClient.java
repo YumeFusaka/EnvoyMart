@@ -69,6 +69,11 @@ public interface OrderClient {
     Result<OrderResponse> getOrder(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                    @PathVariable("id") Long id);
 
+    /** 按用户可见的订单号（YS 开头）取订单；与按 id 那条共用同一段归属校验。 */
+    @GetMapping("/orders/by-no/{orderNo}")
+    Result<OrderResponse> getOrderByNo(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
+                                       @PathVariable("orderNo") String orderNo);
+
     @GetMapping("/orders/{id}/logistics")
     Result<LogisticsResponse> getLogistics(@RequestHeader(IdentityHeaderInterceptor.USER_ID_HEADER) String userId,
                                            @PathVariable("id") Long id);

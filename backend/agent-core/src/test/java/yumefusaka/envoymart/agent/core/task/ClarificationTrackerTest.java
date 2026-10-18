@@ -92,6 +92,34 @@ class ClarificationTrackerTest {
         assertThat(second.round()).isEqualTo(2);
     }
 
+    /**
+     * 回归：纯业务操作不该被推进成健康咨询。
+     * <p>
+     * 真实现场（alice，「把碳酸钙 D3 咀嚼片（60 片）加入购物车」）：
+     * 会话现场被记成 {@code clarification.missing=["症状"]}，一个加购请求被要求补充症状。
+     * 这份状态还会进 prompt，让模型误以为这一轮是健康咨询。
+     */
+    @Test
+    void 非健康语境不推进澄清也不要求症状() {
+        var progress = ClarificationTracker.advance(null, "把碳酸钙 D3 咀嚼片（60 片）加入购物车", false);
+
+        assertThat(progress.round()).isZero();
+        assertThat(progress.missing()).isEmpty();
+        assertThat(progress.collected()).isEmpty();
+    }
+
+    /** 非健康轮次不能抹掉此前已澄清的条件——用户可能先问症状、再问商品。 */
+    @Test
+    void 非健康语境保留既有澄清记录() {
+        var first = ClarificationTracker.advance(null, "最近有点便秘，成人用的");
+        var second = ClarificationTracker.advance(first, "把碳酸钙 D3 咀嚼片加入购物车", false);
+
+        assertThat(second.collected())
+                .containsEntry(ClarificationTracker.SLOT_SYMPTOM, "便秘")
+                .containsEntry(ClarificationTracker.SLOT_POPULATION, "成人");
+        assertThat(second.round()).isEqualTo(first.round());
+    }
+
     @Test
     void 未提及的槽位不会被清空() {
         var first = ClarificationTracker.advance(null, "便秘，成人用的");

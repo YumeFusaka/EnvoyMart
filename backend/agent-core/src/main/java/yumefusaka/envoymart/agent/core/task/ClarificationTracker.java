@@ -96,6 +96,27 @@ public final class ClarificationTracker {
      * @param message  用户本轮原话
      */
     public static Progress advance(Progress previous, String message) {
+        return advance(previous, message, true);
+    }
+
+    /**
+     * 推进一轮澄清，并声明这一轮是否处在健康咨询语境里。
+     * <p>
+     * <b>为什么需要这个开关。</b>这套槽位（症状 / 人群 / 品类 / 偏好 / 时间）是给
+     * 「我不舒服，想买点什么」这类咨询设计的。可它此前对<b>每一句</b>用户话都推进：
+     * 实测「把碳酸钙 D3 咀嚼片（60 片）加入购物车」这样的纯业务操作，
+     * 会话现场被记成 {@code missing=["症状"]}——一个加购请求被要求补充症状。
+     * 那份状态还会进 prompt，让模型误以为这是一次健康咨询。
+     * <p>
+     * 非健康语境的轮次<b>原样返回</b>：不推进轮次、不新增槽位、不改写已有进度。
+     * 既有的澄清记录要保留——用户可能先问症状、再问商品，后者不该抹掉前者。
+     */
+    public static Progress advance(Progress previous, String message, boolean healthContext) {
+        if (!healthContext) {
+            return previous == null
+                    ? new Progress(Map.of(), 0, false, List.of(), List.of())
+                    : previous;
+        }
         Map<String, String> collected = new java.util.LinkedHashMap<>(
                 previous == null ? Map.of() : previous.collected());
         List<String> corrections = new java.util.ArrayList<>();

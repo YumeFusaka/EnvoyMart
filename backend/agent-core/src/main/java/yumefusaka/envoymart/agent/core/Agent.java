@@ -473,11 +473,23 @@ public class Agent {
         // 才知道它问的是什么），而注入发生在 prompt 拼装的那一刻。
         IntentSwitchDetector.Verdict switchVerdict =
                 IntentSwitchDetector.check(sessionContext.coreIntent(), retrievalQuery);
+        // 路由判据只读**用户本轮原话**，不读改写后的检索句（R20/R23）。
+        //
+        // 改写句是给检索器用的中间产物：它补全指代、展开商品名，为的是让召回更准。
+        // 代价是它会引入「用户原话里没有的医学词」——实测 38 轮里有 3 轮因此把
+        // 「取消加购」判成医学问题，整篇走兜底拒答。
+        //
+        // 判据方向的规则：**路由只读原话，检索才用改写句。**把中间产物当意图用，
+        // 等于让一个为召回率优化的变换去决定业务路由。
+        //
+        // 提到澄清之前计算：澄清槽位（症状/人群）只对健康咨询有意义，
+        // 而这个判断本来就在本方法里、且只依赖用户原话。
+        boolean medicalQuestion = MedicalEvidenceVerifier.isMedicalQuestion(message);
         // 澄清进度：这个会话已经问过几轮、拿到了什么条件。
         // **切换话题时从零开始**——上一件事澄清到一半的条件，不该限制新话题的检索范围
         // （用户问完益生菌改问订单，把「腹泻」带过去会让订单查询也带着一个症状条件）
         ClarificationTracker.Progress clarification = ClarificationTracker.advance(
-                switchVerdict.switched() ? null : progressOf(sessionContext), retrievalQuery);
+                switchVerdict.switched() ? null : progressOf(sessionContext), retrievalQuery, medicalQuestion);
         // 检索闭包：执行图判定需要检索时才会调用它。它把「改写句 → 三路召回 → 证据门判定」
         // 一次做完，并返回可直接追加进 prompt 的知识段。
         //
@@ -525,15 +537,6 @@ public class Agent {
         AgentResponse response;
         List<DocumentChunk> knowledge;
         EvidenceGate.Decision evidence;
-        // 路由判据只读**用户本轮原话**，不读改写后的检索句（R20/R23）。
-        //
-        // 改写句是给检索器用的中间产物：它补全指代、展开商品名，为的是让召回更准。
-        // 代价是它会引入「用户原话里没有的医学词」——实测 38 轮里有 3 轮因此把
-        // 「取消加购」判成医学问题，整篇走兜底拒答。
-        //
-        // 判据方向的规则：**路由只读原话，检索才用改写句。**把中间产物当意图用，
-        // 等于让一个为召回率优化的变换去决定业务路由。
-        boolean medicalQuestion = MedicalEvidenceVerifier.isMedicalQuestion(message);
         boolean deferMedicalText = onChunk != null
                 && (medicalQuestion || ProductCandidateList.requestsNewList(message));
         // 保持执行图的流式分支与取消检查，只在出口丢弃未经审核的正文。
